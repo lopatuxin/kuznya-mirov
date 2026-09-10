@@ -1,0 +1,14 @@
+.git
+.gitignore
+.claude
+docs
+*.md
+.env
+docker-compose*.yml
+Dockerfile
+
+engine/target
+engine/pkg
+
+web/node_modules
+web/dist

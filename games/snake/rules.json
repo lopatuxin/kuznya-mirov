@@ -1,0 +1,21 @@
+{
+  "rules": [
+    { "kind": "move", "for": { "has": ["position", "velocity"] } },
+
+    { "kind": "collide", "a": { "has": ["controlled"] }, "b": { "has": ["food"] },
+      "effects": { "a": [["add", "tail", 0.12], ["add", "score", 1]], "b": [["delete"]] } },
+
+    { "kind": "collide", "a": { "has": ["controlled"] }, "b": { "has": ["deadly"] },
+      "do": [["end_game", "loss"]] },
+
+    { "kind": "spawn", "when": { "after_move_of": { "has": ["controlled"] } },
+      "where": "at_parent",
+      "template": { "size": [1, 1], "collides": true, "color": "#3aa54c", "layer": 1,
+                    "deadly": true, "lifetime": { "from_parent": "tail" } } },
+
+    { "kind": "spawn", "when": { "fewer_than": { "count": 1, "of": { "has": ["food"] } } },
+      "where": "random_cell",
+      "template": { "size": [1, 1], "collides": true, "color": "#e0563b", "layer": 1,
+                    "food": true } }
+  ]
+}

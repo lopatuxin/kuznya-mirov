@@ -1,0 +1,9 @@
+{
+  "properties": {
+    "controlled": "flag",
+    "deadly": "flag",
+    "food": "flag",
+    "tail": "time",
+    "score": "number"
+  }
+}

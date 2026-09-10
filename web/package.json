@@ -1,0 +1,23 @@
+{
+  "name": "kuznya-mirov-web",
+  "private": true,
+  "type": "module",
+  "version": "0.1.0",
+  "scripts": {
+    "predev": "node scripts/ensureEnginePkg.mjs",
+    "dev": "vite",
+    "prebuild": "node scripts/ensureEnginePkg.mjs",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "engine": "file:../engine/pkg"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.5",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11",
+    "vitest": "^2.1.8"
+  }
+}

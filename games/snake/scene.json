@@ -1,0 +1,23 @@
+{
+  "objects": [
+    { "name": "head", "position": [10, 10], "size": [1, 1], "velocity": [1, 0],
+      "grid": { "interval": 0.12 },
+      "collides": true, "color": "#5ad469", "layer": 2,
+      "controlled": true, "tail": 0.6, "score": 0,
+      "keys": {
+        "ArrowUp":    { "press": [["velocity", [0, -1]]] },
+        "ArrowDown":  { "press": [["velocity", [0, 1]]] },
+        "ArrowLeft":  { "press": [["velocity", [-1, 0]]] },
+        "ArrowRight": { "press": [["velocity", [1, 0]]] }
+      } },
+
+    { "name": "wall_top", "position": [0, 0], "size": [24, 1],
+      "collides": true, "deadly": true, "color": "#2b2f3a", "layer": 1 },
+    { "name": "wall_bottom", "position": [0, 23], "size": [24, 1],
+      "collides": true, "deadly": true, "color": "#2b2f3a", "layer": 1 },
+    { "name": "wall_left", "position": [0, 0], "size": [1, 24],
+      "collides": true, "deadly": true, "color": "#2b2f3a", "layer": 1 },
+    { "name": "wall_right", "position": [23, 0], "size": [1, 24],
+      "collides": true, "deadly": true, "color": "#2b2f3a", "layer": 1 }
+  ]
+}

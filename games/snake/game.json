@@ -1,0 +1,12 @@
+{
+  "name": "Змейка",
+  "scene": { "width": 24, "height": 24, "background": "#12141a" },
+  "random_seed": 20260907,
+  "max_objects": 4096,
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "images": "images/"
+  }
+}

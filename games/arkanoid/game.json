@@ -1,0 +1,12 @@
+{
+  "name": "Арканоид",
+  "scene": { "width": 24, "height": 24, "background": "#0e1018" },
+  "random_seed": 20260908,
+  "max_objects": 4096,
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "images": "images/"
+  }
+}

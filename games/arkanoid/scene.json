@@ -1,0 +1,56 @@
+{
+  "objects": [
+    { "name": "paddle", "position": [10, 22], "size": [4, 1], "velocity": [0, 0],
+      "collides": true, "solid": true, "color": "#c8ccd4", "layer": 2, "score": 0,
+      "keys": {
+        "ArrowLeft":  { "press":   [["velocity", [-14, 0]]],
+                        "release": [["velocity", [0, 0]]] },
+        "ArrowRight": { "press":   [["velocity", [14, 0]]],
+                        "release": [["velocity", [0, 0]]] }
+      } },
+
+    { "name": "ball", "position": [12, 12], "size": [1, 1], "velocity": [7, -11],
+      "collides": true, "ball": true, "color": "#f2f2f2", "layer": 2 },
+
+    { "name": "wall_top", "position": [0, 0], "size": [24, 1],
+      "collides": true, "solid": true, "color": "#2b2f3a", "layer": 1 },
+    { "name": "wall_left", "position": [0, 0], "size": [1, 24],
+      "collides": true, "solid": true, "color": "#2b2f3a", "layer": 1 },
+    { "name": "wall_right", "position": [23, 0], "size": [1, 24],
+      "collides": true, "solid": true, "color": "#2b2f3a", "layer": 1 },
+
+    { "position": [1, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [3, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [5, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [7, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [9, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [11, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [13, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [15, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [17, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [19, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [21, 2], "size": [2, 1], "collides": true, "brick": true, "color": "#e05a5a", "layer": 1 },
+    { "position": [1, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [3, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [5, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [7, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [9, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [11, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [13, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [15, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [17, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [19, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [21, 4], "size": [2, 1], "collides": true, "brick": true, "color": "#e0a75a", "layer": 1 },
+    { "position": [1, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [3, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [5, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [7, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [9, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [11, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [13, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [15, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [17, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [19, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 },
+    { "position": [21, 6], "size": [2, 1], "collides": true, "brick": true, "color": "#e0d65a", "layer": 1 }
+  ]
+}

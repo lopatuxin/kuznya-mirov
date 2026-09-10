@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "ball": "flag",
+    "solid": "flag",
+    "brick": "flag",
+    "score": "number"
+  }
+}

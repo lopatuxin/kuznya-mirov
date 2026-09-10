@@ -1,0 +1,12 @@
+services:
+  web:
+    build: .
+    ports:
+      - "${WEB_PORT:-8090}:80"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    restart: unless-stopped
