@@ -1,0 +1,77 @@
+{
+  "screens": [
+    { "name": "menu", "world_runs": false, "elements": [
+      { "kind": "label", "anchor": "center", "offset": [0, -60], "size": [400, 48],
+        "text": "Арканоид", "font": "title", "font_size": 44, "color": "#f2f2f2",
+        "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [0, 20], "size": [220, 56],
+        "text": "Играть", "font": "ui", "font_size": 24, "text_color": "#0e1018",
+        "color": "#f2f2f2", "color_hover": "#ffffff", "color_pressed": "#c8ccd4",
+        "on_click": ["new_game", "game"] }
+    ] },
+
+    { "name": "game", "world_runs": true,
+      "keys": { "Space": ["show_screen", "pause"], "Escape": ["show_screen", "pause"] },
+      "elements": [
+      { "kind": "panel", "anchor": "top_right", "offset": [12, 12], "size": [180, 48],
+        "color": "#0e1018cc" },
+      { "kind": "label", "anchor": "top_right", "offset": [24, 24], "size": [156, 24],
+        "text": "Счёт: {paddle.score}", "font": "ui", "font_size": 22, "color": "#f2f2f2",
+        "align": "right" },
+      { "kind": "button", "anchor": "top_left", "offset": [12, 12], "size": [120, 48],
+        "text": "Пауза", "font": "ui", "font_size": 20, "text_color": "#f2f2f2",
+        "color": "#0e1018cc", "color_hover": "#2b2f3acc", "color_pressed": "#3a3f4dcc",
+        "on_click": ["show_screen", "pause"] }
+    ] },
+
+    { "name": "pause", "world_runs": false,
+      "keys": { "Space": ["resume"], "Escape": ["resume"] },
+      "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [300, 220],
+        "color": "#0e1018d9" },
+      { "kind": "label", "anchor": "center", "offset": [0, -70], "size": [280, 40],
+        "text": "Пауза", "font": "title", "font_size": 28, "color": "#f2f2f2",
+        "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [0, -5], "size": [220, 50],
+        "text": "Продолжить", "font": "ui", "font_size": 22, "text_color": "#0e1018",
+        "color": "#f2f2f2", "color_hover": "#ffffff", "color_pressed": "#c8ccd4",
+        "on_click": ["resume"] },
+      { "kind": "button", "anchor": "center", "offset": [0, 60], "size": [220, 50],
+        "text": "В меню", "font": "ui", "font_size": 20, "text_color": "#f2f2f2",
+        "color": "#2b2f3a", "color_hover": "#3a3f4d", "color_pressed": "#1c1f27",
+        "on_click": ["quit"] }
+    ] },
+
+    { "name": "win", "world_runs": false, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [460, 220],
+        "color": "#0e1018d9" },
+      { "kind": "label", "anchor": "center", "offset": [0, -70], "size": [420, 40],
+        "text": "Победа! Счёт: {paddle.score}", "font": "title", "font_size": 26,
+        "color": "#f2f2f2", "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [0, 0], "size": [220, 50],
+        "text": "Ещё раз", "font": "ui", "font_size": 22, "text_color": "#0e1018",
+        "color": "#f2f2f2", "color_hover": "#ffffff", "color_pressed": "#c8ccd4",
+        "on_click": ["new_game", "game"] },
+      { "kind": "button", "anchor": "center", "offset": [0, 65], "size": [220, 50],
+        "text": "В меню", "font": "ui", "font_size": 20, "text_color": "#f2f2f2",
+        "color": "#2b2f3a", "color_hover": "#3a3f4d", "color_pressed": "#1c1f27",
+        "on_click": ["quit"] }
+    ] },
+
+    { "name": "loss", "world_runs": false, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [460, 220],
+        "color": "#0e1018d9" },
+      { "kind": "label", "anchor": "center", "offset": [0, -70], "size": [420, 40],
+        "text": "Игра окончена. Счёт: {paddle.score}", "font": "title", "font_size": 26,
+        "color": "#f2f2f2", "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [0, 0], "size": [220, 50],
+        "text": "Ещё раз", "font": "ui", "font_size": 22, "text_color": "#0e1018",
+        "color": "#f2f2f2", "color_hover": "#ffffff", "color_pressed": "#c8ccd4",
+        "on_click": ["new_game", "game"] },
+      { "kind": "button", "anchor": "center", "offset": [0, 65], "size": [220, 50],
+        "text": "В меню", "font": "ui", "font_size": 20, "text_color": "#f2f2f2",
+        "color": "#2b2f3a", "color_hover": "#3a3f4d", "color_pressed": "#1c1f27",
+        "on_click": ["quit"] }
+    ] }
+  ]
+}

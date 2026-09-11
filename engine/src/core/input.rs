@@ -28,6 +28,10 @@ impl StepInput {
 #[derive(Debug, Clone, Default)]
 pub struct InputQueue {
     pending: Vec<KeyEvent>,
+    /// «Исполнение игры»: клавиши, нажатые прямо сейчас — служебный набор движка, не видимый
+    /// правилам. Уходя с живого экрана, движок отпускает каждую из них, а не только ждёт
+    /// естественного `release` от браузера.
+    held: std::collections::HashSet<String>,
 }
 
 impl InputQueue {
@@ -40,6 +44,7 @@ impl InputQueue {
             code: code.to_string(),
             action: KeyAction::Press,
         });
+        self.held.insert(code.to_string());
     }
 
     pub fn release(&mut self, code: &str) {
@@ -47,6 +52,7 @@ impl InputQueue {
             code: code.to_string(),
             action: KeyAction::Release,
         });
+        self.held.remove(code);
     }
 
     /// Stage 1: folds everything queued since the previous step into a fixed picture and
@@ -60,6 +66,100 @@ impl InputQueue {
             }
         }
         snapshot
+    }
+
+    /// Keys held right now, in no particular order — used only to synthesize the "release
+    /// everything" step when the game leaves a live screen.
+    pub fn held_keys(&self) -> Vec<String> {
+        self.held.iter().cloned().collect()
+    }
+
+    /// Whether `code` is in the held set right now.
+    pub fn is_held(&self, code: &str) -> bool {
+        self.held.contains(code)
+    }
+
+    /// Forgets `code` entirely — used when its release is applied to the world immediately
+    /// instead of going through the queue. The pending events go too: a press still waiting in
+    /// the queue would otherwise be folded into the world a step *after* that release, switching
+    /// the binding on with nothing left in `held` to ever switch it off again.
+    pub fn forget(&mut self, code: &str) {
+        self.pending.retain(|event| event.code != code);
+        self.held.remove(code);
+    }
+
+    /// Drops both the pending queue and the held set — «Исполнение игры»: на входе в паузу
+    /// очередь чистится, а на неигровом экране набор не пополняется.
+    pub fn clear(&mut self) {
+        self.pending.clear();
+        self.held.clear();
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum MouseEvent {
+    Move([f32; 2]),
+    Down,
+    Up,
+}
+
+/// Mouse events are queued the same short way keys are: the page just appends, the engine
+/// drains between steps. See «Интерфейс игры» → «Мышь».
+#[derive(Debug, Clone, Default)]
+pub struct MouseQueue {
+    pending: Vec<MouseEvent>,
+}
+
+impl MouseQueue {
+    pub fn new() -> Self {
+        MouseQueue::default()
+    }
+
+    pub fn push_move(&mut self, x: f32, y: f32) {
+        self.pending.push(MouseEvent::Move([x, y]));
+    }
+
+    pub fn push_down(&mut self) {
+        self.pending.push(MouseEvent::Down);
+    }
+
+    pub fn push_up(&mut self) {
+        self.pending.push(MouseEvent::Up);
+    }
+
+    pub fn drain(&mut self) -> Vec<MouseEvent> {
+        std::mem::take(&mut self.pending)
+    }
+}
+
+/// Cursor position plus which button (by index into the active screen's `elements`) is
+/// hovered or has captured the press — «Интерфейс игры» → «Три состояния кнопки».
+#[derive(Debug, Clone, Copy, Default)]
+pub struct MouseState {
+    pub position: [f32; 2],
+    pub hover: Option<usize>,
+    pub captured: Option<usize>,
+}
+
+/// Releases of a key the active screen declared in its own `keys` table — queued the same short
+/// way mouse events are, and drained at the same step boundary, never through the world's input
+/// pipeline. «Экраны и состояние» → «Клавиша экрана».
+#[derive(Debug, Clone, Default)]
+pub struct KeyQueue {
+    pending: Vec<String>,
+}
+
+impl KeyQueue {
+    pub fn new() -> Self {
+        KeyQueue::default()
+    }
+
+    pub fn push_release(&mut self, code: &str) {
+        self.pending.push(code.to_string());
+    }
+
+    pub fn drain(&mut self) -> Vec<String> {
+        std::mem::take(&mut self.pending)
     }
 }
 

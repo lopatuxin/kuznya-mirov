@@ -7,7 +7,11 @@ use crate::core::rules::{
     CollideEffect, CommonAction, CompareOp, Condition, Outcome, Rule, RuleSet, Selector,
     SpawnCondition, SpawnPlace, TemplateValue,
 };
-use crate::core::scene::SceneConfig;
+use crate::core::scene::{ObjectSpec, SceneConfig};
+use crate::core::screens::{
+    Align, Anchor, ButtonCommand, Element, FontId, Placement, Screen, ScreenId, ScreenKeyTable,
+    ScreensConfig, TextPart,
+};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
 use crate::core::value::{GridSpec, PropKind, Value, Vec2};
 use crate::core::world::World;
@@ -637,19 +641,26 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
     })
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct FilePaths {
     pub properties: String,
     pub scene: String,
     pub rules: String,
+    pub screens: String,
+    /// `(имя, путь)`, в порядке `files.fonts` из `game.json` — этот порядок и определяет
+    /// `FontId`, на который ссылаются элементы `screens.json` (см. `resolve_font`).
+    pub fonts: Vec<(String, String)>,
 }
 
-#[derive(Clone)]
+#[derive(Debug, Clone)]
 pub struct GameConfig {
     pub scene: SceneConfig,
     pub random_seed: u64,
     pub max_objects: usize,
     pub files: FilePaths,
+    pub start_screen: String,
+    pub win_screen: Option<String>,
+    pub loss_screen: Option<String>,
 }
 
 /// The handshake between `read_entry` and `load_rest` that `wasm::Engine` drives: `None` before
@@ -696,7 +707,16 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let obj = expect_object(&root, "game.json", "", errors)?;
     reject_unknown_keys(
         obj,
-        &["name", "scene", "random_seed", "max_objects", "files"],
+        &[
+            "name",
+            "scene",
+            "random_seed",
+            "max_objects",
+            "files",
+            "start_screen",
+            "win_screen",
+            "loss_screen",
+        ],
         "game.json",
         "",
         errors,
@@ -752,7 +772,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let files = files_obj.map(|f| {
         reject_unknown_keys(
             f,
-            &["properties", "scene", "rules", "images"],
+            &["properties", "scene", "rules", "images", "screens", "fonts"],
             "game.json",
             "files",
             errors,
@@ -763,19 +783,35 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             .and_then(|v| expect_string(v, "game.json", "files → scene", errors));
         let rules = require_field(f, "rules", "game.json", "files", errors)
             .and_then(|v| expect_string(v, "game.json", "files → rules", errors));
+        let screens = require_field(f, "screens", "game.json", "files", errors)
+            .and_then(|v| expect_string(v, "game.json", "files → screens", errors));
+        let fonts_json = require_field(f, "fonts", "game.json", "files", errors);
+        let fonts =
+            fonts_json.and_then(|v| parse_font_table(v, "game.json", "files → fonts", errors));
         // `files.images` isn't read anywhere yet — same "documented but unused" status as
         // `name` — but its value still has to be the string a path is.
         if let Some(images) = f.get("images") {
             expect_string(images, "game.json", "files → images", errors);
         }
-        (properties, scene_path, rules)
+        (properties, scene_path, rules, screens, fonts)
     });
+
+    let start_screen = require_field(obj, "start_screen", "game.json", "", errors)
+        .and_then(|v| expect_string(v, "game.json", "start_screen", errors));
+    let win_screen = obj
+        .get("win_screen")
+        .and_then(|v| expect_string(v, "game.json", "win_screen", errors));
+    let loss_screen = obj
+        .get("loss_screen")
+        .and_then(|v| expect_string(v, "game.json", "loss_screen", errors));
 
     let scene = scene?;
     let max_objects = max_objects?;
     let random_seed = random_seed?;
-    let (properties, scene_path, rules) = files?;
-    let (properties, scene_path, rules) = (properties?, scene_path?, rules?);
+    let (properties, scene_path, rules, screens, fonts) = files?;
+    let (properties, scene_path, rules, screens, fonts) =
+        (properties?, scene_path?, rules?, screens?, fonts?);
+    let start_screen = start_screen?;
 
     Some(GameConfig {
         scene: SceneConfig {
@@ -789,8 +825,31 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             properties,
             scene: scene_path,
             rules,
+            screens,
+            fonts,
         },
+        start_screen,
+        win_screen,
+        loss_screen,
     })
+}
+
+/// `files.fonts`: an object mapping a font's name (used by `screens.json`'s `font` field) to its
+/// path inside the game's folder. Order is preserved — it becomes the font's `FontId`.
+fn parse_font_table(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<(String, String)>> {
+    let obj = expect_object(value, file, path, errors)?;
+    let mut fonts = Vec::with_capacity(obj.len());
+    for (name, path_json) in obj {
+        if let Some(font_path) = expect_string(path_json, file, &join(path, name), errors) {
+            fonts.push((name.clone(), font_path));
+        }
+    }
+    Some(fonts)
 }
 
 fn resolve_property_list(
@@ -2255,6 +2314,927 @@ fn validate_selectors_not_empty(
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// screens.json — «Экраны и состояние» / «Интерфейс игры»
+// ---------------------------------------------------------------------------------------------
+
+fn parse_ui_color(s: &str) -> Option<[f32; 4]> {
+    let hex = s.strip_prefix('#')?;
+    let component = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
+    match hex.len() {
+        6 => Some([
+            component(0)? as f32 / 255.0,
+            component(2)? as f32 / 255.0,
+            component(4)? as f32 / 255.0,
+            1.0,
+        ]),
+        8 => Some([
+            component(0)? as f32 / 255.0,
+            component(2)? as f32 / 255.0,
+            component(4)? as f32 / 255.0,
+            component(6)? as f32 / 255.0,
+        ]),
+        _ => None,
+    }
+}
+
+fn expect_ui_color(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<[f32; 4]> {
+    let s = expect_string(value, file, path, errors)?;
+    parse_ui_color(&s).or_else(|| {
+        errors.push(
+            file,
+            path,
+            format!("цвет должен быть вида \"#rrggbb\" или \"#rrggbbaa\", получено \"{s}\""),
+        );
+        None
+    })
+}
+
+/// One `text` field after parsing: `{имя объекта.свойство}` becomes a resolved `TextPart::Value`,
+/// everything else stays literal. «Интерфейс игры» → «Текст».
+fn parse_rich_text(
+    s: &str,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<TextPart>> {
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '}' {
+            errors.push(file, path, format!("непарная закрывающая скобка в \"{s}\""));
+            return None;
+        }
+        if ch != '{' {
+            literal.push(ch);
+            continue;
+        }
+        let mut inner = String::new();
+        let mut closed = false;
+        for c in chars.by_ref() {
+            if c == '}' {
+                closed = true;
+                break;
+            }
+            inner.push(c);
+        }
+        if !closed {
+            errors.push(
+                file,
+                path,
+                format!("подстановка не закрыта скобкой в \"{s}\""),
+            );
+            return None;
+        }
+        let Some(dot) = inner.find('.') else {
+            errors.push(
+                file,
+                path,
+                format!("подстановка \"{{{inner}}}\" должна быть вида {{имя объекта.свойство}}"),
+            );
+            return None;
+        };
+        let (obj_name, prop_name) = (&inner[..dot], &inner[dot + 1..]);
+        if obj_name.is_empty() || prop_name.is_empty() {
+            errors.push(
+                file,
+                path,
+                format!("подстановка \"{{{inner}}}\" должна быть вида {{имя объекта.свойство}}"),
+            );
+            return None;
+        }
+        let prop = resolve_property(prop_name, properties, file, path, errors)?;
+        if !literal.is_empty() {
+            parts.push(TextPart::Literal(std::mem::take(&mut literal)));
+        }
+        parts.push(TextPart::Value {
+            object_name: obj_name.to_string(),
+            prop,
+        });
+    }
+    if !literal.is_empty() {
+        parts.push(TextPart::Literal(literal));
+    }
+    Some(parts)
+}
+
+fn parse_placement(
+    obj: &serde_json::Map<String, Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Placement> {
+    let anchor_json = require_field(obj, "anchor", file, path, errors)?;
+    let anchor_str = expect_string(anchor_json, file, &join(path, "anchor"), errors)?;
+    let anchor = Anchor::parse(&anchor_str).or_else(|| {
+        errors.push(
+            file,
+            &join(path, "anchor"),
+            format!("неизвестный якорь \"{anchor_str}\""),
+        );
+        None
+    })?;
+    let offset = match obj.get("offset") {
+        Some(v) => parse_vec2(v, file, &join(path, "offset"), errors)?,
+        None => [0.0, 0.0],
+    };
+    let size_json = require_field(obj, "size", file, path, errors)?;
+    let size = parse_vec2(size_json, file, &join(path, "size"), errors)?;
+    if size[0] <= 0.0 || size[1] <= 0.0 {
+        errors.push(
+            file,
+            &join(path, "size"),
+            format!(
+                "размер должен быть больше нуля, получено [{}, {}]",
+                size[0], size[1]
+            ),
+        );
+        return None;
+    }
+    Some(Placement {
+        anchor,
+        offset: [offset[0] as f32, offset[1] as f32],
+        size: [size[0] as f32, size[1] as f32],
+    })
+}
+
+#[derive(Debug, Clone)]
+enum ParsedCommand {
+    ShowScreen(String),
+    NewGame(String),
+    Resume,
+    Quit,
+}
+
+fn parse_button_command(
+    value: &Json,
+    file: &str,
+    path: &str,
+    what: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedCommand> {
+    let arr = expect_array(value, file, path, errors)?;
+    let head_json = arr.first();
+    let Some(head_json) = head_json else {
+        errors.push(
+            file,
+            path,
+            "команда не той формы: пустой список".to_string(),
+        );
+        return None;
+    };
+    let head = expect_string(head_json, file, &join(path, "[0]"), errors)?;
+    let want_args = |n: usize, errors: &mut ErrorSink| -> bool {
+        if arr.len() == n {
+            true
+        } else {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "у команды \"{head}\" должно быть {} параметр(ов), получено {}",
+                    n - 1,
+                    arr.len() - 1
+                ),
+            );
+            false
+        }
+    };
+    match head.as_str() {
+        "show_screen" => {
+            let name = expect_string(
+                require_index(arr, 1, file, path, errors)?,
+                file,
+                &join(path, "[1]"),
+                errors,
+            )?;
+            want_args(2, errors).then_some(ParsedCommand::ShowScreen(name))
+        }
+        "new_game" => {
+            let name = expect_string(
+                require_index(arr, 1, file, path, errors)?,
+                file,
+                &join(path, "[1]"),
+                errors,
+            )?;
+            want_args(2, errors).then_some(ParsedCommand::NewGame(name))
+        }
+        "resume" => want_args(1, errors).then_some(ParsedCommand::Resume),
+        "quit" => want_args(1, errors).then_some(ParsedCommand::Quit),
+        other => {
+            errors.push(
+                file,
+                path,
+                format!("неизвестная команда {what} \"{other}\""),
+            );
+            None
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+enum ParsedElementData {
+    Panel {
+        placement: Placement,
+        color: [f32; 4],
+    },
+    Label {
+        placement: Placement,
+        text: Vec<TextPart>,
+        font_name: String,
+        font_size: f32,
+        color: [f32; 4],
+        align: Align,
+    },
+    Button {
+        placement: Placement,
+        text: Vec<TextPart>,
+        font_name: String,
+        font_size: f32,
+        text_color: [f32; 4],
+        color: [f32; 4],
+        color_hover: [f32; 4],
+        color_pressed: [f32; 4],
+        on_click: ParsedCommand,
+    },
+}
+
+const PANEL_KEYS: &[&str] = &["kind", "anchor", "offset", "size", "color"];
+const LABEL_KEYS: &[&str] = &[
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "text",
+    "font",
+    "font_size",
+    "color",
+    "align",
+];
+const BUTTON_KEYS: &[&str] = &[
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "text",
+    "font",
+    "font_size",
+    "text_color",
+    "color",
+    "color_hover",
+    "color_pressed",
+    "on_click",
+];
+
+fn parse_element(
+    value: &Json,
+    path: &str,
+    properties: &PropertyTable,
+    errors: &mut ErrorSink,
+) -> Option<ParsedElementData> {
+    let obj = expect_object(value, "screens.json", path, errors)?;
+    let kind_json = require_field(obj, "kind", "screens.json", path, errors)?;
+    let kind = expect_string(kind_json, "screens.json", &join(path, "kind"), errors)?;
+    match kind.as_str() {
+        "panel" => {
+            reject_unknown_keys(obj, PANEL_KEYS, "screens.json", path, errors);
+            let placement = parse_placement(obj, "screens.json", path, errors)?;
+            let color_json = require_field(obj, "color", "screens.json", path, errors)?;
+            let color = expect_ui_color(color_json, "screens.json", &join(path, "color"), errors)?;
+            Some(ParsedElementData::Panel { placement, color })
+        }
+        "label" => {
+            reject_unknown_keys(obj, LABEL_KEYS, "screens.json", path, errors);
+            let placement = parse_placement(obj, "screens.json", path, errors)?;
+            let text_json = require_field(obj, "text", "screens.json", path, errors)?;
+            let text_str = expect_string(text_json, "screens.json", &join(path, "text"), errors)?;
+            let text = parse_rich_text(
+                &text_str,
+                properties,
+                "screens.json",
+                &join(path, "text"),
+                errors,
+            )?;
+            let font_json = require_field(obj, "font", "screens.json", path, errors)?;
+            let font_name = expect_string(font_json, "screens.json", &join(path, "font"), errors)?;
+            let font_size = match obj.get("font_size") {
+                Some(v) => expect_number(v, "screens.json", &join(path, "font_size"), errors)?,
+                None => 16.0,
+            };
+            let color = match obj.get("color") {
+                Some(v) => expect_ui_color(v, "screens.json", &join(path, "color"), errors)?,
+                None => [1.0, 1.0, 1.0, 1.0],
+            };
+            let align = match obj.get("align") {
+                Some(v) => {
+                    let s = expect_string(v, "screens.json", &join(path, "align"), errors)?;
+                    Align::parse(&s).or_else(|| {
+                        errors.push(
+                            "screens.json",
+                            &join(path, "align"),
+                            format!("неизвестное выравнивание \"{s}\""),
+                        );
+                        None
+                    })?
+                }
+                None => Align::Left,
+            };
+            Some(ParsedElementData::Label {
+                placement,
+                text,
+                font_name,
+                font_size: font_size as f32,
+                color,
+                align,
+            })
+        }
+        "button" => {
+            reject_unknown_keys(obj, BUTTON_KEYS, "screens.json", path, errors);
+            let placement = parse_placement(obj, "screens.json", path, errors)?;
+            let text_json = require_field(obj, "text", "screens.json", path, errors)?;
+            let text_str = expect_string(text_json, "screens.json", &join(path, "text"), errors)?;
+            let text = parse_rich_text(
+                &text_str,
+                properties,
+                "screens.json",
+                &join(path, "text"),
+                errors,
+            )?;
+            let font_json = require_field(obj, "font", "screens.json", path, errors)?;
+            let font_name = expect_string(font_json, "screens.json", &join(path, "font"), errors)?;
+            let font_size = match obj.get("font_size") {
+                Some(v) => expect_number(v, "screens.json", &join(path, "font_size"), errors)?,
+                None => 16.0,
+            };
+            let text_color = match obj.get("text_color") {
+                Some(v) => expect_ui_color(v, "screens.json", &join(path, "text_color"), errors)?,
+                None => [1.0, 1.0, 1.0, 1.0],
+            };
+            let color_json = require_field(obj, "color", "screens.json", path, errors)?;
+            let color = expect_ui_color(color_json, "screens.json", &join(path, "color"), errors)?;
+            let color_hover = match obj.get("color_hover") {
+                Some(v) => expect_ui_color(v, "screens.json", &join(path, "color_hover"), errors)?,
+                None => color,
+            };
+            let color_pressed = match obj.get("color_pressed") {
+                Some(v) => {
+                    expect_ui_color(v, "screens.json", &join(path, "color_pressed"), errors)?
+                }
+                None => color,
+            };
+            let on_click_json = require_field(obj, "on_click", "screens.json", path, errors)?;
+            let on_click = parse_button_command(
+                on_click_json,
+                "screens.json",
+                &join(path, "on_click"),
+                "кнопки",
+                errors,
+            )?;
+            Some(ParsedElementData::Button {
+                placement,
+                text,
+                font_name,
+                font_size: font_size as f32,
+                text_color,
+                color,
+                color_hover,
+                color_pressed,
+                on_click,
+            })
+        }
+        other => {
+            errors.push(
+                "screens.json",
+                &join(path, "kind"),
+                format!("неизвестный вид элемента \"{other}\": ожидался panel, label или button"),
+            );
+            None
+        }
+    }
+}
+
+/// Parses the optional `keys` table — same four commands as `on_click`, resolved later by
+/// `resolve_on_click` once every screen's name is known. A JSON object's keys are always
+/// strings, so «клавиша названа не строкой» from the checklist can't occur past `expect_object`.
+fn parse_screen_keys(
+    value: &Json,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Vec<(String, ParsedCommand)> {
+    let Some(obj) = expect_object(value, "screens.json", path, errors) else {
+        return Vec::new();
+    };
+    obj.iter()
+        .filter_map(|(code, cmd_json)| {
+            let cmd = parse_button_command(
+                cmd_json,
+                "screens.json",
+                &join(path, code),
+                "клавиши",
+                errors,
+            )?;
+            Some((code.clone(), cmd))
+        })
+        .collect()
+}
+
+struct ParsedScreen {
+    name: String,
+    world_runs: bool,
+    elements: Vec<ParsedElementData>,
+    keys: Vec<(String, ParsedCommand)>,
+    path: String,
+}
+
+fn parse_screen(
+    value: &Json,
+    index: usize,
+    properties: &PropertyTable,
+    errors: &mut ErrorSink,
+) -> Option<ParsedScreen> {
+    let path = format!("screens[{index}]");
+    let obj = expect_object(value, "screens.json", &path, errors)?;
+    reject_unknown_keys(
+        obj,
+        &["name", "world_runs", "elements", "keys"],
+        "screens.json",
+        &path,
+        errors,
+    );
+    let name = require_field(obj, "name", "screens.json", &path, errors)
+        .and_then(|v| expect_string(v, "screens.json", &join(&path, "name"), errors));
+    let world_runs =
+        require_field(obj, "world_runs", "screens.json", &path, errors).and_then(|v| {
+            v.as_bool().or_else(|| {
+                errors.push(
+                    "screens.json",
+                    &join(&path, "world_runs"),
+                    format!("ожидался признак (true/false), получено {}", kind_name(v)),
+                );
+                None
+            })
+        });
+    let elements_path = join(&path, "elements");
+    let elements_json = require_field(obj, "elements", "screens.json", &path, errors)
+        .and_then(|v| expect_array(v, "screens.json", &elements_path, errors));
+    let elements = elements_json
+        .map(|arr| {
+            arr.iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    parse_element(
+                        v,
+                        &join(&elements_path, &format!("[{i}]")),
+                        properties,
+                        errors,
+                    )
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    let keys = match obj.get("keys") {
+        Some(v) => parse_screen_keys(v, &join(&path, "keys"), errors),
+        None => Vec::new(),
+    };
+    Some(ParsedScreen {
+        name: name?,
+        world_runs: world_runs?,
+        elements,
+        keys,
+        path,
+    })
+}
+
+fn parse_screens_json(
+    text: &str,
+    properties: &PropertyTable,
+    errors: &mut ErrorSink,
+) -> Vec<ParsedScreen> {
+    let Some(root) = parse_json_or_error("screens.json", text, errors) else {
+        return Vec::new();
+    };
+    let Some(obj) = expect_object(&root, "screens.json", "", errors) else {
+        return Vec::new();
+    };
+    reject_unknown_keys(obj, &["screens"], "screens.json", "", errors);
+    let Some(screens_json) = obj.get("screens") else {
+        errors.push("screens.json", "", "отсутствует список экранов");
+        return Vec::new();
+    };
+    let Some(arr) = expect_array(screens_json, "screens.json", "screens", errors) else {
+        return Vec::new();
+    };
+    arr.iter()
+        .enumerate()
+        .filter_map(|(i, v)| parse_screen(v, i, properties, errors))
+        .collect()
+}
+
+fn resolve_font(
+    name: &str,
+    fonts: &[(String, String)],
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<FontId> {
+    match fonts.iter().position(|(n, _)| n == name) {
+        Some(id) => Some(id),
+        None => {
+            errors.push(
+                "screens.json",
+                path,
+                format!("шрифт \"{name}\" не объявлен в files.fonts"),
+            );
+            None
+        }
+    }
+}
+
+fn validate_text_refs(
+    text: &[TextPart],
+    scene_names: &std::collections::HashSet<&str>,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    let mut ok = true;
+    for part in text {
+        if let TextPart::Value { object_name, .. } = part
+            && !scene_names.contains(object_name.as_str())
+        {
+            errors.push(
+                "screens.json",
+                path,
+                format!("надпись ссылается на объект \"{object_name}\", которого нет в scene.json"),
+            );
+            ok = false;
+        }
+    }
+    ok
+}
+
+fn resolve_button_target(
+    name: &str,
+    name_to_id: &std::collections::HashMap<String, ScreenId>,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ScreenId> {
+    match name_to_id.get(name) {
+        Some(&id) => Some(id),
+        None => {
+            errors.push(
+                "screens.json",
+                path,
+                format!("кнопка ссылается на несуществующий экран \"{name}\""),
+            );
+            None
+        }
+    }
+}
+
+fn resolve_on_click(
+    cmd: &ParsedCommand,
+    name_to_id: &std::collections::HashMap<String, ScreenId>,
+    parsed_screens: &[ParsedScreen],
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ButtonCommand> {
+    match cmd {
+        ParsedCommand::ShowScreen(name) => {
+            resolve_button_target(name, name_to_id, path, errors).map(ButtonCommand::ShowScreen)
+        }
+        ParsedCommand::NewGame(name) => {
+            let id = resolve_button_target(name, name_to_id, path, errors)?;
+            if !parsed_screens[id].world_runs {
+                errors.push(
+                    "screens.json",
+                    path,
+                    format!("new_game ведёт на экран \"{name}\" без world_runs"),
+                );
+                return None;
+            }
+            Some(ButtonCommand::NewGame(id))
+        }
+        ParsedCommand::Resume => Some(ButtonCommand::Resume),
+        ParsedCommand::Quit => Some(ButtonCommand::Quit),
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_element(
+    data: &ParsedElementData,
+    path: &str,
+    fonts: &[(String, String)],
+    scene_names: &std::collections::HashSet<&str>,
+    name_to_id: &std::collections::HashMap<String, ScreenId>,
+    parsed_screens: &[ParsedScreen],
+    errors: &mut ErrorSink,
+) -> Option<Element> {
+    match data {
+        ParsedElementData::Panel { placement, color } => Some(Element::Panel {
+            placement: *placement,
+            color: *color,
+        }),
+        ParsedElementData::Label {
+            placement,
+            text,
+            font_name,
+            font_size,
+            color,
+            align,
+        } => {
+            let font = resolve_font(font_name, fonts, &join(path, "font"), errors);
+            let text_ok = validate_text_refs(text, scene_names, &join(path, "text"), errors);
+            let font = font?;
+            if !text_ok {
+                return None;
+            }
+            Some(Element::Label {
+                placement: *placement,
+                text: text.clone(),
+                font,
+                font_size: *font_size,
+                color: *color,
+                align: *align,
+            })
+        }
+        ParsedElementData::Button {
+            placement,
+            text,
+            font_name,
+            font_size,
+            text_color,
+            color,
+            color_hover,
+            color_pressed,
+            on_click,
+        } => {
+            let font = resolve_font(font_name, fonts, &join(path, "font"), errors);
+            let text_ok = validate_text_refs(text, scene_names, &join(path, "text"), errors);
+            let on_click = resolve_on_click(
+                on_click,
+                name_to_id,
+                parsed_screens,
+                &join(path, "on_click"),
+                errors,
+            );
+            let (font, on_click) = (font?, on_click?);
+            if !text_ok {
+                return None;
+            }
+            Some(Element::Button {
+                placement: *placement,
+                text: text.clone(),
+                font,
+                font_size: *font_size,
+                text_color: *text_color,
+                color: *color,
+                color_hover: *color_hover,
+                color_pressed: *color_pressed,
+                on_click,
+            })
+        }
+    }
+}
+
+/// Whether any rule's `do` contains `["end_game","win"]` / `["end_game","loss"]` — decides
+/// whether `win_screen`/`loss_screen` are required in `game.json`.
+fn rule_end_game_usage(rules: &RuleSet) -> (bool, bool) {
+    let (mut uses_win, mut uses_loss) = (false, false);
+    for rule in &rules.rules {
+        let do_: &[CommonAction] = match rule {
+            Rule::Collide { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => do_,
+            Rule::Move { .. } => &[],
+        };
+        for action in do_ {
+            if let CommonAction::EndGame(outcome) = action {
+                match outcome {
+                    Outcome::Win => uses_win = true,
+                    Outcome::Loss => uses_loss = true,
+                }
+            }
+        }
+    }
+    (uses_win, uses_loss)
+}
+
+/// Cross-checks and assembles the final `ScreensConfig` once `screens.json`, `scene.json` and
+/// `rules.json` are all parsed: resolves every screen-name and font-name reference, and runs the
+/// checks that need more than one file at once — «Экраны и состояние» → «Проверка данных перед
+/// запуском».
+#[allow(clippy::too_many_arguments)]
+fn resolve_screens(
+    parsed: Vec<ParsedScreen>,
+    start_screen_name: &str,
+    win_screen_name: Option<&str>,
+    loss_screen_name: Option<&str>,
+    fonts: &[(String, String)],
+    scene_objects: &[ParsedObject],
+    rules: &RuleSet,
+    errors: &mut ErrorSink,
+) -> Option<ScreensConfig> {
+    let mut name_to_id: std::collections::HashMap<String, ScreenId> =
+        std::collections::HashMap::new();
+    for (i, screen) in parsed.iter().enumerate() {
+        if name_to_id.insert(screen.name.clone(), i).is_some() {
+            errors.push(
+                "screens.json",
+                &join(&screen.path, "name"),
+                format!("имя экрана \"{}\" повторяется", screen.name),
+            );
+        }
+    }
+
+    if !parsed.is_empty() && !parsed.iter().any(|s| s.world_runs) {
+        errors.push(
+            "screens.json",
+            "",
+            "ни один экран не помечен world_runs — мир не пойдёт никогда".to_string(),
+        );
+    }
+
+    let scene_names: std::collections::HashSet<&str> = scene_objects
+        .iter()
+        .filter_map(|o| o.name.as_deref())
+        .collect();
+
+    let screens: Vec<Screen> = parsed
+        .iter()
+        .map(|screen| {
+            let elements_path = join(&screen.path, "elements");
+            let elements = screen
+                .elements
+                .iter()
+                .enumerate()
+                .filter_map(|(i, data)| {
+                    resolve_element(
+                        data,
+                        &join(&elements_path, &format!("[{i}]")),
+                        fonts,
+                        &scene_names,
+                        &name_to_id,
+                        &parsed,
+                        errors,
+                    )
+                })
+                .collect();
+            let keys_path = join(&screen.path, "keys");
+            let keys: ScreenKeyTable = screen
+                .keys
+                .iter()
+                .filter_map(|(code, cmd)| {
+                    let resolved = resolve_on_click(
+                        cmd,
+                        &name_to_id,
+                        &parsed,
+                        &join(&keys_path, code),
+                        errors,
+                    )?;
+                    Some((code.clone(), resolved))
+                })
+                .collect();
+            Screen {
+                name: screen.name.clone(),
+                world_runs: screen.world_runs,
+                elements,
+                keys,
+            }
+        })
+        .collect();
+
+    let start_screen =
+        resolve_button_target(start_screen_name, &name_to_id, "start_screen", errors);
+    let win_screen = win_screen_name
+        .and_then(|name| resolve_button_target(name, &name_to_id, "win_screen", errors));
+    let loss_screen = loss_screen_name
+        .and_then(|name| resolve_button_target(name, &name_to_id, "loss_screen", errors));
+
+    let (uses_win, uses_loss) = rule_end_game_usage(rules);
+    if uses_win && win_screen_name.is_none() {
+        errors.push(
+            "game.json",
+            "",
+            "правило содержит [\"end_game\", \"win\"], а win_screen не назван".to_string(),
+        );
+    }
+    if uses_loss && loss_screen_name.is_none() {
+        errors.push(
+            "game.json",
+            "",
+            "правило содержит [\"end_game\", \"loss\"], а loss_screen не назван".to_string(),
+        );
+    }
+    if let Some(id) = win_screen
+        && screens[id].world_runs
+    {
+        errors.push(
+            "game.json",
+            "win_screen",
+            "у экрана исхода не должен быть поднят world_runs".to_string(),
+        );
+    }
+    if let Some(id) = loss_screen
+        && screens[id].world_runs
+    {
+        errors.push(
+            "game.json",
+            "loss_screen",
+            "у экрана исхода не должен быть поднят world_runs".to_string(),
+        );
+    }
+
+    let mut reachable: std::collections::HashSet<ScreenId> = std::collections::HashSet::new();
+    reachable.extend(start_screen);
+    reachable.extend(win_screen);
+    reachable.extend(loss_screen);
+    for screen in &screens {
+        for element in &screen.elements {
+            if let Element::Button { on_click, .. } = element {
+                match on_click {
+                    ButtonCommand::ShowScreen(target) | ButtonCommand::NewGame(target) => {
+                        reachable.insert(*target);
+                    }
+                    ButtonCommand::Resume | ButtonCommand::Quit => {}
+                }
+            }
+        }
+        for cmd in screen.keys.values() {
+            match cmd {
+                ButtonCommand::ShowScreen(target) | ButtonCommand::NewGame(target) => {
+                    reachable.insert(*target);
+                }
+                ButtonCommand::Resume | ButtonCommand::Quit => {}
+            }
+        }
+    }
+    for (i, screen) in screens.iter().enumerate() {
+        if !reachable.contains(&i) {
+            errors.push_warning(
+                "screens.json",
+                &format!("screens[{i}]"),
+                format!(
+                    "до экрана \"{}\" не ведёт ни одна кнопка, и он не назван в game.json; ожидалось, что каждый экран достижим",
+                    screen.name
+                ),
+            );
+        }
+    }
+
+    let start_screen = start_screen?;
+    Some(ScreensConfig {
+        screens,
+        start_screen,
+        win_screen,
+        loss_screen,
+    })
+}
+
+/// Checks the file starts with a recognized TrueType/OpenType/collection magic number. The real
+/// glyph parser (`cosmic-text`, via `glyphon`) only exists on the `wasm32` target, so prestart
+/// validation settles for this rather than pulling in a full font-parsing crate as a native
+/// dependency for one check.
+fn looks_like_font(bytes: &[u8]) -> bool {
+    bytes.starts_with(&[0x00, 0x01, 0x00, 0x00])
+        || bytes.starts_with(b"OTTO")
+        || bytes.starts_with(b"true")
+        || bytes.starts_with(b"ttcf")
+}
+
+/// «Интерфейс игры»: a font declared in `files.fonts` but missing or unparseable is an error
+/// whether or not any element currently references it — the same way a scene object's own
+/// broken field is, not treated as merely unused.
+fn validate_font_files(
+    fonts: &[(String, String)],
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    errors: &mut ErrorSink,
+) {
+    for (name, path) in fonts {
+        let bytes = font_bytes
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, b)| b.as_ref());
+        let field_path = format!("files → fonts → {name}");
+        match bytes {
+            None => errors.push(
+                "game.json",
+                &field_path,
+                format!("файл шрифта \"{path}\" не найден"),
+            ),
+            Some(b) if !looks_like_font(b) => errors.push(
+                "game.json",
+                &field_path,
+                format!("файл \"{path}\" не разбирается как шрифт"),
+            ),
+            Some(_) => {}
+        }
+    }
+}
+
 /// Second load call: needs the `GameConfig` from `read_entry` and the three files it named.
 /// `None` for any of them means the page could not fetch it. A warning is only computed once the
 /// three files parsed without error: an object or rule that failed to parse simply drops out of
@@ -2267,7 +3247,9 @@ pub fn load_rest(
     properties_json: Option<&str>,
     scene_json: Option<&str>,
     rules_json: Option<&str>,
-) -> Result<(Game, Vec<GameError>), LoadFailure> {
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
     let properties = match properties_json {
@@ -2293,6 +3275,25 @@ pub fn load_rest(
             (RuleSet::default(), Vec::new())
         }
     };
+
+    let parsed_screens = match screens_json {
+        Some(text) => parse_screens_json(text, &properties, &mut errors),
+        None => {
+            errors.push(&config.files.screens, "", "файл не найден");
+            Vec::new()
+        }
+    };
+    validate_font_files(&config.files.fonts, font_bytes, &mut errors);
+    let screens_config = resolve_screens(
+        parsed_screens,
+        &config.start_screen,
+        config.win_screen.as_deref(),
+        config.loss_screen.as_deref(),
+        &config.files.fonts,
+        &scene_objects,
+        &rules,
+        &mut errors,
+    );
 
     let shapes = possible_shapes(&scene_objects, &rules, &rule_meta, &properties);
     validate_property_sufficiency(&shapes, &rules, &rule_meta, &properties, &mut errors);
@@ -2324,6 +3325,9 @@ pub fn load_rest(
     if let Some(text) = rules_json {
         errors.fill_locations("rules.json", text);
     }
+    if let Some(text) = screens_json {
+        errors.fill_locations("screens.json", text);
+    }
 
     let (errs, warnings) = errors.into_parts();
     if !errs.is_empty() {
@@ -2332,19 +3336,34 @@ pub fn load_rest(
             warnings,
         });
     }
+    let screens_config = screens_config.expect("no errors means screens.json resolved");
 
+    let scene_specs: Vec<ObjectSpec> = scene_objects
+        .iter()
+        .map(|parsed| ObjectSpec {
+            values: parsed.values.clone(),
+            grid: parsed.grid,
+            keys: parsed.keys.clone(),
+        })
+        .collect();
+
+    // «Экраны и состояние»: миру родиться только если у стартового экрана поднят world_runs —
+    // на экране меню его просто нет, пока игрок не нажмёт «Играть».
+    let start_is_live = screens_config.screens[screens_config.start_screen].world_runs;
     let mut world = World::new(&properties);
-    for parsed in &scene_objects {
-        let id = world.create();
-        for (prop, value) in &parsed.values {
-            world.set_value(id, *prop, value);
-        }
-        if let Some(spec) = &parsed.grid {
-            world.set_grid(id, property::GRID, *spec);
-            world.set_grid_counter(id, spec.interval_steps);
-        }
-        if let Some(table) = &parsed.keys {
-            world.set_keys(id, property::KEYS, table.clone());
+    if start_is_live {
+        for spec in &scene_specs {
+            let id = world.create();
+            for (prop, value) in &spec.values {
+                world.set_value(id, *prop, value);
+            }
+            if let Some(grid) = &spec.grid {
+                world.set_grid(id, property::GRID, *grid);
+                world.set_grid_counter(id, grid.interval_steps);
+            }
+            if let Some(table) = &spec.keys {
+                world.set_keys(id, property::KEYS, table.clone());
+            }
         }
     }
 
@@ -2355,30 +3374,35 @@ pub fn load_rest(
         config.scene,
         config.max_objects,
         config.random_seed,
+        scene_specs,
     );
-    Ok((game, warnings))
+    Ok((game, screens_config, warnings))
 }
 
-/// Convenience for tests and native tools: loads all four files at once, doing the same
+/// Convenience for tests and native tools: loads all five files at once, doing the same
 /// validation `read_entry` + `load_rest` would, in one call. Warnings from both stages are
-/// merged, `read_entry`'s first, rather than one stage's warnings silently winning.
+/// merged, `read_entry`'s first, rather than one stage's warnings silently winning. Passes no
+/// font bytes — callers that need to exercise font-file validation call `load_rest` directly.
 pub fn load_game_from_texts(
     game_json: &str,
     properties_json: &str,
     scene_json: &str,
     rules_json: &str,
-) -> Result<(Game, Vec<GameError>), LoadFailure> {
+    screens_json: &str,
+) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let (config, entry_warnings) = read_entry(game_json)?;
     match load_rest(
         config,
         Some(properties_json),
         Some(scene_json),
         Some(rules_json),
+        Some(screens_json),
+        &[],
     ) {
-        Ok((game, warnings)) => {
+        Ok((game, screens, warnings)) => {
             let mut all_warnings = entry_warnings;
             all_warnings.extend(warnings);
-            Ok((game, all_warnings))
+            Ok((game, screens, all_warnings))
         }
         Err(mut failure) => {
             let mut all_warnings = entry_warnings;

@@ -2,8 +2,9 @@ use engine::core::input::StepInput;
 use engine::data::load::load_game_from_texts;
 
 const GAME: &str = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":7,"max_objects":10,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":7,"start_screen":"main","max_objects":10,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
+const SCREENS: &str = r#"{"screens":[{"name":"main","world_runs":true,"elements":[]}]}"#;
 
 /// «Формат игры»: перевод секунд в шаги для длительностей зажат снизу единицей, но
 /// `["add", "<time>", число]` — это дельта, не длительность: знак и ноль должны сохраняться.
@@ -18,8 +19,8 @@ fn do_add_time_delta_keeps_sign_and_zero() {
         {"kind":"delete","for":{"has":["dummy"]},"when":"outside_scene",
          "do":[["add","c_pos",0.12],["add","c_zero",0],["add","c_neg",-0.5]]}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -58,8 +59,8 @@ fn collide_effect_add_time_delta_keeps_sign_and_zero() {
         {"kind":"collide","a":{"has":["collides","counter"]},"b":{"has":["collides"]},
          "effects":{"a":[["add","c_pos",0.12],["add","c_zero",0],["add","c_neg",-0.5]]}}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -93,8 +94,8 @@ fn object_created_on_step_n_first_moves_on_step_n_plus_1() {
         {"kind":"spawn","when":{"fewer_than":{"count":1,"of":{"has":["mover"]}}},
          "where":"random_cell","template":{"size":[1,1],"velocity":[1,0],"mover":true}}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     assert_eq!(game.world.alive_count(), 0);
 
@@ -133,10 +134,10 @@ fn deletions_are_applied_before_creations_in_the_same_step() {
          "where":"random_cell","template":{"size":[1,1],"fresh":true}}
     ]}"#;
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":7,"max_objects":1,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
-    let (mut game, _warnings) =
-        load_game_from_texts(game_json, props, scene, rules).expect("должно загрузиться");
+"random_seed":7,"start_screen":"main","max_objects":1,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(game_json, props, scene, rules, SCREENS).expect("должно загрузиться");
     assert_eq!(game.world.alive_count(), 1);
 
     game.step(StepInput::empty());
@@ -168,8 +169,8 @@ fn delete_rule_runs_do_once_per_deleted_object() {
         {"kind":"delete","for":{"has":["position","size"]},"when":"outside_scene",
          "do":[["add","score",1]]}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -191,8 +192,8 @@ fn delete_rule_runs_do_once_per_deleted_object() {
 #[test]
 fn spawn_rule_runs_do_once_per_created_object() {
     let game_json = r##"{"name":"T","scene":{"width":10,"height":10,"background":"#000000"},
-"random_seed":1,"max_objects":20,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":1,"start_screen":"main","max_objects":20,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let props = r#"{"properties":{"mover":"flag","score":"number"}}"#;
     let scene = r#"{"objects":[
         {"position":[5,5],"score":0},
@@ -206,8 +207,8 @@ fn spawn_rule_runs_do_once_per_created_object() {
          "where":"at_parent","template":{"size":[1,1]},
          "do":[["add","score",1]]}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(game_json, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(game_json, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -242,8 +243,8 @@ fn delete_rule_after_move_of_checks_selector_not_the_candidate() {
         {"kind":"move","for":{"has":["mover"]}},
         {"kind":"delete","for":{"has":["target"]},"when":{"after_move_of":{"has":["mover"]}}}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -258,8 +259,8 @@ fn delete_rule_after_move_of_checks_selector_not_the_candidate() {
 #[test]
 fn random_cell_considers_the_whole_object_rectangle_not_just_its_center() {
     let game_json = r##"{"name":"T","scene":{"width":1,"height":1,"background":"#000000"},
-"random_seed":1,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let props = r#"{"properties":{"thing":"flag"}}"#;
     // The object doesn't cover the cell's center point [0.5, 0.5], but it does occupy part of
     // the cell — a center-only check would wrongly call the cell free.
@@ -268,8 +269,8 @@ fn random_cell_considers_the_whole_object_rectangle_not_just_its_center() {
         {"kind":"spawn","when":{"fewer_than":{"count":1000,"of":{"has":["thing"]}}},
          "where":"random_cell","template":{"size":[1,1],"collides":true,"thing":true}}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(game_json, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(game_json, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -293,8 +294,8 @@ fn pending_create_with_false_flag_does_not_satisfy_fewer_than_of_the_same_step()
         {"kind":"spawn","when":{"fewer_than":{"count":1,"of":{"has":["marker"]}}},
          "where":"random_cell","template":{"size":[1,1],"marker":true}}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -323,8 +324,8 @@ fn after_move_of_delete_removes_a_candidate_without_position() {
         {"kind":"move","for":{"has":["mover"]}},
         {"kind":"delete","for":{"has":["fadeaway"]},"when":{"after_move_of":{"has":["mover"]}}}
     ]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
 
     game.step(StepInput::empty());
 
@@ -345,8 +346,8 @@ fn grid_hop_counter_does_not_reset_without_an_actual_hop() {
         5.0 / 60.0
     );
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["position","velocity"]}}]}"#;
-    let (mut game, _warnings) =
-        load_game_from_texts(GAME, props, &scene, rules).expect("должно загрузиться");
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, &scene, rules, SCREENS).expect("должно загрузиться");
 
     for _ in 0..5 {
         game.step(StepInput::empty());

@@ -87,13 +87,49 @@
         position: fixed;
         inset: 0;
         margin: 0;
-        padding: 2rem;
+        /* Снизу больше: там лежит кнопка возврата, и на длинном списке ошибок последняя строка
+           иначе уезжает под неё. */
+        padding: 2rem 2rem 5rem;
         box-sizing: border-box;
         background: #12141a;
         color: #f2b8b8;
         font: 16px/1.6 ui-monospace, "Cascadia Code", Consolas, monospace;
         white-space: pre-wrap;
         overflow: auto;
+      }
+
+      /*
+        Холст занимает окно целиком, и внутри игры выхода нет: движок не знает ни про лаунчер, ни
+        про соседние игры. Поэтому возврат к списку — дело оболочки, и он должен быть виден поверх
+        холста. Левый нижний угол выбран как единственный, который не занимает ни один элемент
+        интерфейса демо-игр: пауза стоит слева сверху, счёт — справа сверху, предупреждения —
+        справа снизу.
+      */
+      #back-to-games {
+        position: fixed;
+        left: 1rem;
+        bottom: 1rem;
+        padding: 0.5rem 0.9rem;
+        font: 14px/1.5 ui-monospace, "Cascadia Code", Consolas, monospace;
+        color: #9aa0ac;
+        background: #1b1e29;
+        border: 1px solid #2c303c;
+        border-radius: 0.5rem;
+        cursor: pointer;
+        /* На единицу выше панели предупреждений: на узком окне они сходятся низами, и накрытым
+           должно оказаться предупреждение, а не единственный выход из игры. */
+        z-index: 11;
+      }
+
+      #back-to-games:hover,
+      #back-to-games:focus-visible {
+        color: #e6e6e6;
+        background: #262b3a;
+        border-color: #3d4356;
+      }
+
+      #back-to-games[hidden] {
+        display: none;
       }
 
       #warnings-panel {
@@ -178,6 +214,7 @@
       <div id="game-select-list"></div>
     </main>
     <pre id="error" hidden></pre>
+    <button type="button" id="back-to-games" hidden>← К играм</button>
     <div id="warnings-panel" hidden>
       <pre id="warnings-list" hidden></pre>
       <div id="warnings-bar">

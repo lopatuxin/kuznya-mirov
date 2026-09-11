@@ -17,3 +17,15 @@ export function resolveGameName(search: string): GameNameResolution {
   if (!isValidGameName(value)) return { status: "invalid", value };
   return { status: "valid", name: value };
 }
+
+/**
+ * Обратный ход к списку игр: тот же адрес без `game`. Внутри игры выхода нет и быть не может —
+ * движок не знает ни про лаунчер, ни про соседние игры, — поэтому возврат делает страница, просто
+ * убирая параметр. Прочие параметры сохраняются: сегодня их нет, но молча выбрасывать чужое незачем.
+ */
+export function gameListSearch(search: string): string {
+  const params = new URLSearchParams(search);
+  params.delete("game");
+  const rest = params.toString();
+  return rest === "" ? "" : `?${rest}`;
+}

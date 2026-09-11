@@ -1,9 +1,10 @@
 use engine::data::load::{LoadFailure, load_game_from_texts, read_entry};
 
 const GAME: &str = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":1,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
 const PROPS_EMPTY: &str = r#"{"properties":{}}"#;
+const SCREENS: &str = r#"{"screens":[{"name":"main","world_runs":true,"elements":[]}]}"#;
 
 /// Computes the 1-based `(line, column)` of `needle`'s first occurrence in `text`, counting bytes
 /// the same way `serde_json`'s own syntax-error positions do. Used by the location tests below to
@@ -22,7 +23,7 @@ fn expect_location(text: &str, needle: &str) -> (usize, usize) {
 #[test]
 fn broken_json_reports_line_and_column() {
     let broken = "{ \"objects\": [ { \"position\": [0,0]";
-    let result = load_game_from_texts(GAME, PROPS_EMPTY, broken, r#"{"rules":[]}"#);
+    let result = load_game_from_texts(GAME, PROPS_EMPTY, broken, r#"{"rules":[]}"#, SCREENS);
     let LoadFailure { errors, .. } = result.expect_err("сломанный JSON должен быть ошибкой");
     assert!(
         errors
@@ -36,7 +37,7 @@ fn broken_json_reports_line_and_column() {
 fn unknown_property_is_reported() {
     let scene = r#"{"objects":[{"positon":[0,0],"size":[1,1]}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("опечатка в свойстве — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("positon")),
@@ -48,7 +49,7 @@ fn unknown_property_is_reported() {
 fn wrong_value_kind_is_reported() {
     let scene = r#"{"objects":[{"position":"oops","size":[1,1]}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("строка вместо пары чисел — ошибка");
     assert!(
         errors.iter().any(|e| e.path.contains("position")),
@@ -60,7 +61,7 @@ fn wrong_value_kind_is_reported() {
 fn negative_size_is_reported() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[-1,1]}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("отрицательный размер — не ошибка сейчас?");
     assert!(!errors.is_empty());
 }
@@ -69,7 +70,7 @@ fn negative_size_is_reported() {
 fn zero_grid_interval_is_reported() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"grid":{"interval":0}}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("interval <= 0 — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("interval")),
@@ -81,7 +82,7 @@ fn zero_grid_interval_is_reported() {
 fn missing_grid_interval_is_reported() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"grid":{}}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("grid без interval — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("interval")),
@@ -93,7 +94,7 @@ fn missing_grid_interval_is_reported() {
 fn unknown_rule_kind_is_reported() {
     let scene = r#"{"objects":[]}"#;
     let rules = r#"{"rules":[{"kind":"teleport"}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("неизвестный вид правила — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("teleport")),
@@ -105,8 +106,8 @@ fn unknown_rule_kind_is_reported() {
 fn missing_required_rule_field_is_reported() {
     let scene = r#"{"objects":[]}"#;
     let rules = r#"{"rules":[{"kind":"move"}]}"#;
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect_err("нет \"for\" — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("нет \"for\" — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("for")),
         "{errors:?}"
@@ -117,7 +118,7 @@ fn missing_required_rule_field_is_reported() {
 fn condition_of_wrong_shape_is_reported() {
     let scene = r#"{"objects":[]}"#;
     let rules = r#"{"rules":[{"kind":"delete","for":{"has":[]},"when":{"nonsense":true}}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("условие не той формы — ошибка");
     assert!(!errors.is_empty());
 }
@@ -126,8 +127,8 @@ fn condition_of_wrong_shape_is_reported() {
 fn object_missing_property_needed_by_rule_is_reported() {
     let scene = r#"{"objects":[{"name":"o","position":[0,0],"size":[1,1]}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["position"]}}]}"#;
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect_err("нет velocity — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("нет velocity — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("velocity")),
         "{errors:?}"
@@ -138,7 +139,7 @@ fn object_missing_property_needed_by_rule_is_reported() {
 fn image_property_is_rejected_outright() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"image":"foo.png"}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("image должно быть ошибкой");
     assert!(
         errors
@@ -152,8 +153,8 @@ fn image_property_is_rejected_outright() {
 fn all_errors_are_collected_in_one_pass_not_just_the_first() {
     let scene = r#"{"objects":[{"positon":[0,0]},{"position":"oops"}]}"#;
     let rules = r#"{"rules":[{"kind":"nope"}]}"#;
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect_err("тут явно есть ошибки");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("тут явно есть ошибки");
     assert!(
         errors.len() >= 3,
         "ожидались все ошибки разом, получили {errors:?}"
@@ -164,19 +165,20 @@ fn all_errors_are_collected_in_one_pass_not_just_the_first() {
 fn valid_minimal_game_loads_without_error() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"velocity":[0,0]}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["position","velocity"]}}]}"#;
-    let (game, _warnings) = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
-        .expect("валидная игра должна загрузиться");
+    let (game, _screens, _warnings) =
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+            .expect("валидная игра должна загрузиться");
     assert_eq!(game.world.alive_count(), 1);
 }
 
 #[test]
 fn broken_random_seed_is_reported() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":"oops","max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":"oops","start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let scene = r#"{"objects":[]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("random_seed не того вида — ошибка, а не молчаливый ноль");
     assert!(
         errors.iter().any(|e| e.path.contains("random_seed")),
@@ -187,11 +189,11 @@ fn broken_random_seed_is_reported() {
 #[test]
 fn fractional_random_seed_is_reported() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":1.5,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":1.5,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let scene = r#"{"objects":[]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("дробное random_seed — ошибка");
     assert!(
         errors.iter().any(|e| e.path.contains("random_seed")),
@@ -202,11 +204,12 @@ fn fractional_random_seed_is_reported() {
 #[test]
 fn missing_random_seed_is_allowed() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let scene = r#"{"objects":[]}"#;
-    let (game, _warnings) = load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
-        .expect("отсутствие random_seed в игре допустимо — «Формат игры» не требует его");
+    let (game, _screens, _warnings) =
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
+            .expect("отсутствие random_seed в игре допустимо — «Формат игры» не требует его");
     assert_eq!(game.world.alive_count(), 0);
 }
 
@@ -238,8 +241,8 @@ fn read_entry_returns_warnings_alongside_errors_on_failure() {
 #[test]
 fn negative_random_seed_wraps_into_u64_deterministically() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":-1,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":-1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let (config, _warnings) = read_entry(game_json).expect("отрицательное random_seed допустимо");
     assert_eq!(config.random_seed, u64::MAX);
 }
@@ -249,8 +252,8 @@ fn negative_random_seed_wraps_into_u64_deterministically() {
 #[test]
 fn random_seed_larger_than_i64_max_is_accepted() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":18446744073709551615,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":18446744073709551615,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let (config, _warnings) =
         read_entry(game_json).expect("u64::MAX как random_seed — целое число, не ошибка");
     assert_eq!(config.random_seed, u64::MAX);
@@ -262,8 +265,9 @@ fn random_seed_larger_than_i64_max_is_accepted() {
 #[test]
 fn game_json_without_cell_pixels_loads() {
     let scene = r#"{"objects":[]}"#;
-    let (game, _warnings) = load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
-        .expect("game.json без cell_pixels должен загружаться");
+    let (game, _screens, _warnings) =
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
+            .expect("game.json без cell_pixels должен загружаться");
     assert_eq!(game.world.alive_count(), 0);
 }
 
@@ -273,11 +277,11 @@ fn game_json_without_cell_pixels_loads() {
 #[test]
 fn stray_cell_pixels_field_in_game_json_is_reported() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"cell_pixels":24,"background":"#000000"},
-"random_seed":1,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let scene = r#"{"objects":[]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("незнакомое поле cell_pixels — ошибка, а не тихий пропуск");
     assert!(
         errors
@@ -293,11 +297,11 @@ fn stray_cell_pixels_field_in_game_json_is_reported() {
 #[test]
 fn misspelled_random_seed_field_is_reported_not_silently_defaulted() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_sed":20260907,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_sed":20260907,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let scene = r#"{"objects":[]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("опечатка random_sed — ошибка, а не молчаливый ноль");
     assert!(
         errors
@@ -313,11 +317,12 @@ fn misspelled_random_seed_field_is_reported_not_silently_defaulted() {
 #[test]
 fn documented_but_unused_name_and_images_fields_are_accepted() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":1,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","images":"images/"}}"##;
+"random_seed":1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{},"images":"images/"}}"##;
     let scene = r#"{"objects":[]}"#;
-    let (game, _warnings) = load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
-        .expect("name и files.images — документированные поля, не ошибка");
+    let (game, _screens, _warnings) =
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
+            .expect("name и files.images — документированные поля, не ошибка");
     assert_eq!(game.world.alive_count(), 0);
 }
 
@@ -325,7 +330,7 @@ fn documented_but_unused_name_and_images_fields_are_accepted() {
 fn non_string_object_name_is_reported() {
     let scene = r#"{"objects":[{"name":42,"position":[0,0],"size":[1,1]}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#).expect_err(
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS).expect_err(
             "число вместо строки в name — ошибка, а не молчаливая замена на objects[N]",
         );
     let name_errors: Vec<_> = errors.iter().filter(|e| e.path.contains("name")).collect();
@@ -339,8 +344,9 @@ fn non_string_object_name_is_reported() {
 #[test]
 fn missing_object_name_is_allowed() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1]}]}"#;
-    let (game, _warnings) = load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
-        .expect("name необязателен, отсутствие не ошибка");
+    let (game, _screens, _warnings) =
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
+            .expect("name необязателен, отсутствие не ошибка");
     assert_eq!(game.world.alive_count(), 1);
 }
 
@@ -356,9 +362,10 @@ fn false_flag_does_not_satisfy_has_selector_at_prestart() {
     let rules = r#"{"rules":[
         {"kind":"delete","for":{"has":["deadly"]},"when":["score","<=",0]}
     ]}"#;
-    let (game, _warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
-        "deadly=false не подходит под has:[\"deadly\"], score от этого объекта не требуется",
-    );
+    let (game, _screens, _warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect(
+            "deadly=false не подходит под has:[\"deadly\"], score от этого объекта не требуется",
+        );
     assert_eq!(game.world.alive_count(), 1);
 }
 
@@ -374,7 +381,14 @@ fn false_flag_in_spawn_template_does_not_satisfy_has_selector_at_prestart() {
          "where":"random_cell",
          "template":{"size":[1,1],"collides":false,"color":"#ffffff","layer":1}}
     ]}"##;
-    let (game, _warnings) = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect(
+    let (game, _screens, _warnings) = load_game_from_texts(
+        GAME,
+        PROPS_EMPTY,
+        scene,
+        rules,
+        SCREENS,
+    )
+    .expect(
         "collides:false в шаблоне не подходит под has:[\"collides\"], velocity для move не нужен",
     );
     assert_eq!(game.world.alive_count(), 0);
@@ -401,7 +415,7 @@ fn from_parent_flag_in_spawn_template_may_satisfy_has_selector_at_prestart() {
          "where":"at_parent",
          "template":{"deadly":{"from_parent":"deadly"}}}
     ]}"##;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules).expect_err(
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS).expect_err(
         "deadly через from_parent может оказаться true у потомка — этой форме не хватает damage для delete",
     );
     assert!(
@@ -431,9 +445,10 @@ fn from_parent_flag_in_spawn_template_without_selector_still_needs_damage() {
          "where":"at_parent",
          "template":{"deadly":{"from_parent":"deadly"}}}
     ]}"##;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules).expect_err(
-        "форма без deadly подходит под without:[\"deadly\"], а damage в шаблоне нет — ошибка",
-    );
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect_err(
+            "форма без deadly подходит под without:[\"deadly\"], а damage в шаблоне нет — ошибка",
+        );
     assert!(
         errors
             .iter()
@@ -457,7 +472,7 @@ fn from_parent_flag_in_spawn_template_without_selector_finds_matching_shape_suff
          "where":"at_parent",
          "template":{"deadly":{"from_parent":"deadly"},"damage":5}}
     ]}"##;
-    let (game, _warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
+    let (game, _screens, _warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS).expect(
         "форма без deadly подходит под without:[\"deadly\"] и несёт damage — ошибки быть не должно",
     );
     assert_eq!(game.world.alive_count(), 1);
@@ -480,9 +495,10 @@ fn from_parent_flags_missing_property_reports_exactly_one_message() {
          "where":"at_parent",
          "template":{"a":{"from_parent":"a"},"b":{"from_parent":"b"}}}
     ]}"##;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules).expect_err(
-        "отбору has:[\"a\"] может подойти форма шаблона, а damage в шаблоне нет — ошибка",
-    );
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect_err(
+            "отбору has:[\"a\"] может подойти форма шаблона, а damage в шаблоне нет — ошибка",
+        );
     let damage_errors: Vec<_> = errors
         .iter()
         .filter(|e| e.message.contains("damage"))
@@ -529,7 +545,7 @@ fn spawn_template_with_thirty_two_from_parent_flags_loads() {
              \"where\":\"at_parent\",\"template\":{{{template_flags}}}}}\
         ]}}"
     );
-    let (game, _warnings) = load_game_from_texts(GAME, &props, &scene, &rules)
+    let (game, _screens, _warnings) = load_game_from_texts(GAME, &props, &scene, &rules, SCREENS)
         .expect("шаблон с двумя десятками from_parent-признаков должен грузиться");
     assert_eq!(game.world.alive_count(), 1);
 }
@@ -552,7 +568,7 @@ fn selector_with_property_in_both_has_and_without_matches_nobody_and_is_not_an_e
          "where":"at_parent",
          "template":{"deadly":{"from_parent":"deadly"}}}
     ]}"##;
-    let (game, _warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
+    let (game, _screens, _warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS).expect(
         "has и without на одном и том же свойстве не подходят никому — предупреждение, не ошибка",
     );
     assert_eq!(game.world.alive_count(), 1);
@@ -571,7 +587,7 @@ fn two_adds_of_same_missing_property_report_one_message_not_two() {
         {"kind":"collide","a":{"has":["mover"]},"b":{"has":["mover"]},
          "effects":{"a":[["add","score",1],["add","score",2]]}}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect_err("объекту не хватает score для add — ошибка");
     let score_errors: Vec<_> = errors
         .iter()
@@ -595,7 +611,7 @@ fn bounce_next_to_set_velocity_reports_one_message_not_two() {
         {"kind":"collide","a":{"has":[]},"b":{"has":[]},
          "effects":{"a":[["bounce"],["set","velocity",[1,0]]]}}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("объекту не хватает velocity для bounce/set — ошибка");
     let velocity_errors: Vec<_> = errors
         .iter()
@@ -622,7 +638,7 @@ fn after_move_of_delete_does_not_require_position_on_candidate() {
         {"kind":"move","for":{"has":["mover"]}},
         {"kind":"delete","for":{"has":["fadeaway"]},"when":{"after_move_of":{"has":["mover"]}}}
     ]}"#;
-    let (game, _warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, _warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("удаляемый объект без position не должен отвергаться предстартовой проверкой");
     assert_eq!(game.world.alive_count(), 2);
 }
@@ -639,9 +655,10 @@ fn delete_rule_after_move_of_selector_matching_nobody_is_reported_as_a_warning()
         {"kind":"delete","for":{"has":["fadeaway"]},
          "when":{"after_move_of":{"has":["tag"],"without":["tag"]}}}
     ]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
-        "отбор в after_move_of, заведомо никого не находящий, — предупреждение, а не ошибка",
-    );
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect(
+            "отбор в after_move_of, заведомо никого не находящий, — предупреждение, а не ошибка",
+        );
     assert_eq!(game.world.alive_count(), 1);
     assert!(
         warnings.iter().any(|w| w.file == "rules.json"
@@ -663,7 +680,7 @@ fn repeated_do_add_of_same_unused_property_reports_one_message_per_property() {
         {"kind":"collide","a":{"has":["mover"]},"b":{"has":["mover"]},
          "do":[["add","gold",1],["add","gold",2],["add","silver",1]]}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect_err("gold и silver не встречаются ни у одного объекта — ошибка");
     let gold: Vec<_> = errors
         .iter()
@@ -697,7 +714,7 @@ fn same_do_add_error_in_two_rules_reports_two_messages() {
         {"kind":"collide","a":{"has":["mover"]},"b":{"has":["mover"]},"do":[["add","gold",1]]},
         {"kind":"collide","a":{"has":["mover"]},"b":{"has":["mover"]},"do":[["add","gold",1]]}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect_err("gold не встречается ни у одного объекта — ошибка");
     let gold: Vec<_> = errors
         .iter()
@@ -718,7 +735,7 @@ fn same_named_objects_get_distinguishable_messages() {
         {"name":"brick","size":[1,1]}
     ]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":[]}}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("трём одинаково названным объектам, у которых нет velocity, — три ошибки");
     let velocity: Vec<&str> = errors
         .iter()
@@ -752,7 +769,7 @@ fn declared_property_used_nowhere_is_reported_as_a_warning() {
     let props = r#"{"properties":{"halo":"flag"}}"#;
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"velocity":[0,0]}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["position","velocity"]}}]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("неиспользуемое свойство — предупреждение, а не ошибка");
     assert_eq!(game.world.alive_count(), 1);
     assert!(
@@ -769,7 +786,7 @@ fn declared_property_used_nowhere_is_reported_as_a_warning() {
 fn object_outside_scene_is_reported_as_a_warning() {
     let scene = r#"{"objects":[{"position":[100,100],"size":[1,1]}]}"#;
     let rules = r#"{"rules":[]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect("объект вне сцены — предупреждение, а не ошибка");
     assert_eq!(game.world.alive_count(), 1);
     assert!(
@@ -789,7 +806,7 @@ fn move_rule_selector_matching_nobody_is_reported_as_a_warning() {
     let props = r#"{"properties":{"tag":"flag"}}"#;
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"velocity":[0,0]}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["tag"],"without":["tag"]}}]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("отбор, заведомо никого не находящий, — предупреждение, а не ошибка");
     assert_eq!(game.world.alive_count(), 1);
     assert!(
@@ -816,7 +833,7 @@ fn selector_on_a_property_given_at_runtime_is_not_reported_as_matching_nobody() 
         {"kind":"collide","a":{"has":[]},"b":{"has":[]},"effects":{"b":[["give","hit"]]}},
         {"kind":"delete","for":{"has":["hit"]},"when":"outside_scene"}
     ]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("give во время игры раздаёт hit — отбор для delete подходит кирпичу");
     assert_eq!(game.world.alive_count(), 2);
     assert!(
@@ -836,7 +853,7 @@ fn selector_on_a_property_set_by_keys_is_not_reported_as_matching_nobody() {
          "keys":{"Space":{"press":[["boosted",true]]}}}
     ]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["boosted"]}}]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("клавиша может дать boosted во время игры — отбор для move не заведомо пуст");
     assert_eq!(game.world.alive_count(), 1);
     assert!(
@@ -858,7 +875,7 @@ fn all_three_warning_kinds_are_collected_together_and_the_game_still_starts() {
         {"kind":"move","for":{"has":["mover"]}},
         {"kind":"delete","for":{"has":["mover"],"without":["mover"]},"when":"outside_scene"}
     ]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("три предупреждения разом не должны помешать игре запуститься");
     assert_eq!(game.world.alive_count(), 2);
 
@@ -899,7 +916,7 @@ fn warnings_are_not_computed_when_the_game_fails_to_load() {
     // само по себе — предупреждение, но не в этом заходе.
     let scene = r#"{"objects":[{"positon":[0,0],"size":[1,1]}]}"#;
     let rules = r#"{"rules":[]}"#;
-    let LoadFailure { errors, warnings } = load_game_from_texts(GAME, props, scene, rules)
+    let LoadFailure { errors, warnings } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect_err("опечатка в свойстве — игра не должна стартовать");
     assert!(
         errors.iter().any(|e| e.message.contains("positon")),
@@ -921,7 +938,7 @@ fn incomplete_scene_data_does_not_spawn_a_spurious_selector_warning() {
     let props = r#"{"properties":{"tag":"flag"}}"#;
     let scene = r#"{"objects":[42,"oops"]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["tag"]}}]}"#;
-    let LoadFailure { errors, warnings } = load_game_from_texts(GAME, props, scene, rules)
+    let LoadFailure { errors, warnings } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect_err("элементы objects не того вида — ошибки, игра не должна стартовать");
     assert!(errors.len() >= 2, "{errors:?}");
     assert!(
@@ -936,7 +953,7 @@ fn incomplete_scene_data_does_not_spawn_a_spurious_selector_warning() {
 fn wrong_value_kind_error_points_at_the_value_with_line_and_column() {
     let scene = "{\n  \"objects\": [\n    {\"position\": \"oops\", \"size\": [1, 1]}\n  ]\n}\n";
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("строка вместо пары чисел — ошибка");
     let err = errors
         .iter()
@@ -956,8 +973,8 @@ fn wrong_value_kind_error_points_at_the_value_with_line_and_column() {
 fn missing_required_rule_field_error_points_at_the_rule() {
     let scene = r#"{"objects":[]}"#;
     let rules = "{\n  \"rules\": [\n    {\"kind\": \"move\"}\n  ]\n}\n";
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect_err("нет \"for\" — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("нет \"for\" — ошибка");
     let err = errors
         .iter()
         .find(|e| e.file == "rules.json" && e.message.contains("for"))
@@ -976,8 +993,8 @@ fn missing_required_rule_field_error_points_at_the_rule() {
 fn object_missing_property_needed_by_rule_error_has_location() {
     let scene = r#"{"objects":[{"name":"o","position":[0,0],"size":[1,1]}]}"#;
     let rules = "{\"rules\": [\n  {\"kind\": \"move\", \"for\": {\"has\": [\"position\"]}}\n]}";
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect_err("нет velocity — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("нет velocity — ошибка");
     let err = errors
         .iter()
         .find(|e| e.message.contains("velocity"))
@@ -1000,7 +1017,7 @@ fn unused_property_warning_has_location() {
     let props = "{\n  \"properties\": {\n    \"halo\": \"flag\"\n  }\n}\n";
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"velocity":[0,0]}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["position","velocity"]}}]}"#;
-    let (_game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (_game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("неиспользуемое свойство — предупреждение, а не ошибка");
     let warn = warnings
         .iter()
@@ -1019,8 +1036,9 @@ fn unused_property_warning_has_location() {
 fn object_outside_scene_warning_has_location() {
     let scene = "{\n  \"objects\": [\n    {\"position\": [100, 100], \"size\": [1, 1]}\n  ]\n}\n";
     let rules = r#"{"rules":[]}"#;
-    let (_game, warnings) = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
-        .expect("объект вне сцены — предупреждение, а не ошибка");
+    let (_game, _screens, warnings) =
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+            .expect("объект вне сцены — предупреждение, а не ошибка");
     let warn = warnings
         .iter()
         .find(|w| w.file == "scene.json" && w.path.contains("position"))
@@ -1042,7 +1060,7 @@ fn object_outside_scene_warning_has_location() {
 fn error_with_unresolvable_path_keeps_message_without_a_location() {
     let scene = r#"{}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("нет objects — ошибка");
     let err = errors
         .iter()
@@ -1062,7 +1080,7 @@ fn error_with_unresolvable_path_keeps_message_without_a_location() {
 fn broken_json_and_missing_file_get_no_structured_location() {
     let broken = "{ \"objects\": [ { \"position\": [0,0]";
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, broken, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, broken, r#"{"rules":[]}"#, SCREENS)
             .expect_err("сломанный JSON — ошибка");
     let broken_err = errors
         .iter()
@@ -1072,7 +1090,7 @@ fn broken_json_and_missing_file_get_no_structured_location() {
     assert!(broken_err.message.contains("строка"), "{broken_err:?}");
 
     let (config, _warnings) = read_entry(GAME).expect("game.json валиден");
-    let missing_result = engine::data::load::load_rest(config, None, None, None);
+    let missing_result = engine::data::load::load_rest(config, None, None, None, None, &[]);
     let LoadFailure { errors, .. } = missing_result.expect_err("отсутствующие файлы — ошибка");
     assert!(
         errors
@@ -1098,9 +1116,10 @@ fn selector_without_a_property_taken_at_runtime_is_not_reported_as_matching_nobo
          "effects":{"a":[["take","shield"]]}},
         {"kind":"move","for":{"has":["position","velocity"],"without":["shield"]}}
     ]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
-        "take во время игры может снять shield — отбор without:[\"shield\"] не заведомо пуст",
-    );
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect(
+            "take во время игры может снять shield — отбор without:[\"shield\"] не заведомо пуст",
+        );
     assert_eq!(game.world.alive_count(), 1);
     assert!(
         warnings.iter().all(|w| !w.message.contains("не подходит")),
@@ -1120,7 +1139,7 @@ fn selector_without_a_property_set_to_false_at_runtime_is_not_reported_as_matchi
          "effects":{"a":[["set","shield",false]]}},
         {"kind":"move","for":{"has":["position","velocity"],"without":["shield"]}}
     ]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS).expect(
         "set … false во время игры может снять shield — отбор without:[\"shield\"] не заведомо пуст",
     );
     assert_eq!(game.world.alive_count(), 1);
@@ -1137,7 +1156,7 @@ fn misspelled_key_binding_field_is_reported() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],
         "keys":{"Space":{"prss":[["position",[1,1]]]}}}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("опечатка prss вместо press — ошибка, а не молчаливый пропуск");
     assert!(
         errors.iter().any(|e| e.message.contains("prss")),
@@ -1153,7 +1172,7 @@ fn misspelled_rule_field_is_reported() {
     let rules = r#"{"rules":[
         {"kind":"delete","for":{"has":[]},"whn":"outside_scene"}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("опечатка whn вместо when — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("whn")),
@@ -1166,7 +1185,7 @@ fn misspelled_rule_field_is_reported() {
 fn stray_field_in_scene_json_root_is_reported() {
     let scene = r#"{"objects":[],"cell_pixels":24}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("лишнее поле в корне scene.json — ошибка");
     assert!(
         errors
@@ -1182,7 +1201,7 @@ fn stray_field_in_scene_json_root_is_reported() {
 fn misspelled_selector_field_is_reported() {
     let scene = r#"{"objects":[]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":[],"withut":["tag"]}}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("опечатка withut вместо without — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("withut")),
@@ -1197,7 +1216,7 @@ fn misspelled_selector_field_is_reported() {
 fn broken_value_on_an_object_does_not_also_report_it_missing_the_property() {
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"velocity":"oops"}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["position"]}}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("velocity не того вида — ошибка");
     let velocity_errors: Vec<_> = errors
         .iter()
@@ -1224,7 +1243,7 @@ fn missing_property_on_a_healthy_object_still_reported_next_to_a_broken_one() {
         {"position":[2,0],"size":[1,1]}
     ]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["position"]}}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("velocity не того вида и вторая нехватка — обе ошибки");
     assert!(
         errors
@@ -1239,11 +1258,11 @@ fn missing_property_on_a_healthy_object_still_reported_next_to_a_broken_one() {
 #[test]
 fn non_string_game_json_name_is_reported() {
     let game_json = r##"{"name":42,"scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":1,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json"}}"##;
+"random_seed":1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let scene = r#"{"objects":[]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("число вместо строки в name — ошибка");
     assert!(
         errors
@@ -1257,11 +1276,11 @@ fn non_string_game_json_name_is_reported() {
 #[test]
 fn non_string_files_images_is_reported() {
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
-"random_seed":1,"max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","images":42}}"##;
+"random_seed":1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{},"images":42}}"##;
     let scene = r#"{"objects":[]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("число вместо строки в files → images — ошибка");
     assert!(
         errors
@@ -1283,7 +1302,7 @@ fn spawn_rule_fewer_than_of_selector_matching_nobody_is_reported_as_a_warning() 
          "where":"random_cell",
          "template":{"size":[1,1],"collides":true,"color":"#ffffff","food":true}}
     ]}"##;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("отбор fewer_than.of, заведомо никого не находящий, — предупреждение, а не ошибка");
     assert_eq!(game.world.alive_count(), 0, "загрузка ничего не создаёт");
     assert!(
@@ -1305,9 +1324,10 @@ fn selector_on_a_property_only_ever_set_false_by_keys_is_reported_as_matching_no
          "keys":{"Space":{"press":[["boosted",false]]}}}
     ]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["boosted"]}}]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
-        "нажатие, всегда ставящее false, не может дать boosted — предупреждение, а не тишина",
-    );
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect(
+            "нажатие, всегда ставящее false, не может дать boosted — предупреждение, а не тишина",
+        );
     assert_eq!(game.world.alive_count(), 1);
     assert!(
         warnings.iter().any(|w| w.file == "rules.json"
@@ -1359,10 +1379,11 @@ fn collide_effect_on_a_side_that_can_never_match_does_not_widen_the_other_side()
          "effects":{"a":[["take","shield"]]}},
         {"kind":"move","for":{"has":["position"],"without":["shield"]}}
     ]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules).expect(
-        "ghost нигде не встречается, столкновение никогда не сработает — take не должен ложно \
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect(
+            "ghost нигде не встречается, столкновение никогда не сработает — take не должен ложно \
          снимать shield и требовать velocity",
-    );
+        );
     assert_eq!(game.world.alive_count(), 1);
     assert!(
         warnings.iter().all(|w| !w.message.contains("velocity")),
@@ -1378,7 +1399,7 @@ fn collide_effect_on_a_side_that_can_never_match_does_not_widen_the_other_side()
 fn broken_property_on_an_object_does_not_suppress_an_unrelated_missing_property_on_it() {
     let scene = r#"{"objects":[{"position":"oops","size":[1,1]}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"has":["size"]}}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("position не того вида и нет velocity — обе ошибки");
     assert!(
         errors
@@ -1407,7 +1428,7 @@ fn broken_template_property_does_not_report_it_missing_on_a_different_rule() {
          "template":{"mover":true,"size":"oops"}},
         {"kind":"collide","a":{"has":["mover"]},"b":{"has":["mover"]}}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect_err("size не того вида в шаблоне — ошибка");
     let size_errors: Vec<_> = errors.iter().filter(|e| e.path.contains("size")).collect();
     assert_eq!(
@@ -1429,7 +1450,7 @@ fn misspelled_effects_side_is_reported() {
     let rules = r#"{"rules":[
         {"kind":"collide","a":{"has":[]},"b":{"has":[]},"effects":{"aa":[["bounce"]]}}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("опечатка aa вместо a — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("aa")),
@@ -1442,7 +1463,7 @@ fn misspelled_effects_side_is_reported() {
 fn stray_field_in_rules_json_root_is_reported() {
     let scene = r#"{"objects":[]}"#;
     let rules = r#"{"rules":[],"rlues":[]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("лишнее поле в корне rules.json — ошибка");
     assert!(
         errors
@@ -1465,7 +1486,7 @@ fn set_effect_does_not_require_the_property_to_already_be_present() {
     let rules = r#"{"rules":[
         {"kind":"collide","a":{"has":[]},"b":{"has":[]},"effects":{"a":[["set","hot",true]]}}
     ]}"#;
-    let (game, _warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, _warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("set пишет hot независимо от прежнего наличия — требовать его не за что");
     assert_eq!(game.world.alive_count(), 1);
 }
@@ -1483,7 +1504,7 @@ fn set_effect_widens_maybe_like_give() {
         {"kind":"collide","a":{"has":[]},"b":{"has":[]},"effects":{"a":[["set","hot",true]]}},
         {"kind":"move","for":{"has":["hot"]}}
     ]}"#;
-    let (game, warnings) = load_game_from_texts(GAME, props, scene, rules)
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
         .expect("set во время игры может дать hot — отбор has:[\"hot\"] у move не заведомо пуст");
     assert_eq!(game.world.alive_count(), 1);
     assert!(
@@ -1500,7 +1521,7 @@ fn fewer_than_rejects_unknown_key() {
         {"kind":"spawn","when":{"fewer_than":{"count":1,"of":{"has":[]},"extra":true}},
          "where":"random_cell","template":{"size":[1,1]}}
     ]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("лишнее поле extra в fewer_than — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("extra")),
@@ -1514,7 +1535,7 @@ fn grid_rejects_unknown_key() {
     let scene =
         r#"{"objects":[{"position":[0,0],"size":[1,1],"grid":{"interval":1,"extra":true}}]}"#;
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#)
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
             .expect_err("лишнее поле extra в grid — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("extra")),
@@ -1528,8 +1549,8 @@ fn grid_rejects_unknown_key() {
 fn rule_kind_of_wrong_json_type_reports_wrong_kind_not_missing() {
     let scene = r#"{"objects":[]}"#;
     let rules = r#"{"rules":[{"kind":5,"for":{"has":[]}}]}"#;
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect_err("kind:5 — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("kind:5 — ошибка");
     assert!(
         errors
             .iter()
@@ -1548,7 +1569,7 @@ fn rule_kind_of_wrong_json_type_reports_wrong_kind_not_missing() {
 fn unknown_rule_kind_still_reports_a_typo_in_another_field_the_same_pass() {
     let scene = r#"{"objects":[]}"#;
     let rules = r#"{"rules":[{"kind":"mve","fpr":{"has":[]}}]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
         .expect_err("неизвестный kind — ошибка");
     assert!(
         errors.iter().any(|e| e.message.contains("mve")),
@@ -1569,8 +1590,8 @@ fn without_selector_does_not_match_a_candidate_whose_own_property_value_is_broke
     let props = r#"{"properties":{"ball":"flag"}}"#;
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"ball":"yes"}]}"#;
     let rules = r#"{"rules":[{"kind":"move","for":{"without":["ball"]}}]}"#;
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, props, scene, rules).expect_err("ball не того вида — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect_err("ball не того вида — ошибка");
     assert_eq!(
         errors.len(),
         1,
@@ -1586,8 +1607,8 @@ fn without_selector_does_not_match_a_candidate_whose_own_property_value_is_broke
 fn missing_rule_kind_error_points_at_the_rule() {
     let scene = r#"{"objects":[]}"#;
     let rules = "{\n  \"rules\": [\n    {\"for\": {\"has\": []}}\n  ]\n}\n";
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, rules).expect_err("нет kind — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("нет kind — ошибка");
     let err = errors
         .iter()
         .find(|e| e.file == "rules.json" && e.message.contains("kind"))
@@ -1608,7 +1629,8 @@ fn missing_spawn_where_error_points_at_the_rule() {
         "{\"kind\": \"spawn\", \"when\": {\"fewer_than\": {\"count\": 1, \"of\": {\"has\": []}}}}";
     let rules = format!("{{\n  \"rules\": [\n    {rule_text}\n  ]\n}}\n");
     let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, PROPS_EMPTY, scene, &rules).expect_err("нет where — ошибка");
+        load_game_from_texts(GAME, PROPS_EMPTY, scene, &rules, SCREENS)
+            .expect_err("нет where — ошибка");
     let err = errors
         .iter()
         .find(|e| e.file == "rules.json" && e.message.contains("at_parent"))
@@ -1628,8 +1650,9 @@ fn missing_spawn_where_error_points_at_the_rule() {
 fn stray_field_in_properties_json_root_is_reported() {
     let props = r#"{"properties":{},"propertes":{"x":"flag"}}"#;
     let scene = r#"{"objects":[]}"#;
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, r#"{"rules":[]}"#)
-        .expect_err("лишнее поле (опечатка propertes) в корне properties.json — ошибка");
+    let LoadFailure { errors, .. } =
+        load_game_from_texts(GAME, props, scene, r#"{"rules":[]}"#, SCREENS)
+            .expect_err("лишнее поле (опечатка propertes) в корне properties.json — ошибка");
     assert!(
         errors
             .iter()
@@ -1653,8 +1676,8 @@ fn without_selector_does_not_match_a_broken_property_widened_to_removable_by_tak
         {"kind":"collide","a":{"has":[]},"b":{"has":[]},"effects":{"a":[["take","ball"]]}},
         {"kind":"move","for":{"without":["ball"]}}
     ]}"#;
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(GAME, props, scene, rules).expect_err("ball не того вида — ошибка");
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect_err("ball не того вида — ошибка");
     assert_eq!(
         errors.len(),
         1,
@@ -1681,7 +1704,7 @@ fn message_about_a_rule_after_a_broken_one_addresses_its_real_file_position() {
     let rules = format!(
         "{{\n  \"rules\": [\n    {{\"kind\": \"nonsense\"}},\n    {spawn_text},\n    {move_text}\n  ]\n}}\n"
     );
-    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, &rules)
+    let LoadFailure { errors, .. } = load_game_from_texts(GAME, props, scene, &rules, SCREENS)
         .expect_err("nonsense и нехватка velocity — ошибки");
     let err = errors
         .iter()

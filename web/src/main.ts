@@ -2,17 +2,28 @@ import init, { Engine } from "engine";
 import { computeCanvasLayout } from "./canvasLayout";
 import { formatError, formatErrorScreen, type EngineError } from "./engineErrors";
 import { fetchText, loadGameOptions, type GameOptionsResult } from "./gameOptions";
-import { resolveGameName } from "./gameSelection";
-import { parseSceneConfig, type SceneConfig } from "./sceneConfig";
+import { gameListSearch, resolveGameName } from "./gameSelection";
 import { buildWarningsBadge, shouldBlurAfterToggleActivation, type WarningsBadge } from "./warningsPanel";
 
+type FontEntry = { name: string; path: string };
+
+type ReadEntryFiles = {
+  properties: string;
+  scene: string;
+  rules: string;
+  screens: string;
+  fonts: FontEntry[];
+};
+
 type ReadEntryResult =
-  | { ok: true; files: { properties: string; scene: string; rules: string }; warnings: EngineError[] }
+  | { ok: true; files: ReadEntryFiles; warnings: EngineError[] }
   | { ok: false; errors: EngineError[]; warnings: EngineError[] };
 
 type LoadResult =
   | { ok: true; warnings: EngineError[] }
   | { ok: false; errors: EngineError[]; warnings: EngineError[] };
+
+type LoadedFont = { name: string; bytes: Uint8Array | null };
 
 const MESSAGE_POLL_FRAMES = 60;
 
@@ -24,6 +35,19 @@ const warningsPanel = document.querySelector<HTMLElement>("#warnings-panel");
 const warningsToggle = document.querySelector<HTMLButtonElement>("#warnings-toggle");
 const warningsClose = document.querySelector<HTMLButtonElement>("#warnings-close");
 const warningsList = document.querySelector<HTMLElement>("#warnings-list");
+const backToGames = document.querySelector<HTMLButtonElement>("#back-to-games");
+
+/**
+ * Единственный выход из открытой игры. Показывается на игре и на экране ошибки, но не на самом
+ * списке — там возвращаться некуда.
+ */
+function showBackToGames(): void {
+  if (!backToGames) return;
+  backToGames.hidden = false;
+  backToGames.addEventListener("click", () => {
+    location.href = `${location.pathname}${gameListSearch(location.search)}`;
+  });
+}
 
 function showError(text: string): void {
   if (canvas) canvas.hidden = true;
@@ -79,6 +103,29 @@ function logWarnings(warnings: EngineError[]): void {
 }
 
 /**
+ * Тот же сетевой контракт, что у `fetchText` — сетевая ошибка и не-2xx статус сводятся к `null`, —
+ * но для двоичных файлов шрифтов.
+ */
+async function fetchBinary(url: string): Promise<Uint8Array | null> {
+  try {
+    const response = await fetch(url);
+    return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * По одному файлу на запись `files.fonts`; ненайденный файл становится `bytes: null` — движок сам
+ * решает, ошибка это или нет (шрифт не объявлен в `screens.json` — не ошибка, объявлен — ошибка
+ * предстартовой проверки).
+ */
+async function fetchFonts(baseUrl: string, fonts: FontEntry[]): Promise<LoadedFont[]> {
+  const bytesList = await Promise.all(fonts.map((font) => fetchBinary(`${baseUrl}${font.path}`)));
+  return fonts.map((font, index) => ({ name: font.name, bytes: bytesList[index] ?? null }));
+}
+
+/**
  * Плашка предупреждений над идущей игрой: свёрнута — виден только счётчик, разворачивается по
  * клику в список, закрывается насовсем (без способа открыть её снова, кроме перезагрузки
  * страницы) — предупреждение не повод загораживать игру дольше, чем автору нужно его прочитать.
@@ -110,6 +157,17 @@ function attachInput(engine: Engine): void {
   window.addEventListener("keyup", (event) => engine.key_up(event.code));
 }
 
+/**
+ * `clientX`/`clientY` — те же оконные CSS-пиксели, что и `anchor`/`offset`/`size` в `screens.json`:
+ * холст растянут на всё окно и стоит в его левом верхнем углу, поэтому координата курсора относительно
+ * окна совпадает с координатой относительно холста.
+ */
+function attachMouse(engine: Engine): void {
+  window.addEventListener("mousemove", (event) => engine.mouse_move(event.clientX, event.clientY));
+  window.addEventListener("mousedown", () => engine.mouse_down());
+  window.addEventListener("mouseup", () => engine.mouse_up());
+}
+
 function attachVisibility(engine: Engine): void {
   document.addEventListener("visibilitychange", () => {
     if (document.hidden) engine.tab_hidden();
@@ -117,18 +175,31 @@ function attachVisibility(engine: Engine): void {
 }
 
 /**
- * Вписывает холст в окно, сохраняя квадратную клетку сцены (см. `computeCanvasLayout`), и при
- * наличии движка сообщает ему новый размер буфера. `engine` отсутствует при самом первом вызове —
- * до того как GPU-поверхность вообще создана на этом холсте.
+ * `matchMedia("(resolution: …dppx)")` совпадает ровно с текущим значением `devicePixelRatio`, а
+ * значит перестаёт совпадать, как только оно меняется, — и `change` стреляет один раз. Слушатель
+ * пересоздаёт запрос под новое значение при каждом срабатывании, иначе после первого же изменения
+ * плотности экрана движок перестал бы узнавать о следующих.
  */
-function applyCanvasLayout(target: HTMLCanvasElement, scene: SceneConfig, engine: Engine | null): void {
-  const layout = computeCanvasLayout(
-    scene.width,
-    scene.height,
-    window.innerWidth,
-    window.innerHeight,
-    window.devicePixelRatio || 1,
-  );
+function attachPixelRatio(engine: Engine): void {
+  const notify = (): void => engine.set_pixel_ratio(window.devicePixelRatio || 1);
+  let media = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+  const onChange = (): void => {
+    notify();
+    media.removeEventListener("change", onChange);
+    media = matchMedia(`(resolution: ${window.devicePixelRatio}dppx)`);
+    media.addEventListener("change", onChange);
+  };
+  media.addEventListener("change", onChange);
+  notify();
+}
+
+/**
+ * Растягивает холст на всё окно и при наличии движка сообщает ему новый размер буфера — сцену
+ * внутрь этого буфера вписывает уже сам движок (см. `computeCanvasLayout`). `engine` отсутствует при
+ * самом первом вызове — до того как GPU-поверхность вообще создана на этом холсте.
+ */
+function applyCanvasLayout(target: HTMLCanvasElement, engine: Engine | null): void {
+  const layout = computeCanvasLayout(window.innerWidth, window.innerHeight, window.devicePixelRatio || 1);
   target.style.width = `${layout.cssWidth}px`;
   target.style.height = `${layout.cssHeight}px`;
   target.width = layout.bufferWidth;
@@ -141,14 +212,14 @@ function applyCanvasLayout(target: HTMLCanvasElement, scene: SceneConfig, engine
  * переставляло бы `canvas.width`/`height` и перенастраивало поверхность wgpu. `pending` схлопывает
  * события внутри одного кадра в один вызов `applyCanvasLayout`.
  */
-function attachResize(engine: Engine, target: HTMLCanvasElement, scene: SceneConfig): void {
+function attachResize(engine: Engine, target: HTMLCanvasElement): void {
   let pending = false;
   window.addEventListener("resize", () => {
     if (pending) return;
     pending = true;
     requestAnimationFrame(() => {
       pending = false;
-      applyCanvasLayout(target, scene, engine);
+      applyCanvasLayout(target, engine);
     });
   });
 }
@@ -190,8 +261,7 @@ async function runGame(gameName: string): Promise<void> {
     return;
   }
 
-  const scene = parseSceneConfig(gameJsonText);
-  applyCanvasLayout(canvas, scene, null);
+  applyCanvasLayout(canvas, null);
 
   await init();
 
@@ -210,14 +280,18 @@ async function runGame(gameName: string): Promise<void> {
     return;
   }
 
-  const [propertiesText, sceneText, rulesText] = await Promise.all([
-    fetchText(`${baseUrl}${entryResult.files.properties}`),
-    fetchText(`${baseUrl}${entryResult.files.scene}`),
-    fetchText(`${baseUrl}${entryResult.files.rules}`),
+  const [[propertiesText, sceneText, rulesText, screensText], fonts] = await Promise.all([
+    Promise.all([
+      fetchText(`${baseUrl}${entryResult.files.properties}`),
+      fetchText(`${baseUrl}${entryResult.files.scene}`),
+      fetchText(`${baseUrl}${entryResult.files.rules}`),
+      fetchText(`${baseUrl}${entryResult.files.screens}`),
+    ]),
+    fetchFonts(baseUrl, entryResult.files.fonts),
   ]);
 
-  const loadResult = engine.load(propertiesText, sceneText, rulesText) as LoadResult;
-  // read_entry (game.json) первым, load (остальные три файла) вторым — тот же порядок, в котором
+  const loadResult = engine.load(propertiesText, sceneText, rulesText, screensText, fonts) as LoadResult;
+  // read_entry (game.json) первым, load (остальные файлы) вторым — тот же порядок, в котором
   // предупреждения собирает сам движок при объединённой загрузке (см. `load_game_from_texts`).
   const warnings = [...entryResult.warnings, ...loadResult.warnings];
   logWarnings(warnings);
@@ -230,9 +304,11 @@ async function runGame(gameName: string): Promise<void> {
   if (badge) showWarningsBadge(badge);
 
   attachInput(engine);
+  attachMouse(engine);
   attachVisibility(engine);
-  attachResize(engine, canvas, scene);
-  applyCanvasLayout(canvas, scene, engine);
+  attachPixelRatio(engine);
+  attachResize(engine, canvas);
+  applyCanvasLayout(canvas, engine);
   runLoop(engine);
 }
 
@@ -243,11 +319,13 @@ async function boot(): Promise<void> {
       await showGameSelection();
       return;
     case "invalid":
+      showBackToGames();
       showError(
-        `Параметр game=«${resolution.value}» недопустим — разрешены только латинские буквы, цифры, «_» и «-». Открой страницу без параметра, чтобы увидеть список игр.`,
+        `Параметр game=«${resolution.value}» недопустим — разрешены только латинские буквы, цифры, «_» и «-». Кнопка «← К играм» внизу слева вернёт к списку.`,
       );
       return;
     case "valid":
+      showBackToGames();
       await runGame(resolution.name);
       return;
   }
