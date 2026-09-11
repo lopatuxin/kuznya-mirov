@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveGameName } from "./gameSelection";
+import { gameListSearch, resolveGameName } from "./gameSelection";
 
 describe("resolveGameName", () => {
   it("берёт имя игры из query-параметра game", () => {
@@ -26,5 +26,23 @@ describe("resolveGameName", () => {
     expect(resolveGameName("?game=snake 2")).toEqual({ status: "invalid", value: "snake 2" });
     expect(resolveGameName("?game=my.game")).toEqual({ status: "invalid", value: "my.game" });
     expect(resolveGameName("?game=игра")).toEqual({ status: "invalid", value: "игра" });
+  });
+});
+
+describe("gameListSearch", () => {
+  it("убирает игру из адреса — так страница возвращается к списку", () => {
+    expect(gameListSearch("?game=arkanoid")).toBe("");
+  });
+
+  it("на самом списке ничего не меняет", () => {
+    expect(gameListSearch("")).toBe("");
+  });
+
+  it("убирает только игру, остальные параметры оставляет", () => {
+    expect(gameListSearch("?game=snake&debug=1")).toBe("?debug=1");
+  });
+
+  it("убирает недопустимое имя игры так же, как годное — с экрана ошибки тоже нужен выход", () => {
+    expect(gameListSearch("?game=../../etc")).toBe("");
   });
 });

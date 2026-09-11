@@ -1,6 +1,8 @@
 use web_sys::HtmlCanvasElement;
 use wgpu::util::DeviceExt;
 
+use crate::core::screens::{Align, FontId};
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct DrawRect {
@@ -9,10 +11,24 @@ pub struct DrawRect {
     pub color: [f32; 4],
 }
 
+/// One label or button caption to hand to `glyphon` this frame. `rect_px` is the element's
+/// placement rectangle in the same screen (CSS) pixels `core::screens::Placement` resolves —
+/// the renderer applies the device-pixel-ratio scale itself, the same as it does for `ui_rects`.
+pub struct TextDraw {
+    pub text: String,
+    pub font: FontId,
+    pub font_size_px: f32,
+    pub color: [f32; 4],
+    pub align: Align,
+    pub rect_px: [f32; 4],
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
-    scene_size: [f32; 2],
+    scale: [f32; 2],
+    offset: [f32; 2],
+    canvas_size_px: [f32; 2],
     _padding: [f32; 2],
 }
 
@@ -31,22 +47,61 @@ impl GpuBackend {
     }
 }
 
-/// Draws every visible object as a colored rectangle, batched into one instanced draw call per
-/// frame: the caller sorts by layer then by object number and hands over the whole list.
+fn cosmic_align(align: Align) -> glyphon::cosmic_text::Align {
+    match align {
+        Align::Left => glyphon::cosmic_text::Align::Left,
+        Align::Center => glyphon::cosmic_text::Align::Center,
+        Align::Right => glyphon::cosmic_text::Align::Right,
+    }
+}
+
+fn glyphon_color(color: [f32; 4]) -> glyphon::Color {
+    let to_u8 = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
+    glyphon::Color::rgba(
+        to_u8(color[0]),
+        to_u8(color[1]),
+        to_u8(color[2]),
+        to_u8(color[3]),
+    )
+}
+
+/// Draws one frame in three passes over the same canvas: the world's colored rectangles (scene
+/// cells, letterboxed into the window), the interface's panels and buttons (window pixels), and
+/// the interface's text (`glyphon`, on top of both) — «Интерфейс игры» → «Отрисовка».
 pub struct Renderer {
     _instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
-    pipeline: wgpu::RenderPipeline,
-    globals_buffer: wgpu::Buffer,
-    bind_group: wgpu::BindGroup,
+    rect_pipeline: wgpu::RenderPipeline,
     quad_buffer: wgpu::Buffer,
-    instance_buffer: wgpu::Buffer,
-    instance_capacity: usize,
+
+    world_globals_buffer: wgpu::Buffer,
+    world_bind_group: wgpu::BindGroup,
+    world_instance_buffer: wgpu::Buffer,
+    world_instance_capacity: usize,
+
+    ui_globals_buffer: wgpu::Buffer,
+    ui_bind_group: wgpu::BindGroup,
+    ui_instance_buffer: wgpu::Buffer,
+    ui_instance_capacity: usize,
+
+    font_system: glyphon::FontSystem,
+    swash_cache: glyphon::SwashCache,
+    text_atlas: glyphon::TextAtlas,
+    text_viewport: glyphon::Viewport,
+    text_renderer: glyphon::TextRenderer,
+    /// `FontId` (index into this table) → the family name `cosmic-text` shaping needs, resolved
+    /// from the font file itself when it was loaded — see `load_font`.
+    fonts: Vec<String>,
+
     background: [f32; 4],
     backend: GpuBackend,
+
+    canvas_size_px: [f32; 2],
+    scene_cells: [f32; 2],
+    device_pixel_ratio: f32,
 }
 
 impl Renderer {
@@ -129,16 +184,6 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/rect.wgsl").into()),
         });
 
-        let globals = Globals {
-            scene_size: [scene_width as f32, scene_height as f32],
-            _padding: [0.0, 0.0],
-        };
-        let globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("globals"),
-            contents: bytemuck::bytes_of(&globals),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
-
         let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("globals_layout"),
             entries: &[wgpu::BindGroupLayoutEntry {
@@ -152,12 +197,36 @@ impl Renderer {
                 count: None,
             }],
         });
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("globals_bind_group"),
+
+        let canvas_size_px = [width_px.max(1) as f32, height_px.max(1) as f32];
+        let scene_cells = [scene_width.max(1) as f32, scene_height.max(1) as f32];
+        let world_globals = world_globals_data(canvas_size_px, scene_cells);
+        let world_globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("world_globals"),
+            contents: bytemuck::bytes_of(&world_globals),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let world_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("world_globals_bind_group"),
             layout: &bind_group_layout,
             entries: &[wgpu::BindGroupEntry {
                 binding: 0,
-                resource: globals_buffer.as_entire_binding(),
+                resource: world_globals_buffer.as_entire_binding(),
+            }],
+        });
+
+        let ui_globals = ui_globals_data(canvas_size_px, 1.0);
+        let ui_globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("ui_globals"),
+            contents: bytemuck::bytes_of(&ui_globals),
+            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+        });
+        let ui_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("ui_globals_bind_group"),
+            layout: &bind_group_layout,
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: ui_globals_buffer.as_entire_binding(),
             }],
         });
 
@@ -198,7 +267,7 @@ impl Renderer {
             ],
         };
 
-        let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        let rect_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("rect_pipeline"),
             layout: Some(&pipeline_layout),
             vertex: wgpu::VertexState {
@@ -238,13 +307,20 @@ impl Renderer {
             usage: wgpu::BufferUsages::VERTEX,
         });
 
-        let instance_capacity = 1024usize;
-        let instance_buffer = device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instances"),
-            size: (instance_capacity * std::mem::size_of::<DrawRect>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        let world_instance_capacity = 1024usize;
+        let world_instance_buffer = make_instance_buffer(&device, world_instance_capacity);
+        let ui_instance_capacity = 256usize;
+        let ui_instance_buffer = make_instance_buffer(&device, ui_instance_capacity);
+
+        let text_cache = glyphon::Cache::new(&device);
+        let mut text_atlas = glyphon::TextAtlas::new(&device, &queue, &text_cache, format);
+        let text_viewport = glyphon::Viewport::new(&device, &text_cache);
+        let text_renderer = glyphon::TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
 
         Ok(Renderer {
             _instance: instance,
@@ -252,14 +328,27 @@ impl Renderer {
             device,
             queue,
             config,
-            pipeline,
-            globals_buffer,
-            bind_group,
+            rect_pipeline,
             quad_buffer,
-            instance_buffer,
-            instance_capacity,
+            world_globals_buffer,
+            world_bind_group,
+            world_instance_buffer,
+            world_instance_capacity,
+            ui_globals_buffer,
+            ui_bind_group,
+            ui_instance_buffer,
+            ui_instance_capacity,
+            font_system: glyphon::FontSystem::new(),
+            swash_cache: glyphon::SwashCache::new(),
+            text_atlas,
+            text_viewport,
+            text_renderer,
+            fonts: Vec::new(),
             background,
             backend,
+            canvas_size_px,
+            scene_cells,
+            device_pixel_ratio: 1.0,
         })
     }
 
@@ -267,35 +356,96 @@ impl Renderer {
         self.backend
     }
 
+    /// The window size in CSS pixels — the unit `screens.json`'s `anchor`/`offset`/`size` are
+    /// written in, and what mouse hit-testing has to use as its viewport.
+    pub fn window_size_css(&self) -> [f32; 2] {
+        [
+            self.canvas_size_px[0] / self.device_pixel_ratio,
+            self.canvas_size_px[1] / self.device_pixel_ratio,
+        ]
+    }
+
+    /// Loads one font's bytes into `cosmic-text`'s shared database and returns the `FontId`
+    /// later `TextDraw`s reference. The family name shaping needs comes from the file itself —
+    /// the caller's name for it (from `files.fonts`) is not a font-internal name, so this reads
+    /// it back from the face `load_font_source` reports having just added.
+    pub fn load_font(&mut self, bytes: Vec<u8>) -> FontId {
+        let ids = self
+            .font_system
+            .db_mut()
+            .load_font_source(glyphon::fontdb::Source::Binary(std::sync::Arc::new(bytes)));
+        let family = ids
+            .first()
+            .and_then(|&id| self.font_system.db().face(id))
+            .and_then(|face| face.families.first())
+            .map(|(name, _)| name.clone())
+            .unwrap_or_default();
+        let font_id = self.fonts.len();
+        self.fonts.push(family);
+        font_id
+    }
+
     /// The game's scene size and background become known only once it has loaded, well after
     /// the GPU itself was set up — this rewrites both without touching anything else.
     pub fn set_scene(&mut self, scene_width: u32, scene_height: u32, background: [f32; 4]) {
-        let globals = Globals {
-            scene_size: [scene_width as f32, scene_height as f32],
-            _padding: [0.0, 0.0],
-        };
-        self.queue
-            .write_buffer(&self.globals_buffer, 0, bytemuck::bytes_of(&globals));
+        self.scene_cells = [scene_width.max(1) as f32, scene_height.max(1) as f32];
         self.background = background;
+        self.write_world_globals();
     }
 
+    /// Reconfigures the GPU surface for a new device-pixel canvas size. Call on resize; does
+    /// not touch the game. `set_pixel_ratio` supplies the CSS/device-pixel split separately.
     pub fn resize(&mut self, width_px: u32, height_px: u32) {
         self.config.width = width_px.max(1);
         self.config.height = height_px.max(1);
         self.surface.configure(&self.device, &self.config);
+        self.canvas_size_px = [self.config.width as f32, self.config.height as f32];
+        self.write_world_globals();
+        self.write_ui_globals();
+        self.text_viewport.update(
+            &self.queue,
+            glyphon::Resolution {
+                width: self.config.width,
+                height: self.config.height,
+            },
+        );
     }
 
-    fn grow_instance_buffer(&mut self, needed: usize) {
-        if needed <= self.instance_capacity {
+    /// «Интерфейс игры» → «Плотность экрана»: the ratio the interface's own pixel values get
+    /// multiplied by; the world pass never needs it, since `canvas_size_px` already is device
+    /// pixels regardless of density.
+    pub fn set_pixel_ratio(&mut self, ratio: f32) {
+        self.device_pixel_ratio = ratio.max(0.01);
+        self.write_ui_globals();
+    }
+
+    fn write_world_globals(&mut self) {
+        let globals = world_globals_data(self.canvas_size_px, self.scene_cells);
+        self.queue
+            .write_buffer(&self.world_globals_buffer, 0, bytemuck::bytes_of(&globals));
+    }
+
+    fn write_ui_globals(&mut self) {
+        let globals = ui_globals_data(self.canvas_size_px, self.device_pixel_ratio);
+        self.queue
+            .write_buffer(&self.ui_globals_buffer, 0, bytemuck::bytes_of(&globals));
+    }
+
+    fn grow_world_instances(&mut self, needed: usize) {
+        if needed <= self.world_instance_capacity {
             return;
         }
-        self.instance_capacity = needed.next_power_of_two();
-        self.instance_buffer = self.device.create_buffer(&wgpu::BufferDescriptor {
-            label: Some("instances"),
-            size: (self.instance_capacity * std::mem::size_of::<DrawRect>()) as u64,
-            usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
-            mapped_at_creation: false,
-        });
+        self.world_instance_capacity = needed.next_power_of_two();
+        self.world_instance_buffer =
+            make_instance_buffer(&self.device, self.world_instance_capacity);
+    }
+
+    fn grow_ui_instances(&mut self, needed: usize) {
+        if needed <= self.ui_instance_capacity {
+            return;
+        }
+        self.ui_instance_capacity = needed.next_power_of_two();
+        self.ui_instance_buffer = make_instance_buffer(&self.device, self.ui_instance_capacity);
     }
 
     fn acquire_frame(&mut self) -> Result<Option<wgpu::SurfaceTexture>, String> {
@@ -314,13 +464,100 @@ impl Renderer {
         }
     }
 
-    /// Draws every rect in `instances` with one instanced draw call. `instances` must already be
-    /// sorted by layer, then by object number — the renderer does not sort.
-    pub fn render(&mut self, instances: &[DrawRect]) -> Result<(), String> {
-        self.grow_instance_buffer(instances.len());
-        if !instances.is_empty() {
-            self.queue
-                .write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
+    /// One `cosmic-text` buffer per `TextDraw`, shaped to fit its element and clipped to it —
+    /// «Интерфейс игры» → «Текст»: single line, no wrapping, aligned inside the element.
+    fn build_text_buffers(
+        &mut self,
+        texts: &[TextDraw],
+    ) -> Vec<(glyphon::Buffer, usize, [f32; 4], [f32; 4])> {
+        let dpr = self.device_pixel_ratio;
+        texts
+            .iter()
+            .map(|t| {
+                let font_size_px = (t.font_size_px * dpr).max(1.0);
+                let metrics = glyphon::Metrics::new(font_size_px, font_size_px * 1.2);
+                let mut buffer = glyphon::Buffer::new(&mut self.font_system, metrics);
+                buffer.set_wrap(&mut self.font_system, glyphon::cosmic_text::Wrap::None);
+                let rect_px = [
+                    t.rect_px[0] * dpr,
+                    t.rect_px[1] * dpr,
+                    t.rect_px[2] * dpr,
+                    t.rect_px[3] * dpr,
+                ];
+                buffer.set_size(&mut self.font_system, Some(rect_px[2]), None);
+                let family = self.fonts.get(t.font).map(String::as_str).unwrap_or("");
+                let attrs = glyphon::Attrs::new().family(glyphon::Family::Name(family));
+                buffer.set_text(
+                    &mut self.font_system,
+                    &t.text,
+                    &attrs,
+                    glyphon::Shaping::Advanced,
+                    Some(cosmic_align(t.align)),
+                );
+                (buffer, t.font, rect_px, t.color)
+            })
+            .collect()
+    }
+
+    /// Draws one frame: `world_instances` (scene cells, letterboxed) and `ui_instances` (window
+    /// pixels) each go out as one instanced draw call, then `texts` uploads to the GPU as a
+    /// single `glyphon` command drawn on top of both — «Интерфейс игры» → «Отрисовка».
+    pub fn render_frame(
+        &mut self,
+        world_instances: &[DrawRect],
+        ui_instances: &[DrawRect],
+        texts: &[TextDraw],
+    ) -> Result<(), String> {
+        self.grow_world_instances(world_instances.len());
+        if !world_instances.is_empty() {
+            self.queue.write_buffer(
+                &self.world_instance_buffer,
+                0,
+                bytemuck::cast_slice(world_instances),
+            );
+        }
+        self.grow_ui_instances(ui_instances.len());
+        if !ui_instances.is_empty() {
+            self.queue.write_buffer(
+                &self.ui_instance_buffer,
+                0,
+                bytemuck::cast_slice(ui_instances),
+            );
+        }
+
+        let buffers = self.build_text_buffers(texts);
+        let text_areas: Vec<glyphon::TextArea> = buffers
+            .iter()
+            .map(|(buffer, _font, rect_px, color)| {
+                let line_height = buffer.metrics().line_height;
+                glyphon::TextArea {
+                    buffer,
+                    left: rect_px[0],
+                    top: rect_px[1] + (rect_px[3] - line_height) / 2.0,
+                    scale: 1.0,
+                    bounds: glyphon::TextBounds {
+                        left: rect_px[0] as i32,
+                        top: rect_px[1] as i32,
+                        right: (rect_px[0] + rect_px[2]) as i32,
+                        bottom: (rect_px[1] + rect_px[3]) as i32,
+                    },
+                    default_color: glyphon_color(*color),
+                    custom_glyphs: &[],
+                }
+            })
+            .collect();
+        if !text_areas.is_empty() {
+            self.text_renderer
+                .prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.text_viewport,
+                    text_areas,
+                    &mut self.swash_cache,
+                )
+                .map_err(|e| format!("не удалось подготовить текст: {e:?}"))?;
         }
 
         let Some(surface_texture) = self.acquire_frame()? else {
@@ -356,16 +593,65 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            if !instances.is_empty() {
-                pass.set_pipeline(&self.pipeline);
-                pass.set_bind_group(0, &self.bind_group, &[]);
-                pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
-                pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
-                pass.draw(0..6, 0..instances.len() as u32);
+            pass.set_pipeline(&self.rect_pipeline);
+            pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+            if !world_instances.is_empty() {
+                pass.set_bind_group(0, &self.world_bind_group, &[]);
+                pass.set_vertex_buffer(1, self.world_instance_buffer.slice(..));
+                pass.draw(0..6, 0..world_instances.len() as u32);
+            }
+            if !ui_instances.is_empty() {
+                pass.set_bind_group(0, &self.ui_bind_group, &[]);
+                pass.set_vertex_buffer(1, self.ui_instance_buffer.slice(..));
+                pass.draw(0..6, 0..ui_instances.len() as u32);
+            }
+            if !texts.is_empty() {
+                self.text_renderer
+                    .render(&self.text_atlas, &self.text_viewport, &mut pass)
+                    .map_err(|e| format!("не удалось нарисовать текст: {e:?}"))?;
             }
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
         Ok(())
+    }
+}
+
+fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
+    device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("instances"),
+        size: (capacity * std::mem::size_of::<DrawRect>()) as u64,
+        usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// World pass: scene cells scale up to fill the largest letterboxed rectangle of `canvas_size_px`
+/// that keeps the scene's aspect ratio, centered — «Формат игры»: «сцена вписывается в окно
+/// целиком, с сохранением пропорций».
+fn world_globals_data(canvas_size_px: [f32; 2], scene_cells: [f32; 2]) -> Globals {
+    let scale = (canvas_size_px[0] / scene_cells[0]).min(canvas_size_px[1] / scene_cells[1]);
+    let viewport_size = [scene_cells[0] * scale, scene_cells[1] * scale];
+    let offset = [
+        (canvas_size_px[0] - viewport_size[0]) / 2.0,
+        (canvas_size_px[1] - viewport_size[1]) / 2.0,
+    ];
+    Globals {
+        scale: [scale, scale],
+        offset,
+        canvas_size_px,
+        _padding: [0.0, 0.0],
+    }
+}
+
+/// UI pass: window pixels (as `screens.json` and `core::screens::Placement` use them) scale up
+/// by the device pixel ratio to the canvas's own device pixels — «Интерфейс игры» → «Плотность
+/// экрана».
+fn ui_globals_data(canvas_size_px: [f32; 2], device_pixel_ratio: f32) -> Globals {
+    Globals {
+        scale: [device_pixel_ratio, device_pixel_ratio],
+        offset: [0.0, 0.0],
+        canvas_size_px,
+        _padding: [0.0, 0.0],
     }
 }

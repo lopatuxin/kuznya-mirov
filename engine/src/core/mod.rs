@@ -7,6 +7,7 @@ pub mod rng;
 pub mod rules;
 pub mod runner;
 pub mod scene;
+pub mod screens;
 pub mod step;
 pub mod time;
 pub mod value;

@@ -3,26 +3,46 @@ use std::path::PathBuf;
 
 use engine::core::input::StepInput;
 use engine::core::property;
-use engine::data::load::load_game_from_texts;
+use engine::data::load::{load_rest, read_entry};
 
-fn read(name: &str) -> String {
+fn game_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("..");
     path.push("games");
     path.push("arkanoid");
     path.push(name);
+    path
+}
+
+fn read(name: &str) -> String {
+    let path = game_path(name);
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"))
 }
 
+/// The demo's `start_screen` is the menu, so the freshly loaded game has no world at all —
+/// `new_game()` is the same call `["new_game", "game"]` on the "Играть" button would make.
+/// Loads the real demo folder end to end, fonts included — unlike `load_game_from_texts`, which
+/// carries no font bytes and is only good for data that declares none.
 fn load() -> engine::core::game::Game {
-    let (game, warnings) = load_game_from_texts(
-        &read("game.json"),
-        &read("properties.json"),
-        &read("scene.json"),
-        &read("rules.json"),
+    let (config, _entry_warnings) =
+        read_entry(&read("game.json")).expect("game.json демо-арканоида должен разбираться");
+    let font_bytes: Vec<(String, Option<Vec<u8>>)> = config
+        .files
+        .fonts
+        .iter()
+        .map(|(name, path)| (name.clone(), fs::read(game_path(path)).ok()))
+        .collect();
+    let (mut game, _screens, warnings) = load_rest(
+        config,
+        Some(&read("properties.json")),
+        Some(&read("scene.json")),
+        Some(&read("rules.json")),
+        Some(&read("screens.json")),
+        &font_bytes,
     )
     .expect("демо-арканоид должен проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.new_game();
     game
 }
 

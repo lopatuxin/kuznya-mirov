@@ -3,7 +3,7 @@ use super::input::{InputQueue, StepInput};
 use super::property::{self, PropertyTable};
 use super::rng::Rng;
 use super::rules::{Outcome, RuleSet};
-use super::scene::SceneConfig;
+use super::scene::{ObjectSpec, SceneConfig};
 use super::step;
 use super::value::Vec2;
 use super::world::World;
@@ -16,6 +16,8 @@ pub struct Game {
     pub scene: SceneConfig,
     pub max_objects: usize,
 
+    scene_objects: Vec<ObjectSpec>,
+    random_seed: u64,
     rng: Rng,
     step_count: u64,
     input_queue: InputQueue,
@@ -31,6 +33,7 @@ pub struct Game {
 }
 
 impl Game {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         properties: PropertyTable,
         world: World,
@@ -38,6 +41,7 @@ impl Game {
         scene: SceneConfig,
         max_objects: usize,
         random_seed: u64,
+        scene_objects: Vec<ObjectSpec>,
     ) -> Self {
         Game {
             properties,
@@ -45,6 +49,8 @@ impl Game {
             rules,
             scene,
             max_objects,
+            scene_objects,
+            random_seed,
             rng: Rng::new(random_seed),
             step_count: 0,
             input_queue: InputQueue::new(),
@@ -65,6 +71,71 @@ impl Game {
 
     pub fn key_up(&mut self, code: &str) {
         self.input_queue.release(code);
+    }
+
+    /// Whether `code` is held right now — a key the world already treats as pressed, whether or
+    /// not the currently active screen's own `keys` table names it.
+    pub fn is_key_held(&self, code: &str) -> bool {
+        self.input_queue.is_held(code)
+    }
+
+    /// «Экраны и состояние»: applied by the screen layer's `switch_to` when a transition leaves
+    /// a live screen — synthesizes a release for every key held right now, then drops both the
+    /// pending queue and the held set, so a returning player has to press the key again.
+    pub fn release_held_keys(&mut self) {
+        let held = self.input_queue.held_keys();
+        step::apply_input(&mut self.world, &[], &held);
+        self.input_queue.clear();
+    }
+
+    /// «Экраны и состояние» → «Клавиша экрана»: releases one held key immediately, the same way
+    /// `release_held_keys` releases all of them — used when the screen that declares `code`
+    /// absorbs its release, so the world binding a *different* screen set up for it doesn't stay
+    /// stuck. Applied right away rather than queued: a queued release would sit in the input
+    /// queue until the next step, and a screen switch landing before that step clears the queue
+    /// out from under it.
+    pub fn release_key(&mut self, code: &str) {
+        step::apply_input(
+            &mut self.world,
+            &[],
+            std::slice::from_ref(&code.to_string()),
+        );
+        self.input_queue.forget(code);
+    }
+
+    /// «Экраны и состояние» → «Что происходит при создании»: rebuilds the world from the
+    /// parsed copy of `scene.json` — the file itself is never reopened — resets the step
+    /// counter, the random-number generator (same seed, so the second playthrough replays the
+    /// same way the first one would), the input queue, and the sticky win/loss mark.
+    pub fn new_game(&mut self) {
+        self.world = World::new(&self.properties);
+        for spec in &self.scene_objects {
+            let id = self.world.create();
+            for (prop, value) in &spec.values {
+                self.world.set_value(id, *prop, value);
+            }
+            if let Some(grid) = &spec.grid {
+                self.world.set_grid(id, property::GRID, *grid);
+                self.world.set_grid_counter(id, grid.interval_steps);
+            }
+            if let Some(keys) = &spec.keys {
+                self.world.set_keys(id, property::KEYS, keys.clone());
+            }
+        }
+        self.step_count = 0;
+        self.rng = Rng::new(self.random_seed);
+        self.input_queue = InputQueue::new();
+        self.outcome = None;
+    }
+
+    /// «Экраны и состояние»: `quit` throws the run away entirely — the world empties and there
+    /// is no way back to it, a fresh `new_game` starts from a clean scene. Clearing the sticky
+    /// win/loss mark here matters as much as emptying the world: `handle_outcome` runs every
+    /// tick regardless of the active screen, so a mark left standing would drag the player
+    /// straight back to the outcome screen the next tick after `quit` returns them to the menu.
+    pub fn quit(&mut self) {
+        self.world = World::new(&self.properties);
+        self.outcome = None;
     }
 
     pub fn is_running(&self) -> bool {

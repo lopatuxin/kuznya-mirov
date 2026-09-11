@@ -40,6 +40,18 @@ impl Runner {
     pub fn reset(&mut self) {
         self.accumulator = 0.0;
     }
+
+    /// «Экраны и состояние» → «Как это ложится в круг движка»: on the screen the active screen
+    /// has `world_runs`, steps as `advance` always did; otherwise the step is skipped
+    /// entirely and the accumulator is dropped every call, so a minute spent paused does not
+    /// arrive as a burst of catch-up steps on return.
+    pub fn advance_or_reset(&mut self, game: &mut Game, dt_seconds: f64, screen_live: bool) {
+        if !screen_live {
+            self.reset();
+            return;
+        }
+        self.advance(game, dt_seconds);
+    }
 }
 
 #[cfg(test)]
@@ -58,7 +70,15 @@ mod tests {
             height: 10,
             background: [0.0; 4],
         };
-        Game::new(properties, world, RuleSet::default(), scene, 100, 1)
+        Game::new(
+            properties,
+            world,
+            RuleSet::default(),
+            scene,
+            100,
+            1,
+            Vec::new(),
+        )
     }
 
     #[test]
