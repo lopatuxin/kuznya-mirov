@@ -13,6 +13,9 @@ use super::world::World;
 
 pub type ScreenId = usize;
 pub type FontId = usize;
+/// Index into `files.music`, in declaration order — «Звук в данных игры»: a screen's `music`
+/// field resolves its name to one of these at load time, the same way `font` resolves to `FontId`.
+pub type MusicId = usize;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anchor {
@@ -183,6 +186,10 @@ pub enum ButtonCommand {
     NewGame(ScreenId),
     Resume,
     Quit,
+    /// «Звук в данных игры» → «Выключение звука целиком»: touches no world property, so it needs
+    /// none of `apply_command`'s screen-switching machinery — just flips `ScreenState`'s own
+    /// `sound_enabled`.
+    ToggleSound,
 }
 
 #[derive(Debug, Clone)]
@@ -222,6 +229,8 @@ pub struct Screen {
     pub world_runs: bool,
     pub elements: Vec<Element>,
     pub keys: ScreenKeyTable,
+    /// «Звук в данных игры» → «Музыка экрана»: `None` is silence, same as the pause screen.
+    pub music: Option<MusicId>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -233,11 +242,15 @@ pub struct ScreensConfig {
 }
 
 /// The active screen and the one remembered screen `resume` returns to — «Экраны и состояние» →
-/// «Четыре команды кнопки»: at most one level deep, no further history.
+/// «Пять команд кнопки»: at most one level deep, no further history.
 #[derive(Debug, Clone, Copy)]
 pub struct ScreenState {
     active: ScreenId,
     previous: Option<ScreenId>,
+    /// «Звук в шаге и кадре» → «Кому принадлежит состояние звука»: belongs to the circle, next
+    /// to the active screen, not to the world — `new_game`/`quit` don't touch it, and it starts
+    /// `true` on every load, since the engine keeps no storage for it at all.
+    sound_enabled: bool,
 }
 
 impl ScreenState {
@@ -245,11 +258,16 @@ impl ScreenState {
         ScreenState {
             active: start_screen,
             previous: None,
+            sound_enabled: true,
         }
     }
 
     pub fn active(&self) -> ScreenId {
         self.active
+    }
+
+    pub fn sound_enabled(&self) -> bool {
+        self.sound_enabled
     }
 
     pub fn is_live(&self, config: &ScreensConfig) -> bool {
@@ -301,6 +319,9 @@ pub fn apply_command(
             game.quit();
             switch_to(state, config, game, config.start_screen, false);
         }
+        // «Звук в данных игры» → «Выключение звука целиком»: touches no world property, no
+        // screen, no queued anything — the whole command is this one flip.
+        ButtonCommand::ToggleSound => state.sound_enabled = !state.sound_enabled,
     }
 }
 
@@ -334,6 +355,18 @@ pub fn tick(
 ) {
     runner.advance_or_reset(game, dt_seconds, state.is_live(config));
     handle_outcome(game, config, state);
+}
+
+/// «Звук в шаге и кадре» → «Порядок работ за один вызов», пункт 5: writes the active screen's
+/// music (or silence, if it names none) and the sound-enabled flag into the window — called
+/// once per call, after the mouse and screen-key queues have drained, so a click that just
+/// switched screens writes the screen it landed on, never the one it left. «Экраны и
+/// состояние» → «Кому принадлежит состояние звука»: `game`'s own window carries the result,
+/// `config`/`state` only supply what's currently true.
+pub fn write_sound_frame(game: &mut Game, config: &ScreensConfig, state: &ScreenState) {
+    let music = config.screens[state.active()].music;
+    game.sound_window_mut()
+        .write_header(music, state.sound_enabled());
 }
 
 /// «Экраны и состояние»: keyboard events are dropped outright on a screen with no `world_runs`.

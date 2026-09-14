@@ -45,7 +45,13 @@ impl Runner {
     /// has `world_runs`, steps as `advance` always did; otherwise the step is skipped
     /// entirely and the accumulator is dropped every call, so a minute spent paused does not
     /// arrive as a burst of catch-up steps on return.
+    ///
+    /// «Звук в шаге и кадре» → «Порядок работ за один вызов»: this is the one call every tick
+    /// makes exactly once, live screen or not, so the sound marks the page already read last
+    /// time are cleared right here, before any of this call's steps get a chance to raise new
+    /// ones — never at the end, and never per step inside the catch-up burst below.
     pub fn advance_or_reset(&mut self, game: &mut Game, dt_seconds: f64, screen_live: bool) {
+        game.sound_window_mut().clear_marks();
         if !screen_live {
             self.reset();
             return;
@@ -78,6 +84,7 @@ mod tests {
             100,
             1,
             Vec::new(),
+            0,
         )
     }
 

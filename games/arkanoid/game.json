@@ -12,6 +12,9 @@
     "rules": "rules.json",
     "screens": "screens.json",
     "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf" },
+    "sounds": { "bounce": "sounds/bounce.wav", "brick": "sounds/brick.wav",
+                "win": "sounds/win.wav", "lose": "sounds/lose.wav" },
+    "music": { "menu": "music/menu.mp3", "game": "music/game.mp3" },
     "images": "images/"
   }
 }

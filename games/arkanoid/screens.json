@@ -1,6 +1,6 @@
 {
   "screens": [
-    { "name": "menu", "world_runs": false, "elements": [
+    { "name": "menu", "world_runs": false, "music": "menu", "elements": [
       { "kind": "label", "anchor": "center", "offset": [0, -60], "size": [400, 48],
         "text": "Арканоид", "font": "title", "font_size": 44, "color": "#f2f2f2",
         "align": "center" },
@@ -10,8 +10,9 @@
         "on_click": ["new_game", "game"] }
     ] },
 
-    { "name": "game", "world_runs": true,
-      "keys": { "Space": ["show_screen", "pause"], "Escape": ["show_screen", "pause"] },
+    { "name": "game", "world_runs": true, "music": "game",
+      "keys": { "Space": ["show_screen", "pause"], "Escape": ["show_screen", "pause"],
+                "KeyM": ["toggle_sound"] },
       "elements": [
       { "kind": "panel", "anchor": "top_right", "offset": [12, 12], "size": [180, 48],
         "color": "#0e1018cc" },
@@ -27,22 +28,26 @@
     { "name": "pause", "world_runs": false,
       "keys": { "Space": ["resume"], "Escape": ["resume"] },
       "elements": [
-      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [300, 220],
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [300, 300],
         "color": "#0e1018d9" },
-      { "kind": "label", "anchor": "center", "offset": [0, -70], "size": [280, 40],
+      { "kind": "label", "anchor": "center", "offset": [0, -100], "size": [280, 40],
         "text": "Пауза", "font": "title", "font_size": 28, "color": "#f2f2f2",
         "align": "center" },
-      { "kind": "button", "anchor": "center", "offset": [0, -5], "size": [220, 50],
+      { "kind": "button", "anchor": "center", "offset": [0, -30], "size": [220, 50],
         "text": "Продолжить", "font": "ui", "font_size": 22, "text_color": "#0e1018",
         "color": "#f2f2f2", "color_hover": "#ffffff", "color_pressed": "#c8ccd4",
         "on_click": ["resume"] },
-      { "kind": "button", "anchor": "center", "offset": [0, 60], "size": [220, 50],
+      { "kind": "button", "anchor": "center", "offset": [0, 35], "size": [220, 50],
+        "text": "Звук вкл/выкл", "font": "ui", "font_size": 18, "text_color": "#f2f2f2",
+        "color": "#2b2f3a", "color_hover": "#3a3f4d", "color_pressed": "#1c1f27",
+        "on_click": ["toggle_sound"] },
+      { "kind": "button", "anchor": "center", "offset": [0, 100], "size": [220, 50],
         "text": "В меню", "font": "ui", "font_size": 20, "text_color": "#f2f2f2",
         "color": "#2b2f3a", "color_hover": "#3a3f4d", "color_pressed": "#1c1f27",
         "on_click": ["quit"] }
     ] },
 
-    { "name": "win", "world_runs": false, "elements": [
+    { "name": "win", "world_runs": false, "music": "menu", "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [460, 220],
         "color": "#0e1018d9" },
       { "kind": "label", "anchor": "center", "offset": [0, -70], "size": [420, 40],
@@ -58,7 +63,7 @@
         "on_click": ["quit"] }
     ] },
 
-    { "name": "loss", "world_runs": false, "elements": [
+    { "name": "loss", "world_runs": false, "music": "menu", "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [460, 220],
         "color": "#0e1018d9" },
       { "kind": "label", "anchor": "center", "offset": [0, -70], "size": [420, 40],

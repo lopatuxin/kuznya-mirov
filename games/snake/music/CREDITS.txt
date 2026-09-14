@@ -1,0 +1,11 @@
+menu.mp3 — меню и поражение
+  Название: Digital Bananas
+  Автор: Locomule
+  Источник: https://opengameart.org/content/digital-bananas
+  Лицензия: CC0 (на странице трек выложен под двумя лицензиями, GPL 3.0 и CC0; взят под CC0)
+
+game.mp3 — партия
+  Название: Free Run [8 bit(ish)]
+  Автор: TAD
+  Источник: https://opengameart.org/content/free-run-8-bitish
+  Лицензия: CC0

@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use engine::core::input::StepInput;
 use engine::core::property;
-use engine::data::load::{load_rest, read_entry};
+use engine::data::load::{MusicVerdict, load_rest, read_entry};
 
 fn game_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -21,8 +21,10 @@ fn read(name: &str) -> String {
 
 /// The demo's `start_screen` is the menu, so the freshly loaded game has no world at all —
 /// `new_game()` is the same call `["new_game", "game"]` on the "Играть" button would make.
-/// Loads the real demo folder end to end, fonts included — unlike `load_game_from_texts`, which
-/// carries no font bytes and is only good for data that declares none.
+/// Loads the real demo folder end to end, fonts and sound bytes included, music verdicts all
+/// `Ok` — unlike `load_game_from_texts`, which carries no binary bytes and is only good for data
+/// that declares none. «Звук в данных игры»: every declared sound is read whether or not
+/// `play_sound` uses it, so `files.sounds` is read in full here just like `files.fonts` is.
 fn load() -> engine::core::game::Game {
     let (config, _entry_warnings) =
         read_entry(&read("game.json")).expect("game.json демо-арканоида должен разбираться");
@@ -32,6 +34,18 @@ fn load() -> engine::core::game::Game {
         .iter()
         .map(|(name, path)| (name.clone(), fs::read(game_path(path)).ok()))
         .collect();
+    let sound_bytes: Vec<(String, Option<Vec<u8>>)> = config
+        .files
+        .sounds
+        .iter()
+        .map(|(name, path)| (name.clone(), fs::read(game_path(path)).ok()))
+        .collect();
+    let music_verdicts: Vec<(String, MusicVerdict)> = config
+        .files
+        .music
+        .iter()
+        .map(|(name, _)| (name.clone(), MusicVerdict::Ok))
+        .collect();
     let (mut game, _screens, warnings) = load_rest(
         config,
         Some(&read("properties.json")),
@@ -39,6 +53,8 @@ fn load() -> engine::core::game::Game {
         Some(&read("rules.json")),
         Some(&read("screens.json")),
         &font_bytes,
+        &sound_bytes,
+        &music_verdicts,
     )
     .expect("демо-арканоид должен проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");

@@ -1090,7 +1090,8 @@ fn broken_json_and_missing_file_get_no_structured_location() {
     assert!(broken_err.message.contains("строка"), "{broken_err:?}");
 
     let (config, _warnings) = read_entry(GAME).expect("game.json валиден");
-    let missing_result = engine::data::load::load_rest(config, None, None, None, None, &[]);
+    let missing_result =
+        engine::data::load::load_rest(config, None, None, None, None, &[], &[], &[]);
     let LoadFailure { errors, .. } = missing_result.expect_err("отсутствующие файлы — ошибка");
     assert!(
         errors

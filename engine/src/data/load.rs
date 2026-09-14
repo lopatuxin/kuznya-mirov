@@ -4,19 +4,20 @@ use crate::core::game::Game;
 use crate::core::keys::{KeyBinding, KeyEdit, KeyTable};
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::rules::{
-    CollideEffect, CommonAction, CompareOp, Condition, Outcome, Rule, RuleSet, Selector,
+    CollideEffect, CommonAction, CompareOp, Condition, Outcome, Rule, RuleSet, Selector, SoundId,
     SpawnCondition, SpawnPlace, TemplateValue,
 };
 use crate::core::scene::{ObjectSpec, SceneConfig};
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, Element, FontId, Placement, Screen, ScreenId, ScreenKeyTable,
-    ScreensConfig, TextPart,
+    Align, Anchor, ButtonCommand, Element, FontId, MusicId, Placement, Screen, ScreenId,
+    ScreenKeyTable, ScreensConfig, TextPart,
 };
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
 use crate::core::value::{GridSpec, PropKind, Value, Vec2};
 use crate::core::world::World;
 
 use super::error::ErrorSink;
+use super::wav;
 
 pub use super::error::{GameError, LoadFailure};
 
@@ -426,6 +427,83 @@ fn resolve_property(
     }
 }
 
+/// «Звук в данных игры»: "звука \"eet\" нет" отправляет гадать, а с перечнем объявленных имён
+/// чинится сразу — эта строка добавляется к сообщению об отсутствующей ссылке по имени.
+fn format_declared_names(table: &[(String, String)]) -> String {
+    table
+        .iter()
+        .map(|(name, _)| format!("\"{name}\""))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+/// `play_sound`'s name lookup — «Звук в данных игры»: same table for both scopes is legal, so a
+/// name missing from `sounds` but present in `music` gets the "wrong table" message instead of
+/// "unknown name", and an unknown name lists every declared sound to save the outside model a
+/// round trip.
+fn resolve_sound(
+    name: &str,
+    sounds: &[(String, String)],
+    music: &[(String, String)],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<SoundId> {
+    if let Some(id) = sounds.iter().position(|(n, _)| n == name) {
+        return Some(id);
+    }
+    if music.iter().any(|(n, _)| n == name) {
+        errors.push(
+            file,
+            path,
+            format!(
+                "\"{name}\" объявлен в files.music; правило умеет звать только звуки из files.sounds"
+            ),
+        );
+        return None;
+    }
+    let declared = format_declared_names(sounds);
+    let message = if declared.is_empty() {
+        format!("звука \"{name}\" нет; звуки не объявлены")
+    } else {
+        format!("звука \"{name}\" нет; объявлены {declared}")
+    };
+    errors.push(file, path, message);
+    None
+}
+
+/// A screen's `music` name lookup — the mirror of `resolve_sound`.
+fn resolve_music(
+    name: &str,
+    music: &[(String, String)],
+    sounds: &[(String, String)],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<MusicId> {
+    if let Some(id) = music.iter().position(|(n, _)| n == name) {
+        return Some(id);
+    }
+    if sounds.iter().any(|(n, _)| n == name) {
+        errors.push(
+            file,
+            path,
+            format!(
+                "\"{name}\" объявлен в files.sounds; экран умеет называть только музыку из files.music"
+            ),
+        );
+        return None;
+    }
+    let declared = format_declared_names(music);
+    let message = if declared.is_empty() {
+        format!("трека \"{name}\" нет; треки не объявлены")
+    } else {
+        format!("трека \"{name}\" нет; объявлены {declared}")
+    };
+    errors.push(file, path, message);
+    None
+}
+
 pub struct ParsedObject {
     pub path: String,
     pub name: Option<String>,
@@ -650,6 +728,31 @@ pub struct FilePaths {
     /// `(имя, путь)`, в порядке `files.fonts` из `game.json` — этот порядок и определяет
     /// `FontId`, на который ссылаются элементы `screens.json` (см. `resolve_font`).
     pub fonts: Vec<(String, String)>,
+    /// `(имя, путь)`, в порядке `files.sounds` — этот порядок и определяет `SoundId`, на который
+    /// ссылается `play_sound` (см. `resolve_sound`). Пусто, если `files.sounds` не объявлена.
+    pub sounds: Vec<(String, String)>,
+    /// То же для `files.music` и `MusicId`, на который ссылается поле экрана `music`
+    /// (см. `resolve_music`). Пусто, если `files.music` не объявлена.
+    pub music: Vec<(String, String)>,
+}
+
+/// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук в данных игры» → «Кто
+/// отвечает на вопрос "годен ли файл"»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MusicVerdict {
+    Ok,
+    Missing,
+    Rejected,
+}
+
+/// Список двоичных файлов, которые стоит прочитать в третьем заходе загрузки — «Звуковые файлы»
+/// → «Загрузка: сначала лёгкое, потом тяжёлое»: шрифты и звуки читаются все, музыка — только та,
+/// которую называет хоть один экран.
+#[derive(Debug, Clone, Default)]
+pub struct NeededMedia {
+    pub fonts: Vec<(String, String)>,
+    pub sounds: Vec<(String, String)>,
+    pub music: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -682,12 +785,19 @@ impl PendingConfig {
     pub fn take(&mut self) -> Option<GameConfig> {
         self.0.take()
     }
+
+    /// Looks at the pending config without consuming it — for `read_texts`, the second of the
+    /// three load calls, which sits between `read_entry` (fills this) and `load_rest` (empties
+    /// it via `take`).
+    pub fn peek(&self) -> Option<&GameConfig> {
+        self.0.as_ref()
+    }
 }
 
 /// Parses just enough of `game.json` to tell the caller which files to fetch next. This is the
-/// first of the two load calls the page makes; see `load_rest`. Same contract as `load_rest`:
-/// warnings travel alongside the config on success and alongside the errors on failure, rather
-/// than only on one of the two paths.
+/// first of the three load calls the page makes — see `read_texts` for the second and `load_rest`
+/// for the third. Same contract as `load_rest`: warnings travel alongside the config on success
+/// and alongside the errors on failure, rather than only on one of the two paths.
 pub fn read_entry(text: &str) -> Result<(GameConfig, Vec<GameError>), LoadFailure> {
     let mut errors = ErrorSink::new();
     let config = parse_game_json(text, &mut errors);
@@ -700,6 +810,46 @@ pub fn read_entry(text: &str) -> Result<(GameConfig, Vec<GameError>), LoadFailur
         });
     }
     Ok((config.expect("no errors means game.json parsed"), warnings))
+}
+
+/// Second load call — «Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое»: a best-effort
+/// parse of the four text files `read_entry` named, just enough to say which binary files are
+/// worth fetching next. Tolerant of broken text on purpose: a `screens.json` that fails to parse
+/// simply names no referenced track here, same as `parse_screens_json` itself falls back to no
+/// screens — the real errors surface later, when `load_rest` parses everything again for real and
+/// collects them all in one pass. `scene_json`/`rules_json` play no part in the answer (only a
+/// screen's own `music` field decides which tracks are read — «Звуковые файлы» → «Непрослушиваемый
+/// трек не читается вовсе») and are accordingly not asked for here.
+pub fn read_texts(
+    config: &GameConfig,
+    properties_json: Option<&str>,
+    screens_json: Option<&str>,
+) -> NeededMedia {
+    let mut scratch = ErrorSink::new();
+    let properties = match properties_json {
+        Some(text) => parse_properties_json(text, &mut scratch),
+        None => PropertyTable::new(),
+    };
+    let parsed_screens = match screens_json {
+        Some(text) => parse_screens_json(text, &properties, &mut scratch),
+        None => Vec::new(),
+    };
+    let referenced: std::collections::HashSet<&str> = parsed_screens
+        .iter()
+        .filter_map(|s| s.music.as_deref())
+        .collect();
+    let music = config
+        .files
+        .music
+        .iter()
+        .filter(|(name, _)| referenced.contains(name.as_str()))
+        .cloned()
+        .collect();
+    NeededMedia {
+        fonts: config.files.fonts.clone(),
+        sounds: config.files.sounds.clone(),
+        music,
+    }
 }
 
 fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
@@ -772,7 +922,16 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let files = files_obj.map(|f| {
         reject_unknown_keys(
             f,
-            &["properties", "scene", "rules", "images", "screens", "fonts"],
+            &[
+                "properties",
+                "scene",
+                "rules",
+                "images",
+                "screens",
+                "fonts",
+                "sounds",
+                "music",
+            ],
             "game.json",
             "files",
             errors,
@@ -788,12 +947,25 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         let fonts_json = require_field(f, "fonts", "game.json", "files", errors);
         let fonts =
             fonts_json.and_then(|v| parse_font_table(v, "game.json", "files → fonts", errors));
+        // «Звуковые файлы»: обе таблицы необязательны — нет ключа, нет и звуков/музыки, не ошибка.
+        let sounds = match f.get("sounds") {
+            Some(v) => {
+                parse_media_table(v, MediaKind::Sound, "game.json", "files → sounds", errors)
+                    .unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        let music = match f.get("music") {
+            Some(v) => parse_media_table(v, MediaKind::Music, "game.json", "files → music", errors)
+                .unwrap_or_default(),
+            None => Vec::new(),
+        };
         // `files.images` isn't read anywhere yet — same "documented but unused" status as
         // `name` — but its value still has to be the string a path is.
         if let Some(images) = f.get("images") {
             expect_string(images, "game.json", "files → images", errors);
         }
-        (properties, scene_path, rules, screens, fonts)
+        (properties, scene_path, rules, screens, fonts, sounds, music)
     });
 
     let start_screen = require_field(obj, "start_screen", "game.json", "", errors)
@@ -808,7 +980,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let scene = scene?;
     let max_objects = max_objects?;
     let random_seed = random_seed?;
-    let (properties, scene_path, rules, screens, fonts) = files?;
+    let (properties, scene_path, rules, screens, fonts, sounds, music) = files?;
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
@@ -827,6 +999,8 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             rules,
             screens,
             fonts,
+            sounds,
+            music,
         },
         start_screen,
         win_screen,
@@ -850,6 +1024,142 @@ fn parse_font_table(
         }
     }
     Some(fonts)
+}
+
+/// The two ways `files.sounds`/`files.music` differ — everything else about the two tables is
+/// identical, so `parse_media_table` takes one of these instead of two near-duplicate functions.
+#[derive(Clone, Copy)]
+enum MediaKind {
+    Sound,
+    Music,
+}
+
+impl MediaKind {
+    fn table_name(self) -> &'static str {
+        match self {
+            MediaKind::Sound => "files.sounds",
+            MediaKind::Music => "files.music",
+        }
+    }
+
+    fn extension(self) -> &'static str {
+        match self {
+            MediaKind::Sound => ".wav",
+            MediaKind::Music => ".mp3",
+        }
+    }
+
+    fn other_extension(self) -> &'static str {
+        match self {
+            MediaKind::Sound => ".mp3",
+            MediaKind::Music => ".wav",
+        }
+    }
+
+    fn format_word(self) -> &'static str {
+        match self {
+            MediaKind::Sound => "WAV",
+            MediaKind::Music => "MP3",
+        }
+    }
+
+    /// «Звук в данных игры» → «Проверка данных перед запуском»: у трека имя нужно экрану, у звука
+    /// — правилу.
+    fn empty_name_hint(self) -> &'static str {
+        match self {
+            MediaKind::Sound => "у звука должно быть имя, которым его назовёт правило",
+            MediaKind::Music => "у трека должно быть имя, которым его назовёт экран",
+        }
+    }
+
+    /// The generic wrong-extension hint, when the path isn't the other table's extension either.
+    fn wrong_extension_hint(self) -> &'static str {
+        match self {
+            MediaKind::Sound => "если это музыка, ей место в files.music",
+            MediaKind::Music => "если это звук, ему место в files.sounds",
+        }
+    }
+
+    /// The sharper hint for the most common mistake — the path is actually the other table's own
+    /// extension.
+    fn wrong_extension_is_other_hint(self) -> &'static str {
+        match self {
+            MediaKind::Sound => "это MP3, ему место в files.music",
+            MediaKind::Music => "это WAV, ему место в files.sounds",
+        }
+    }
+}
+
+/// `files.sounds`/`files.music`: an object mapping a name (used by `play_sound`/the screen
+/// `music` field) to its path inside the game's folder — «Звук в данных игры» → «Проверка данных
+/// перед запуском». Order is preserved — it becomes `SoundId`/`MusicId`. A malformed entry is
+/// skipped (its own error already pushed), same as `parse_font_table`; `None` only when the whole
+/// value isn't a table at all.
+fn parse_media_table(
+    value: &Json,
+    kind: MediaKind,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<(String, String)>> {
+    let Some(obj) = value.as_object() else {
+        errors.push(
+            file,
+            path,
+            format!(
+                "{} — ожидалась таблица \"имя → файл\", как files.fonts",
+                kind.table_name()
+            ),
+        );
+        return None;
+    };
+    let mut out = Vec::with_capacity(obj.len());
+    for (name, path_json) in obj {
+        if name.is_empty() {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "{} → пустое имя: {}",
+                    kind.table_name(),
+                    kind.empty_name_hint()
+                ),
+            );
+            continue;
+        }
+        let entry_path = join(path, name);
+        let Some(file_path) = path_json.as_str() else {
+            errors.push(
+                file,
+                &entry_path,
+                format!(
+                    "{} → {name}: ожидался путь к файлу строкой",
+                    kind.table_name()
+                ),
+            );
+            continue;
+        };
+        let lower = file_path.to_ascii_lowercase();
+        if !lower.ends_with(kind.extension()) {
+            let hint = if lower.ends_with(kind.other_extension()) {
+                kind.wrong_extension_is_other_hint()
+            } else {
+                kind.wrong_extension_hint()
+            };
+            errors.push(
+                file,
+                &entry_path,
+                format!(
+                    "{file_path} — в {} берётся {}; {hint}",
+                    kind.table_name(),
+                    kind.format_word()
+                ),
+            );
+            continue;
+        }
+        out.push((name.clone(), file_path.to_string()));
+    }
+    Some(out)
 }
 
 fn resolve_property_list(
@@ -1020,6 +1330,8 @@ fn parse_spawn_condition(
 fn parse_common_actions(
     value: Option<&Json>,
     properties: &PropertyTable,
+    sounds: &[(String, String)],
+    music: &[(String, String)],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -1034,6 +1346,8 @@ fn parse_common_actions(
             parse_common_action(
                 entry,
                 properties,
+                sounds,
+                music,
                 file,
                 &join(path, &format!("[{i}]")),
                 errors,
@@ -1061,6 +1375,8 @@ fn require_index<'a>(
 fn parse_common_action(
     value: &Json,
     properties: &PropertyTable,
+    sounds: &[(String, String)],
+    music: &[(String, String)],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -1123,6 +1439,22 @@ fn parse_common_action(
                 Value::Number(raw)
             };
             Some(CommonAction::Add { prop, value: delta })
+        }
+        "play_sound" => {
+            // «Звук в данных игры»: все три формы ошибки — без имени, с двумя, число вместо
+            // строки — делят один и тот же текст, а не отдельное сообщение на каждую.
+            let bad_form =
+                "play_sound берёт ровно одну настройку — имя звука из files.sounds строкой";
+            if arr.len() != 2 {
+                errors.push(file, path, bad_form.to_string());
+                return None;
+            }
+            let Some(name) = arr[1].as_str() else {
+                errors.push(file, path, bad_form.to_string());
+                return None;
+            };
+            let id = resolve_sound(name, sounds, music, file, &join(path, "[1]"), errors)?;
+            Some(CommonAction::PlaySound(id))
         }
         other => {
             errors.push(
@@ -1260,6 +1592,12 @@ fn parse_collide_effect(
                 Some(CollideEffect::Take { prop })
             }
         }
+        "play_sound" => {
+            // «Звук в данных игры»: `effects` адресован стороне столкновения, а у звука стороны
+            // нет — его место в `do`, regardless of what follows in this list.
+            errors.push(file, path, "это общее действие, его место в do".to_string());
+            None
+        }
         other => {
             errors.push(
                 file,
@@ -1341,6 +1679,8 @@ fn parse_rule(
     value: &Json,
     index: usize,
     properties: &PropertyTable,
+    sounds: &[(String, String)],
+    music: &[(String, String)],
     errors: &mut ErrorSink,
 ) -> Option<(Rule, std::collections::HashSet<PropertyId>)> {
     let path = format!("rules[{index}]");
@@ -1412,6 +1752,8 @@ fn parse_rule(
             let do_ = parse_common_actions(
                 obj.get("do"),
                 properties,
+                sounds,
+                music,
                 "rules.json",
                 &join(&path, "do"),
                 errors,
@@ -1455,6 +1797,8 @@ fn parse_rule(
             let do_ = parse_common_actions(
                 obj.get("do"),
                 properties,
+                sounds,
+                music,
                 "rules.json",
                 &join(&path, "do"),
                 errors,
@@ -1534,6 +1878,8 @@ fn parse_rule(
             let do_ = parse_common_actions(
                 obj.get("do"),
                 properties,
+                sounds,
+                music,
                 "rules.json",
                 &join(&path, "do"),
                 errors,
@@ -1581,7 +1927,13 @@ struct RuleMeta {
 
 type ParsedRules = (RuleSet, Vec<RuleMeta>);
 
-fn parse_rules_json(text: &str, properties: &PropertyTable, errors: &mut ErrorSink) -> ParsedRules {
+fn parse_rules_json(
+    text: &str,
+    properties: &PropertyTable,
+    sounds: &[(String, String)],
+    music: &[(String, String)],
+    errors: &mut ErrorSink,
+) -> ParsedRules {
     let Some(root) = parse_json_or_error("rules.json", text, errors) else {
         return (RuleSet::default(), Vec::new());
     };
@@ -1600,7 +1952,7 @@ fn parse_rules_json(text: &str, properties: &PropertyTable, errors: &mut ErrorSi
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {
-            let (rule, template_broken) = parse_rule(v, i, properties, errors)?;
+            let (rule, template_broken) = parse_rule(v, i, properties, sounds, music, errors)?;
             Some((
                 rule,
                 RuleMeta {
@@ -1883,6 +2235,14 @@ fn possible_shapes(
     shapes
 }
 
+/// `do_` from any rule kind that has one — `Move` has none.
+fn common_actions(rule: &Rule) -> &[CommonAction] {
+    match rule {
+        Rule::Collide { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => do_,
+        Rule::Move { .. } => &[],
+    }
+}
+
 fn validate_property_sufficiency(
     shapes: &[(Shape, String)],
     rules: &RuleSet,
@@ -2034,10 +2394,7 @@ fn validate_property_sufficiency(
             }
         }
         // `do`'s add: declared, and present on at least one object anywhere.
-        let do_actions: &[CommonAction] = match rule {
-            Rule::Collide { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => do_,
-            Rule::Move { .. } => &[],
-        };
+        let do_actions = common_actions(rule);
         // Отметка ставится вставкой последним звеном цепочки условий ниже: только когда сообщение
         // действительно выдаётся. Перестановка звеньев отметит свойство до проверки и проглотит
         // ошибку — порядок здесь значащий.
@@ -2471,6 +2828,7 @@ enum ParsedCommand {
     NewGame(String),
     Resume,
     Quit,
+    ToggleSound,
 }
 
 fn parse_button_command(
@@ -2528,6 +2886,18 @@ fn parse_button_command(
         }
         "resume" => want_args(1, errors).then_some(ParsedCommand::Resume),
         "quit" => want_args(1, errors).then_some(ParsedCommand::Quit),
+        "toggle_sound" => {
+            if arr.len() != 1 {
+                errors.push(
+                    file,
+                    path,
+                    "у toggle_sound настроек нет: команда переключает звук из любого состояния"
+                        .to_string(),
+                );
+                return None;
+            }
+            Some(ParsedCommand::ToggleSound)
+        }
         other => {
             errors.push(
                 file,
@@ -2750,6 +3120,9 @@ struct ParsedScreen {
     world_runs: bool,
     elements: Vec<ParsedElementData>,
     keys: Vec<(String, ParsedCommand)>,
+    /// Raw `music` name, not yet resolved against `files.music` — «Звук в данных игры» →
+    /// «Музыка экрана». Resolution happens in `resolve_screens`, same as `font` on an element.
+    music: Option<String>,
     path: String,
 }
 
@@ -2763,7 +3136,7 @@ fn parse_screen(
     let obj = expect_object(value, "screens.json", &path, errors)?;
     reject_unknown_keys(
         obj,
-        &["name", "world_runs", "elements", "keys"],
+        &["name", "world_runs", "elements", "keys", "music"],
         "screens.json",
         &path,
         errors,
@@ -2803,11 +3176,26 @@ fn parse_screen(
         Some(v) => parse_screen_keys(v, &join(&path, "keys"), errors),
         None => Vec::new(),
     };
+    // «Звук в данных игры»: список — самая частая опечатка (плейлист вместо одного трека), и у
+    // неё свой текст, отдельный от обычного «ожидалась строка».
+    let music = match obj.get("music") {
+        None => None,
+        Some(v) if v.is_array() => {
+            errors.push(
+                "screens.json",
+                &join(&path, "music"),
+                "плейлиста нет, у экрана один трек".to_string(),
+            );
+            None
+        }
+        Some(v) => expect_string(v, "screens.json", &join(&path, "music"), errors),
+    };
     Some(ParsedScreen {
         name: name?,
         world_runs: world_runs?,
         elements,
         keys,
+        music,
         path,
     })
 }
@@ -2922,6 +3310,7 @@ fn resolve_on_click(
         }
         ParsedCommand::Resume => Some(ButtonCommand::Resume),
         ParsedCommand::Quit => Some(ButtonCommand::Quit),
+        ParsedCommand::ToggleSound => Some(ButtonCommand::ToggleSound),
     }
 }
 
@@ -3007,10 +3396,7 @@ fn resolve_element(
 fn rule_end_game_usage(rules: &RuleSet) -> (bool, bool) {
     let (mut uses_win, mut uses_loss) = (false, false);
     for rule in &rules.rules {
-        let do_: &[CommonAction] = match rule {
-            Rule::Collide { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => do_,
-            Rule::Move { .. } => &[],
-        };
+        let do_ = common_actions(rule);
         for action in do_ {
             if let CommonAction::EndGame(outcome) = action {
                 match outcome {
@@ -3029,11 +3415,13 @@ fn rule_end_game_usage(rules: &RuleSet) -> (bool, bool) {
 /// запуском».
 #[allow(clippy::too_many_arguments)]
 fn resolve_screens(
-    parsed: Vec<ParsedScreen>,
+    parsed: &[ParsedScreen],
     start_screen_name: &str,
     win_screen_name: Option<&str>,
     loss_screen_name: Option<&str>,
     fonts: &[(String, String)],
+    sounds: &[(String, String)],
+    music_table: &[(String, String)],
     scene_objects: &[ParsedObject],
     rules: &RuleSet,
     errors: &mut ErrorSink,
@@ -3078,7 +3466,7 @@ fn resolve_screens(
                         fonts,
                         &scene_names,
                         &name_to_id,
-                        &parsed,
+                        parsed,
                         errors,
                     )
                 })
@@ -3091,18 +3479,29 @@ fn resolve_screens(
                     let resolved = resolve_on_click(
                         cmd,
                         &name_to_id,
-                        &parsed,
+                        parsed,
                         &join(&keys_path, code),
                         errors,
                     )?;
                     Some((code.clone(), resolved))
                 })
                 .collect();
+            let music = screen.music.as_deref().and_then(|name| {
+                resolve_music(
+                    name,
+                    music_table,
+                    sounds,
+                    "screens.json",
+                    &join(&screen.path, "music"),
+                    errors,
+                )
+            });
             Screen {
                 name: screen.name.clone(),
                 world_runs: screen.world_runs,
                 elements,
                 keys,
+                music,
             }
         })
         .collect();
@@ -3159,7 +3558,7 @@ fn resolve_screens(
                     ButtonCommand::ShowScreen(target) | ButtonCommand::NewGame(target) => {
                         reachable.insert(*target);
                     }
-                    ButtonCommand::Resume | ButtonCommand::Quit => {}
+                    ButtonCommand::Resume | ButtonCommand::Quit | ButtonCommand::ToggleSound => {}
                 }
             }
         }
@@ -3168,7 +3567,7 @@ fn resolve_screens(
                 ButtonCommand::ShowScreen(target) | ButtonCommand::NewGame(target) => {
                     reachable.insert(*target);
                 }
-                ButtonCommand::Resume | ButtonCommand::Quit => {}
+                ButtonCommand::Resume | ButtonCommand::Quit | ButtonCommand::ToggleSound => {}
             }
         }
     }
@@ -3235,13 +3634,205 @@ fn validate_font_files(
     }
 }
 
-/// Second load call: needs the `GameConfig` from `read_entry` and the three files it named.
-/// `None` for any of them means the page could not fetch it. A warning is only computed once the
-/// three files parsed without error: an object or rule that failed to parse simply drops out of
-/// `scene_objects`/`rules`, and a warning computed against that shrunken, incomplete set can be
-/// outright wrong about the data the author will have once the real errors are fixed — not just
-/// unhelpful. And a warning is «the game still runs» information (see «Формат игры»), which
-/// doesn't apply here anyway: with errors present the game never starts.
+/// «Звук в данных игры» → «По байтам WAV отвечает движок»: every declared sound is read and
+/// measured whether or not `play_sound` uses it — same treatment `validate_font_files` gives
+/// fonts, unlike an unreferenced track (see `validate_unreferenced_tracks`), which isn't even read.
+fn validate_sound_files(
+    sounds: &[(String, String)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    errors: &mut ErrorSink,
+) {
+    for (name, path) in sounds {
+        let bytes = sound_bytes
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, b)| b.as_ref());
+        let field_path = format!("files → sounds → {name}");
+        let Some(bytes) = bytes else {
+            errors.push(
+                "game.json",
+                &field_path,
+                format!("файл \"{path}\" не найден"),
+            );
+            continue;
+        };
+        let Some(info) = wav::parse_wav(bytes) else {
+            errors.push(
+                "game.json",
+                &field_path,
+                format!("файл \"{path}\" не разбирается как WAV"),
+            );
+            continue;
+        };
+        if info.duration_seconds > 5.0 {
+            errors.push(
+                "game.json",
+                &field_path,
+                format!("звук \"{path}\" длиннее пяти секунд: этому место в files.music"),
+            );
+        }
+    }
+}
+
+/// «Звук в данных игры» → «Кто отвечает на вопрос "годен ли файл"»: only a track some screen
+/// actually names is read at all — `referenced` is that set, gathered from the raw parsed screens
+/// before name resolution so it doesn't depend on the rest of the game being error-free.
+fn validate_music_files(
+    music: &[(String, String)],
+    referenced: &std::collections::HashSet<String>,
+    verdicts: &[(String, MusicVerdict)],
+    errors: &mut ErrorSink,
+) {
+    for (name, path) in music {
+        if !referenced.contains(name) {
+            continue;
+        }
+        let field_path = format!("files → music → {name}");
+        match verdicts.iter().find(|(n, _)| n == name).map(|(_, v)| v) {
+            Some(MusicVerdict::Ok) => {}
+            Some(MusicVerdict::Rejected) => errors.push(
+                "game.json",
+                &field_path,
+                format!("{path} — исполнитель (браузер) не берётся разжимать этот файл"),
+            ),
+            Some(MusicVerdict::Missing) | None => errors.push(
+                "game.json",
+                &field_path,
+                format!("файл \"{path}\" не найден"),
+            ),
+        }
+    }
+}
+
+/// «Звук в данных игры»: объявленный звук, на который не ссылается ни один `play_sound` — читан
+/// и проверен, просто не нужен, как объявленное и не используемое свойство.
+fn validate_unused_sounds(sounds: &[(String, String)], rules: &RuleSet, errors: &mut ErrorSink) {
+    let mut used: std::collections::HashSet<SoundId> = std::collections::HashSet::new();
+    for rule in &rules.rules {
+        let do_ = common_actions(rule);
+        for action in do_ {
+            if let CommonAction::PlaySound(id) = action {
+                used.insert(*id);
+            }
+        }
+    }
+    for (i, (name, _)) in sounds.iter().enumerate() {
+        if !used.contains(&i) {
+            errors.push_warning(
+                "game.json",
+                &format!("files → sounds → {name}"),
+                format!(
+                    "звук \"{name}\" объявлен, но на него не ссылается ни один play_sound; ожидалось, что объявленный звук где-то используется"
+                ),
+            );
+        }
+    }
+}
+
+/// «Звуковые файлы» → «Непрослушиваемый трек не читается вовсе»: unlike an unused sound, an
+/// unreferenced track isn't read or checked by anything, so its warning names that consequence
+/// rather than just "declared but unused".
+fn validate_unreferenced_tracks(
+    music: &[(String, String)],
+    referenced: &std::collections::HashSet<String>,
+    errors: &mut ErrorSink,
+) {
+    for (name, _) in music {
+        if !referenced.contains(name) {
+            errors.push_warning(
+                "game.json",
+                &format!("files → music → {name}"),
+                format!(
+                    "трек \"{name}\" объявлен, но его не называет ни один экран: он не прочитан и потому не проверен; сославшись на него, проверку придётся проходить заново"
+                ),
+            );
+        }
+    }
+}
+
+fn any_toggle_sound_bound(screens: &[Screen]) -> bool {
+    screens.iter().any(|screen| {
+        let button_bound = screen.elements.iter().any(|element| {
+            matches!(
+                element,
+                Element::Button {
+                    on_click: ButtonCommand::ToggleSound,
+                    ..
+                }
+            )
+        });
+        button_bound
+            || screen
+                .keys
+                .values()
+                .any(|cmd| matches!(cmd, ButtonCommand::ToggleSound))
+    })
+}
+
+/// «Звук в данных игры» → «Проверка данных перед запуском»: игрок должен иметь способ выключить
+/// звук, если он в игре вообще есть — хоть один `play_sound`, хоть один экран с `music`.
+fn validate_toggle_sound_presence(rules: &RuleSet, screens: &[Screen], errors: &mut ErrorSink) {
+    let any_play_sound = rules.rules.iter().any(|rule| {
+        common_actions(rule)
+            .iter()
+            .any(|a| matches!(a, CommonAction::PlaySound(_)))
+    });
+    let any_music = screens.iter().any(|s| s.music.is_some());
+    if (any_play_sound || any_music) && !any_toggle_sound_bound(screens) {
+        errors.push_warning(
+            "screens.json",
+            "",
+            "в игре есть звук, но toggle_sound не назначен ни одной кнопке и ни одной клавише экрана"
+                .to_string(),
+        );
+    }
+}
+
+/// «Экраны и состояние» → «Клавиша экрана»: a key a *live* screen names never reaches the world —
+/// warns when that key also drives one of the scene's own key bindings, so the author isn't
+/// silently missing input. Only scene objects can carry a `keys` table (a spawn template can't —
+/// `parse_template` never parses one), so scanning `scene_objects` covers every object that could
+/// ever hold such a binding.
+fn validate_screen_key_collisions(
+    parsed_screens: &[ParsedScreen],
+    scene_objects: &[ParsedObject],
+    errors: &mut ErrorSink,
+) {
+    for screen in parsed_screens {
+        if !screen.world_runs {
+            continue;
+        }
+        for (code, _) in &screen.keys {
+            for obj in scene_objects {
+                let Some(table) = &obj.keys else { continue };
+                if !table.contains_key(code) {
+                    continue;
+                }
+                errors.push_warning(
+                    "screens.json",
+                    &join(&screen.path, "keys"),
+                    format!(
+                        "клавиша \"{code}\" экрана \"{}\" совпадает с клавишей, привязанной к объекту {}{}: на этом экране привязка работать не будет",
+                        screen.name,
+                        join("scene.json", &obj.path),
+                        name_suffix(obj),
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// Third and last load call: needs the `GameConfig` from `read_entry`, the four text files
+/// `read_texts` was given, and the binary files `read_texts` named as needed — fonts and sounds by
+/// bytes, music by the executor's own verdict on each readable track (see `MusicVerdict`).
+/// `None`/an empty slice for any of them means the page could not fetch it. A warning is only
+/// computed once the four text files parsed without error: an object or rule that failed to parse
+/// simply drops out of `scene_objects`/`rules`, and a warning computed against that shrunken,
+/// incomplete set can be outright wrong about the data the author will have once the real errors
+/// are fixed — not just unhelpful. And a warning is «the game still runs» information (see
+/// «Формат игры»), which doesn't apply here anyway: with errors present the game never starts.
+#[allow(clippy::too_many_arguments)]
 pub fn load_rest(
     config: GameConfig,
     properties_json: Option<&str>,
@@ -3249,6 +3840,8 @@ pub fn load_rest(
     rules_json: Option<&str>,
     screens_json: Option<&str>,
     font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -3269,7 +3862,13 @@ pub fn load_rest(
     };
 
     let (rules, rule_meta) = match rules_json {
-        Some(text) => parse_rules_json(text, &properties, &mut errors),
+        Some(text) => parse_rules_json(
+            text,
+            &properties,
+            &config.files.sounds,
+            &config.files.music,
+            &mut errors,
+        ),
         None => {
             errors.push(&config.files.rules, "", "файл не найден");
             (RuleSet::default(), Vec::new())
@@ -3284,12 +3883,28 @@ pub fn load_rest(
         }
     };
     validate_font_files(&config.files.fonts, font_bytes, &mut errors);
+    validate_sound_files(&config.files.sounds, sound_bytes, &mut errors);
+    // «Звуковые файлы» → «Непрослушиваемый трек не читается вовсе»: captured from the raw parse,
+    // before `resolve_screens` resolves each screen's `music` name, so an unknown or malformed
+    // name still counts as "referenced" here — its own error comes from `resolve_music` regardless.
+    let referenced_music: std::collections::HashSet<String> = parsed_screens
+        .iter()
+        .filter_map(|s| s.music.clone())
+        .collect();
+    validate_music_files(
+        &config.files.music,
+        &referenced_music,
+        music_verdicts,
+        &mut errors,
+    );
     let screens_config = resolve_screens(
-        parsed_screens,
+        &parsed_screens,
         &config.start_screen,
         config.win_screen.as_deref(),
         config.loss_screen.as_deref(),
         &config.files.fonts,
+        &config.files.sounds,
+        &config.files.music,
         &scene_objects,
         &rules,
         &mut errors,
@@ -3308,9 +3923,17 @@ pub fn load_rest(
     // настоящая нехватка свойства у исправного объекта не теряется из-за того, что у того же или
     // соседнего объекта сломано что-то ещё.
     if errors.has_no_errors() {
+        validate_screen_key_collisions(&parsed_screens, &scene_objects, &mut errors);
         validate_unused_properties(&properties, &scene_objects, &rules, &mut errors);
         validate_objects_within_scene(&scene_objects, &config.scene, &mut errors);
         validate_selectors_not_empty(&shapes, &rules, &rule_meta, &properties, &mut errors);
+        validate_unused_sounds(&config.files.sounds, &rules, &mut errors);
+        validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
+        // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
+        // returns `None` by failing to resolve `start_screen`, which always pushes one.
+        if let Some(sc) = &screens_config {
+            validate_toggle_sound_presence(&rules, &sc.screens, &mut errors);
+        }
     }
 
     // One second pass per file, after every message about it has been pushed: a message from
@@ -3367,6 +3990,7 @@ pub fn load_rest(
         }
     }
 
+    let sound_count = config.files.sounds.len();
     let game = Game::new(
         properties,
         world,
@@ -3375,6 +3999,7 @@ pub fn load_rest(
         config.max_objects,
         config.random_seed,
         scene_specs,
+        sound_count,
     );
     Ok((game, screens_config, warnings))
 }
@@ -3397,6 +4022,8 @@ pub fn load_game_from_texts(
         Some(scene_json),
         Some(rules_json),
         Some(screens_json),
+        &[],
+        &[],
         &[],
     ) {
         Ok((game, screens, warnings)) => {

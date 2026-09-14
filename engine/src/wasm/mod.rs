@@ -10,7 +10,7 @@ use crate::core::runner::Runner;
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
 use crate::data::error::GameError;
-use crate::data::load::{self, GameConfig};
+use crate::data::load::{self, GameConfig, MusicVerdict, NeededMedia};
 use crate::render::{DrawRect, Renderer, TextDraw};
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
@@ -86,6 +86,64 @@ fn js_entry_ok(config: &GameConfig, warnings: &[GameError]) -> JsValue {
     obj.into()
 }
 
+/// A `(name, path)` table with no numbering — `read_texts()`'s `fonts`, matched back by name the
+/// same way `read_entry()`'s own font list already is.
+fn js_media_table(table: &[(String, String)]) -> Array {
+    let arr = Array::new();
+    for (name, path) in table {
+        let item = Object::new();
+        set(&item, "name", &JsValue::from_str(name));
+        set(&item, "path", &JsValue::from_str(path));
+        arr.push(&item);
+    }
+    arr
+}
+
+/// A `(name, path)` table numbered by each entry's position in `full` — «Звуковые файлы»: that
+/// position is the `SoundId`/`MusicId` the loaded game will resolve `play_sound`/`music` names
+/// to, so it's what the page has to echo back in `load()`'s `sounds`/`music` arrays rather than
+/// re-deriving it. `subset` may skip entries `full` has (an unreferenced track, for `music`); its
+/// own position would not agree with `full`'s, so the index is looked up by name instead of
+/// assumed from `enumerate()`.
+fn js_indexed_media_table(subset: &[(String, String)], full: &[(String, String)]) -> Array {
+    let arr = Array::new();
+    for (name, path) in subset {
+        let Some(index) = full.iter().position(|(n, _)| n == name) else {
+            continue;
+        };
+        let item = Object::new();
+        set(&item, "index", &JsValue::from_f64(index as f64));
+        set(&item, "name", &JsValue::from_str(name));
+        set(&item, "path", &JsValue::from_str(path));
+        arr.push(&item);
+    }
+    arr
+}
+
+/// `read_texts()`'s result: which binary files are worth fetching next — «Звуковые файлы» →
+/// «Загрузка: сначала лёгкое, потом тяжёлое». Never an error shape: a text file this step
+/// couldn't parse just names fewer tracks, and the real errors surface later, from `load()`,
+/// so every error from every file is collected in the one place that already does that.
+/// `all_music` is `config.files.music` in full — `needed.music` only ever names a subset of it
+/// (the tracks some screen actually references), so it alone can't supply the true `MusicId`.
+fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> JsValue {
+    let obj = Object::new();
+    set(&obj, "fonts", &js_media_table(&needed.fonts));
+    // `needed.sounds` is every declared sound, unfiltered — its own position already is the
+    // `SoundId`, so it's its own "full" table here.
+    set(
+        &obj,
+        "sounds",
+        &js_indexed_media_table(&needed.sounds, &needed.sounds),
+    );
+    set(
+        &obj,
+        "music",
+        &js_indexed_media_table(&needed.music, all_music),
+    );
+    obj.into()
+}
+
 fn js_running() -> JsValue {
     let obj = Object::new();
     set(&obj, "running", &JsValue::TRUE);
@@ -120,6 +178,69 @@ fn parse_font_bytes(fonts: &JsValue) -> Vec<(String, Option<Vec<u8>>)> {
             .filter(|v| !v.is_null() && !v.is_undefined())
             .map(|v| Uint8Array::new(&v).to_vec());
         out.push((name, bytes));
+    }
+    out
+}
+
+/// Resolves one `{index, ...}` entry's `index` back to the name it was numbered from in
+/// `read_texts()`'s response — shared by `parse_sound_bytes` and `parse_music_verdicts`.
+fn resolve_indexed_name(item: &JsValue, table: &[(String, String)]) -> Option<String> {
+    let index = Reflect::get(item, &JsValue::from_str("index"))
+        .ok()
+        .and_then(|v| v.as_f64())?;
+    if !index.is_finite() || index < 0.0 {
+        return None;
+    }
+    table.get(index as usize).map(|(name, _)| name.clone())
+}
+
+/// Reads `sounds` — the page's `[{index, bytes: Uint8Array|null}, ...]`, numbered the way
+/// `read_texts()` numbered them — into `(name, bytes)` pairs, the shape `load::load_rest` wants.
+fn parse_sound_bytes(
+    sounds: &JsValue,
+    table: &[(String, String)],
+) -> Vec<(String, Option<Vec<u8>>)> {
+    let arr = Array::from(sounds);
+    let mut out = Vec::with_capacity(arr.length() as usize);
+    for item in arr.iter() {
+        let Some(name) = resolve_indexed_name(&item, table) else {
+            continue;
+        };
+        let bytes = Reflect::get(&item, &JsValue::from_str("bytes"))
+            .ok()
+            .filter(|v| !v.is_null() && !v.is_undefined())
+            .map(|v| Uint8Array::new(&v).to_vec());
+        out.push((name, bytes));
+    }
+    out
+}
+
+/// Reads `music` — the page's `[{index, verdict: "ok"|"missing"|"rejected"}, ...]` — into
+/// `(name, MusicVerdict)` pairs. An unrecognized verdict string reads as `Missing`. An item whose
+/// `index` doesn't resolve to a declared track (missing, negative, or NaN) is dropped instead of
+/// guessed at — the name then simply stays absent from the result, and `validate_music_files`
+/// already treats an absent name as `Missing`, so the "file not found" message still comes
+/// through, not a silent pass.
+fn parse_music_verdicts(
+    music: &JsValue,
+    table: &[(String, String)],
+) -> Vec<(String, MusicVerdict)> {
+    let arr = Array::from(music);
+    let mut out = Vec::with_capacity(arr.length() as usize);
+    for item in arr.iter() {
+        let Some(name) = resolve_indexed_name(&item, table) else {
+            continue;
+        };
+        let verdict = match Reflect::get(&item, &JsValue::from_str("verdict"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .as_deref()
+        {
+            Some("ok") => MusicVerdict::Ok,
+            Some("rejected") => MusicVerdict::Rejected,
+            _ => MusicVerdict::Missing,
+        };
+        out.push((name, verdict));
     }
     out
 }
@@ -233,9 +354,10 @@ fn compose_ui(
 }
 
 /// The engine, one per canvas. See the crate's README / contract notes for the exact JS-side
-/// call sequence: `create` once, then `read_entry` followed by `load`, then `key_down`/`key_up`,
-/// `mouse_move`/`mouse_down`/`mouse_up` and `resize`/`set_pixel_ratio` as events happen, and
-/// `tick` once per `requestAnimationFrame`.
+/// call sequence: `create` once, then loading in three passes — `read_entry`, `read_texts`,
+/// `load` — «Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое», then `key_down`/
+/// `key_up`, `mouse_move`/`mouse_down`/`mouse_up` and `resize`/`set_pixel_ratio` as events
+/// happen, and `tick` once per `requestAnimationFrame`.
 #[wasm_bindgen]
 pub struct Engine {
     renderer: Renderer,
@@ -294,13 +416,38 @@ impl Engine {
         }
     }
 
-    /// Step two: hand over the three text files plus `screens_json` `read_entry` named
-    /// (`None`/`null` for one the page could not fetch), and `fonts` — a JS array of
-    /// `{name, bytes: Uint8Array|null}`, one entry per `files.fonts`. Runs the full prestart
-    /// check and, on success, the game is ready to run starting from the next `tick`. Returns
-    /// `{ok:true, warnings:[...]}` on success or `{ok:false, errors:[...], warnings:[...]}` on
-    /// failure — warnings never stop the game from starting, but the page still needs to see
-    /// them either way.
+    /// Step two of loading — «Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое»: a
+    /// best-effort read of `properties_json`/`screens_json` (`scene`/`rules` play no part in the
+    /// answer and are accepted only for symmetry with `read_entry`'s own file list) that reports
+    /// which binary files are worth fetching next — `fonts` (all of them), `sounds` (all of
+    /// them, numbered), `music` (only the tracks some screen actually names, numbered). Never
+    /// fails: a text file that doesn't parse here just names fewer tracks, and the real errors
+    /// surface later, from `load()`, so every error from every file still collects in one place.
+    /// Returns `{fonts:[{name,path}], sounds:[{index,name,path}], music:[{index,name,path}]}`; an
+    /// empty answer if called before a successful `read_entry()`.
+    pub fn read_texts(
+        &self,
+        properties_json: Option<String>,
+        _scene_json: Option<String>,
+        _rules_json: Option<String>,
+        screens_json: Option<String>,
+    ) -> JsValue {
+        let Some(config) = self.pending_config.peek() else {
+            return js_needed_media_ok(&NeededMedia::default(), &[]);
+        };
+        let needed = load::read_texts(config, properties_json.as_deref(), screens_json.as_deref());
+        js_needed_media_ok(&needed, &config.files.music)
+    }
+
+    /// Step three: hand over the four text files, `fonts` — `[{name, bytes: Uint8Array|null}]`,
+    /// one per `files.fonts` — `sounds` — `[{index, bytes: Uint8Array|null}]`, one per
+    /// `read_texts()`'s `sounds` — and `music` — `[{index, verdict: "ok"|"missing"|"rejected"}]`,
+    /// one per `read_texts()`'s `music`, the executor's (browser's) answer to "can you decompress
+    /// this track". Runs the full prestart check and, on success, the game is ready to run
+    /// starting from the next `tick`. Returns `{ok:true, warnings:[...]}` on success or
+    /// `{ok:false, errors:[...], warnings:[...]}` on failure — warnings never stop the game from
+    /// starting, but the page still needs to see them either way.
+    #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
         properties_json: Option<String>,
@@ -308,6 +455,8 @@ impl Engine {
         rules_json: Option<String>,
         screens_json: Option<String>,
         fonts: JsValue,
+        sounds: JsValue,
+        music: JsValue,
     ) -> JsValue {
         let Some(config) = self.pending_config.take() else {
             return js_load_err(
@@ -319,10 +468,13 @@ impl Engine {
                 &[],
             );
         };
-        // `config` is about to move into `load_rest` — the font name order it carries is what
-        // fixes each font's `FontId`, so it has to be captured before that happens.
+        // `config` is about to move into `load_rest` — the font/sound/music name order it
+        // carries is what fixes each one's FontId/SoundId/MusicId, so it has to be captured
+        // before that happens.
         let font_order: Vec<String> = config.files.fonts.iter().map(|(n, _)| n.clone()).collect();
         let font_bytes = parse_font_bytes(&fonts);
+        let sound_bytes = parse_sound_bytes(&sounds, &config.files.sounds);
+        let music_verdicts = parse_music_verdicts(&music, &config.files.music);
         match load::load_rest(
             config,
             properties_json.as_deref(),
@@ -330,6 +482,8 @@ impl Engine {
             rules_json.as_deref(),
             screens_json.as_deref(),
             &font_bytes,
+            &sound_bytes,
+            &music_verdicts,
         ) {
             Ok((game, screens_config, warnings)) => {
                 self.renderer
@@ -421,6 +575,11 @@ impl Engine {
             viewport,
         );
         screens::process_key_queue(&mut self.key_queue, game, config, state);
+        // «Звук в шаге и кадре» → «Порядок работ за один вызов», пункт 5: written after the
+        // mouse and screen keys, so a click that just changed screen writes the one it landed
+        // on. The page reads the window itself once this call returns — the border is crossed
+        // only by `tick()` returning, never by a call in the other direction.
+        screens::write_sound_frame(game, config, state);
 
         let world_instances = compose_instances(game);
         let screen = &config.screens[state.active()];
@@ -467,5 +626,23 @@ impl Engine {
             }
         }
         arr
+    }
+
+    /// «Звук снаружи движка» → «Одно окно чисел на круг»: address of the sound window inside
+    /// this engine's own wasm memory — read it as `new Int32Array(memory.buffer, ptr, len)`,
+    /// after every `tick()` returns. Allocated once, at `load()`; null before that.
+    pub fn sound_window_ptr(&self) -> *const i32 {
+        self.game
+            .as_ref()
+            .map(|g| g.sound_window().as_ptr())
+            .unwrap_or(std::ptr::null())
+    }
+
+    /// Length of that window, in `i32` elements (not bytes) — 0 before `load()`.
+    pub fn sound_window_len(&self) -> usize {
+        self.game
+            .as_ref()
+            .map(|g| g.sound_window().cell_count())
+            .unwrap_or(0)
     }
 }

@@ -11,6 +11,8 @@
     "rules": "rules.json",
     "screens": "screens.json",
     "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf" },
+    "sounds": { "eat": "sounds/eat.wav", "hit": "sounds/hit.wav" },
+    "music": { "menu": "music/menu.mp3", "game": "music/game.mp3" },
     "images": "images/"
   }
 }
