@@ -3,10 +3,11 @@
     { "kind": "move", "for": { "has": ["position", "velocity"] } },
 
     { "kind": "collide", "a": { "has": ["controlled"] }, "b": { "has": ["food"] },
-      "effects": { "a": [["add", "tail", 0.12], ["add", "score", 1]], "b": [["delete"]] } },
+      "effects": { "a": [["add", "tail", 0.12], ["add", "score", 1]], "b": [["delete"]] },
+      "do": [["play_sound", "eat"]] },
 
     { "kind": "collide", "a": { "has": ["controlled"] }, "b": { "has": ["deadly"] },
-      "do": [["end_game", "loss"]] },
+      "do": [["end_game", "loss"], ["play_sound", "hit"]] },
 
     { "kind": "spawn", "when": { "after_move_of": { "has": ["controlled"] } },
       "where": "at_parent",

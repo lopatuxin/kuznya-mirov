@@ -4,6 +4,7 @@ use super::property::{self, PropertyTable};
 use super::rng::Rng;
 use super::rules::{Outcome, RuleSet};
 use super::scene::{ObjectSpec, SceneConfig};
+use super::sound::SoundWindow;
 use super::step;
 use super::value::Vec2;
 use super::world::World;
@@ -26,6 +27,7 @@ pub struct Game {
     max_objects_warned: bool,
     random_cell_warned: bool,
     messages: Vec<String>,
+    sound_window: SoundWindow,
 
     grid_hop_ready: Vec<bool>,
     moved: Vec<bool>,
@@ -42,6 +44,7 @@ impl Game {
         max_objects: usize,
         random_seed: u64,
         scene_objects: Vec<ObjectSpec>,
+        sound_count: usize,
     ) -> Self {
         Game {
             properties,
@@ -59,6 +62,7 @@ impl Game {
             max_objects_warned: false,
             random_cell_warned: false,
             messages: Vec::new(),
+            sound_window: SoundWindow::new(sound_count),
             grid_hop_ready: Vec::new(),
             moved: Vec::new(),
             bounced: Vec::new(),
@@ -154,6 +158,16 @@ impl Game {
         &self.messages
     }
 
+    /// «Звук снаружи движка»: read side, for the circle (clearing/writing the header) and for
+    /// the wasm layer's `sound_window_ptr()`/`sound_window_len()` — never for a step.
+    pub fn sound_window(&self) -> &SoundWindow {
+        &self.sound_window
+    }
+
+    pub fn sound_window_mut(&mut self) -> &mut SoundWindow {
+        &mut self.sound_window
+    }
+
     pub fn take_input_snapshot(&mut self) -> StepInput {
         self.input_queue.take_snapshot()
     }
@@ -199,6 +213,9 @@ impl Game {
         }
         let mut outcome_flag = None;
         let mut deletes_from_collide = Vec::new();
+        // «Звук в шаге и кадре»: этому и только этому обёртка `SoundMarks` даётся — поднять
+        // отметку и никогда её не прочитать; окно целиком (`self.sound_window`) шаг не видит.
+        let mut marks = self.sound_window.marks();
         step::apply_collide_rules(
             &self.rules.rules,
             &mut self.world,
@@ -206,6 +223,7 @@ impl Game {
             &mut self.bounced,
             &mut deletes_from_collide,
             &mut outcome_flag,
+            &mut marks,
         );
 
         let already_deleted: Vec<u32> = expired.into_iter().chain(deletes_from_collide).collect();
@@ -221,6 +239,7 @@ impl Game {
             &mut self.rng,
             &mut outcome_flag,
             &mut random_cell_exhausted,
+            &mut marks,
         );
         if random_cell_exhausted && !self.random_cell_warned {
             self.random_cell_warned = true;

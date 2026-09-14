@@ -43,6 +43,8 @@ fn load(
         Some(rules),
         Some(screens),
         &font_bytes,
+        &[],
+        &[],
     )
 }
 
@@ -55,6 +57,8 @@ fn missing_screens_file_is_reported() {
         Some(SCENE),
         Some(RULES_EMPTY),
         None,
+        &[],
+        &[],
         &[],
     );
     let LoadFailure { errors, .. } = result.expect_err("отсутствующий screens.json — ошибка");

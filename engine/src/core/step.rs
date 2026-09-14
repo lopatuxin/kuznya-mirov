@@ -8,6 +8,7 @@ use super::rules::{
     TemplateValue,
 };
 use super::scene::SceneConfig;
+use super::sound::SoundMarks;
 use super::value::{Value, Vec2};
 use super::world::World;
 
@@ -200,6 +201,7 @@ fn execute_common_actions(
     world: &mut World,
     actions: &[CommonAction],
     outcome: &mut Option<super::rules::Outcome>,
+    marks: &mut SoundMarks<'_>,
 ) {
     for action in actions {
         match action {
@@ -218,6 +220,9 @@ fn execute_common_actions(
                     }
                 }
             }
+            // «Звук в шаге и кадре»: правило кладёт заявку — поднимает отметку и тут же о ней
+            // забывает; звучит ли что-то на самом деле, шаг не спрашивает никогда.
+            CommonAction::PlaySound(id) => marks.raise(*id),
         }
     }
 }
@@ -230,6 +235,7 @@ pub fn apply_collide_rules(
     bounced: &mut [bool],
     deletes: &mut Vec<u32>,
     outcome: &mut Option<super::rules::Outcome>,
+    marks: &mut SoundMarks<'_>,
 ) {
     for rule in rules {
         let Rule::Collide {
@@ -257,7 +263,7 @@ pub fn apply_collide_rules(
             for effect in effects_b {
                 apply_collide_effect(world, obj_b, effect, bounced, obj_a, deletes);
             }
-            execute_common_actions(world, do_, outcome);
+            execute_common_actions(world, do_, outcome, marks);
         }
     }
 }
@@ -429,6 +435,7 @@ pub fn queue_create_and_delete_rules(
     rng: &mut Rng,
     outcome: &mut Option<super::rules::Outcome>,
     random_cell_exhausted: &mut bool,
+    marks: &mut SoundMarks<'_>,
 ) -> (Vec<u32>, Vec<PendingCreate>) {
     let mut pending = PendingState {
         deleted: already_deleted.iter().copied().collect(),
@@ -455,7 +462,7 @@ pub fn queue_create_and_delete_rules(
                         if pending.count_selector(of, world) < *count {
                             for id in candidates {
                                 pending.queue_delete(id);
-                                execute_common_actions(world, do_, outcome);
+                                execute_common_actions(world, do_, outcome, marks);
                             }
                         }
                     }
@@ -469,7 +476,7 @@ pub fn queue_create_and_delete_rules(
                         if any_moved {
                             for id in candidates {
                                 pending.queue_delete(id);
-                                execute_common_actions(world, do_, outcome);
+                                execute_common_actions(world, do_, outcome, marks);
                             }
                         }
                     }
@@ -477,7 +484,7 @@ pub fn queue_create_and_delete_rules(
                         for id in candidates {
                             if condition_holds_for_object(when, world, id, scene) {
                                 pending.queue_delete(id);
-                                execute_common_actions(world, do_, outcome);
+                                execute_common_actions(world, do_, outcome, marks);
                             }
                         }
                     }
@@ -507,7 +514,7 @@ pub fn queue_create_and_delete_rules(
                                 random_cell_exhausted,
                             )
                         {
-                            execute_common_actions(world, do_, outcome);
+                            execute_common_actions(world, do_, outcome, marks);
                         }
                     }
                     SpawnCondition::AfterMoveOf { of } => {
@@ -530,7 +537,7 @@ pub fn queue_create_and_delete_rules(
                             .collect();
                         for ok in created {
                             if ok {
-                                execute_common_actions(world, do_, outcome);
+                                execute_common_actions(world, do_, outcome, marks);
                             }
                         }
                     }

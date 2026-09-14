@@ -1,0 +1,11 @@
+menu.mp3 — меню, победа и поражение
+  Название: Oldskool
+  Автор: Of Far Different Nature
+  Источник: https://opengameart.org/content/oldskool
+  Лицензия: CC0
+
+game.mp3 — партия
+  Название: 8-bit Theme – On The Offensive (V2)
+  Автор: Wolfgang_
+  Источник: https://opengameart.org/content/8-bit-theme-on-the-offensive
+  Лицензия: CC0

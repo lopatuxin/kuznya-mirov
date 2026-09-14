@@ -1,6 +1,11 @@
 use super::property::PropertyId;
 use super::value::Value;
 
+/// Index into `files.sounds`, in declaration order — «Звук в данных игры»: a `play_sound` action
+/// resolves its name to one of these at load time, the same way an object reference resolves to a
+/// `PropertyId`.
+pub type SoundId = usize;
+
 #[derive(Debug, Clone, Default)]
 pub struct Selector {
     pub has: Vec<PropertyId>,
@@ -89,6 +94,7 @@ pub enum Outcome {
 pub enum CommonAction {
     EndGame(Outcome),
     Add { prop: PropertyId, value: Value },
+    PlaySound(SoundId),
 }
 
 #[derive(Debug, Clone)]

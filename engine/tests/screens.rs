@@ -57,6 +57,8 @@ fn load() -> (
         Some(RULES),
         Some(SCREENS_JSON),
         &font_bytes,
+        &[],
+        &[],
     )
     .expect("должно загрузиться");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
@@ -423,9 +425,19 @@ fn load_key_fixture(
         Some(KEY_RULES),
         Some(screens_json),
         &font_bytes,
+        &[],
+        &[],
     )
     .expect("должно загрузиться");
-    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    // Every `KEY_SCREENS_*` fixture in this file pairs a live screen's own `Space` binding with
+    // `KEY_SCENE`'s object doing the same, on purpose — «Экраны и состояние» → «Клавиша экрана»:
+    // that's the exact shape the loader now warns about, so it's expected here rather than a sign
+    // something broke; any *other* warning still fails the fixture.
+    let unexpected: Vec<_> = warnings
+        .iter()
+        .filter(|w| !w.message.contains("совпадает с клавишей"))
+        .collect();
+    assert!(unexpected.is_empty(), "{warnings:?}");
     (game, screens)
 }
 
@@ -728,9 +740,17 @@ fn load_mirror_fixture() -> (
         Some(MIRROR_RULES),
         Some(MIRROR_SCREENS),
         &font_bytes,
+        &[],
+        &[],
     )
     .expect("должно загрузиться");
-    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    // `declares` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — «Экраны и
+    // состояние» → «Клавиша экрана»: expected here, any *other* warning still fails the fixture.
+    let unexpected: Vec<_> = warnings
+        .iter()
+        .filter(|w| !w.message.contains("совпадает с клавишей"))
+        .collect();
+    assert!(unexpected.is_empty(), "{warnings:?}");
     (game, screens)
 }
 
@@ -806,6 +826,8 @@ fn load_newgame_key_fixture() -> (
         Some(KEY_RULES),
         Some(NEWGAME_KEY_SCREENS),
         &font_bytes,
+        &[],
+        &[],
     )
     .expect("должно загрузиться");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
