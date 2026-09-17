@@ -92,7 +92,7 @@ impl Game {
         self.input_queue.clear();
     }
 
-    /// «Экраны и состояние» → «Клавиша экрана»: releases one held key immediately, the same way
+    /// «Экраны и состояние» → «Клавиши экрана»: releases one held key immediately, the same way
     /// `release_held_keys` releases all of them — used when the screen that declares `code`
     /// absorbs its release, so the world binding a *different* screen set up for it doesn't stay
     /// stuck. Applied right away rather than queued: a queued release would sit in the input
@@ -107,7 +107,7 @@ impl Game {
         self.input_queue.forget(code);
     }
 
-    /// «Экраны и состояние» → «Что происходит при создании»: rebuilds the world from the
+    /// «Экраны и состояние» → «Жизнь партии»: rebuilds the world from the
     /// parsed copy of `scene.json` — the file itself is never reopened — resets the step
     /// counter, the random-number generator (same seed, so the second playthrough replays the
     /// same way the first one would), the input queue, and the sticky win/loss mark.
@@ -158,7 +158,7 @@ impl Game {
         &self.messages
     }
 
-    /// «Звук снаружи движка»: read side, for the circle (clearing/writing the header) and for
+    /// «Звук»: read side, for the circle (clearing/writing the header) and for
     /// the wasm layer's `sound_window_ptr()`/`sound_window_len()` — never for a step.
     pub fn sound_window(&self) -> &SoundWindow {
         &self.sound_window
@@ -213,7 +213,7 @@ impl Game {
         }
         let mut outcome_flag = None;
         let mut deletes_from_collide = Vec::new();
-        // «Звук в шаге и кадре»: этому и только этому обёртка `SoundMarks` даётся — поднять
+        // «Звук»: этому и только этому обёртка `SoundMarks` даётся — поднять
         // отметку и никогда её не прочитать; окно целиком (`self.sound_window`) шаг не видит.
         let mut marks = self.sound_window.marks();
         step::apply_collide_rules(

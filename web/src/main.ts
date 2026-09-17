@@ -24,7 +24,7 @@ type ReadEntryResult =
   | { ok: true; files: ReadEntryFiles; warnings: EngineError[] }
   | { ok: false; errors: EngineError[]; warnings: EngineError[] };
 
-/** Шаг два загрузки — «Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое»: какие двоичные
+/** Шаг два загрузки — «Звук» → «Загрузка и проверка»: какие двоичные
  *  файлы вообще стоит читать, теперь, когда текстовые файлы разобраны. */
 type ReadTextsResult = { fonts: FontEntry[]; sounds: SoundEntry[]; music: MusicEntry[] };
 
@@ -149,7 +149,7 @@ async function fetchSoundBytes(baseUrl: string, sounds: SoundEntry[]): Promise<L
 
 /**
  * По одному файлу на запись `read_texts().music` — только треки, которые называет хоть один экран
- * («Звуковые файлы» → «Непрослушиваемый трек не читается вовсе»).
+ * («Звук» → «Загрузка и проверка»).
  */
 async function fetchMusicBytes(baseUrl: string, music: MusicEntry[]): Promise<LoadedMusic[]> {
   const bytesList = await Promise.all(music.map((track) => fetchBinary(`${baseUrl}${track.path}`)));
@@ -157,8 +157,7 @@ async function fetchMusicBytes(baseUrl: string, music: MusicEntry[]): Promise<Lo
 }
 
 /**
- * Приговор исполнителя каждому читаемому треку — «Звук в данных игры» → «Кто отвечает на вопрос
- * «годен ли файл»»: движок байтов трека не держит вовсе, а по MP3 отвечает браузер. Заодно собирает
+ * Приговор исполнителя каждому читаемому треку — «Звук» → «Загрузка и проверка»: движок байтов трека не держит вовсе, а по MP3 отвечает браузер. Заодно собирает
  * Blob-адрес для тех треков, что приговор прошли: распаковывать их во второй раз при первом
  * проигрывании незачем.
  */
@@ -181,7 +180,7 @@ async function buildMusicAssets(
 
 /**
  * Разжимает каждый принятый движком звук в готовый `AudioBuffer` до старта кадрового цикла —
- * «Звуковые файлы» → «Два способа проигрывания». Расхождение между движком (принял WAV) и браузером
+ * «Звук» → «Два вида звука». Расхождение между движком (принял WAV) и браузером
  * (не смог его разжать) сюда всё же заведено одной строкой в журнал — «У журнала два писателя»:
  * движок о таком расхождении не знает и сказать о нём не может, значит это делает исполнитель;
  * сам звук при этом просто остаётся недоступным для проигрывания, а не роняет загрузку игры.
@@ -318,7 +317,7 @@ function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundP
   function tick(now: number): void {
     try {
       engine.tick(now);
-      // «Звук в шаге и кадре» → «Порядок работ за один вызов»: страница читает окно после того,
+      // «Звук» → «Один вызов движка»: страница читает окно после того,
       // как вызов вернул ей управление, — то есть прямо здесь, а не отдельным пересечением границы.
       const snapshot = readSoundWindow(memory, engine.sound_window_ptr(), engine.sound_window_len());
       soundPlayer.handleFrame(snapshot);
@@ -374,7 +373,7 @@ async function runGame(gameName: string): Promise<void> {
   }
 
   // Второй заход — только текстовые файлы; до их разбора движок не знает, какие звуки и треки
-  // вообще используются («Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое»).
+  // вообще используются («Звук» → «Загрузка и проверка»).
   const [propertiesText, sceneText, rulesText, screensText] = await Promise.all([
     fetchText(`${baseUrl}${entryResult.files.properties}`),
     fetchText(`${baseUrl}${entryResult.files.scene}`),
@@ -384,9 +383,8 @@ async function runGame(gameName: string): Promise<void> {
 
   const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText) as ReadTextsResult;
 
-  // Создаётся при загрузке и стоит в `suspended` до первого нажатия игрока («Звук снаружи
-  // движка» → «Браузер не даёт звучать до первого действия игрока»), но нужен уже сейчас — им же
-  // проверяются треки из `files.music`.
+  // Создаётся при загрузке и стоит в `suspended` до первого нажатия игрока («Звук» →
+  // «Проигрывание на странице»), но нужен уже сейчас — им же проверяются треки из `files.music`.
   const audioContext = new AudioContext();
 
   // Третий заход — все двоичные файлы разом: шрифты, все звуки, только названные экранами треки.

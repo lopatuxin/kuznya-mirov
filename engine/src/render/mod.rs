@@ -411,7 +411,7 @@ impl Renderer {
         );
     }
 
-    /// «Интерфейс игры» → «Плотность экрана»: the ratio the interface's own pixel values get
+    /// «Интерфейс игры» → «Раскладка»: the ratio the interface's own pixel values get
     /// multiplied by; the world pass never needs it, since `canvas_size_px` already is device
     /// pixels regardless of density.
     pub fn set_pixel_ratio(&mut self, ratio: f32) {
@@ -645,8 +645,7 @@ fn world_globals_data(canvas_size_px: [f32; 2], scene_cells: [f32; 2]) -> Global
 }
 
 /// UI pass: window pixels (as `screens.json` and `core::screens::Placement` use them) scale up
-/// by the device pixel ratio to the canvas's own device pixels — «Интерфейс игры» → «Плотность
-/// экрана».
+/// by the device pixel ratio to the canvas's own device pixels — «Интерфейс игры» → «Раскладка».
 fn ui_globals_data(canvas_size_px: [f32; 2], device_pixel_ratio: f32) -> Globals {
     Globals {
         scale: [device_pixel_ratio, device_pixel_ratio],

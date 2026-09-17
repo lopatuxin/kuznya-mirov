@@ -1,6 +1,6 @@
 //! Prestart validation for `files.sounds`/`files.music`, `play_sound`, the screen `music` field
-//! and `toggle_sound` — «Звук в данных игры» → «Проверка данных перед запуском» — plus the screen
-//! key/object key collision warning from «Экраны и состояние» → «Клавиша экрана». Companion to
+//! and `toggle_sound` — «Звук» → «Загрузка и проверка» — plus the screen
+//! key/object key collision warning from «Экраны и состояние» → «Клавиши экрана». Companion to
 //! `prestart_validation.rs` and `screens_validation.rs`, which cover everything else.
 
 use engine::data::error::LoadFailure;

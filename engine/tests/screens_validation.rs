@@ -506,7 +506,7 @@ fn unreachable_screen_is_a_warning_not_an_error() {
     );
 }
 
-// «Экраны и состояние» → «Клавиша экрана» → «Проверка данных перед запуском»: the checklist for
+// «Экраны и состояние» → «Клавиши экрана» → «Проверка данных перед запуском»: the checklist for
 // a key's command mirrors `on_click`'s exactly, plus the shape errors specific to `keys` itself.
 
 #[test]

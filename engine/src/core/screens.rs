@@ -13,7 +13,7 @@ use super::world::World;
 
 pub type ScreenId = usize;
 pub type FontId = usize;
-/// Index into `files.music`, in declaration order — «Звук в данных игры»: a screen's `music`
+/// Index into `files.music`, in declaration order — «Звук»: a screen's `music`
 /// field resolves its name to one of these at load time, the same way `font` resolves to `FontId`.
 pub type MusicId = usize;
 
@@ -90,7 +90,7 @@ pub struct Placement {
 
 impl Placement {
     /// The element's top-left corner in window pixels, given the window's current size.
-    /// «Интерфейс игры» → «Раскладка: якорь и отступ».
+    /// «Интерфейс игры» → «Раскладка».
     pub fn top_left(&self, viewport: [f32; 2]) -> [f32; 2] {
         let (fx, fy) = self.anchor.fractions();
         let x = if fx == 0.0 {
@@ -186,7 +186,7 @@ pub enum ButtonCommand {
     NewGame(ScreenId),
     Resume,
     Quit,
-    /// «Звук в данных игры» → «Выключение звука целиком»: touches no world property, so it needs
+    /// «Звук» → «Два вида звука»: touches no world property, so it needs
     /// none of `apply_command`'s screen-switching machinery — just flips `ScreenState`'s own
     /// `sound_enabled`.
     ToggleSound,
@@ -219,7 +219,7 @@ pub enum Element {
     },
 }
 
-/// «Экраны и состояние» → «Клавиша экрана»: name-to-command, the same four commands as
+/// «Экраны и состояние» → «Клавиши экрана»: name-to-command, the same four commands as
 /// `on_click`. A key named here never reaches the world, on either press or release.
 pub type ScreenKeyTable = HashMap<String, ButtonCommand>;
 
@@ -229,7 +229,7 @@ pub struct Screen {
     pub world_runs: bool,
     pub elements: Vec<Element>,
     pub keys: ScreenKeyTable,
-    /// «Звук в данных игры» → «Музыка экрана»: `None` is silence, same as the pause screen.
+    /// «Звук» → «Два вида звука»: `None` is silence, same as the pause screen.
     pub music: Option<MusicId>,
 }
 
@@ -241,13 +241,12 @@ pub struct ScreensConfig {
     pub loss_screen: Option<ScreenId>,
 }
 
-/// The active screen and the one remembered screen `resume` returns to — «Экраны и состояние» →
-/// «Пять команд кнопки»: at most one level deep, no further history.
+/// The active screen and the one remembered screen `resume` returns to — «Экраны и состояние» → «Команды»: at most one level deep, no further history.
 #[derive(Debug, Clone, Copy)]
 pub struct ScreenState {
     active: ScreenId,
     previous: Option<ScreenId>,
-    /// «Звук в шаге и кадре» → «Кому принадлежит состояние звука»: belongs to the circle, next
+    /// «Звук» → «Два вида звука»: belongs to the circle, next
     /// to the active screen, not to the world — `new_game`/`quit` don't touch it, and it starts
     /// `true` on every load, since the engine keeps no storage for it at all.
     sound_enabled: bool,
@@ -281,7 +280,7 @@ impl ScreenState {
 }
 
 /// Moves to `target`, releasing held keys through `game` first when the transition leaves a
-/// live screen for one that isn't — «Экраны и состояние» → «Как это ложится в круг движка».
+/// live screen for one that isn't — «Экраны и состояние» → «Жизнь партии».
 fn switch_to(
     state: &mut ScreenState,
     config: &ScreensConfig,
@@ -319,7 +318,7 @@ pub fn apply_command(
             game.quit();
             switch_to(state, config, game, config.start_screen, false);
         }
-        // «Звук в данных игры» → «Выключение звука целиком»: touches no world property, no
+        // «Звук» → «Два вида звука»: touches no world property, no
         // screen, no queued anything — the whole command is this one flip.
         ButtonCommand::ToggleSound => state.sound_enabled = !state.sound_enabled,
     }
@@ -345,7 +344,7 @@ fn handle_outcome(game: &mut Game, config: &ScreensConfig, state: &mut ScreenSta
 
 /// One fixed-step tick: steps the world when the active screen is live (or resets the runner's
 /// accumulator when it isn't), then applies the win/loss screen switch if a step just ended the
-/// game. «Экраны и состояние» → «Как это ложится в круг движка».
+/// game. «Экраны и состояние» → «Жизнь партии».
 pub fn tick(
     runner: &mut super::runner::Runner,
     game: &mut Game,
@@ -357,7 +356,7 @@ pub fn tick(
     handle_outcome(game, config, state);
 }
 
-/// «Звук в шаге и кадре» → «Порядок работ за один вызов», пункт 5: writes the active screen's
+/// «Звук» → «Один вызов движка», пункт 5: writes the active screen's
 /// music (or silence, if it names none) and the sound-enabled flag into the window — called
 /// once per call, after the mouse and screen-key queues have drained, so a click that just
 /// switched screens writes the screen it landed on, never the one it left. «Экраны и
@@ -382,7 +381,7 @@ pub fn key_down(game: &mut Game, config: &ScreensConfig, state: &ScreenState, co
 }
 
 /// Queues the release for `process_key_queue` when the active screen names `code` in its own
-/// `keys` table — «Экраны и состояние» → «Клавиша экрана»: fires on release, not on press, and
+/// `keys` table — «Экраны и состояние» → «Клавиши экрана»: fires on release, not on press, and
 /// the command runs against whichever screen is active once the queue drains, same as a mouse
 /// click. Otherwise forwarded to the world exactly as before, and only if the key actually
 /// reached the world on press — a release absorbed by press (by this screen's own table, by a
@@ -433,7 +432,7 @@ pub fn process_key_queue(
     }
 }
 
-/// «Интерфейс игры» → «Над каким элементом курсор»: only buttons participate, checked in
+/// «Интерфейс игры» → «Мышь»: only buttons participate, checked in
 /// reverse drawing order so the topmost one wins.
 fn topmost_button_at(screen: &Screen, viewport: [f32; 2], point: [f32; 2]) -> Option<usize> {
     screen
@@ -452,7 +451,7 @@ fn topmost_button_at(screen: &Screen, viewport: [f32; 2], point: [f32; 2]) -> Op
 
 /// Applies one queued mouse event to `mouse`'s hover/capture state against `screen`'s buttons.
 /// Returns the command to run once a press releases inside the button that captured it —
-/// «Интерфейс игры» → «Срабатывает по отпусканию внутри границ».
+/// «Интерфейс игры» → «Мышь».
 fn handle_mouse_event(
     mouse: &mut MouseState,
     screen: &Screen,
@@ -508,7 +507,7 @@ pub fn process_mouse_queue(
 }
 
 /// Which of the three fill colors a button currently shows — pressed wins over hover, and no
-/// button hovers while another one holds the capture. «Интерфейс игры» → «Три состояния кнопки».
+/// button hovers while another one holds the capture. «Интерфейс игры» → «Мышь».
 pub fn button_fill<'a>(
     color: &'a [f32; 4],
     color_hover: &'a [f32; 4],

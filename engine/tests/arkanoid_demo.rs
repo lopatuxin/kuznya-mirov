@@ -23,7 +23,7 @@ fn read(name: &str) -> String {
 /// `new_game()` is the same call `["new_game", "game"]` on the "Играть" button would make.
 /// Loads the real demo folder end to end, fonts and sound bytes included, music verdicts all
 /// `Ok` — unlike `load_game_from_texts`, which carries no binary bytes and is only good for data
-/// that declares none. «Звук в данных игры»: every declared sound is read whether or not
+/// that declares none. «Звук»: every declared sound is read whether or not
 /// `play_sound` uses it, so `files.sounds` is read in full here just like `files.fonts` is.
 fn load() -> engine::core::game::Game {
     let (config, _entry_warnings) =

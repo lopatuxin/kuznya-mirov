@@ -41,12 +41,12 @@ impl Runner {
         self.accumulator = 0.0;
     }
 
-    /// «Экраны и состояние» → «Как это ложится в круг движка»: on the screen the active screen
+    /// «Экраны и состояние» → «Жизнь партии»: on the screen the active screen
     /// has `world_runs`, steps as `advance` always did; otherwise the step is skipped
     /// entirely and the accumulator is dropped every call, so a minute spent paused does not
     /// arrive as a burst of catch-up steps on return.
     ///
-    /// «Звук в шаге и кадре» → «Порядок работ за один вызов»: this is the one call every tick
+    /// «Звук» → «Один вызов движка»: this is the one call every tick
     /// makes exactly once, live screen or not, so the sound marks the page already read last
     /// time are cleared right here, before any of this call's steps get a chance to raise new
     /// ones — never at the end, and never per step inside the catch-up burst below.

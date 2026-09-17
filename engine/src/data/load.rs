@@ -427,7 +427,7 @@ fn resolve_property(
     }
 }
 
-/// «Звук в данных игры»: "звука \"eet\" нет" отправляет гадать, а с перечнем объявленных имён
+/// «Звук»: "звука \"eet\" нет" отправляет гадать, а с перечнем объявленных имён
 /// чинится сразу — эта строка добавляется к сообщению об отсутствующей ссылке по имени.
 fn format_declared_names(table: &[(String, String)]) -> String {
     table
@@ -437,7 +437,7 @@ fn format_declared_names(table: &[(String, String)]) -> String {
         .join(", ")
 }
 
-/// `play_sound`'s name lookup — «Звук в данных игры»: same table for both scopes is legal, so a
+/// `play_sound`'s name lookup — «Звук»: same table for both scopes is legal, so a
 /// name missing from `sounds` but present in `music` gets the "wrong table" message instead of
 /// "unknown name", and an unknown name lists every declared sound to save the outside model a
 /// round trip.
@@ -736,8 +736,7 @@ pub struct FilePaths {
     pub music: Vec<(String, String)>,
 }
 
-/// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук в данных игры» → «Кто
-/// отвечает на вопрос "годен ли файл"»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
+/// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук» → «Загрузка и проверка»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MusicVerdict {
     Ok,
@@ -745,7 +744,7 @@ pub enum MusicVerdict {
     Rejected,
 }
 
-/// Список двоичных файлов, которые стоит прочитать в третьем заходе загрузки — «Звуковые файлы»
+/// Список двоичных файлов, которые стоит прочитать в третьем заходе загрузки — «Звук»
 /// → «Загрузка: сначала лёгкое, потом тяжёлое»: шрифты и звуки читаются все, музыка — только та,
 /// которую называет хоть один экран.
 #[derive(Debug, Clone, Default)]
@@ -812,14 +811,13 @@ pub fn read_entry(text: &str) -> Result<(GameConfig, Vec<GameError>), LoadFailur
     Ok((config.expect("no errors means game.json parsed"), warnings))
 }
 
-/// Second load call — «Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое»: a best-effort
+/// Second load call — «Звук» → «Загрузка и проверка»: a best-effort
 /// parse of the four text files `read_entry` named, just enough to say which binary files are
 /// worth fetching next. Tolerant of broken text on purpose: a `screens.json` that fails to parse
 /// simply names no referenced track here, same as `parse_screens_json` itself falls back to no
 /// screens — the real errors surface later, when `load_rest` parses everything again for real and
 /// collects them all in one pass. `scene_json`/`rules_json` play no part in the answer (only a
-/// screen's own `music` field decides which tracks are read — «Звуковые файлы» → «Непрослушиваемый
-/// трек не читается вовсе») and are accordingly not asked for here.
+/// screen's own `music` field decides which tracks are read — «Звук» → «Загрузка и проверка») and are accordingly not asked for here.
 pub fn read_texts(
     config: &GameConfig,
     properties_json: Option<&str>,
@@ -947,7 +945,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         let fonts_json = require_field(f, "fonts", "game.json", "files", errors);
         let fonts =
             fonts_json.and_then(|v| parse_font_table(v, "game.json", "files → fonts", errors));
-        // «Звуковые файлы»: обе таблицы необязательны — нет ключа, нет и звуков/музыки, не ошибка.
+        // «Звук»: обе таблицы необязательны — нет ключа, нет и звуков/музыки, не ошибка.
         let sounds = match f.get("sounds") {
             Some(v) => {
                 parse_media_table(v, MediaKind::Sound, "game.json", "files → sounds", errors)
@@ -1063,7 +1061,7 @@ impl MediaKind {
         }
     }
 
-    /// «Звук в данных игры» → «Проверка данных перед запуском»: у трека имя нужно экрану, у звука
+    /// «Звук» → «Загрузка и проверка»: у трека имя нужно экрану, у звука
     /// — правилу.
     fn empty_name_hint(self) -> &'static str {
         match self {
@@ -1091,8 +1089,7 @@ impl MediaKind {
 }
 
 /// `files.sounds`/`files.music`: an object mapping a name (used by `play_sound`/the screen
-/// `music` field) to its path inside the game's folder — «Звук в данных игры» → «Проверка данных
-/// перед запуском». Order is preserved — it becomes `SoundId`/`MusicId`. A malformed entry is
+/// `music` field) to its path inside the game's folder — «Звук» → «Загрузка и проверка». Order is preserved — it becomes `SoundId`/`MusicId`. A malformed entry is
 /// skipped (its own error already pushed), same as `parse_font_table`; `None` only when the whole
 /// value isn't a table at all.
 fn parse_media_table(
@@ -1441,7 +1438,7 @@ fn parse_common_action(
             Some(CommonAction::Add { prop, value: delta })
         }
         "play_sound" => {
-            // «Звук в данных игры»: все три формы ошибки — без имени, с двумя, число вместо
+            // «Звук»: все три формы ошибки — без имени, с двумя, число вместо
             // строки — делят один и тот же текст, а не отдельное сообщение на каждую.
             let bad_form =
                 "play_sound берёт ровно одну настройку — имя звука из files.sounds строкой";
@@ -1593,7 +1590,7 @@ fn parse_collide_effect(
             }
         }
         "play_sound" => {
-            // «Звук в данных игры»: `effects` адресован стороне столкновения, а у звука стороны
+            // «Звук»: `effects` адресован стороне столкновения, а у звука стороны
             // нет — его место в `do`, regardless of what follows in this list.
             errors.push(file, path, "это общее действие, его место в do".to_string());
             None
@@ -3120,8 +3117,7 @@ struct ParsedScreen {
     world_runs: bool,
     elements: Vec<ParsedElementData>,
     keys: Vec<(String, ParsedCommand)>,
-    /// Raw `music` name, not yet resolved against `files.music` — «Звук в данных игры» →
-    /// «Музыка экрана». Resolution happens in `resolve_screens`, same as `font` on an element.
+    /// Raw `music` name, not yet resolved against `files.music` — «Звук» →«Два вида звука». Resolution happens in `resolve_screens`, same as `font` on an element.
     music: Option<String>,
     path: String,
 }
@@ -3176,7 +3172,7 @@ fn parse_screen(
         Some(v) => parse_screen_keys(v, &join(&path, "keys"), errors),
         None => Vec::new(),
     };
-    // «Звук в данных игры»: список — самая частая опечатка (плейлист вместо одного трека), и у
+    // «Звук»: список — самая частая опечатка (плейлист вместо одного трека), и у
     // неё свой текст, отдельный от обычного «ожидалась строка».
     let music = match obj.get("music") {
         None => None,
@@ -3634,7 +3630,7 @@ fn validate_font_files(
     }
 }
 
-/// «Звук в данных игры» → «По байтам WAV отвечает движок»: every declared sound is read and
+/// «Звук» → «Загрузка и проверка»: every declared sound is read and
 /// measured whether or not `play_sound` uses it — same treatment `validate_font_files` gives
 /// fonts, unlike an unreferenced track (see `validate_unreferenced_tracks`), which isn't even read.
 fn validate_sound_files(
@@ -3674,7 +3670,7 @@ fn validate_sound_files(
     }
 }
 
-/// «Звук в данных игры» → «Кто отвечает на вопрос "годен ли файл"»: only a track some screen
+/// «Звук» → «Загрузка и проверка»: only a track some screen
 /// actually names is read at all — `referenced` is that set, gathered from the raw parsed screens
 /// before name resolution so it doesn't depend on the rest of the game being error-free.
 fn validate_music_files(
@@ -3704,7 +3700,7 @@ fn validate_music_files(
     }
 }
 
-/// «Звук в данных игры»: объявленный звук, на который не ссылается ни один `play_sound` — читан
+/// «Звук»: объявленный звук, на который не ссылается ни один `play_sound` — читан
 /// и проверен, просто не нужен, как объявленное и не используемое свойство.
 fn validate_unused_sounds(sounds: &[(String, String)], rules: &RuleSet, errors: &mut ErrorSink) {
     let mut used: std::collections::HashSet<SoundId> = std::collections::HashSet::new();
@@ -3729,7 +3725,7 @@ fn validate_unused_sounds(sounds: &[(String, String)], rules: &RuleSet, errors: 
     }
 }
 
-/// «Звуковые файлы» → «Непрослушиваемый трек не читается вовсе»: unlike an unused sound, an
+/// «Звук» → «Загрузка и проверка»: unlike an unused sound, an
 /// unreferenced track isn't read or checked by anything, so its warning names that consequence
 /// rather than just "declared but unused".
 fn validate_unreferenced_tracks(
@@ -3769,7 +3765,7 @@ fn any_toggle_sound_bound(screens: &[Screen]) -> bool {
     })
 }
 
-/// «Звук в данных игры» → «Проверка данных перед запуском»: игрок должен иметь способ выключить
+/// «Звук» → «Загрузка и проверка»: игрок должен иметь способ выключить
 /// звук, если он в игре вообще есть — хоть один `play_sound`, хоть один экран с `music`.
 fn validate_toggle_sound_presence(rules: &RuleSet, screens: &[Screen], errors: &mut ErrorSink) {
     let any_play_sound = rules.rules.iter().any(|rule| {
@@ -3788,7 +3784,7 @@ fn validate_toggle_sound_presence(rules: &RuleSet, screens: &[Screen], errors: &
     }
 }
 
-/// «Экраны и состояние» → «Клавиша экрана»: a key a *live* screen names never reaches the world —
+/// «Экраны и состояние» → «Клавиши экрана»: a key a *live* screen names never reaches the world —
 /// warns when that key also drives one of the scene's own key bindings, so the author isn't
 /// silently missing input. Only scene objects can carry a `keys` table (a spawn template can't —
 /// `parse_template` never parses one), so scanning `scene_objects` covers every object that could
@@ -3884,7 +3880,7 @@ pub fn load_rest(
     };
     validate_font_files(&config.files.fonts, font_bytes, &mut errors);
     validate_sound_files(&config.files.sounds, sound_bytes, &mut errors);
-    // «Звуковые файлы» → «Непрослушиваемый трек не читается вовсе»: captured from the raw parse,
+    // «Звук» → «Загрузка и проверка»: captured from the raw parse,
     // before `resolve_screens` resolves each screen's `music` name, so an unknown or malformed
     // name still counts as "referenced" here — its own error comes from `resolve_music` regardless.
     let referenced_music: std::collections::HashSet<String> = parsed_screens

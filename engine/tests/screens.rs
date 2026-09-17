@@ -360,7 +360,7 @@ fn button_press_release_inside_fires_and_release_outside_does_not() {
     );
 }
 
-// «Экраны и состояние» → «Клавиша экрана»: a self-contained fixture, separate from the shared
+// «Экраны и состояние» → «Клавиши экрана»: a self-contained fixture, separate from the shared
 // one above — one live screen ("arena") whose sole object binds `Space` the same way arkanoid's
 // paddle does, so a test can tell "reached the world" from "did not" by the velocity it left.
 const KEY_GAME: &str = r##"{"name":"T","scene":{"width":10,"height":10,"background":"#000000"},
@@ -430,7 +430,7 @@ fn load_key_fixture(
     )
     .expect("должно загрузиться");
     // Every `KEY_SCREENS_*` fixture in this file pairs a live screen's own `Space` binding with
-    // `KEY_SCENE`'s object doing the same, on purpose — «Экраны и состояние» → «Клавиша экрана»:
+    // `KEY_SCENE`'s object doing the same, on purpose — «Экраны и состояние» → «Клавиши экрана»:
     // that's the exact shape the loader now warns about, so it's expected here rather than a sign
     // something broke; any *other* warning still fails the fixture.
     let unexpected: Vec<_> = warnings
@@ -704,7 +704,7 @@ fn absorbed_release_on_a_new_live_screen_survives_a_switch_before_the_next_step(
     );
 }
 
-// «Экраны и состояние» → «Клавиша экрана»: bug #3's own fixture — `release` writes a `score` no
+// «Экраны и состояние» → «Клавиши экрана»: bug #3's own fixture — `release` writes a `score` no
 // `press` touches, so a release that reaches the world despite the key never having been pressed
 // on the current screen shows up unmistakably, instead of hiding behind a property `press` would
 // have set to the same value anyway.
@@ -744,8 +744,7 @@ fn load_mirror_fixture() -> (
         &[],
     )
     .expect("должно загрузиться");
-    // `declares` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — «Экраны и
-    // состояние» → «Клавиша экрана»: expected here, any *other* warning still fails the fixture.
+    // `declares` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — «Экраны и состояние» → «Клавиши экрана»: expected here, any *other* warning still fails the fixture.
     let unexpected: Vec<_> = warnings
         .iter()
         .filter(|w| !w.message.contains("совпадает с клавишей"))

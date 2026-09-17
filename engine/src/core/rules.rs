@@ -1,7 +1,7 @@
 use super::property::PropertyId;
 use super::value::Value;
 
-/// Index into `files.sounds`, in declaration order — «Звук в данных игры»: a `play_sound` action
+/// Index into `files.sounds`, in declaration order — «Звук»: a `play_sound` action
 /// resolves its name to one of these at load time, the same way an object reference resolves to a
 /// `PropertyId`.
 pub type SoundId = usize;

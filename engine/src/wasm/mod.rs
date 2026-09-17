@@ -99,7 +99,7 @@ fn js_media_table(table: &[(String, String)]) -> Array {
     arr
 }
 
-/// A `(name, path)` table numbered by each entry's position in `full` — «Звуковые файлы»: that
+/// A `(name, path)` table numbered by each entry's position in `full` — «Звук»: that
 /// position is the `SoundId`/`MusicId` the loaded game will resolve `play_sound`/`music` names
 /// to, so it's what the page has to echo back in `load()`'s `sounds`/`music` arrays rather than
 /// re-deriving it. `subset` may skip entries `full` has (an unreferenced track, for `music`); its
@@ -120,8 +120,7 @@ fn js_indexed_media_table(subset: &[(String, String)], full: &[(String, String)]
     arr
 }
 
-/// `read_texts()`'s result: which binary files are worth fetching next — «Звуковые файлы» →
-/// «Загрузка: сначала лёгкое, потом тяжёлое». Never an error shape: a text file this step
+/// `read_texts()`'s result: which binary files are worth fetching next — «Звук» →«Загрузка и проверка». Never an error shape: a text file this step
 /// couldn't parse just names fewer tracks, and the real errors surface later, from `load()`,
 /// so every error from every file is collected in the one place that already does that.
 /// `all_music` is `config.files.music` in full — `needed.music` only ever names a subset of it
@@ -355,7 +354,7 @@ fn compose_ui(
 
 /// The engine, one per canvas. See the crate's README / contract notes for the exact JS-side
 /// call sequence: `create` once, then loading in three passes — `read_entry`, `read_texts`,
-/// `load` — «Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое», then `key_down`/
+/// `load` — «Звук» → «Загрузка и проверка», then `key_down`/
 /// `key_up`, `mouse_move`/`mouse_down`/`mouse_up` and `resize`/`set_pixel_ratio` as events
 /// happen, and `tick` once per `requestAnimationFrame`.
 #[wasm_bindgen]
@@ -416,7 +415,7 @@ impl Engine {
         }
     }
 
-    /// Step two of loading — «Звуковые файлы» → «Загрузка: сначала лёгкое, потом тяжёлое»: a
+    /// Step two of loading — «Звук» → «Загрузка и проверка»: a
     /// best-effort read of `properties_json`/`screens_json` (`scene`/`rules` play no part in the
     /// answer and are accepted only for symmetry with `read_entry`'s own file list) that reports
     /// which binary files are worth fetching next — `fonts` (all of them), `sounds` (all of
@@ -509,7 +508,7 @@ impl Engine {
     }
 
     /// Dropped outright on a screen with no `world_runs`, except a key named in that screen's
-    /// own `keys` table — «Экраны и состояние» → «Клавиша экрана».
+    /// own `keys` table — «Экраны и состояние» → «Клавиши экрана».
     pub fn key_down(&mut self, code: &str) {
         if let (Some(game), Some(config), Some(state)) = (
             self.game.as_mut(),
@@ -575,7 +574,7 @@ impl Engine {
             viewport,
         );
         screens::process_key_queue(&mut self.key_queue, game, config, state);
-        // «Звук в шаге и кадре» → «Порядок работ за один вызов», пункт 5: written after the
+        // «Звук» → «Один вызов движка», пункт 5: written after the
         // mouse and screen keys, so a click that just changed screen writes the one it landed
         // on. The page reads the window itself once this call returns — the border is crossed
         // only by `tick()` returning, never by a call in the other direction.
@@ -606,7 +605,7 @@ impl Engine {
 
     /// The page's `window.devicePixelRatio` — the interface's own pixel values (declared in CSS
     /// pixels in `screens.json`) get multiplied by this before reaching the GPU. Defaults to 1.0
-    /// until called. «Интерфейс игры» → «Плотность экрана».
+    /// until called. «Интерфейс игры» → «Раскладка».
     pub fn set_pixel_ratio(&mut self, ratio: f32) {
         self.renderer.set_pixel_ratio(ratio);
     }
@@ -628,7 +627,7 @@ impl Engine {
         arr
     }
 
-    /// «Звук снаружи движка» → «Одно окно чисел на круг»: address of the sound window inside
+    /// «Звук» → «Окно чисел»: address of the sound window inside
     /// this engine's own wasm memory — read it as `new Int32Array(memory.buffer, ptr, len)`,
     /// after every `tick()` returns. Allocated once, at `load()`; null before that.
     pub fn sound_window_ptr(&self) -> *const i32 {

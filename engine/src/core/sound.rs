@@ -1,4 +1,4 @@
-//! «Звук в шаге и кадре» + «Звук снаружи движка»: the mark window shared with the page — a
+//! «Звук» → «Окно чисел»: the mark window shared with the page — a
 //! small, fixed-size block of numbers a step can only write into, cleared once per call and
 //! read only by the page, after the call has already returned control to it.
 
@@ -10,7 +10,7 @@ const MUSIC_INDEX: usize = 1;
 const HEADER_LEN: usize = 2;
 
 /// The only thing a step may do with sound: raise a mark, never read one back — not even one it
-/// just raised itself. «Звук в шаге и кадре» → «Шаг из набора не читает ни разу»: this type is
+/// just raised itself. «Звук» → «Звук ничего не решает»: this type is
 /// the guard, not a convention that a rule could get around.
 pub struct SoundMarks<'a> {
     marks: &'a mut [i32],
@@ -26,8 +26,7 @@ impl SoundMarks<'_> {
     }
 }
 
-/// The window of numbers the page reads after every call — «Звук снаружи движка» → «Одно окно
-/// чисел на круг»: `[0]` whether sound is enabled, `[1]` the music id to play or `-1` for
+/// The window of numbers the page reads after every call — «Звук» → «Окно чисел»: `[0]` whether sound is enabled, `[1]` the music id to play or `-1` for
 /// silence, `[2..]` one mark per declared sound, indexed by `SoundId`. Sized once, from the
 /// game's `files.sounds` table, and never reallocated after that — «память под набор не
 /// выделяется никогда» вне загрузки.
@@ -82,7 +81,7 @@ impl SoundWindow {
         self.cells[ENABLED_INDEX] != 0
     }
 
-    /// «Звук снаружи движка»: the wasm layer's `sound_window_ptr()`/`sound_window_len()` hand
+    /// «Звук»: the wasm layer's `sound_window_ptr()`/`sound_window_len()` hand
     /// this straight to the page — one contiguous block of `i32`s, header first.
     pub fn as_ptr(&self) -> *const i32 {
         self.cells.as_ptr()

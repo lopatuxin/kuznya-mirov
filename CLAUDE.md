@@ -7,8 +7,10 @@ by a browser page (`web/`, built separately). `games/snake/` and `games/arkanoid
 made entirely of data — no engine code exists per-game.
 
 The design documentation that governs this code lives outside this repo, in the Obsidian vault at
-`C:\projects\obsidian\Кузня Миров\Архитектура Кузни\`. Any mismatch between the code and those
-notes is a bug in the code, not in the docs — do not "fix" the docs to match the code.
+`C:\projects\obsidian\Проекты\Кузня Миров\`: `Архитектура Кузни\` (how the engine is built),
+`Фазы Кузни\` (one note per feature — this is where feature plans go, not `docs/plans/`) and
+`Журнал Кузни\` (decisions). The folder follows `Проекты\Шаблон проекта.md`. Any mismatch between the
+code and those notes is a bug in the code, not in the docs — do not "fix" the docs to match the code.
 
 # Stack & Build
 

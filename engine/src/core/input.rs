@@ -133,7 +133,7 @@ impl MouseQueue {
 }
 
 /// Cursor position plus which button (by index into the active screen's `elements`) is
-/// hovered or has captured the press — «Интерфейс игры» → «Три состояния кнопки».
+/// hovered or has captured the press — «Интерфейс игры» → «Мышь».
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MouseState {
     pub position: [f32; 2],
@@ -143,7 +143,7 @@ pub struct MouseState {
 
 /// Releases of a key the active screen declared in its own `keys` table — queued the same short
 /// way mouse events are, and drained at the same step boundary, never through the world's input
-/// pipeline. «Экраны и состояние» → «Клавиша экрана».
+/// pipeline. «Экраны и состояние» → «Клавиши экрана».
 #[derive(Debug, Clone, Default)]
 pub struct KeyQueue {
     pending: Vec<String>,
