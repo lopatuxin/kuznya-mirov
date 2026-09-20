@@ -8,7 +8,7 @@ use super::game::Game;
 use super::input::{MouseEvent, MouseState, UiEvent, UiQueue};
 use super::property::{self, PropertyId, PropertyTable};
 use super::rules::Outcome;
-use super::value::PropKind;
+use super::value::{ImageId, PropKind};
 use super::world::World;
 
 pub type ScreenId = usize;
@@ -16,6 +16,17 @@ pub type FontId = usize;
 /// Index into `files.music`, in declaration order — «Звук»: a screen's `music`
 /// field resolves its name to one of these at load time, the same way `font` resolves to `FontId`.
 pub type MusicId = usize;
+
+/// «Картинки» → «Где появляется картинка»: a panel or button's own fill is exactly one of these,
+/// never both — checked at load time. Image and color are drawn the same way further down the
+/// pipeline (a color fill is the atlas's white pixel, stretched and multiplied by the color), but
+/// the data itself keeps them apart: a color fill's own alpha already carries opacity
+/// (`#rrggbbaa`), so `opacity` only ever appears on the image side.
+#[derive(Debug, Clone, Copy)]
+pub enum Fill {
+    Color([f32; 4]),
+    Image { image: ImageId, opacity: f32 },
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Anchor {
@@ -174,9 +185,12 @@ fn format_property(world: &World, id: u32, prop: PropertyId, properties: &Proper
             }
         }
         PropKind::Text => world.text(id, prop).unwrap_or_default().to_string(),
-        PropKind::Vec2 | PropKind::Color | PropKind::Layer | PropKind::Grid | PropKind::Keys => {
-            String::new()
-        }
+        PropKind::Vec2
+        | PropKind::Color
+        | PropKind::Layer
+        | PropKind::Grid
+        | PropKind::Keys
+        | PropKind::Image => String::new(),
     }
 }
 
@@ -196,7 +210,7 @@ pub enum ButtonCommand {
 pub enum Element {
     Panel {
         placement: Placement,
-        color: [f32; 4],
+        fill: Fill,
     },
     Label {
         placement: Placement,
@@ -212,9 +226,9 @@ pub enum Element {
         font: FontId,
         font_size: f32,
         text_color: [f32; 4],
-        color: [f32; 4],
-        color_hover: [f32; 4],
-        color_pressed: [f32; 4],
+        fill: Fill,
+        fill_hover: Fill,
+        fill_pressed: Fill,
         on_click: ButtonCommand,
     },
 }
@@ -518,27 +532,100 @@ pub fn engine_call(
     write_sound_frame(game, config, state);
 }
 
-/// Which of the three fill colors a button currently shows — pressed wins over hover, and no
-/// button hovers while another one holds the capture. «Интерфейс игры» → «Мышь».
+/// Which of the three fills a button currently shows — pressed wins over hover, and no button
+/// hovers while another one holds the capture. «Интерфейс игры» → «Мышь», «Картинки» → «Где
+/// появляется картинка».
 pub fn button_fill<'a>(
-    color: &'a [f32; 4],
-    color_hover: &'a [f32; 4],
-    color_pressed: &'a [f32; 4],
+    fill: &'a Fill,
+    fill_hover: &'a Fill,
+    fill_pressed: &'a Fill,
     index: usize,
     mouse: &MouseState,
-) -> &'a [f32; 4] {
+) -> &'a Fill {
     if mouse.captured == Some(index) {
-        color_pressed
+        fill_pressed
     } else if mouse.captured.is_none() && mouse.hover == Some(index) {
-        color_hover
+        fill_hover
     } else {
-        color
+        fill
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::input::MouseState;
+
+    #[test]
+    fn button_fill_defaults_hover_and_pressed_to_the_base_image_fill() {
+        // «Картинки»: «Нет своей картинки на вид — во всех трёх видах показывается image».
+        let base = Fill::Image {
+            image: 3,
+            opacity: 0.8,
+        };
+        let mouse = MouseState {
+            hover: Some(0),
+            captured: None,
+            ..Default::default()
+        };
+        let shown = button_fill(&base, &base, &base, 0, &mouse);
+        match shown {
+            Fill::Image { image, opacity } => {
+                assert_eq!(*image, 3);
+                assert_eq!(*opacity, 0.8);
+            }
+            Fill::Color(_) => panic!("должна остаться картинка"),
+        }
+    }
+
+    #[test]
+    fn button_fill_prefers_its_own_image_hover_over_the_base_fill() {
+        let base = Fill::Image {
+            image: 1,
+            opacity: 1.0,
+        };
+        let hover = Fill::Image {
+            image: 2,
+            opacity: 1.0,
+        };
+        let pressed = base;
+        let mouse = MouseState {
+            hover: Some(0),
+            captured: None,
+            ..Default::default()
+        };
+        let shown = button_fill(&base, &hover, &pressed, 0, &mouse);
+        assert!(matches!(shown, Fill::Image { image: 2, .. }));
+    }
+
+    #[test]
+    fn button_fill_pressed_wins_over_hover() {
+        let base = Fill::Color([0.0, 0.0, 0.0, 1.0]);
+        let hover = Fill::Color([0.5, 0.5, 0.5, 1.0]);
+        let pressed = Fill::Color([1.0, 1.0, 1.0, 1.0]);
+        let mouse = MouseState {
+            hover: Some(0),
+            captured: Some(0),
+            ..Default::default()
+        };
+        let shown = button_fill(&base, &hover, &pressed, 0, &mouse);
+        assert!(matches!(shown, Fill::Color([1.0, 1.0, 1.0, 1.0])));
+    }
+
+    #[test]
+    fn button_fill_of_a_different_button_ignores_this_ones_capture() {
+        let base = Fill::Color([0.0, 0.0, 0.0, 1.0]);
+        let hover = Fill::Color([0.5, 0.5, 0.5, 1.0]);
+        let pressed = Fill::Color([1.0, 1.0, 1.0, 1.0]);
+        // Another button (index 1) holds the capture — button 0 shows neither hover nor pressed.
+        let mouse = MouseState {
+            hover: Some(0),
+            captured: Some(1),
+            ..Default::default()
+        };
+        let shown = button_fill(&base, &hover, &pressed, 0, &mouse);
+        assert!(matches!(shown, Fill::Color([0.0, 0.0, 0.0, 1.0])));
+    }
 
     fn placement(anchor: Anchor, offset: [f32; 2], size: [f32; 2]) -> Placement {
         Placement {

@@ -14,7 +14,8 @@ pub const LAYER: PropertyId = 6;
 pub const KEYS: PropertyId = 7;
 pub const LIFETIME: PropertyId = 8;
 pub const NAME: PropertyId = 9;
-pub const IMAGE_NAME: &str = "image";
+pub const IMAGE: PropertyId = 10;
+pub const OPACITY: PropertyId = 11;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -27,6 +28,8 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("keys", PropKind::Keys),
     ("lifetime", PropKind::Time),
     ("name", PropKind::Text),
+    ("image", PropKind::Image),
+    ("opacity", PropKind::Number),
 ];
 
 #[derive(Debug, Clone)]
@@ -118,6 +121,20 @@ mod tests {
         assert_eq!(table.resolve("position"), Some(POSITION));
         assert_eq!(table.resolve("velocity"), Some(VELOCITY));
         assert_eq!(table.kind(COLLIDES), PropKind::Flag);
+        assert_eq!(table.resolve("image"), Some(IMAGE));
+        assert_eq!(table.kind(IMAGE), PropKind::Image);
+        assert_eq!(table.resolve("opacity"), Some(OPACITY));
+        assert_eq!(table.kind(OPACITY), PropKind::Number);
+    }
+
+    #[test]
+    fn author_property_cannot_shadow_image_or_opacity() {
+        let mut table = PropertyTable::new();
+        assert_eq!(table.declare_author("image", PropKind::Flag), Err(IMAGE));
+        assert_eq!(
+            table.declare_author("opacity", PropKind::Flag),
+            Err(OPACITY)
+        );
     }
 
     #[test]

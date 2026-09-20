@@ -15,6 +15,12 @@
     "sounds": { "bounce": "sounds/bounce.wav", "brick": "sounds/brick.wav",
                 "win": "sounds/win.wav", "lose": "sounds/lose.wav" },
     "music": { "menu": "music/menu.mp3", "game": "music/game.mp3" },
-    "images": "images/"
+    "images": {
+      "paddle": { "path": "images/paddle.png" },
+      "ball": { "path": "images/ball.png", "frames": 4, "frame_time": 0.15 },
+      "brick_red": { "path": "images/brick_red.png" },
+      "brick_amber": { "path": "images/brick_amber.png" },
+      "brick_yellow": { "path": "images/brick_yellow.png" }
+    }
   }
 }

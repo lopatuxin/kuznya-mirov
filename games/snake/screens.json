@@ -1,12 +1,14 @@
 {
   "screens": [
     { "name": "menu", "world_runs": false, "music": "menu", "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, -20], "size": [480, 260],
+        "image": "panel" },
       { "kind": "label", "anchor": "center", "offset": [0, -60], "size": [400, 48],
         "text": "Змейка", "font": "title", "font_size": 44, "color": "#e8ecf2",
         "align": "center" },
       { "kind": "button", "anchor": "center", "offset": [0, 20], "size": [220, 56],
         "text": "Играть", "font": "ui", "font_size": 24, "text_color": "#12141a",
-        "color": "#5ad469", "color_hover": "#6fe07d", "color_pressed": "#3aa54c",
+        "image": "button", "image_hover": "button_hover", "image_pressed": "button_pressed",
         "on_click": ["new_game", "game"] }
     ] },
 

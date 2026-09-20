@@ -1,5 +1,10 @@
 pub type Vec2 = [f64; 2];
 
+/// Index into `files.images`, in declaration order — «Картинки»: an object's `image`
+/// property, a spawn template's `image` field and a panel/button's `image` field all resolve
+/// their name to one of these at load time, the same way a track name resolves to a `MusicId`.
+pub type ImageId = usize;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropKind {
     Vec2,
@@ -11,6 +16,7 @@ pub enum PropKind {
     Text,
     Grid,
     Keys,
+    Image,
 }
 
 impl PropKind {
@@ -25,6 +31,7 @@ impl PropKind {
             PropKind::Text => "строка",
             PropKind::Grid => "grid",
             PropKind::Keys => "keys",
+            PropKind::Image => "картинка",
         }
     }
 }
@@ -38,6 +45,7 @@ pub enum Value {
     Color([f32; 4]),
     Layer(i32),
     Text(String),
+    Image(ImageId),
 }
 
 impl Value {
@@ -50,6 +58,7 @@ impl Value {
             Value::Color(_) => PropKind::Color,
             Value::Layer(_) => PropKind::Layer,
             Value::Text(_) => PropKind::Text,
+            Value::Image(_) => PropKind::Image,
         }
     }
 

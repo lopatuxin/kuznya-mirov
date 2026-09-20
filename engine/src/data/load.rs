@@ -9,11 +9,11 @@ use crate::core::rules::{
 };
 use crate::core::scene::{ObjectSpec, SceneConfig};
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, Element, FontId, MusicId, Placement, Screen, ScreenId,
+    Align, Anchor, ButtonCommand, Element, Fill, FontId, MusicId, Placement, Screen, ScreenId,
     ScreenKeyTable, ScreensConfig, TextPart,
 };
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
-use crate::core::value::{GridSpec, PropKind, Value, Vec2};
+use crate::core::value::{GridSpec, ImageId, PropKind, Value, Vec2};
 use crate::core::world::World;
 
 use super::error::ErrorSink;
@@ -228,6 +228,7 @@ fn parse_scalar_value(
     value: &Json,
     prop: PropertyId,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -242,7 +243,13 @@ fn parse_scalar_value(
             );
             None
         }),
-        PropKind::Number => expect_number(value, file, path, errors).map(Value::Number),
+        PropKind::Number => {
+            let n = expect_number(value, file, path, errors)?;
+            if prop == property::OPACITY && !validate_opacity_range(n, file, path, errors) {
+                return None;
+            }
+            Some(Value::Number(n))
+        }
         PropKind::Time => {
             expect_number(value, file, path, errors).map(|s| Value::Time(seconds_to_steps(s)))
         }
@@ -288,6 +295,10 @@ fn parse_scalar_value(
             Some(Value::Layer(n as i32))
         }
         PropKind::Text => expect_string(value, file, path, errors).map(Value::Text),
+        PropKind::Image => {
+            let name = expect_string(value, file, path, errors)?;
+            resolve_image(&name, images, file, path, errors).map(Value::Image)
+        }
         PropKind::Grid | PropKind::Keys => {
             errors.push(
                 file,
@@ -320,6 +331,7 @@ fn parse_grid(value: &Json, file: &str, path: &str, errors: &mut ErrorSink) -> O
 fn parse_key_edits(
     value: &Json,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -362,6 +374,7 @@ fn parse_key_edits(
             &pair[1],
             prop,
             properties,
+            images,
             file,
             &join(&entry_path, "[1]"),
             errors,
@@ -378,6 +391,7 @@ fn parse_key_edits(
 fn parse_keys(
     value: &Json,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -397,13 +411,25 @@ fn parse_keys(
             errors,
         );
         let press = match binding_obj.get("press") {
-            Some(v) => parse_key_edits(v, properties, file, &join(&binding_path, "press"), errors),
+            Some(v) => parse_key_edits(
+                v,
+                properties,
+                images,
+                file,
+                &join(&binding_path, "press"),
+                errors,
+            ),
             None => Vec::new(),
         };
         let release = match binding_obj.get("release") {
-            Some(v) => {
-                parse_key_edits(v, properties, file, &join(&binding_path, "release"), errors)
-            }
+            Some(v) => parse_key_edits(
+                v,
+                properties,
+                images,
+                file,
+                &join(&binding_path, "release"),
+                errors,
+            ),
             None => Vec::new(),
         };
         table.insert(code.clone(), KeyBinding { press, release });
@@ -418,10 +444,6 @@ fn resolve_property(
     path: &str,
     errors: &mut ErrorSink,
 ) -> Option<PropertyId> {
-    if name == property::IMAGE_NAME {
-        errors.push(file, path, "картинки в этой версии не поддержаны");
-        return None;
-    }
     match properties.resolve(name) {
         Some(id) => Some(id),
         None => {
@@ -514,6 +536,33 @@ fn resolve_music(
     None
 }
 
+/// An `image` field's name lookup — «Картинки»: resolves against `files.images`, listing every
+/// declared name when it doesn't, the same way `resolve_sound`/`resolve_music` do for their own
+/// tables.
+fn resolve_image(
+    name: &str,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ImageId> {
+    if let Some(id) = images.iter().position(|decl| decl.name == name) {
+        return Some(id);
+    }
+    let declared = images
+        .iter()
+        .map(|decl| format!("\"{}\"", decl.name))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let message = if declared.is_empty() {
+        format!("картинки \"{name}\" нет; картинки не объявлены")
+    } else {
+        format!("картинки \"{name}\" нет; объявлены {declared}")
+    };
+    errors.push(file, path, message);
+    None
+}
+
 pub struct ParsedObject {
     pub path: String,
     pub name: Option<String>,
@@ -530,11 +579,67 @@ pub struct ParsedObject {
     pub broken_properties: std::collections::HashSet<PropertyId>,
 }
 
+/// «Картинки»: `opacity` границы и текст ошибки написаны один раз здесь — как для числового
+/// значения свойства объекта (`parse_scalar_value`), так и для поля `opacity` панели/кнопки
+/// (`parse_opacity`).
+fn validate_opacity_range(n: f64, file: &str, path: &str, errors: &mut ErrorSink) -> bool {
+    if (0.0..=1.0).contains(&n) {
+        true
+    } else {
+        errors.push(
+            file,
+            path,
+            format!("opacity должен быть от 0 до 1 включительно, получено {n}"),
+        );
+        false
+    }
+}
+
+/// «Картинки»: `opacity` без `image` — ошибка данных везде, где может появиться `opacity`:
+/// объект, шаблон создания, панель и кнопка. Текст написан один раз здесь и его же берёт
+/// `validate_opacity_reachable_image`, проверяющая ту же ошибку по расширенной форме объекта.
+const OPACITY_WITHOUT_IMAGE: &str =
+    "opacity задан без image: множить не на что, у цвета для этого есть #rrggbbaa";
+fn validate_opacity_has_image(
+    has_image: bool,
+    has_opacity: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if has_opacity && !has_image {
+        errors.push(file, path, OPACITY_WITHOUT_IMAGE);
+    }
+}
+
+/// «Картинки»: `color`+`image` together is a data error, checked once here for every place a
+/// fixed set of properties gets built at once — a scene object and a spawn template alike.
+/// `opacity` without `image` is checked separately, after `possible_shapes` widens the shape by
+/// `keys` and collide effects — see `validate_opacity_reachable_image`: unlike `color`, which a
+/// scene object's shape never gains at runtime, `image` can arrive through a `keys` edit or a
+/// `set`/`give` collide effect, so judging it here, from the object's file shape alone, would
+/// reject a game that only ever adds `image` once the object is already moving.
+fn validate_image_fill(
+    shape: &std::collections::HashSet<PropertyId>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if shape.contains(&property::COLOR) && shape.contains(&property::IMAGE) {
+        errors.push(
+            file,
+            path,
+            "заданы и color, и image; должно быть ровно одно из двух",
+        );
+    }
+}
+
 fn parse_scene_object(
     value: &Json,
     index: usize,
     file: &str,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     errors: &mut ErrorSink,
 ) -> Option<ParsedObject> {
     let path = format!("objects[{index}]");
@@ -570,7 +675,8 @@ fn parse_scene_object(
                 }
             }
             PropKind::Keys => {
-                if let Some(table) = parse_keys(field_value, properties, file, &field_path, errors)
+                if let Some(table) =
+                    parse_keys(field_value, properties, images, file, &field_path, errors)
                 {
                     keys = Some(table);
                     shape.insert(prop);
@@ -579,9 +685,15 @@ fn parse_scene_object(
                 }
             }
             _ => {
-                if let Some(v) =
-                    parse_scalar_value(field_value, prop, properties, file, &field_path, errors)
-                {
+                if let Some(v) = parse_scalar_value(
+                    field_value,
+                    prop,
+                    properties,
+                    images,
+                    file,
+                    &field_path,
+                    errors,
+                ) {
                     // A flag set to `false` is absent for `World::has`, so it must be absent
                     // from the shape too: the prestart check and the running game have to
                     // agree on which objects a `has: [...]` selector matches.
@@ -596,6 +708,8 @@ fn parse_scene_object(
             }
         }
     }
+
+    validate_image_fill(&shape, file, &path, errors);
 
     Some(ParsedObject {
         path,
@@ -612,6 +726,7 @@ fn parse_scene_json(
     text: &str,
     file: &str,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     errors: &mut ErrorSink,
 ) -> Vec<ParsedObject> {
     let Some(root) = parse_json_or_error(file, text, errors) else {
@@ -633,7 +748,7 @@ fn parse_scene_json(
     };
     arr.iter()
         .enumerate()
-        .filter_map(|(i, v)| parse_scene_object(v, i, file, properties, errors))
+        .filter_map(|(i, v)| parse_scene_object(v, i, file, properties, images, errors))
         .collect()
 }
 
@@ -735,6 +850,23 @@ pub struct FilePaths {
     /// То же для `files.music` и `MusicId`, на который ссылается поле экрана `music`
     /// (см. `resolve_music`). Пусто, если `files.music` не объявлена.
     pub music: Vec<(String, String)>,
+    /// `files.images`, в порядке объявления — этот порядок определяет `ImageId`, на который
+    /// ссылается свойство `image` объекта, поле `image` шаблона создания и поля `image`/
+    /// `image_hover`/`image_pressed` панели и кнопки (см. `resolve_image`). Пусто, если
+    /// `files.images` не объявлена — «Картинки»: нет таблицы, нет картинок, это не ошибка.
+    pub images: Vec<ImageDecl>,
+}
+
+/// One `files.images` entry — «Картинки» → «Таблица картинок»: `frames`/`frame_time` default to
+/// a single, motionless frame when the game names neither. `frame_time` is already converted to
+/// steps here, at load time, the same way every other duration in the game's files is — nothing
+/// downstream ever sees seconds again.
+#[derive(Debug, Clone)]
+pub struct ImageDecl {
+    pub name: String,
+    pub path: String,
+    pub frames: u32,
+    pub frame_steps: i64,
 }
 
 /// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук» → «Загрузка и проверка»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
@@ -745,14 +877,29 @@ pub enum MusicVerdict {
     Rejected,
 }
 
+/// Ответ страницы по одной картинке из `files.images` — «Картинки» → «Загрузка и проверка»:
+/// движок не разжимает PNG сам, страница уже разжала его и отдаёт размер и точки. `Ok`'s `pixels`
+/// is RGBA, four bytes per pixel, straight from `getImageData` — not premultiplied by alpha.
+#[derive(Debug, Clone)]
+pub enum ImageVerdict {
+    Ok {
+        width: u32,
+        height: u32,
+        pixels: Vec<u8>,
+    },
+    Missing,
+    Rejected,
+}
+
 /// Список двоичных файлов, которые стоит прочитать в третьем заходе загрузки — «Звук»
-/// → «Загрузка: сначала лёгкое, потом тяжёлое»: шрифты и звуки читаются все, музыка — только та,
-/// которую называет хоть один экран.
+/// → «Загрузка: сначала лёгкое, потом тяжёлое»: шрифты, звуки и картинки читаются все, музыка —
+/// только та, которую называет хоть один экран.
 #[derive(Debug, Clone, Default)]
 pub struct NeededMedia {
     pub fonts: Vec<(String, String)>,
     pub sounds: Vec<(String, String)>,
     pub music: Vec<(String, String)>,
+    pub images: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -855,6 +1002,14 @@ pub fn read_texts(
         fonts: config.files.fonts.clone(),
         sounds: config.files.sounds.clone(),
         music,
+        // «Картинки» → «Загрузка и проверка»: все объявленные, whether or not anything
+        // names them yet — same treatment `fonts`/`sounds` get, unlike `music`'s filter above.
+        images: config
+            .files
+            .images
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.path.clone()))
+            .collect(),
     }
 }
 
@@ -966,12 +1121,16 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 .unwrap_or_default(),
             None => Vec::new(),
         };
-        // `files.images` isn't read anywhere yet — same "documented but unused" status as
-        // `name` — but its value still has to be the string a path is.
-        if let Some(images) = f.get("images") {
-            expect_string(images, "game.json", "files → images", errors);
-        }
-        (properties, scene_path, rules, screens, fonts, sounds, music)
+        // «Картинки»: необязательна — нет ключа, нет и картинок, не ошибка.
+        let images = match f.get("images") {
+            Some(v) => {
+                parse_images_table(v, "game.json", "files → images", errors).unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
+        (
+            properties, scene_path, rules, screens, fonts, sounds, music, images,
+        )
     });
 
     let start_screen = require_field(obj, "start_screen", "game.json", "", errors)
@@ -986,7 +1145,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let scene = scene?;
     let max_objects = max_objects?;
     let random_seed = random_seed?;
-    let (properties, scene_path, rules, screens, fonts, sounds, music) = files?;
+    let (properties, scene_path, rules, screens, fonts, sounds, music, images) = files?;
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
@@ -1007,6 +1166,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             fonts,
             sounds,
             music,
+            images,
         },
         start_screen,
         win_screen,
@@ -1163,6 +1323,132 @@ fn parse_media_table(
             continue;
         }
         out.push((name.clone(), file_path.to_string()));
+    }
+    Some(out)
+}
+
+/// `files.images`: an object mapping an image's name (used by an object's `image` property, a
+/// spawn template's `image` field, and a panel/button's `image` fields) to its description —
+/// «Картинки» → «Таблица картинок». Order is preserved — it becomes the image's `ImageId`. A
+/// malformed entry is skipped (its own error already pushed), same as `parse_font_table`; `None`
+/// only when the whole value isn't a table at all. `frame_time` is converted to steps right here,
+/// the same way `parse_grid`/`parse_scalar_value` convert every other duration at load time.
+fn parse_images_table(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<ImageDecl>> {
+    let Some(obj) = value.as_object() else {
+        errors.push(
+            file,
+            path,
+            "files.images — ожидалась таблица \"имя → описание\", как files.fonts",
+        );
+        return None;
+    };
+    let mut out = Vec::with_capacity(obj.len());
+    for (name, decl_json) in obj {
+        if name.is_empty() {
+            errors.push(
+                file,
+                path,
+                "files.images → пустое имя: у картинки должно быть имя, которым её назовёт объект или элемент",
+            );
+            continue;
+        }
+        let entry_path = join(path, name);
+        let Some(decl_obj) = expect_object(decl_json, file, &entry_path, errors) else {
+            continue;
+        };
+        reject_unknown_keys(
+            decl_obj,
+            &["path", "frames", "frame_time"],
+            file,
+            &entry_path,
+            errors,
+        );
+        let Some(image_path) = require_field(decl_obj, "path", file, &entry_path, errors)
+            .and_then(|v| expect_string(v, file, &join(&entry_path, "path"), errors))
+        else {
+            continue;
+        };
+        if !image_path.to_ascii_lowercase().ends_with(".png") {
+            errors.push(
+                file,
+                &join(&entry_path, "path"),
+                format!(
+                    "{image_path} — files.images берёт только PNG; путь должен оканчиваться на \".png\""
+                ),
+            );
+            continue;
+        }
+        let (frames, frame_steps) = match (decl_obj.get("frames"), decl_obj.get("frame_time")) {
+            (None, None) => (1, 1),
+            (Some(_), None) => {
+                errors.push(
+                    file,
+                    &entry_path,
+                    "frames задан без frame_time: оба поля нужны вместе, иначе не нужно ни одного",
+                );
+                continue;
+            }
+            (None, Some(_)) => {
+                errors.push(
+                    file,
+                    &entry_path,
+                    "frame_time задан без frames: оба поля нужны вместе, иначе не нужно ни одного",
+                );
+                continue;
+            }
+            (Some(frames_json), Some(frame_time_json)) => {
+                let frames = expect_number(frames_json, file, &join(&entry_path, "frames"), errors)
+                    .filter(|n| {
+                        if *n < 1.0 || n.fract() != 0.0 || *n > f64::from(u32::MAX) {
+                            errors.push(
+                                file,
+                                &join(&entry_path, "frames"),
+                                format!(
+                                    "frames должен быть целым числом от 1 до {}, получено {n}",
+                                    u32::MAX
+                                ),
+                            );
+                            false
+                        } else {
+                            true
+                        }
+                    })
+                    .map(|n| n as u32);
+                let frame_time = expect_number(
+                    frame_time_json,
+                    file,
+                    &join(&entry_path, "frame_time"),
+                    errors,
+                )
+                .filter(|n| {
+                    if *n <= 0.0 {
+                        errors.push(
+                            file,
+                            &join(&entry_path, "frame_time"),
+                            format!("frame_time должен быть больше нуля, получено {n}"),
+                        );
+                        false
+                    } else {
+                        true
+                    }
+                });
+                match (frames, frame_time) {
+                    (Some(frames), Some(frame_time)) => (frames, seconds_to_steps(frame_time)),
+                    _ => continue,
+                }
+            }
+        };
+        out.push(ImageDecl {
+            name: name.clone(),
+            path: image_path,
+            frames,
+            frame_steps,
+        });
     }
     Some(out)
 }
@@ -1480,6 +1766,7 @@ fn parse_common_action(
 fn parse_collide_effects(
     value: Option<&Json>,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -1494,6 +1781,7 @@ fn parse_collide_effects(
             parse_collide_effect(
                 entry,
                 properties,
+                images,
                 file,
                 &join(path, &format!("[{i}]")),
                 errors,
@@ -1505,6 +1793,7 @@ fn parse_collide_effects(
 fn parse_collide_effect(
     value: &Json,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -1568,6 +1857,7 @@ fn parse_collide_effect(
                 raw_value,
                 prop,
                 properties,
+                images,
                 file,
                 &join(path, "[2]"),
                 errors,
@@ -1626,6 +1916,7 @@ fn parse_collide_effect(
 fn parse_template(
     value: &Json,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -1668,14 +1959,22 @@ fn parse_template(
             template.push((prop, TemplateValue::FromParent(parent_prop)));
             continue;
         }
-        if let Some(v) =
-            parse_scalar_value(field_value, prop, properties, file, &field_path, errors)
-        {
+        if let Some(v) = parse_scalar_value(
+            field_value,
+            prop,
+            properties,
+            images,
+            file,
+            &field_path,
+            errors,
+        ) {
             template.push((prop, TemplateValue::Const(v)));
         } else {
             broken_properties.insert(prop);
         }
     }
+    let shape: std::collections::HashSet<PropertyId> = template.iter().map(|(p, _)| *p).collect();
+    validate_image_fill(&shape, file, path, errors);
     (template, broken_properties)
 }
 
@@ -1685,11 +1984,13 @@ const ALL_RULE_KEYS: &[&str] = &[
     "kind", "for", "a", "b", "effects", "do", "when", "where", "template",
 ];
 
+#[allow(clippy::too_many_arguments)]
 fn parse_rule(
     value: &Json,
     index: usize,
     file: &str,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     sounds: &[(String, String)],
     music: &[(String, String)],
     errors: &mut ErrorSink,
@@ -1737,6 +2038,7 @@ fn parse_rule(
             let effects_a = parse_collide_effects(
                 effects_json.and_then(|e| e.get("a")),
                 properties,
+                images,
                 file,
                 &join(&path, "effects → a"),
                 errors,
@@ -1744,6 +2046,7 @@ fn parse_rule(
             let effects_b = parse_collide_effects(
                 effects_json.and_then(|e| e.get("b")),
                 properties,
+                images,
                 file,
                 &join(&path, "effects → b"),
                 errors,
@@ -1836,6 +2139,7 @@ fn parse_rule(
             let (template, template_broken) = parse_template(
                 template_json,
                 properties,
+                images,
                 file,
                 &join(&path, "template"),
                 errors,
@@ -1907,6 +2211,7 @@ fn parse_rules_json(
     text: &str,
     file: &str,
     properties: &PropertyTable,
+    images: &[ImageDecl],
     sounds: &[(String, String)],
     music: &[(String, String)],
     errors: &mut ErrorSink,
@@ -1930,7 +2235,7 @@ fn parse_rules_json(
         .enumerate()
         .filter_map(|(i, v)| {
             let (rule, template_broken) =
-                parse_rule(v, i, file, properties, sounds, music, errors)?;
+                parse_rule(v, i, file, properties, images, sounds, music, errors)?;
             Some((
                 rule,
                 RuleMeta {
@@ -1956,6 +2261,16 @@ struct Shape {
     maybe: std::collections::HashSet<PropertyId>,
     removable: std::collections::HashSet<PropertyId>,
     broken_properties: std::collections::HashSet<PropertyId>,
+}
+
+/// One shape from `possible_shapes`, with its display `locator` and the file/path of the node it
+/// came from — a scene object's own node, or a spawn rule's `template` field — so a check run over
+/// these shapes can address its own file, rather than the caller's.
+struct PossibleShape {
+    shape: Shape,
+    locator: String,
+    file: String,
+    path: String,
 }
 
 /// Whether some assignment of the `maybe`/`removable` properties could make `selector` match this
@@ -2083,7 +2398,7 @@ fn keys_edited_properties(
 /// matches the *other* side too; otherwise the rule can never trigger and the widening would be
 /// describing a state the game can't reach. Checked fresh each pass, since an earlier rule's
 /// widening in the same pass can be what makes the other side matchable.
-fn widen_shapes_by_collide_effects(shapes: &mut [(Shape, String)], rules: &RuleSet) {
+fn widen_shapes_by_collide_effects(shapes: &mut [PossibleShape], rules: &RuleSet) {
     let mut changed = true;
     while changed {
         changed = false;
@@ -2098,8 +2413,8 @@ fn widen_shapes_by_collide_effects(shapes: &mut [(Shape, String)], rules: &RuleS
             else {
                 continue;
             };
-            let a_matches = shapes.iter().any(|(s, _)| matches_shape(a, s));
-            let b_matches = shapes.iter().any(|(s, _)| matches_shape(b, s));
+            let a_matches = shapes.iter().any(|ps| matches_shape(a, &ps.shape));
+            let b_matches = shapes.iter().any(|ps| matches_shape(b, &ps.shape));
             if !a_matches || !b_matches {
                 continue;
             }
@@ -2121,15 +2436,15 @@ fn widen_shapes_by_collide_effects(shapes: &mut [(Shape, String)], rules: &RuleS
                 if given.is_empty() && taken.is_empty() {
                     continue;
                 }
-                for (shape, _) in shapes.iter_mut() {
-                    if !matches_shape(selector, shape) {
+                for ps in shapes.iter_mut() {
+                    if !matches_shape(selector, &ps.shape) {
                         continue;
                     }
                     for prop in &given {
-                        changed |= shape.maybe.insert(*prop);
+                        changed |= ps.shape.maybe.insert(*prop);
                     }
                     for prop in &taken {
-                        changed |= shape.removable.insert(*prop);
+                        changed |= ps.shape.removable.insert(*prop);
                     }
                 }
             }
@@ -2144,11 +2459,12 @@ fn widen_shapes_by_collide_effects(shapes: &mut [(Shape, String)], rules: &RuleS
 fn possible_shapes(
     scene: &[ParsedObject],
     scene_file: &str,
+    rules_file: &str,
     rules: &RuleSet,
     rule_meta: &[RuleMeta],
     properties: &PropertyTable,
-) -> Vec<(Shape, String)> {
-    let mut shapes: Vec<(Shape, String)> = scene
+) -> Vec<PossibleShape> {
+    let mut shapes: Vec<PossibleShape> = scene
         .iter()
         .map(|o| {
             let locator = join(scene_file, &o.path);
@@ -2157,15 +2473,17 @@ fn possible_shapes(
                 None => locator,
             };
             let (maybe, removable) = keys_edited_properties(o);
-            (
-                Shape {
+            PossibleShape {
+                shape: Shape {
                     certain: o.shape.clone(),
                     maybe,
                     removable,
                     broken_properties: o.broken_properties.clone(),
                 },
                 locator,
-            )
+                file: scene_file.to_string(),
+                path: o.path.clone(),
+            }
         })
         .collect();
     for (rule, meta) in rules.rules.iter().zip(rule_meta) {
@@ -2201,19 +2519,43 @@ fn possible_shapes(
                 .collect();
 
             let name = format!("шаблон rules[{}]", meta.file_index);
-            shapes.push((
-                Shape {
+            let path = join(&format!("rules[{}]", meta.file_index), "template");
+            shapes.push(PossibleShape {
+                shape: Shape {
                     certain,
                     maybe,
                     removable: std::collections::HashSet::new(),
                     broken_properties: meta.template_broken.clone(),
                 },
-                name,
-            ));
+                locator: name,
+                file: rules_file.to_string(),
+                path,
+            });
         }
     }
     widen_shapes_by_collide_effects(&mut shapes, rules);
     shapes
+}
+
+/// «Картинки»: `opacity` declared on a scene object or spawn template needs `image` to multiply,
+/// but not necessarily from the object's own file shape — a `keys` edit or a collide rule's
+/// `set`/`give` can hand it `image` once the game is running (`possible_shapes`'s `maybe`), and a
+/// `broken_properties` `image` is already reported by its own error, so its presence is
+/// known-incomplete rather than known-absent (see `validate_image_fill`). Run once here, after
+/// `possible_shapes` has widened every shape, instead of at parse time like the `color`+`image`
+/// check, which needs no such widening.
+fn validate_opacity_reachable_image(shapes: &[PossibleShape], errors: &mut ErrorSink) {
+    for ps in shapes {
+        if !ps.shape.certain.contains(&property::OPACITY) {
+            continue;
+        }
+        let has_image = ps.shape.certain.contains(&property::IMAGE)
+            || ps.shape.maybe.contains(&property::IMAGE)
+            || ps.shape.broken_properties.contains(&property::IMAGE);
+        if !has_image {
+            errors.push(&ps.file, &ps.path, OPACITY_WITHOUT_IMAGE);
+        }
+    }
 }
 
 /// `do_` from any rule kind that has one — `Move` has none.
@@ -2225,7 +2567,7 @@ fn common_actions(rule: &Rule) -> &[CommonAction] {
 }
 
 fn validate_property_sufficiency(
-    shapes: &[(Shape, String)],
+    shapes: &[PossibleShape],
     rules: &RuleSet,
     rule_meta: &[RuleMeta],
     file: &str,
@@ -2234,7 +2576,10 @@ fn validate_property_sufficiency(
 ) {
     let candidates: Vec<Candidate> = shapes
         .iter()
-        .map(|(shape, locator)| Candidate { shape, locator })
+        .map(|ps| Candidate {
+            shape: &ps.shape,
+            locator: &ps.locator,
+        })
         .collect();
 
     for (rule, meta) in rules.rules.iter().zip(rule_meta) {
@@ -2395,7 +2740,7 @@ fn validate_property_sufficiency(
             if let CommonAction::Add { prop, .. } = action
                 && !shapes
                     .iter()
-                    .any(|(s, _)| s.certain.contains(prop) || s.maybe.contains(prop))
+                    .any(|ps| ps.shape.certain.contains(prop) || ps.shape.maybe.contains(prop))
                 && reported_do_adds.insert(*prop)
             {
                 errors.push(
@@ -2615,7 +2960,7 @@ fn describe_selector(selector: &Selector, properties: &PropertyTable) -> String 
 /// сыплет объекты до `max_objects`, ровно то же по сути, что и пустой `for`. Пустой отбор (`has`
 /// и `without` оба пусты) подходит всем и предупреждения не даёт.
 fn validate_selectors_not_empty(
-    shapes: &[(Shape, String)],
+    shapes: &[PossibleShape],
     rules: &RuleSet,
     rule_meta: &[RuleMeta],
     rules_file: &str,
@@ -2626,10 +2971,7 @@ fn validate_selectors_not_empty(
         if selector.has.is_empty() && selector.without.is_empty() {
             return;
         }
-        if shapes
-            .iter()
-            .any(|(shape, _)| matches_shape(selector, shape))
-        {
+        if shapes.iter().any(|ps| matches_shape(selector, &ps.shape)) {
             return;
         }
         errors.push_warning(
@@ -2908,7 +3250,9 @@ fn parse_button_command(
 enum ParsedElementData {
     Panel {
         placement: Placement,
-        color: [f32; 4],
+        color: Option<[f32; 4]>,
+        image_name: Option<String>,
+        opacity: Option<f32>,
     },
     Label {
         placement: Placement,
@@ -2924,14 +3268,20 @@ enum ParsedElementData {
         font_name: String,
         font_size: f32,
         text_color: [f32; 4],
-        color: [f32; 4],
-        color_hover: [f32; 4],
-        color_pressed: [f32; 4],
+        color: Option<[f32; 4]>,
+        color_hover: Option<[f32; 4]>,
+        color_pressed: Option<[f32; 4]>,
+        image_name: Option<String>,
+        image_hover_name: Option<String>,
+        image_pressed_name: Option<String>,
+        opacity: Option<f32>,
         on_click: ParsedCommand,
     },
 }
 
-const PANEL_KEYS: &[&str] = &["kind", "anchor", "offset", "size", "color"];
+const PANEL_KEYS: &[&str] = &[
+    "kind", "anchor", "offset", "size", "color", "image", "opacity",
+];
 const LABEL_KEYS: &[&str] = &[
     "kind",
     "anchor",
@@ -2955,8 +3305,51 @@ const BUTTON_KEYS: &[&str] = &[
     "color",
     "color_hover",
     "color_pressed",
+    "image",
+    "image_hover",
+    "image_pressed",
+    "opacity",
     "on_click",
 ];
+
+/// «Картинки» → «Где появляется картинка»: a panel or button must show exactly one of `color`/
+/// `image`, never both and never neither — checked once here for the two element kinds that can
+/// carry either.
+fn validate_fill_choice(
+    has_color: bool,
+    has_image: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    match (has_color, has_image) {
+        (true, true) => errors.push(
+            file,
+            path,
+            "заданы и color, и image; должно быть ровно одно из двух",
+        ),
+        (false, false) => errors.push(file, path, "нужен один из color или image"),
+        _ => {}
+    }
+}
+
+fn parse_opacity(
+    obj: &serde_json::Map<String, Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<f32>> {
+    match obj.get("opacity") {
+        None => Some(None),
+        Some(v) => {
+            let n = expect_number(v, file, &join(path, "opacity"), errors)?;
+            if !validate_opacity_range(n, file, &join(path, "opacity"), errors) {
+                return None;
+            }
+            Some(Some(n as f32))
+        }
+    }
+}
 
 fn parse_element(
     value: &Json,
@@ -2972,9 +3365,23 @@ fn parse_element(
         "panel" => {
             reject_unknown_keys(obj, PANEL_KEYS, file, path, errors);
             let placement = parse_placement(obj, file, path, errors)?;
-            let color_json = require_field(obj, "color", file, path, errors)?;
-            let color = expect_ui_color(color_json, file, &join(path, "color"), errors)?;
-            Some(ParsedElementData::Panel { placement, color })
+            let color = match obj.get("color") {
+                Some(v) => Some(expect_ui_color(v, file, &join(path, "color"), errors)?),
+                None => None,
+            };
+            let image_name = match obj.get("image") {
+                Some(v) => Some(expect_string(v, file, &join(path, "image"), errors)?),
+                None => None,
+            };
+            validate_fill_choice(color.is_some(), image_name.is_some(), file, path, errors);
+            let opacity = parse_opacity(obj, file, path, errors)?;
+            validate_opacity_has_image(image_name.is_some(), opacity.is_some(), file, path, errors);
+            Some(ParsedElementData::Panel {
+                placement,
+                color,
+                image_name,
+                opacity,
+            })
         }
         "label" => {
             reject_unknown_keys(obj, LABEL_KEYS, file, path, errors);
@@ -3031,16 +3438,70 @@ fn parse_element(
                 Some(v) => expect_ui_color(v, file, &join(path, "text_color"), errors)?,
                 None => [1.0, 1.0, 1.0, 1.0],
             };
-            let color_json = require_field(obj, "color", file, path, errors)?;
-            let color = expect_ui_color(color_json, file, &join(path, "color"), errors)?;
+            let color = match obj.get("color") {
+                Some(v) => Some(expect_ui_color(v, file, &join(path, "color"), errors)?),
+                None => None,
+            };
             let color_hover = match obj.get("color_hover") {
-                Some(v) => expect_ui_color(v, file, &join(path, "color_hover"), errors)?,
-                None => color,
+                Some(v) => Some(expect_ui_color(
+                    v,
+                    file,
+                    &join(path, "color_hover"),
+                    errors,
+                )?),
+                None => None,
             };
             let color_pressed = match obj.get("color_pressed") {
-                Some(v) => expect_ui_color(v, file, &join(path, "color_pressed"), errors)?,
-                None => color,
+                Some(v) => Some(expect_ui_color(
+                    v,
+                    file,
+                    &join(path, "color_pressed"),
+                    errors,
+                )?),
+                None => None,
             };
+            let image_name = match obj.get("image") {
+                Some(v) => Some(expect_string(v, file, &join(path, "image"), errors)?),
+                None => None,
+            };
+            let image_hover_name = match obj.get("image_hover") {
+                Some(v) => Some(expect_string(v, file, &join(path, "image_hover"), errors)?),
+                None => None,
+            };
+            let image_pressed_name = match obj.get("image_pressed") {
+                Some(v) => Some(expect_string(
+                    v,
+                    file,
+                    &join(path, "image_pressed"),
+                    errors,
+                )?),
+                None => None,
+            };
+            match (color.is_some(), image_name.is_some()) {
+                (true, true) | (false, false) => {
+                    validate_fill_choice(color.is_some(), image_name.is_some(), file, path, errors)
+                }
+                (true, false) => {
+                    if image_hover_name.is_some() || image_pressed_name.is_some() {
+                        errors.push(
+                            file,
+                            path,
+                            "image_hover и image_pressed допустимы только у кнопки с image, а не с color",
+                        );
+                    }
+                }
+                (false, true) => {
+                    if color_hover.is_some() || color_pressed.is_some() {
+                        errors.push(
+                            file,
+                            path,
+                            "color_hover и color_pressed допустимы только у кнопки с color, а не с image",
+                        );
+                    }
+                }
+            }
+            let opacity = parse_opacity(obj, file, path, errors)?;
+            validate_opacity_has_image(image_name.is_some(), opacity.is_some(), file, path, errors);
             let on_click_json = require_field(obj, "on_click", file, path, errors)?;
             let on_click = parse_button_command(
                 on_click_json,
@@ -3058,6 +3519,10 @@ fn parse_element(
                 color,
                 color_hover,
                 color_pressed,
+                image_name,
+                image_hover_name,
+                image_pressed_name,
+                opacity,
                 on_click,
             })
         }
@@ -3306,6 +3771,39 @@ fn resolve_on_click(
     }
 }
 
+/// A panel or button's fill — exactly one of `color`/`image` at the base level (`default: None`,
+/// «Картинки»: both or neither was already flagged by `validate_fill_choice` at parse time, so
+/// `None` here just drops the element like any other broken field), or a button's own hover/
+/// pressed field if it names one, the base fill otherwise (`default: Some(base)` — «Картинки»:
+/// «Нет своей картинки на вид — во всех трёх видах показывается image», the same default
+/// `color_hover`/`color_pressed` already had for a plain color).
+#[allow(clippy::too_many_arguments)]
+fn resolve_fill(
+    color: Option<[f32; 4]>,
+    image_name: Option<&str>,
+    opacity: Option<f32>,
+    default: Option<Fill>,
+    images: &[ImageDecl],
+    file: &str,
+    image_path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Fill> {
+    match (color, image_name) {
+        (Some(c), None) => Some(Fill::Color(c)),
+        (None, Some(name)) => {
+            let image = resolve_image(name, images, file, image_path, errors)?;
+            Some(Fill::Image {
+                image,
+                opacity: opacity.unwrap_or(1.0),
+            })
+        }
+        (None, None) => default,
+        // `parse_element` never sets both — a button's `color`/`image` and their hover/pressed
+        // counterparts are always parsed as one or the other for the same field.
+        (Some(_), Some(_)) => None,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_element(
     data: &ParsedElementData,
@@ -3313,16 +3811,34 @@ fn resolve_element(
     file: &str,
     scene_file: &str,
     fonts: &[(String, String)],
+    images: &[ImageDecl],
     scene_names: &std::collections::HashSet<&str>,
     name_to_id: &std::collections::HashMap<String, ScreenId>,
     parsed_screens: &[ParsedScreen],
     errors: &mut ErrorSink,
 ) -> Option<Element> {
     match data {
-        ParsedElementData::Panel { placement, color } => Some(Element::Panel {
-            placement: *placement,
-            color: *color,
-        }),
+        ParsedElementData::Panel {
+            placement,
+            color,
+            image_name,
+            opacity,
+        } => {
+            let fill = resolve_fill(
+                *color,
+                image_name.as_deref(),
+                *opacity,
+                None,
+                images,
+                file,
+                &join(path, "image"),
+                errors,
+            )?;
+            Some(Element::Panel {
+                placement: *placement,
+                fill,
+            })
+        }
         ParsedElementData::Label {
             placement,
             text,
@@ -3362,6 +3878,10 @@ fn resolve_element(
             color,
             color_hover,
             color_pressed,
+            image_name,
+            image_hover_name,
+            image_pressed_name,
+            opacity,
             on_click,
         } => {
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
@@ -3382,7 +3902,38 @@ fn resolve_element(
                 "кнопка",
                 errors,
             );
-            let (font, on_click) = (font?, on_click?);
+            let fill = resolve_fill(
+                *color,
+                image_name.as_deref(),
+                *opacity,
+                None,
+                images,
+                file,
+                &join(path, "image"),
+                errors,
+            );
+            let (font, on_click, fill) = (font?, on_click?, fill?);
+            let fill_hover = resolve_fill(
+                *color_hover,
+                image_hover_name.as_deref(),
+                *opacity,
+                Some(fill),
+                images,
+                file,
+                &join(path, "image_hover"),
+                errors,
+            );
+            let fill_pressed = resolve_fill(
+                *color_pressed,
+                image_pressed_name.as_deref(),
+                *opacity,
+                Some(fill),
+                images,
+                file,
+                &join(path, "image_pressed"),
+                errors,
+            );
+            let (fill_hover, fill_pressed) = (fill_hover?, fill_pressed?);
             if !text_ok {
                 return None;
             }
@@ -3392,9 +3943,9 @@ fn resolve_element(
                 font,
                 font_size: *font_size,
                 text_color: *text_color,
-                color: *color,
-                color_hover: *color_hover,
-                color_pressed: *color_pressed,
+                fill,
+                fill_hover,
+                fill_pressed,
                 on_click,
             })
         }
@@ -3432,6 +3983,7 @@ fn resolve_screens(
     win_screen_name: Option<&str>,
     loss_screen_name: Option<&str>,
     fonts: &[(String, String)],
+    images: &[ImageDecl],
     sounds: &[(String, String)],
     music_table: &[(String, String)],
     scene_objects: &[ParsedObject],
@@ -3478,6 +4030,7 @@ fn resolve_screens(
                         file,
                         scene_file,
                         fonts,
+                        images,
                         &scene_names,
                         &name_to_id,
                         parsed,
@@ -3748,6 +4301,191 @@ fn validate_music_files(
     }
 }
 
+/// «Картинки» → «Загрузка и проверка»: every declared image is read and checked whether or not
+/// anything names it — same treatment `validate_font_files`/`validate_sound_files` give fonts and
+/// sounds, unlike an unreferenced track (`validate_unreferenced_tracks`), which isn't even read.
+fn validate_image_files(
+    images: &[ImageDecl],
+    image_data: &[(String, ImageVerdict)],
+    errors: &mut ErrorSink,
+) {
+    for decl in images {
+        let field_path = format!("files → images → {}", decl.name);
+        match image_data
+            .iter()
+            .find(|(n, _)| n == &decl.name)
+            .map(|(_, v)| v)
+        {
+            Some(ImageVerdict::Ok {
+                width,
+                height,
+                pixels,
+            }) => {
+                if *width == 0 || *height == 0 {
+                    errors.push(
+                        "game.json",
+                        &field_path,
+                        format!(
+                            "{} — ширина и высота картинки должны быть больше нуля, получено {width}×{height}",
+                            decl.path
+                        ),
+                    );
+                    continue;
+                }
+                let expected_len = *width as usize * *height as usize * 4;
+                if pixels.len() != expected_len {
+                    errors.push(
+                        "game.json",
+                        &field_path,
+                        format!(
+                            "{} — страница отдала {} байт точек, ожидалось {expected_len} ({width}×{height}×4)",
+                            decl.path,
+                            pixels.len()
+                        ),
+                    );
+                    continue;
+                }
+                if width % decl.frames != 0 {
+                    errors.push(
+                        "game.json",
+                        &field_path,
+                        format!(
+                            "{} — ширина {width} не делится на frames ({}) нацело, остаток {}",
+                            decl.path,
+                            decl.frames,
+                            width % decl.frames
+                        ),
+                    );
+                }
+            }
+            Some(ImageVerdict::Rejected) => errors.push(
+                "game.json",
+                &field_path,
+                format!(
+                    "{} — исполнитель (браузер) не берётся разжимать этот файл",
+                    decl.path
+                ),
+            ),
+            Some(ImageVerdict::Missing) | None => errors.push(
+                "game.json",
+                &field_path,
+                format!(
+                    "файл \"{}\" не найден; ожидалась PNG-картинка, названная в game.json → files → images",
+                    decl.path
+                ),
+            ),
+        }
+    }
+}
+
+fn mark_fill_used(used: &mut std::collections::HashSet<ImageId>, fill: &Fill) {
+    if let Fill::Image { image, .. } = fill {
+        used.insert(*image);
+    }
+}
+
+fn mark_key_table_used(used: &mut std::collections::HashSet<ImageId>, table: &KeyTable) {
+    for binding in table.values() {
+        for edit in binding.press.iter().chain(&binding.release) {
+            if let Value::Image(id) = &edit.value {
+                used.insert(*id);
+            }
+        }
+    }
+}
+
+/// «Картинки»: an image the scene/rules/screens never name — collected across an object's own
+/// `image` property, its key bindings' `press`/`release` edits, a spawn template's `image` field
+/// (a collide effect's `set` counts too, the only other place a `Value::Image` can come from) and
+/// every panel/button fill.
+fn collect_used_images(
+    scene: &[ParsedObject],
+    rules: &RuleSet,
+    screens: &[Screen],
+) -> std::collections::HashSet<ImageId> {
+    let mut used = std::collections::HashSet::new();
+    for obj in scene {
+        for (_, v) in &obj.values {
+            if let Value::Image(id) = v {
+                used.insert(*id);
+            }
+        }
+        if let Some(table) = &obj.keys {
+            mark_key_table_used(&mut used, table);
+        }
+    }
+    for rule in &rules.rules {
+        match rule {
+            Rule::Spawn { template, .. } => {
+                for (_, tv) in template {
+                    if let TemplateValue::Const(Value::Image(id)) = tv {
+                        used.insert(*id);
+                    }
+                }
+            }
+            Rule::Collide {
+                effects_a,
+                effects_b,
+                ..
+            } => {
+                for effect in effects_a.iter().chain(effects_b) {
+                    if let CollideEffect::Set {
+                        value: Value::Image(id),
+                        ..
+                    } = effect
+                    {
+                        used.insert(*id);
+                    }
+                }
+            }
+            Rule::Move { .. } | Rule::Delete { .. } => {}
+        }
+    }
+    for screen in screens {
+        for element in &screen.elements {
+            match element {
+                Element::Panel { fill, .. } => mark_fill_used(&mut used, fill),
+                Element::Button {
+                    fill,
+                    fill_hover,
+                    fill_pressed,
+                    ..
+                } => {
+                    mark_fill_used(&mut used, fill);
+                    mark_fill_used(&mut used, fill_hover);
+                    mark_fill_used(&mut used, fill_pressed);
+                }
+                Element::Label { .. } => {}
+            }
+        }
+    }
+    used
+}
+
+/// «Картинки»: предупреждение (игра идёт), если объявленная картинка не встречается ни на одном
+/// объекте сцены, ни в одном шаблоне создания, ни на одном элементе экрана.
+fn validate_unused_images(
+    images: &[ImageDecl],
+    scene: &[ParsedObject],
+    rules: &RuleSet,
+    screens: &[Screen],
+    errors: &mut ErrorSink,
+) {
+    let used = collect_used_images(scene, rules, screens);
+    for (i, decl) in images.iter().enumerate() {
+        if !used.contains(&i) {
+            errors.push_warning(
+                "game.json",
+                &format!("files → images → {}", decl.name),
+                format!(
+                    "картинка \"{}\" объявлена, но её не называет ни один объект, ни один шаблон создания и ни один элемент экрана",
+                    decl.name
+                ),
+            );
+        }
+    }
+}
+
 /// «Звук»: объявленный звук, на который не ссылается ни один `play_sound` — читан
 /// и проверен, просто не нужен, как объявленное и не используемое свойство.
 fn validate_unused_sounds(sounds: &[(String, String)], rules: &RuleSet, errors: &mut ErrorSink) {
@@ -3897,6 +4635,7 @@ pub fn load_rest(
     font_bytes: &[(String, Option<Vec<u8>>)],
     sound_bytes: &[(String, Option<Vec<u8>>)],
     music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -3913,7 +4652,13 @@ pub fn load_rest(
     };
 
     let scene_objects = match scene_json {
-        Some(text) => parse_scene_json(text, &config.files.scene, &properties, &mut errors),
+        Some(text) => parse_scene_json(
+            text,
+            &config.files.scene,
+            &properties,
+            &config.files.images,
+            &mut errors,
+        ),
         None => {
             errors.push(
                 &config.files.scene,
@@ -3929,6 +4674,7 @@ pub fn load_rest(
             text,
             &config.files.rules,
             &properties,
+            &config.files.images,
             &config.files.sounds,
             &config.files.music,
             &mut errors,
@@ -3956,6 +4702,7 @@ pub fn load_rest(
     };
     validate_font_files(&config.files.fonts, font_bytes, &mut errors);
     validate_sound_files(&config.files.sounds, sound_bytes, &mut errors);
+    validate_image_files(&config.files.images, image_data, &mut errors);
     // «Звук» → «Загрузка и проверка»: captured from the raw parse,
     // before `resolve_screens` resolves each screen's `music` name, so an unknown or malformed
     // name still counts as "referenced" here — its own error comes from `resolve_music` regardless.
@@ -3977,6 +4724,7 @@ pub fn load_rest(
         config.win_screen.as_deref(),
         config.loss_screen.as_deref(),
         &config.files.fonts,
+        &config.files.images,
         &config.files.sounds,
         &config.files.music,
         &scene_objects,
@@ -3987,6 +4735,7 @@ pub fn load_rest(
     let shapes = possible_shapes(
         &scene_objects,
         &config.files.scene,
+        &config.files.rules,
         &rules,
         &rule_meta,
         &properties,
@@ -3999,6 +4748,7 @@ pub fn load_rest(
         &properties,
         &mut errors,
     );
+    validate_opacity_reachable_image(&shapes, &mut errors);
     // «Формат игры»: предупреждение не мешает игре запуститься — но раз игра уже не запустится
     // из-за ошибок собранных выше, считать эти три предупреждения незачем: правило, не
     // разобравшееся из-за ошибки, просто выпадает из `rules`, и предупреждение по неполному
@@ -4044,6 +4794,13 @@ pub fn load_rest(
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {
             validate_toggle_sound_presence(&rules, &sc.screens, &config.files.screens, &mut errors);
+            validate_unused_images(
+                &config.files.images,
+                &scene_objects,
+                &rules,
+                &sc.screens,
+                &mut errors,
+            );
         }
     }
 
@@ -4138,6 +4895,7 @@ pub fn load_game_from_texts(
         Some(scene_json),
         Some(rules_json),
         Some(screens_json),
+        &[],
         &[],
         &[],
         &[],

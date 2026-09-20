@@ -136,15 +136,17 @@ fn object_missing_property_needed_by_rule_is_reported() {
 }
 
 #[test]
-fn image_property_is_rejected_outright() {
+fn image_property_naming_an_undeclared_image_is_reported() {
+    // «Картинки»: `GAME` declares no `files.images` at all, so any name is undeclared —
+    // full coverage of `image`/`opacity` lives in `image_validation.rs`.
     let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"image":"foo.png"}]}"#;
     let LoadFailure { errors, .. } =
         load_game_from_texts(GAME, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
-            .expect_err("image должно быть ошибкой");
+            .expect_err("имя необъявленной картинки должно быть ошибкой");
     assert!(
         errors
             .iter()
-            .any(|e| e.message == "картинки в этой версии не поддержаны"),
+            .any(|e| e.message.contains("foo.png") && e.message.contains("не объявлены")),
         "{errors:?}"
     );
 }
@@ -337,14 +339,17 @@ fn unknown_field_message_names_the_allowed_fields() {
 /// игры»), просто пока не используются загрузчиком; общая проверка незнакомых ключей не должна
 /// отвергать их как опечатку.
 #[test]
-fn documented_but_unused_name_and_images_fields_are_accepted() {
+fn documented_but_unused_name_field_is_accepted() {
+    // «Формат игры»: `name` is documentation for a human/outside model, never read by the
+    // engine — «Картинки» → `files.images` is fully read now, so it no longer belongs in this
+    // "declared but unused" group; its own coverage lives in `image_validation.rs`.
     let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
 "random_seed":1,"start_screen":"main","max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{},"images":"images/"}}"##;
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
     let scene = r#"{"objects":[]}"#;
     let (game, _screens, _warnings) =
         load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
-            .expect("name и files.images — документированные поля, не ошибка");
+            .expect("name — документированное поле, не ошибка");
     assert_eq!(game.world.alive_count(), 0);
 }
 
@@ -1115,7 +1120,7 @@ fn broken_json_and_missing_file_get_no_structured_location() {
 
     let (config, _warnings) = read_entry(GAME).expect("game.json валиден");
     let missing_result =
-        engine::data::load::load_rest(GAME, config, None, None, None, None, &[], &[], &[]);
+        engine::data::load::load_rest(GAME, config, None, None, None, None, &[], &[], &[], &[]);
     let LoadFailure { errors, .. } = missing_result.expect_err("отсутствующие файлы — ошибка");
     assert!(
         errors
