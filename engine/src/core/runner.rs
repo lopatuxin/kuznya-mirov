@@ -85,6 +85,36 @@ impl Runner {
     }
 }
 
+/// «Картинки» → «Кадры»: window time for the interface's own image frames, in steps (60/second) —
+/// counted from an absolute `now_ms` timestamp rather than accumulated frame-to-frame deltas, so
+/// neither a paused screen nor a hidden tab affects it: the browser's own clock keeps running
+/// through both, and the interface's frame simply reflects however much real time has actually
+/// elapsed, jumping forward on return from a hidden tab instead of standing still.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UiClock {
+    first_tick_ms: Option<f64>,
+}
+
+impl UiClock {
+    pub fn new() -> Self {
+        UiClock {
+            first_tick_ms: None,
+        }
+    }
+
+    /// Starts the count over from the next `elapsed_steps` call — a fresh game load starts the
+    /// interface's own ribbon at frame 0 too, same as the world's.
+    pub fn reset(&mut self) {
+        self.first_tick_ms = None;
+    }
+
+    /// Steps elapsed since the first call after creation or the last `reset`.
+    pub fn elapsed_steps(&mut self, now_ms: f64) -> f64 {
+        let first = *self.first_tick_ms.get_or_insert(now_ms);
+        (now_ms - first) / 1000.0 * 60.0
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,5 +202,40 @@ mod tests {
             0,
             "без пропущенного времени шагов быть не должно"
         );
+    }
+
+    #[test]
+    fn ui_clock_starts_at_zero_on_the_first_call() {
+        let mut clock = UiClock::new();
+        assert_eq!(clock.elapsed_steps(1_000.0), 0.0);
+    }
+
+    #[test]
+    fn ui_clock_advances_with_real_time_between_calls() {
+        let mut clock = UiClock::new();
+        clock.elapsed_steps(1_000.0);
+        assert_eq!(clock.elapsed_steps(1_016.0), 0.96); // 16ms * 60/1000
+    }
+
+    /// «Картинки» → «Прочее»: «лента интерфейса перескакивает вперёд, потому что часы окна
+    /// шли» — a five-minute real-world gap between two `tick()` calls (the tab was hidden and
+    /// resumed) must show up as five minutes' worth of steps, not as zero the way the world's own
+    /// step accumulator sees it.
+    #[test]
+    fn ui_clock_jumps_forward_across_a_gap_with_no_calls_in_between() {
+        let mut clock = UiClock::new();
+        clock.elapsed_steps(1_000.0);
+        let gap_ms = 5.0 * 60_000.0;
+        let steps = clock.elapsed_steps(1_000.0 + gap_ms);
+        assert_eq!(steps, gap_ms / 1000.0 * 60.0);
+    }
+
+    #[test]
+    fn ui_clock_reset_starts_a_new_count_from_the_next_call() {
+        let mut clock = UiClock::new();
+        clock.elapsed_steps(1_000.0);
+        clock.elapsed_steps(2_000.0);
+        clock.reset();
+        assert_eq!(clock.elapsed_steps(5_000.0), 0.0);
     }
 }

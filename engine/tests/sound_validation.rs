@@ -59,6 +59,7 @@ fn load(
         &[],
         &sound_bytes,
         &music_verdicts,
+        &[],
     )
 }
 

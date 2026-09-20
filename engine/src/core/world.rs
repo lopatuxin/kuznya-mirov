@@ -1,6 +1,6 @@
 use super::keys::KeyTable;
 use super::property::{PropertyId, PropertyTable};
-use super::value::{GridSpec, PropKind, Value, Vec2};
+use super::value::{GridSpec, ImageId, PropKind, Value, Vec2};
 
 #[derive(Debug, Clone)]
 enum Column {
@@ -13,6 +13,7 @@ enum Column {
     Text(Vec<Option<String>>),
     Grid(Vec<Option<GridSpec>>),
     Keys(Vec<Option<KeyTable>>),
+    Image(Vec<Option<ImageId>>),
 }
 
 impl Column {
@@ -27,6 +28,7 @@ impl Column {
             PropKind::Text => Column::Text(Vec::new()),
             PropKind::Grid => Column::Grid(Vec::new()),
             PropKind::Keys => Column::Keys(Vec::new()),
+            PropKind::Image => Column::Image(Vec::new()),
         }
     }
 
@@ -41,6 +43,7 @@ impl Column {
             Column::Text(v) => v.push(None),
             Column::Grid(v) => v.push(None),
             Column::Keys(v) => v.push(None),
+            Column::Image(v) => v.push(None),
         }
     }
 
@@ -55,6 +58,7 @@ impl Column {
             Column::Text(v) => v[id] = None,
             Column::Grid(v) => v[id] = None,
             Column::Keys(v) => v[id] = None,
+            Column::Image(v) => v[id] = None,
         }
     }
 
@@ -69,6 +73,7 @@ impl Column {
             Column::Text(v) => v[id].is_some(),
             Column::Grid(v) => v[id].is_some(),
             Column::Keys(v) => v[id].is_some(),
+            Column::Image(v) => v[id].is_some(),
         }
     }
 }
@@ -285,6 +290,19 @@ impl World {
         }
     }
 
+    pub fn image(&self, id: u32, prop: PropertyId) -> Option<ImageId> {
+        match &self.columns[prop as usize] {
+            Column::Image(v) => v[id as usize],
+            _ => None,
+        }
+    }
+
+    pub fn set_image(&mut self, id: u32, prop: PropertyId, value: ImageId) {
+        if let Column::Image(v) = &mut self.columns[prop as usize] {
+            v[id as usize] = Some(value);
+        }
+    }
+
     pub fn grid_counter(&self, id: u32) -> i64 {
         self.grid_counter[id as usize]
     }
@@ -304,6 +322,7 @@ impl World {
             Value::Color(c) => self.set_color(id, prop, *c),
             Value::Layer(l) => self.set_layer(id, prop, *l),
             Value::Text(s) => self.set_text(id, prop, s.clone()),
+            Value::Image(i) => self.set_image(id, prop, *i),
         }
     }
 
@@ -316,6 +335,7 @@ impl World {
             PropKind::Color => self.color(id, prop).map(Value::Color),
             PropKind::Layer => self.layer(id, prop).map(Value::Layer),
             PropKind::Text => self.text(id, prop).map(|s| Value::Text(s.to_string())),
+            PropKind::Image => self.image(id, prop).map(Value::Image),
             PropKind::Grid | PropKind::Keys => None,
         }
     }

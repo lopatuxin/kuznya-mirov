@@ -11,12 +11,12 @@
 
     { "kind": "spawn", "when": { "after_move_of": { "has": ["controlled"] } },
       "where": "at_parent",
-      "template": { "size": [1, 1], "collides": true, "color": "#3aa54c", "layer": 1,
+      "template": { "size": [1, 1], "collides": true, "image": "tail", "layer": 1,
                     "deadly": true, "lifetime": { "from_parent": "tail" } } },
 
     { "kind": "spawn", "when": { "fewer_than": { "count": 1, "of": { "has": ["food"] } } },
       "where": "random_cell",
-      "template": { "size": [1, 1], "collides": true, "color": "#e0563b", "layer": 1,
+      "template": { "size": [1, 1], "collides": true, "image": "food", "layer": 1,
                     "food": true } }
   ]
 }

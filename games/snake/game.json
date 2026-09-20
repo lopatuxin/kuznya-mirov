@@ -13,6 +13,14 @@
     "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf" },
     "sounds": { "eat": "sounds/eat.wav", "hit": "sounds/hit.wav" },
     "music": { "menu": "music/menu.mp3", "game": "music/game.mp3" },
-    "images": "images/"
+    "images": {
+      "head": { "path": "images/head.png" },
+      "tail": { "path": "images/tail.png" },
+      "food": { "path": "images/food.png", "frames": 4, "frame_time": 0.15 },
+      "panel": { "path": "images/panel.png" },
+      "button": { "path": "images/button.png" },
+      "button_hover": { "path": "images/button_hover.png" },
+      "button_pressed": { "path": "images/button_pressed.png" }
+    }
   }
 }

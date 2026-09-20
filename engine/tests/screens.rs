@@ -62,6 +62,7 @@ fn load() -> (
         &font_bytes,
         &[],
         &[],
+        &[],
     )
     .expect("должно загрузиться");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
@@ -485,6 +486,7 @@ fn load_key_fixture(
         Some(KEY_RULES),
         Some(screens_json),
         &font_bytes,
+        &[],
         &[],
         &[],
     )
@@ -986,6 +988,7 @@ fn load_mirror_fixture() -> (
         &font_bytes,
         &[],
         &[],
+        &[],
     )
     .expect("должно загрузиться");
     // `declares` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — «Экраны и состояние» → «Клавиши экрана»: expected here, any *other* warning still fails the fixture.
@@ -1028,6 +1031,7 @@ fn load_mirror_two_live_fixture() -> (
         Some(MIRROR_RULES),
         Some(MIRROR_TWO_LIVE_SCREENS),
         &font_bytes,
+        &[],
         &[],
         &[],
     )
@@ -1117,6 +1121,7 @@ fn load_mirror_live_to_pause_fixture() -> (
         Some(MIRROR_RULES),
         Some(MIRROR_LIVE_TO_PAUSE_SCREENS),
         &font_bytes,
+        &[],
         &[],
         &[],
     )
@@ -1351,6 +1356,7 @@ fn load_newgame_key_fixture() -> (
         Some(KEY_RULES),
         Some(NEWGAME_KEY_SCREENS),
         &font_bytes,
+        &[],
         &[],
         &[],
     )

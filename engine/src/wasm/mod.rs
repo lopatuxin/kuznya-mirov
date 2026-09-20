@@ -4,13 +4,14 @@ use web_sys::HtmlCanvasElement;
 
 use crate::core::game::Game;
 use crate::core::input::{MouseState, UiQueue};
-use crate::core::property::{self, PropertyTable};
+use crate::core::property::PropertyTable;
 use crate::core::rules::Outcome;
-use crate::core::runner::Runner;
+use crate::core::runner::{Runner, UiClock};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
 use crate::data::error::GameError;
-use crate::data::load::{self, GameConfig, MusicVerdict, NeededMedia};
+use crate::data::load::{self, GameConfig, ImageDecl, ImageVerdict, MusicVerdict, NeededMedia};
+use crate::render::atlas::{self, AtlasRect};
 use crate::render::{DrawRect, Renderer, TextDraw};
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
@@ -128,8 +129,9 @@ fn js_indexed_media_table(subset: &[(String, String)], full: &[(String, String)]
 fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> JsValue {
     let obj = Object::new();
     set(&obj, "fonts", &js_media_table(&needed.fonts));
-    // `needed.sounds` is every declared sound, unfiltered — its own position already is the
-    // `SoundId`, so it's its own "full" table here.
+    // `needed.sounds`/`needed.images` are every declared sound/image, unfiltered — its own
+    // position already is the `SoundId`/`ImageId`, so each is its own "full" table here —
+    // «Картинки»: read whether or not anything names it yet, unlike `music` below.
     set(
         &obj,
         "sounds",
@@ -139,6 +141,11 @@ fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> J
         &obj,
         "music",
         &js_indexed_media_table(&needed.music, all_music),
+    );
+    set(
+        &obj,
+        "images",
+        &js_indexed_media_table(&needed.images, &needed.images),
     );
     obj.into()
 }
@@ -244,37 +251,82 @@ fn parse_music_verdicts(
     out
 }
 
-fn compose_instances(game: &Game) -> Vec<DrawRect> {
-    let mut ordered: Vec<(i32, u32)> = game
-        .world
-        .ids()
-        .filter(|&id| {
-            game.world.vec2(id, property::POSITION).is_some()
-                && game.world.vec2(id, property::SIZE).is_some()
-                && game.world.color(id, property::COLOR).is_some()
-        })
-        .map(|id| (game.world.layer(id, property::LAYER).unwrap_or(0), id))
-        .collect();
-    ordered.sort_unstable();
-
-    ordered
-        .into_iter()
-        .map(|(_, id)| {
-            let p = game
-                .world
-                .vec2(id, property::POSITION)
-                .expect("filtered above");
-            let s = game.world.vec2(id, property::SIZE).expect("filtered above");
-            let color = game
-                .world
-                .color(id, property::COLOR)
-                .expect("filtered above");
-            DrawRect {
-                position: [p[0] as f32, p[1] as f32],
-                size: [s[0] as f32, s[1] as f32],
-                color,
+/// Reads `images` — the page's `[{index, verdict: "ok"|"missing"|"rejected", width?, height?,
+/// pixels?: Uint8Array}, ...]` — into `(name, ImageVerdict)` pairs, the shape `load::load_rest`
+/// wants. Mirrors `parse_music_verdicts`; `width`/`height`/`pixels` are only read when the
+/// verdict is `"ok"` — «Картинки» → «Загрузка и проверка»: at any other verdict the rest of the
+/// entry isn't meaningful and is not read.
+fn parse_image_verdicts(
+    images: &JsValue,
+    table: &[(String, String)],
+) -> Vec<(String, ImageVerdict)> {
+    let arr = Array::from(images);
+    let mut out = Vec::with_capacity(arr.length() as usize);
+    for item in arr.iter() {
+        let Some(name) = resolve_indexed_name(&item, table) else {
+            continue;
+        };
+        let verdict = match Reflect::get(&item, &JsValue::from_str("verdict"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .as_deref()
+        {
+            Some("ok") => {
+                let width = Reflect::get(&item, &JsValue::from_str("width"))
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as u32;
+                let height = Reflect::get(&item, &JsValue::from_str("height"))
+                    .ok()
+                    .and_then(|v| v.as_f64())
+                    .unwrap_or(0.0) as u32;
+                let pixels = Reflect::get(&item, &JsValue::from_str("pixels"))
+                    .ok()
+                    .map(|v| Uint8Array::new(&v).to_vec())
+                    .unwrap_or_default();
+                ImageVerdict::Ok {
+                    width,
+                    height,
+                    pixels,
+                }
             }
-        })
+            Some("rejected") => ImageVerdict::Rejected,
+            _ => ImageVerdict::Missing,
+        };
+        out.push((name, verdict));
+    }
+    out
+}
+
+fn draw_rect(
+    position: [f32; 2],
+    size: [f32; 2],
+    color: [f32; 4],
+    atlas_rect: AtlasRect,
+) -> DrawRect {
+    DrawRect {
+        position,
+        size,
+        color,
+        atlas_pos: [atlas_rect.x as f32, atlas_rect.y as f32],
+        atlas_size: [atlas_rect.w as f32, atlas_rect.h as f32],
+    }
+}
+
+/// «Картинки» → «Кадры»: the world's own frame is picked by shots taken (`game.step_count()`),
+/// frozen exactly when the world stops stepping (paused, or on the outcome screen) — «Исполнение
+/// игры»: rendering never changes the world, this just reads it. The layer ordering and fill
+/// choice are `atlas::compose_world_paints`'s job, natively testable; this just turns each result
+/// into the GPU's own `DrawRect`.
+fn compose_instances(
+    game: &Game,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+) -> Vec<DrawRect> {
+    let steps = game.step_count() as f64;
+    atlas::compose_world_paints(&game.world, game.world.ids(), steps, images, atlas_rects)
+        .into_iter()
+        .map(|paint| draw_rect(paint.position, paint.size, paint.color, paint.atlas_rect))
         .collect()
 }
 
@@ -282,23 +334,32 @@ fn compose_instances(game: &Game) -> Vec<DrawRect> {
 /// `TextDraw`s. «Интерфейс игры» → «Отрисовка»: elements draw in list order (panels can sit
 /// under buttons on the same screen), text always ends up on top of every rectangle because it
 /// is collected separately and drawn as its own pass, never interleaved with the rects.
+/// «Картинки» → «Кадры»: `ui_elapsed_steps` is window time, already converted to steps — never
+/// frozen, unlike the world's own frame in `compose_instances`.
+#[allow(clippy::too_many_arguments)]
 fn compose_ui(
     screen: &screens::Screen,
     world: &World,
     properties: &PropertyTable,
     mouse: &MouseState,
     viewport: [f32; 2],
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+    ui_elapsed_steps: f64,
 ) -> (Vec<DrawRect>, Vec<TextDraw>) {
     let mut rects = Vec::with_capacity(screen.elements.len());
     let mut texts = Vec::new();
     for (index, element) in screen.elements.iter().enumerate() {
         match element {
-            screens::Element::Panel { placement, color } => {
-                rects.push(DrawRect {
-                    position: placement.top_left(viewport),
-                    size: placement.size,
-                    color: *color,
-                });
+            screens::Element::Panel { placement, fill } => {
+                let (color, atlas_rect) =
+                    atlas::fill_paint(fill, ui_elapsed_steps, images, atlas_rects);
+                rects.push(draw_rect(
+                    placement.top_left(viewport),
+                    placement.size,
+                    color,
+                    atlas_rect,
+                ));
             }
             screens::Element::Label {
                 placement,
@@ -324,18 +385,16 @@ fn compose_ui(
                 font,
                 font_size,
                 text_color,
-                color,
-                color_hover,
-                color_pressed,
+                fill,
+                fill_hover,
+                fill_pressed,
                 on_click: _,
             } => {
                 let [x, y] = placement.top_left(viewport);
-                let fill = *screens::button_fill(color, color_hover, color_pressed, index, mouse);
-                rects.push(DrawRect {
-                    position: [x, y],
-                    size: placement.size,
-                    color: fill,
-                });
+                let chosen = screens::button_fill(fill, fill_hover, fill_pressed, index, mouse);
+                let (color, atlas_rect) =
+                    atlas::fill_paint(chosen, ui_elapsed_steps, images, atlas_rects);
+                rects.push(draw_rect([x, y], placement.size, color, atlas_rect));
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
                 texts.push(TextDraw {
@@ -367,6 +426,16 @@ pub struct Engine {
     mouse: MouseState,
     ui_queue: UiQueue,
     pending_config: load::PendingConfig,
+    /// «Картинки»: `files.images`, in `ImageId` order — kept here (not just inside `Game`) so
+    /// `compose_instances`/`compose_ui` can look up each image's `frames`/`frame_steps` without
+    /// the core knowing anything about frames or atlases.
+    images: Vec<ImageDecl>,
+    /// Where `load()`'s atlas build put each declared image's whole strip — parallel to `images`.
+    atlas_rects: Vec<AtlasRect>,
+    /// «Картинки» → «Кадры»: window time for the interface's own image frames — unlike the
+    /// world's own step counter, this never freezes: it keeps advancing on a paused or menu
+    /// screen, which is exactly why the interface's own images keep animating there.
+    ui_clock: UiClock,
 }
 
 #[wasm_bindgen]
@@ -389,6 +458,9 @@ impl Engine {
             mouse: MouseState::default(),
             ui_queue: UiQueue::new(),
             pending_config: load::PendingConfig::default(),
+            images: Vec::new(),
+            atlas_rects: Vec::new(),
+            ui_clock: UiClock::new(),
         })
     }
 
@@ -452,6 +524,7 @@ impl Engine {
         fonts: JsValue,
         sounds: JsValue,
         music: JsValue,
+        images: JsValue,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -463,13 +536,19 @@ impl Engine {
                 &[],
             );
         };
-        // `config` is about to move into `load_rest` — the font/sound/music name order it
-        // carries is what fixes each one's FontId/SoundId/MusicId, so it has to be captured
-        // before that happens.
+        // `config` is about to move into `load_rest` — the font/sound/music/image name order it
+        // carries is what fixes each one's FontId/SoundId/MusicId/ImageId, so it has to be
+        // captured before that happens.
         let font_order: Vec<String> = config.files.fonts.iter().map(|(n, _)| n.clone()).collect();
+        let image_order: Vec<ImageDecl> = config.files.images.clone();
+        let image_table: Vec<(String, String)> = image_order
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.path.clone()))
+            .collect();
         let font_bytes = parse_font_bytes(&fonts);
         let sound_bytes = parse_sound_bytes(&sounds, &config.files.sounds);
         let music_verdicts = parse_music_verdicts(&music, &config.files.music);
+        let image_verdicts = parse_image_verdicts(&images, &image_table);
         match load::load_rest(
             &game_json,
             config,
@@ -480,8 +559,63 @@ impl Engine {
             &font_bytes,
             &sound_bytes,
             &music_verdicts,
+            &image_verdicts,
         ) {
             Ok((game, screens_config, warnings)) => {
+                // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
+                // image's own verdict/dimensions, but not whether the whole set fits in one
+                // 2048×2048 canvas — that's the render layer's job, so it only runs once the
+                // data layer's own check has already passed.
+                //
+                // Looked up the same way `validate_image_files` looks a name up in this same
+                // vector — the first match by name — rather than through a `HashMap`: a
+                // duplicate `index` from the page (`parse_image_verdicts` builds this vector by
+                // index) gives two entries for one name, and a `HashMap::from_iter` would keep
+                // the last of them while validation judged the first, so the two could disagree
+                // on which verdict a name actually has. `Vec::remove` takes the entry by value,
+                // so the pixel buffer moves into `AtlasImage` rather than being copied.
+                let mut image_verdicts = image_verdicts;
+                let atlas_images: Vec<atlas::AtlasImage> = image_order
+                    .iter()
+                    .map(|decl| {
+                        let pos = image_verdicts
+                            .iter()
+                            .position(|(name, _)| name == &decl.name)
+                            .expect(
+                                "load_rest succeeded: every declared image already has a verdict",
+                            );
+                        let (_, verdict) = image_verdicts.remove(pos);
+                        match verdict {
+                            ImageVerdict::Ok {
+                                width,
+                                height,
+                                pixels,
+                            } => atlas::AtlasImage {
+                                width,
+                                height,
+                                pixels,
+                            },
+                            ImageVerdict::Missing | ImageVerdict::Rejected => unreachable!(
+                                "load_rest succeeded: every declared image verdict is ok"
+                            ),
+                        }
+                    })
+                    .collect();
+                self.atlas_rects = match self.renderer.build_atlas(&atlas_images) {
+                    Ok(rects) => rects,
+                    // `atlas::pack` already writes its own complete message (not fitting isn't
+                    // the only failure it reports — an oversized image or a wrong pixel count
+                    // are, too), so it goes out verbatim rather than under a second, guessed-at
+                    // header.
+                    Err(e) => {
+                        return js_load_err(
+                            &[GameError::new("game.json", "files → images", e)],
+                            &warnings,
+                        );
+                    }
+                };
+                self.images = image_order;
+                self.ui_clock.reset();
                 self.renderer
                     .set_scene(game.scene.width, game.scene.height, game.scene.background);
                 for name in &font_order {
@@ -535,6 +669,11 @@ impl Engine {
     /// and draws one frame on top: world, interface, text.
     pub fn tick(&mut self, now_ms: f64) -> JsValue {
         let dt_seconds = self.runner.dt_since_last_tick(now_ms);
+        // «Картинки» → «Кадры»: counted from an absolute timestamp, not accumulated deltas — a
+        // hidden tab calls neither `tick()` nor `dt_since_last_tick()`, so a delta-based sum
+        // would stand still across the gap; the browser's own clock kept running through it, so
+        // the interface's frame has to jump forward on return, not stay put.
+        let ui_clock_steps = self.ui_clock.elapsed_steps(now_ms);
 
         let (Some(game), Some(config), Some(state)) = (
             self.game.as_mut(),
@@ -561,10 +700,18 @@ impl Engine {
             dt_seconds,
         );
 
-        let world_instances = compose_instances(game);
+        let world_instances = compose_instances(game, &self.images, &self.atlas_rects);
         let screen = &config.screens[state.active()];
-        let (ui_instances, texts) =
-            compose_ui(screen, &game.world, &game.properties, &self.mouse, viewport);
+        let (ui_instances, texts) = compose_ui(
+            screen,
+            &game.world,
+            &game.properties,
+            &self.mouse,
+            viewport,
+            &self.images,
+            &self.atlas_rects,
+            ui_clock_steps,
+        );
         if let Err(e) = self
             .renderer
             .render_frame(&world_instances, &ui_instances, &texts)

@@ -6,6 +6,7 @@ import { gameListSearch, resolveGameName } from "./gameSelection";
 import { decodeSoundBuffer, probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import { createSoundPlayer, type MusicAsset, type SoundPlayer } from "./sound/soundPlayer";
 import { readSoundWindow } from "./sound/soundWindow";
+import { buildImagePayload, fetchImageBytes, type ImageEntry } from "./images/imagePayload";
 import { buildWarningsBadge, shouldBlurAfterToggleActivation, type WarningsBadge } from "./warningsPanel";
 
 type FontEntry = { name: string; path: string };
@@ -26,7 +27,7 @@ type ReadEntryResult =
 
 /** Шаг два загрузки — «Звук» → «Загрузка и проверка»: какие двоичные
  *  файлы вообще стоит читать, теперь, когда текстовые файлы разобраны. */
-type ReadTextsResult = { fonts: FontEntry[]; sounds: SoundEntry[]; music: MusicEntry[] };
+type ReadTextsResult = { fonts: FontEntry[]; sounds: SoundEntry[]; music: MusicEntry[]; images: ImageEntry[] };
 
 type LoadResult =
   | { ok: true; warnings: EngineError[] }
@@ -387,13 +388,18 @@ async function runGame(gameName: string): Promise<void> {
   // «Проигрывание на странице»), но нужен уже сейчас — им же проверяются треки из `files.music`.
   const audioContext = new AudioContext();
 
-  // Третий заход — все двоичные файлы разом: шрифты, все звуки, только названные экранами треки.
-  const [fonts, loadedSounds, loadedMusic] = await Promise.all([
+  // Третий заход — все двоичные файлы разом: шрифты, все звуки, только названные экранами треки,
+  // все объявленные картинки.
+  const [fonts, loadedSounds, loadedMusic, loadedImages] = await Promise.all([
     fetchFonts(baseUrl, needed.fonts),
     fetchSoundBytes(baseUrl, needed.sounds),
     fetchMusicBytes(baseUrl, needed.music),
+    fetchImageBytes(baseUrl, needed.images, fetchBinary),
   ]);
-  const { payload: musicPayload, assets: musicAssets } = await buildMusicAssets(audioContext, loadedMusic);
+  const [{ payload: musicPayload, assets: musicAssets }, imagesPayload] = await Promise.all([
+    buildMusicAssets(audioContext, loadedMusic),
+    buildImagePayload(loadedImages),
+  ]);
 
   const loadResult = engine.load(
     propertiesText,
@@ -403,6 +409,7 @@ async function runGame(gameName: string): Promise<void> {
     fonts,
     loadedSounds,
     musicPayload,
+    imagesPayload,
   ) as LoadResult;
   // read_entry (game.json) первым, load (остальные файлы) вторым — тот же порядок, в котором
   // предупреждения собирает сам движок при объединённой загрузке (см. `load_game_from_texts`).

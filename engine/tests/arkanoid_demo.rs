@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use engine::core::input::StepInput;
 use engine::core::property;
-use engine::data::load::{MusicVerdict, load_rest, read_entry};
+use engine::data::load::{ImageVerdict, MusicVerdict, load_rest, read_entry};
 
 fn game_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -17,6 +17,16 @@ fn game_path(name: &str) -> PathBuf {
 fn read(name: &str) -> String {
     let path = game_path(name);
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"))
+}
+
+/// `width`/`height` straight out of the PNG's own `IHDR` chunk (bytes 16..24, big-endian) — the
+/// engine never decodes PNG itself, but a test fixture reading its own fixed-position header is
+/// not that: it needs no pixel data at all, only the two numbers `validate_image_files` checks.
+fn png_dimensions(path: &std::path::Path) -> (u32, u32) {
+    let bytes = fs::read(path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"));
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    (width, height)
 }
 
 /// The demo's `start_screen` is the menu, so the freshly loaded game has no world at all —
@@ -47,6 +57,22 @@ fn load() -> engine::core::game::Game {
         .iter()
         .map(|(name, _)| (name.clone(), MusicVerdict::Ok))
         .collect();
+    let image_verdicts: Vec<(String, ImageVerdict)> = config
+        .files
+        .images
+        .iter()
+        .map(|decl| {
+            let (width, height) = png_dimensions(&game_path(&decl.path));
+            (
+                decl.name.clone(),
+                ImageVerdict::Ok {
+                    width,
+                    height,
+                    pixels: vec![0u8; (width * height * 4) as usize],
+                },
+            )
+        })
+        .collect();
     let (mut game, _screens, warnings) = load_rest(
         &game_json,
         config,
@@ -57,6 +83,7 @@ fn load() -> engine::core::game::Game {
         &font_bytes,
         &sound_bytes,
         &music_verdicts,
+        &image_verdicts,
     )
     .expect("демо-арканоид должен проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
