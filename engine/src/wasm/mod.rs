@@ -3,7 +3,7 @@ use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
 use crate::core::game::Game;
-use crate::core::input::{KeyQueue, MouseQueue, MouseState};
+use crate::core::input::{MouseState, UiQueue};
 use crate::core::property::{self, PropertyTable};
 use crate::core::rules::Outcome;
 use crate::core::runner::Runner;
@@ -120,7 +120,7 @@ fn js_indexed_media_table(subset: &[(String, String)], full: &[(String, String)]
     arr
 }
 
-/// `read_texts()`'s result: which binary files are worth fetching next — «Звук» →«Загрузка и проверка». Never an error shape: a text file this step
+/// `read_texts()`'s result: which binary files are worth fetching next — «Звук» →«Загрузка и проверка». Never an error shape: a text file this step
 /// couldn't parse just names fewer tracks, and the real errors surface later, from `load()`,
 /// so every error from every file is collected in the one place that already does that.
 /// `all_music` is `config.files.music` in full — `needed.music` only ever names a subset of it
@@ -365,10 +365,8 @@ pub struct Engine {
     screen_state: Option<ScreenState>,
     runner: Runner,
     mouse: MouseState,
-    mouse_queue: MouseQueue,
-    key_queue: KeyQueue,
+    ui_queue: UiQueue,
     pending_config: load::PendingConfig,
-    last_tick_ms: Option<f64>,
 }
 
 #[wasm_bindgen]
@@ -389,10 +387,8 @@ impl Engine {
             screen_state: None,
             runner: Runner::new(),
             mouse: MouseState::default(),
-            mouse_queue: MouseQueue::new(),
-            key_queue: KeyQueue::new(),
+            ui_queue: UiQueue::new(),
             pending_config: load::PendingConfig::default(),
-            last_tick_ms: None,
         })
     }
 
@@ -408,7 +404,7 @@ impl Engine {
     /// same shape `load()` uses, warnings travel alongside either outcome.
     pub fn read_entry(&mut self, game_json: &str) -> JsValue {
         let result = load::read_entry(game_json);
-        self.pending_config.set(&result);
+        self.pending_config.set(&result, game_json);
         match result {
             Ok((config, warnings)) => js_entry_ok(&config, &warnings),
             Err(failure) => js_load_err(&failure.errors, &failure.warnings),
@@ -457,7 +453,7 @@ impl Engine {
         sounds: JsValue,
         music: JsValue,
     ) -> JsValue {
-        let Some(config) = self.pending_config.take() else {
+        let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
                 &[GameError::new(
                     "engine",
@@ -475,6 +471,7 @@ impl Engine {
         let sound_bytes = parse_sound_bytes(&sounds, &config.files.sounds);
         let music_verdicts = parse_music_verdicts(&music, &config.files.music);
         match load::load_rest(
+            &game_json,
             config,
             properties_json.as_deref(),
             scene_json.as_deref(),
@@ -500,85 +497,69 @@ impl Engine {
                 self.game = Some(game);
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
-                self.key_queue = KeyQueue::new();
+                self.ui_queue = UiQueue::new();
                 js_load_ok(&warnings)
             }
             Err(failure) => js_load_err(&failure.errors, &failure.warnings),
         }
     }
 
-    /// Dropped outright on a screen with no `world_runs`, except a key named in that screen's
-    /// own `keys` table — «Экраны и состояние» → «Клавиши экрана».
+    /// Queued, not applied immediately — judged against whichever screen is active once `tick`
+    /// drains the queue, same as a mouse event: dropped outright on a screen with no
+    /// `world_runs`, except a key named in that screen's own `keys` table — «Экраны и
+    /// состояние» → «Клавиши экрана».
     pub fn key_down(&mut self, code: &str) {
-        if let (Some(game), Some(config), Some(state)) = (
-            self.game.as_mut(),
-            self.screens_config.as_ref(),
-            self.screen_state.as_ref(),
-        ) {
-            screens::key_down(game, config, state, code);
-        }
+        self.ui_queue.push_key_down(code);
     }
 
     pub fn key_up(&mut self, code: &str) {
-        if let (Some(game), Some(config), Some(state)) = (
-            self.game.as_mut(),
-            self.screens_config.as_ref(),
-            self.screen_state.as_ref(),
-        ) {
-            screens::key_up(game, config, state, &mut self.key_queue, code);
-        }
+        self.ui_queue.push_key_up(code);
     }
 
     /// `x`/`y` in window (CSS) pixels — the same unit `screens.json`'s `anchor`/`offset`/`size`
     /// are written in. Queued, not applied immediately — «Интерфейс игры» → «Мышь».
     pub fn mouse_move(&mut self, x: f32, y: f32) {
-        self.mouse_queue.push_move(x, y);
+        self.ui_queue.push_mouse_move(x, y);
     }
 
     pub fn mouse_down(&mut self) {
-        self.mouse_queue.push_down();
+        self.ui_queue.push_mouse_down();
     }
 
     pub fn mouse_up(&mut self) {
-        self.mouse_queue.push_up();
+        self.ui_queue.push_mouse_up();
     }
 
-    /// Called once per `requestAnimationFrame` with `performance.now()`. Advances the fixed-step
-    /// simulation (skipped entirely on a screen without `world_runs`), drains the queued mouse
-    /// events against whichever screen ends up active, and draws one frame: world, interface,
-    /// text.
+    /// Called once per `requestAnimationFrame` with `performance.now()`. Runs `screens::engine_call`
+    /// (queue, then steps, then the sound window — see its own doc comment for why in that order)
+    /// and draws one frame on top: world, interface, text.
     pub fn tick(&mut self, now_ms: f64) -> JsValue {
-        let dt_seconds = match self.last_tick_ms {
-            Some(prev) => ((now_ms - prev) / 1000.0).max(0.0),
-            None => 0.0,
-        };
-        self.last_tick_ms = Some(now_ms);
+        let dt_seconds = self.runner.dt_since_last_tick(now_ms);
 
         let (Some(game), Some(config), Some(state)) = (
             self.game.as_mut(),
             self.screens_config.as_ref(),
             self.screen_state.as_mut(),
         ) else {
+            // No game loaded yet (or load failed): nothing will ever drain `ui_queue` on this
+            // path, so `key_down`/`key_up`/`mouse_*` piling onto a page stuck here would grow it
+            // without bound.
+            self.ui_queue = UiQueue::new();
             let _ = self.renderer.render_frame(&[], &[], &[]);
             return js_running();
         };
 
-        screens::tick(&mut self.runner, game, config, state, dt_seconds);
         let viewport = self.renderer.window_size_css();
-        screens::process_mouse_queue(
-            &mut self.mouse_queue,
+        screens::engine_call(
+            &mut self.ui_queue,
             &mut self.mouse,
+            &mut self.runner,
             game,
             config,
             state,
             viewport,
+            dt_seconds,
         );
-        screens::process_key_queue(&mut self.key_queue, game, config, state);
-        // «Звук» → «Один вызов движка», пункт 5: written after the
-        // mouse and screen keys, so a click that just changed screen writes the one it landed
-        // on. The page reads the window itself once this call returns — the border is crossed
-        // only by `tick()` returning, never by a call in the other direction.
-        screens::write_sound_frame(game, config, state);
 
         let world_instances = compose_instances(game);
         let screen = &config.screens[state.active()];
@@ -611,9 +592,11 @@ impl Engine {
     }
 
     /// Call on `visibilitychange` going to hidden: drops accumulated real time so a multi-minute
-    /// gap is not caught up in a burst.
+    /// gap is not caught up in a burst, and forgets the last tick's timestamp so the next `tick()`
+    /// does not compute its `dt_seconds` against it — see `Runner::forget_last_tick`.
     pub fn tab_hidden(&mut self) {
         self.runner.reset();
+        self.runner.forget_last_tick();
     }
 
     /// Once-only runtime warnings collected so far (max_objects reached, random_cell exhausted).

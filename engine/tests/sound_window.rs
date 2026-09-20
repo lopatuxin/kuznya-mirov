@@ -3,7 +3,7 @@
 //! validation for sound data lives in `sound_validation.rs`; this file drives a loaded game
 //! through `core::sound`/`core::screens` the way `wasm::Engine` would.
 
-use engine::core::input::{KeyQueue, StepInput};
+use engine::core::input::{MouseState, StepInput, UiQueue};
 use engine::core::rules::Outcome;
 use engine::core::runner::Runner;
 use engine::core::screens::{self, ButtonCommand, ScreenState};
@@ -59,6 +59,7 @@ fn load(
         .map(|name| (name.to_string(), MusicVerdict::Ok))
         .collect();
     let (game, screens, _warnings) = load_rest(
+        game_json,
         config,
         Some(props),
         Some(scene),
@@ -395,10 +396,10 @@ fn toggle_sound_flips_the_flag_new_game_and_quit_leave_it_alone_and_pause_is_sil
 }
 
 // -------------------------------------------------------------------------------------------
-// Клавиша экрана через реальный путь key_down → key_up → process_key_queue, а не через прямой
-// вызов apply_command — «Экраны и состояние» → «Клавиши экрана» покрыт этим путём и для
-// переключения экрана (Escape), и для toggle_sound (KeyM), чтобы регрессия в одном из них не
-// пряталась за тестом, вызывающим apply_command напрямую.
+// Клавиша экрана через реальный путь очередь → process_ui_queue, а не через прямой вызов
+// apply_command — «Экраны и состояние» → «Клавиши экрана» покрыт этим путём и для переключения
+// экрана (Escape), и для toggle_sound (KeyM), чтобы регрессия в одном из них не пряталась за
+// тестом, вызывающим apply_command напрямую.
 // -------------------------------------------------------------------------------------------
 
 const SCREENS_KEYM: &str = r#"{"screens":[
@@ -444,11 +445,19 @@ fn key_m_press_and_release_on_the_game_screen_toggles_sound_through_the_real_key
     let (mut game, config, mut state) = load_keym_game();
     assert!(state.sound_enabled(), "звук включён при загрузке");
 
-    let mut key_queue = KeyQueue::new();
+    let mut mouse = MouseState::default();
+    let mut queue = UiQueue::new();
     for i in 0..4 {
-        screens::key_down(&mut game, &config, &state, "KeyM");
-        screens::key_up(&mut game, &config, &state, &mut key_queue, "KeyM");
-        screens::process_key_queue(&mut key_queue, &mut game, &config, &mut state);
+        queue.push_key_down("KeyM");
+        queue.push_key_up("KeyM");
+        screens::process_ui_queue(
+            &mut queue,
+            &mut mouse,
+            &mut game,
+            &config,
+            &mut state,
+            [800.0, 600.0],
+        );
         assert_eq!(
             state.sound_enabled(),
             i % 2 == 1,
@@ -462,14 +471,62 @@ fn escape_press_and_release_on_the_game_screen_switches_to_pause_through_the_rea
     let (mut game, config, mut state) = load_keym_game();
     let game_id = state.active();
 
-    let mut key_queue = KeyQueue::new();
-    screens::key_down(&mut game, &config, &state, "Escape");
-    screens::key_up(&mut game, &config, &state, &mut key_queue, "Escape");
-    screens::process_key_queue(&mut key_queue, &mut game, &config, &mut state);
+    let mut mouse = MouseState::default();
+    let mut queue = UiQueue::new();
+    queue.push_key_down("Escape");
+    queue.push_key_up("Escape");
+    screens::process_ui_queue(
+        &mut queue,
+        &mut mouse,
+        &mut game,
+        &config,
+        &mut state,
+        [800.0, 600.0],
+    );
 
     assert_ne!(
         state.active(),
         game_id,
         "Escape через реальный путь клавиши должен был увести с игрового экрана"
+    );
+}
+
+/// «Звук» → «Один вызов движка»: очередь разбирается до шагов, а должное пишется после и
+/// разбора очереди, и шагов — так что переключение экрана реальным, очередным вводом (не прямым
+/// `apply_command`) уже видно к моменту `write_sound_frame`, ровно тот порядок, которому следует
+/// `wasm::Engine::tick`.
+#[test]
+fn a_real_queued_switch_writes_the_new_screens_music_in_the_same_call() {
+    let (mut game, config, mut state) = load_keym_game();
+    let mut runner = Runner::new();
+    let mut mouse = MouseState::default();
+    let mut queue = UiQueue::new();
+
+    screens::write_sound_frame(&mut game, &config, &state);
+    assert!(
+        game.sound_window().music().is_some(),
+        "у game объявлена музыка"
+    );
+
+    // Escape — собственная клавиша экрана `game`, ведёт на `pause` — тот же путь, каким прошло бы
+    // настоящее событие браузера, а не прямой вызов `apply_command`. `engine_call` — та же точка
+    // входа, что и `wasm::Engine::tick`, а не рукописная пара process_ui_queue+tick.
+    queue.push_key_down("Escape");
+    queue.push_key_up("Escape");
+    screens::engine_call(
+        &mut queue,
+        &mut mouse,
+        &mut runner,
+        &mut game,
+        &config,
+        &mut state,
+        [800.0, 600.0],
+        1.0 / 60.0,
+    );
+
+    assert_eq!(
+        game.sound_window().music(),
+        None,
+        "у pause нет музыки — в окне должна быть тишина, а не музыка покинутого game"
     );
 }

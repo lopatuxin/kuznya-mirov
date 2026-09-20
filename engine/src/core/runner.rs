@@ -9,11 +9,36 @@ pub const MAX_CATCHUP_STEPS: u32 = 5;
 #[derive(Debug, Clone, Copy, Default)]
 pub struct Runner {
     accumulator: f64,
+    last_tick_ms: Option<f64>,
 }
 
 impl Runner {
     pub fn new() -> Self {
-        Runner { accumulator: 0.0 }
+        Runner {
+            accumulator: 0.0,
+            last_tick_ms: None,
+        }
+    }
+
+    /// Turns an absolute `performance.now()` timestamp into elapsed real time since the previous
+    /// call — the way `wasm::Engine::tick` feeds `advance_or_reset`. `None` (never called yet, or
+    /// forgotten by `forget_last_tick`) gives zero elapsed time instead of comparing `now_ms`
+    /// against a stale timestamp from before a gap.
+    pub fn dt_since_last_tick(&mut self, now_ms: f64) -> f64 {
+        let dt = match self.last_tick_ms {
+            Some(prev) => ((now_ms - prev) / 1000.0).max(0.0),
+            None => 0.0,
+        };
+        self.last_tick_ms = Some(now_ms);
+        dt
+    }
+
+    /// Call on `visibilitychange` going to hidden, alongside `reset`: without this, the next
+    /// `dt_since_last_tick` would still compare the resumed `now_ms` against the timestamp from
+    /// right before the tab was hidden and hand that whole gap to `advance` — `reset` alone only
+    /// clears real time already banked in the accumulator, not a dt about to be added to it.
+    pub fn forget_last_tick(&mut self) {
+        self.last_tick_ms = None;
     }
 
     /// Advances `game` by `dt_seconds` of real time. Runs at most `MAX_CATCHUP_STEPS` fixed
@@ -107,5 +132,45 @@ mod tests {
         assert_eq!(game.step_count(), 0);
         runner.advance(&mut game, STEP_SECONDS * 0.5);
         assert_eq!(game.step_count(), 1);
+    }
+
+    #[test]
+    fn dt_since_last_tick_is_zero_on_the_very_first_call() {
+        let mut runner = Runner::new();
+        assert_eq!(runner.dt_since_last_tick(12_345.0), 0.0);
+    }
+
+    #[test]
+    fn dt_since_last_tick_measures_the_gap_between_two_calls() {
+        let mut runner = Runner::new();
+        runner.dt_since_last_tick(1_000.0);
+        assert_eq!(runner.dt_since_last_tick(1_016.0), 0.016);
+    }
+
+    /// «Исполнение игры»: «вкладку спрятали — пропущенное время не догоняется». Without
+    /// `forget_last_tick`, the first `dt_since_last_tick` after a multi-minute gap would hand that
+    /// whole gap to `advance` as a real `dt_seconds` — `Runner::reset` alone only clears time
+    /// already banked in the accumulator, not a dt about to be added to it next.
+    #[test]
+    fn tab_hidden_then_resumed_gives_zero_dt_on_the_first_tick_back() {
+        let mut game = empty_game();
+        let mut runner = Runner::new();
+        runner.dt_since_last_tick(1_000.0);
+
+        // The tab was hidden for five real minutes.
+        runner.reset();
+        runner.forget_last_tick();
+
+        let dt = runner.dt_since_last_tick(1_000.0 + 5.0 * 60_000.0);
+        assert_eq!(
+            dt, 0.0,
+            "первый кадр после возврата должен дать нулевое прошедшее время"
+        );
+        runner.advance(&mut game, dt);
+        assert_eq!(
+            game.step_count(),
+            0,
+            "без пропущенного времени шагов быть не должно"
+        );
     }
 }

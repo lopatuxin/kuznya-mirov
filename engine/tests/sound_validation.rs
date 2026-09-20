@@ -50,6 +50,7 @@ fn load(
         .map(|(name, verdict)| (name.to_string(), *verdict))
         .collect();
     load_rest(
+        game_json,
         config,
         Some(props),
         Some(scene),
@@ -559,9 +560,9 @@ fn missing_sound_file_is_reported() {
     )
     .expect_err("файл звука не найден — ошибка");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("eat.wav") && e.message.contains("не найден")),
+        errors.iter().any(|e| e.message.contains("eat.wav")
+            && e.message.contains("не найден")
+            && e.message.contains("ожидался WAV-звук")),
         "{errors:?}"
     );
 }
@@ -625,9 +626,9 @@ fn missing_music_verdict_is_reported_as_not_found() {
     )
     .expect_err("трек не найден — ошибка");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.message.contains("theme.mp3") && e.message.contains("не найден")),
+        errors.iter().any(|e| e.message.contains("theme.mp3")
+            && e.message.contains("не найден")
+            && e.message.contains("ожидался MP3-трек")),
         "{errors:?}"
     );
 }

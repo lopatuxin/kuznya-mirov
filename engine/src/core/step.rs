@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 
 use super::grid::{Rect, SpatialGrid, largest_dimension};
+use super::input::{KeyAction, KeyEvent};
 use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
 use super::rules::{
@@ -27,32 +28,25 @@ fn rect_of(world: &World, id: u32) -> Option<Rect> {
     })
 }
 
-/// Stage 2: press/release events turn into property writes named by each object's `keys` table.
-pub fn apply_input(world: &mut World, pressed: &[String], released: &[String]) {
+/// Stage 2: press/release events turn into property writes named by each object's `keys` table —
+/// applied in `events`' own order, not grouped by press-then-release, so a release and a press of
+/// the same key landing in the same real-time gap leave the object in the state the later of the
+/// two actually calls for.
+pub fn apply_input(world: &mut World, events: &[KeyEvent]) {
     let mut edits: Vec<(u32, PropertyId, Value)> = Vec::new();
-    for id in world.ids() {
-        let Some(table) = world.keys(id, property::KEYS) else {
-            continue;
-        };
-        for code in pressed {
-            if let Some(binding) = table.get(code) {
-                edits.extend(
-                    binding
-                        .press
-                        .iter()
-                        .map(|e| (id, e.property, e.value.clone())),
-                );
-            }
-        }
-        for code in released {
-            if let Some(binding) = table.get(code) {
-                edits.extend(
-                    binding
-                        .release
-                        .iter()
-                        .map(|e| (id, e.property, e.value.clone())),
-                );
-            }
+    for event in events {
+        for id in world.ids() {
+            let Some(table) = world.keys(id, property::KEYS) else {
+                continue;
+            };
+            let Some(binding) = table.get(&event.code) else {
+                continue;
+            };
+            let side = match event.action {
+                KeyAction::Press => &binding.press,
+                KeyAction::Release => &binding.release,
+            };
+            edits.extend(side.iter().map(|e| (id, e.property, e.value.clone())));
         }
     }
     for (id, prop, value) in edits {

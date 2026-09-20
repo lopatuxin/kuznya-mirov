@@ -26,8 +26,9 @@ fn read(name: &str) -> String {
 /// that declares none. «Звук»: every declared sound is read whether or not
 /// `play_sound` uses it, so `files.sounds` is read in full here just like `files.fonts` is.
 fn load() -> engine::core::game::Game {
+    let game_json = read("game.json");
     let (config, _entry_warnings) =
-        read_entry(&read("game.json")).expect("game.json демо-арканоида должен разбираться");
+        read_entry(&game_json).expect("game.json демо-арканоида должен разбираться");
     let font_bytes: Vec<(String, Option<Vec<u8>>)> = config
         .files
         .fonts
@@ -47,6 +48,7 @@ fn load() -> engine::core::game::Game {
         .map(|(name, _)| (name.clone(), MusicVerdict::Ok))
         .collect();
     let (mut game, _screens, warnings) = load_rest(
+        &game_json,
         config,
         Some(&read("properties.json")),
         Some(&read("scene.json")),

@@ -13,8 +13,8 @@ export type SoundAssets = {
 export type SoundPlayer = {
   /** Зовётся раз в кадр, сразу после чтения окна чисел движка. */
   handleFrame(snapshot: SoundWindowSnapshot): void;
-  /** «У проигрывателя один хозяин»: обработчик скрытия вкладки трогает исполненное сам, а не ждёт
-   *  следующей сверки — она уже не позовёт движок, пока вкладка спрятана. */
+  /** «У проигрывателя один хозяин»: обработчик скрытия вкладки останавливает трек сам, а не ждёт
+   *  следующей сверки — кадров, пока вкладка спрятана, больше не будет. */
   handleTabHidden(): void;
 };
 
@@ -35,7 +35,9 @@ export function createSoundPlayer(
   audioElement: HTMLAudioElement,
   assets: SoundAssets,
 ): SoundPlayer {
-  const performed: MusicPerformed = { trackId: null, playing: false };
+  // Какой трек лежит в проигрывателе; играет ли он прямо сейчас, сверка спрашивает у самого
+  // элемента — см. `reconcileNow`.
+  let performedTrackId: number | null = null;
   const brokenTrackIds = new Set<number>();
   let awaitingRetry = false;
   let hasUserGestured = false;
@@ -44,17 +46,10 @@ export function createSoundPlayer(
   // завести звук отдельной метки на трек нет, поэтому метка одна на всю страницу.
   let hasLoggedStartFailure = false;
 
-  // «Событие pause элемента обновляет эту память» — источник истины про «играет ли» один, и это не
-  // код, который её меняет, а сам элемент; наши же вызовы `pause()`/`play()` проходят через него.
-  audioElement.addEventListener("pause", () => {
-    performed.playing = false;
-  });
-
   audioElement.addEventListener("error", () => {
-    const trackId = performed.trackId;
+    const trackId = performedTrackId;
     if (trackId === null || audioElement.error?.code !== MediaError.MEDIA_ERR_DECODE) return;
     brokenTrackIds.add(trackId);
-    performed.playing = false;
     const asset = assets.music.get(trackId);
     logPlayerLine(
       `${asset?.path ?? trackId} — не разжимается на ${Math.floor(audioElement.currentTime)}-й секунде`,
@@ -72,19 +67,18 @@ export function createSoundPlayer(
 
   /**
    * «У проигрывателя один хозяин»: всякий, кто трогает `<audio>` мимо `attemptPlay()` (пауза по
-   * сверке, скрытие вкладки, отсутствующий файл трека), обязан тем же движением поправить
-   * исполненное и снять отметку «попытка в пути» — иначе поздний ответ брошенного `play()` придёт
-   * уже после того, как всё улеглось, и либо повторит вызов, либо перепутает состояние.
+   * сверке, скрытие вкладки, отсутствующий файл трека), обязан тем же движением снять отметку
+   * «попытка в пути» — иначе поздний ответ брошенного `play()` придёт уже после того, как всё
+   * улеглось, и повторит вызов.
    */
   function stopPlayback(): void {
     audioElement.pause();
-    performed.playing = false;
     pendingPlayTrackId = null;
     playRequestId += 1;
   }
 
   function attemptPlay(): void {
-    const trackId = performed.trackId;
+    const trackId = performedTrackId;
     // «Исполнитель не долбится»: пока предыдущая попытка на этот же трек не решилась, второй
     // play() поверх неё не зовётся.
     if (trackId !== null && pendingPlayTrackId === trackId) return;
@@ -95,17 +89,14 @@ export function createSoundPlayer(
       () => {
         if (requestId !== playRequestId) return;
         pendingPlayTrackId = null;
-        performed.playing = true;
       },
       (error: unknown) => {
         if (requestId !== playRequestId) return;
         pendingPlayTrackId = null;
         // AbortError — это не отказ браузера играть, а наш же `pause()`/смена трека, оборвавшие
-        // незавершённый play(); тот, кто это сделал, уже поправил исполненное сам через
-        // `stopPlayback()` или следующий `attemptPlay()`. Отложенная попытка и строка в журнал
-        // положены только на NotAllowedError — настоящий отказ браузера завести звук.
+        // незавершённый play(). Отложенная попытка и строка в журнал положены только на
+        // NotAllowedError — настоящий отказ браузера завести звук.
         if (!(error instanceof DOMException) || error.name !== "NotAllowedError") return;
-        performed.playing = false;
         awaitingRetry = true;
         // До первого нажатия игрока отказ — обычное поведение браузера, а не сбой; строка в
         // журнал идёт только после того, как звук уже разрешали, и только один раз за сессию.
@@ -135,11 +126,10 @@ export function createSoundPlayer(
           // он всё ещё лежит в проигрывателе, — и подняла бы старый трек через «resume».
           stopPlayback();
           audioElement.removeAttribute("src");
-          performed.trackId = null;
+          performedTrackId = null;
           return;
         }
-        performed.trackId = action.trackId;
-        performed.playing = false;
+        performedTrackId = action.trackId;
         audioElement.src = asset.url;
         attemptPlay();
         return;
@@ -157,6 +147,14 @@ export function createSoundPlayer(
   }
 
   function reconcileNow(snapshot: SoundWindowSnapshot): void {
+    // «Сверка музыки — единственное место, которое решает, что играет»: играет ли трек на самом
+    // деле, сверка спрашивает у элемента прямо здесь, а не ведёт отдельную память, которую надо
+    // было бы чинить подпиской на его `pause`. Паузу, поставленную браузером мимо этого кода
+    // (спрятанная вкладка, потерянный вывод), видит ближайшая же сверка.
+    const performed: MusicPerformed = {
+      trackId: performedTrackId,
+      playing: !audioElement.paused,
+    };
     const action = reconcileMusic(
       { enabled: snapshot.enabled, trackId: snapshot.musicId },
       performed,

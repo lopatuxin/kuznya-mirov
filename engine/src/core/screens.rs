@@ -5,7 +5,7 @@
 use std::collections::HashMap;
 
 use super::game::Game;
-use super::input::{KeyQueue, MouseEvent, MouseState};
+use super::input::{MouseEvent, MouseState, UiEvent, UiQueue};
 use super::property::{self, PropertyId, PropertyTable};
 use super::rules::Outcome;
 use super::value::PropKind;
@@ -219,7 +219,7 @@ pub enum Element {
     },
 }
 
-/// «Экраны и состояние» → «Клавиши экрана»: name-to-command, the same four commands as
+/// «Экраны и состояние» → «Клавиши экрана»: name-to-command, the same five commands as
 /// `on_click`. A key named here never reaches the world, on either press or release.
 pub type ScreenKeyTable = HashMap<String, ButtonCommand>;
 
@@ -357,21 +357,28 @@ pub fn tick(
 }
 
 /// «Звук» → «Один вызов движка», пункт 5: writes the active screen's
-/// music (or silence, if it names none) and the sound-enabled flag into the window — called
-/// once per call, after the mouse and screen-key queues have drained, so a click that just
-/// switched screens writes the screen it landed on, never the one it left. «Экраны и
-/// состояние» → «Кому принадлежит состояние звука»: `game`'s own window carries the result,
-/// `config`/`state` only supply what's currently true.
+/// music (or silence, if it names none) and the sound-enabled flag into the window — called once
+/// per call, after both the shared mouse/screen-key queue has drained and this call's own steps
+/// have run, so a click that just switched screens writes the screen it landed on, never the one
+/// it left. «Экраны и состояние» → «Кому принадлежит состояние звука»: `game`'s own window
+/// carries the result, `config`/`state` only supply what's currently true.
 pub fn write_sound_frame(game: &mut Game, config: &ScreensConfig, state: &ScreenState) {
     let music = config.screens[state.active()].music;
     game.sound_window_mut()
         .write_header(music, state.sound_enabled());
 }
 
-/// «Экраны и состояние»: keyboard events are dropped outright on a screen with no `world_runs`.
-/// A key the active screen names in its own `keys` table is absorbed here instead — it never
-/// reaches the world, live screen or not, and never joins the engine's held-keys set.
-pub fn key_down(game: &mut Game, config: &ScreensConfig, state: &ScreenState, code: &str) {
+/// «Экраны и состояние» → «Клавиши экрана»: a key named in the active screen's own `keys` table
+/// never reaches the world, on press or release — judged here against whichever screen is
+/// active *right now*, at drain time, not when the raw event first arrived, so a key queued
+/// before a click that switches screens still sees the screen the click lands on. Dropped
+/// outright on a screen without `world_runs`, except a key the active screen names.
+fn handle_screen_key_down(
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &ScreenState,
+    code: &str,
+) {
     if config.screens[state.active()].keys.contains_key(code) {
         return;
     }
@@ -380,55 +387,28 @@ pub fn key_down(game: &mut Game, config: &ScreensConfig, state: &ScreenState, co
     }
 }
 
-/// Queues the release for `process_key_queue` when the active screen names `code` in its own
-/// `keys` table — «Экраны и состояние» → «Клавиши экрана»: fires on release, not on press, and
-/// the command runs against whichever screen is active once the queue drains, same as a mouse
-/// click. Otherwise forwarded to the world exactly as before, and only if the key actually
-/// reached the world on press — a release absorbed by press (by this screen's own table, by a
-/// different screen's, or already synthesized by `release_held_keys`) must not reach the world a
-/// second time, or a binding fires for a key the player never pressed on this screen.
-///
-/// A key can be held from a *different* live screen that didn't declare it, then get absorbed
-/// here once the player switches to a live screen that does. Without also releasing it in the
-/// world, it would stay held forever — the same servicing action `release_held_keys` performs on
-/// a live-to-non-live transition, just for one key instead of all of them. That release is
-/// applied immediately, the same way `release_held_keys` applies its own — queuing it through
-/// `game.key_up` instead would leave it sitting in `Game`'s input queue until the next step, and
-/// a `new_game`/`switch_to` landing before that step throws the whole queue away, taking the
-/// release with it while `held` no longer names the key to retry.
-pub fn key_up(
-    game: &mut Game,
-    config: &ScreensConfig,
-    state: &ScreenState,
-    keys: &mut KeyQueue,
-    code: &str,
-) {
-    if config.screens[state.active()].keys.contains_key(code) {
-        if game.is_key_held(code) {
-            game.release_key(code);
-        }
-        keys.push_release(code);
-        return;
-    }
-    if state.is_live(config) && game.is_key_held(code) {
-        game.key_up(code);
-    }
-}
-
-/// Drains queued screen-key releases, running each one's command against whichever screen is
-/// active at the moment it is processed — a release that lands after a mouse-driven switch in
-/// the same batch uses the new screen's table, same as `process_mouse_queue`.
-pub fn process_key_queue(
-    queue: &mut KeyQueue,
+/// Mirrors `handle_screen_key_down`: an absorbed key's command runs right here, in this same
+/// drain pass, instead of through a second queue of its own — drain order already puts it after
+/// every mouse event queued ahead of it. `Game::release_key` runs unconditionally first: it
+/// releases the key from the world only if the world actually holds it, and either way drops
+/// whatever the page still has queued for it — see its own doc comment for exactly which case
+/// that first part covers. A release the world never held on a screen that never absorbs it (its
+/// press was itself absorbed, by this screen or an earlier one) is silently dropped by
+/// `Game::key_up` itself in the non-absorbed branch below, so this function does not need to
+/// track that case separately.
+fn handle_screen_key_up(
     game: &mut Game,
     config: &ScreensConfig,
     state: &mut ScreenState,
+    code: &str,
 ) {
-    for code in queue.drain() {
-        let cmd = config.screens[state.active()].keys.get(&code).copied();
-        if let Some(cmd) = cmd {
-            apply_command(cmd, game, config, state);
-        }
+    if let Some(cmd) = config.screens[state.active()].keys.get(code).copied() {
+        game.release_key(code);
+        apply_command(cmd, game, config, state);
+        return;
+    }
+    if state.is_live(config) {
+        game.key_up(code);
     }
 }
 
@@ -487,11 +467,13 @@ fn handle_mouse_event(
     }
 }
 
-/// Drains the mouse queue, processing every event against whichever screen is active at the
-/// time — a click that switches the screen mid-drain leaves later events in the same batch to
-/// land on the new one, same as the browser delivering them one at a time would.
-pub fn process_mouse_queue(
-    queue: &mut super::input::MouseQueue,
+/// Drains the shared mouse/screen-key queue, judging every event — mouse or keyboard — against
+/// whichever screen is active at the moment it is *this* event's turn, not when it arrived. A
+/// click that switches the screen mid-drain leaves later events in the same batch, key or mouse,
+/// to land on the new one, same as the browser delivering them one at a time would — «Экраны и
+/// состояние» → «Клавиши экрана».
+pub fn process_ui_queue(
+    queue: &mut UiQueue,
     mouse: &mut MouseState,
     game: &mut Game,
     config: &ScreensConfig,
@@ -499,11 +481,41 @@ pub fn process_mouse_queue(
     viewport: [f32; 2],
 ) {
     for event in queue.drain() {
-        let screen = &config.screens[state.active()];
-        if let Some(cmd) = handle_mouse_event(mouse, screen, viewport, event) {
-            apply_command(cmd, game, config, state);
+        match event {
+            UiEvent::Mouse(mouse_event) => {
+                let screen = &config.screens[state.active()];
+                if let Some(cmd) = handle_mouse_event(mouse, screen, viewport, mouse_event) {
+                    apply_command(cmd, game, config, state);
+                }
+            }
+            UiEvent::KeyDown(code) => handle_screen_key_down(game, config, state, &code),
+            UiEvent::KeyUp(code) => handle_screen_key_up(game, config, state, &code),
         }
     }
+}
+
+/// The one call every `tick` makes, once per `requestAnimationFrame` — «Исполнение игры» →
+/// «Шаг и кадр», «Звук» → «Один вызов движка»: drain the shared mouse/screen-key queue first (a
+/// click's own screen switch, and a key the new screen doesn't claim, are both visible to this
+/// same call's steps below, not only a later call's), advance the fixed-step simulation, then
+/// write what the sound window should say — after both, so a click that just changed screen
+/// writes the screen it landed on. `wasm::Engine::tick` calls this and then draws a frame; native
+/// code (tests included) calls it directly instead of repeating the three calls by hand, so a
+/// change to this order is exercised the same way in both.
+#[allow(clippy::too_many_arguments)]
+pub fn engine_call(
+    queue: &mut UiQueue,
+    mouse: &mut MouseState,
+    runner: &mut super::runner::Runner,
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+    viewport: [f32; 2],
+    dt_seconds: f64,
+) {
+    process_ui_queue(queue, mouse, game, config, state, viewport);
+    tick(runner, game, config, state, dt_seconds);
+    write_sound_frame(game, config, state);
 }
 
 /// Which of the three fill colors a button currently shows — pressed wins over hover, and no

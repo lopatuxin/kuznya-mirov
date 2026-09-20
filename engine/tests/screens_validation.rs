@@ -37,6 +37,7 @@ fn load(
         .map(|(name, bytes)| (name.to_string(), Some(bytes.to_vec())))
         .collect();
     load_rest(
+        game_json,
         config,
         Some(props),
         Some(scene),
@@ -52,6 +53,7 @@ fn load(
 fn missing_screens_file_is_reported() {
     let (config, _warnings) = read_entry(GAME).expect("game.json валиден");
     let result = load_rest(
+        GAME,
         config,
         Some(PROPS),
         Some(SCENE),
@@ -63,9 +65,9 @@ fn missing_screens_file_is_reported() {
     );
     let LoadFailure { errors, .. } = result.expect_err("отсутствующий screens.json — ошибка");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.file == "screens.json" && e.message.contains("не найден")),
+        errors.iter().any(|e| e.file == "screens.json"
+            && e.message.contains("не найден")
+            && e.message.contains("ожидался")),
         "{errors:?}"
     );
 }
@@ -89,10 +91,13 @@ fn start_screen_naming_unknown_screen_is_reported() {
     let screens = r##"{"screens":[{"name":"other","world_runs":true,"elements":[]}]}"##;
     let LoadFailure { errors, .. } = load(GAME, PROPS, SCENE, RULES_EMPTY, screens, &[])
         .expect_err("start_screen называет экран, которого нет в screens.json — ошибка");
+    // «Экраны и состояние»: ссылка идёт из `game.json`, значит и файл, и текст сообщения должны
+    // называть его, а не `screens.json` и не общую формулировку про кнопку.
     assert!(
-        errors
-            .iter()
-            .any(|e| e.path == "start_screen" && e.message.contains("menu")),
+        errors.iter().any(|e| e.path == "start_screen"
+            && e.file == "game.json"
+            && e.message.contains("menu")
+            && e.message.contains("start_screen")),
         "{errors:?}"
     );
 }
@@ -157,7 +162,9 @@ fn button_target_naming_unknown_screen_is_reported() {
     )
     .expect_err("show_screen на несуществующий экран — ошибка");
     assert!(
-        errors.iter().any(|e| e.message.contains("nowhere")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("nowhere") && e.message.contains("кнопка")),
         "{errors:?}"
     );
 }
@@ -305,11 +312,17 @@ fn font_file_missing_is_reported() {
     // The "ui" font is declared in `GAME`'s files.fonts, but no bytes are supplied for it.
     let LoadFailure { errors, .. } = load(GAME, PROPS, SCENE, RULES_EMPTY, screens, &[])
         .expect_err("файл шрифта не найден — ошибка");
+    let err = errors
+        .iter()
+        .find(|e| e.path.contains("fonts") && e.message.contains("не найден"))
+        .unwrap_or_else(|| panic!("должна быть ошибка про недостающий шрифт: {errors:?}"));
+    assert!(err.message.contains("ожидался файл шрифта"), "{err:?}");
+    // «Формат игры» → «Проверка данных перед запуском»: сообщение называет файл И место в нём —
+    // это поле объявлено прямо в game.json, значит и место ищется там же.
+    assert_eq!(err.file, "game.json", "{err:?}");
     assert!(
-        errors
-            .iter()
-            .any(|e| e.path.contains("fonts") && e.message.contains("не найден")),
-        "{errors:?}"
+        err.line.is_some() && err.column.is_some(),
+        "у ошибки про files.fonts, объявленный прямо в game.json, есть текст, а значит и место: {err:?}"
     );
 }
 
@@ -526,7 +539,9 @@ fn screen_key_targeting_unknown_screen_is_reported() {
     )
     .expect_err("клавиша экрана ссылается на несуществующий экран — ошибка");
     assert!(
-        errors.iter().any(|e| e.message.contains("nowhere")),
+        errors
+            .iter()
+            .any(|e| e.message.contains("nowhere") && e.message.contains("клавиша")),
         "{errors:?}"
     );
 }

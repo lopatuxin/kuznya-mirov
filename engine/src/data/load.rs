@@ -90,14 +90,24 @@ fn reject_unknown_keys(
     path: &str,
     errors: &mut ErrorSink,
 ) {
-    for key in obj.keys() {
-        if !known.contains(&key.as_str()) {
-            errors.push(
-                file,
-                &join(path, key),
-                format!("неизвестное поле \"{key}\""),
-            );
-        }
+    let unknown_keys: Vec<&String> = obj
+        .keys()
+        .filter(|key| !known.contains(&key.as_str()))
+        .collect();
+    if unknown_keys.is_empty() {
+        return;
+    }
+    let allowed = known
+        .iter()
+        .map(|k| format!("\"{k}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    for key in unknown_keys {
+        errors.push(
+            file,
+            &join(path, key),
+            format!("неизвестное поле \"{key}\"; ожидалось одно из: {allowed}"),
+        );
     }
 }
 
@@ -523,11 +533,12 @@ pub struct ParsedObject {
 fn parse_scene_object(
     value: &Json,
     index: usize,
+    file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
 ) -> Option<ParsedObject> {
     let path = format!("objects[{index}]");
-    let obj = expect_object(value, "scene.json", &path, errors)?;
+    let obj = expect_object(value, file, &path, errors)?;
 
     // `name` is a builtin property of kind `Text`, so the loop below already validates it
     // through `parse_scalar_value` and reports a broken value there. `name` isn't unique across
@@ -546,13 +557,12 @@ fn parse_scene_object(
 
     for (key, field_value) in obj {
         let field_path = join(&path, key);
-        let Some(prop) = resolve_property(key, properties, "scene.json", &field_path, errors)
-        else {
+        let Some(prop) = resolve_property(key, properties, file, &field_path, errors) else {
             continue;
         };
         match properties.kind(prop) {
             PropKind::Grid => {
-                if let Some(spec) = parse_grid(field_value, "scene.json", &field_path, errors) {
+                if let Some(spec) = parse_grid(field_value, file, &field_path, errors) {
                     grid = Some(spec);
                     shape.insert(prop);
                 } else {
@@ -560,8 +570,7 @@ fn parse_scene_object(
                 }
             }
             PropKind::Keys => {
-                if let Some(table) =
-                    parse_keys(field_value, properties, "scene.json", &field_path, errors)
+                if let Some(table) = parse_keys(field_value, properties, file, &field_path, errors)
                 {
                     keys = Some(table);
                     shape.insert(prop);
@@ -570,14 +579,9 @@ fn parse_scene_object(
                 }
             }
             _ => {
-                if let Some(v) = parse_scalar_value(
-                    field_value,
-                    prop,
-                    properties,
-                    "scene.json",
-                    &field_path,
-                    errors,
-                ) {
+                if let Some(v) =
+                    parse_scalar_value(field_value, prop, properties, file, &field_path, errors)
+                {
                     // A flag set to `false` is absent for `World::has`, so it must be absent
                     // from the shape too: the prestart check and the running game have to
                     // agree on which objects a `has: [...]` selector matches.
@@ -606,54 +610,55 @@ fn parse_scene_object(
 
 fn parse_scene_json(
     text: &str,
+    file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
 ) -> Vec<ParsedObject> {
-    let Some(root) = parse_json_or_error("scene.json", text, errors) else {
+    let Some(root) = parse_json_or_error(file, text, errors) else {
         return Vec::new();
     };
-    let Some(obj) = expect_object(&root, "scene.json", "", errors) else {
+    let Some(obj) = expect_object(&root, file, "", errors) else {
         return Vec::new();
     };
-    reject_unknown_keys(obj, &["objects"], "scene.json", "", errors);
+    reject_unknown_keys(obj, &["objects"], file, "", errors);
     let Some(objects_json) = obj.get("objects") else {
         // Same convention `require_field` uses: the path names the parent object (here the
         // root, `""`), not the missing key itself — a path pointing at a key that by definition
         // isn't in the text can never resolve to a location.
-        errors.push("scene.json", "", "отсутствует список объектов");
+        errors.push(file, "", "отсутствует список объектов");
         return Vec::new();
     };
-    let Some(arr) = expect_array(objects_json, "scene.json", "objects", errors) else {
+    let Some(arr) = expect_array(objects_json, file, "objects", errors) else {
         return Vec::new();
     };
     arr.iter()
         .enumerate()
-        .filter_map(|(i, v)| parse_scene_object(v, i, properties, errors))
+        .filter_map(|(i, v)| parse_scene_object(v, i, file, properties, errors))
         .collect()
 }
 
-fn parse_properties_json(text: &str, errors: &mut ErrorSink) -> PropertyTable {
+fn parse_properties_json(text: &str, file: &str, errors: &mut ErrorSink) -> PropertyTable {
     let mut table = PropertyTable::new();
-    let Some(root) = parse_json_or_error("properties.json", text, errors) else {
+    let Some(root) = parse_json_or_error(file, text, errors) else {
         return table;
     };
-    let Some(obj) = expect_object(&root, "properties.json", "", errors) else {
+    let Some(obj) = expect_object(&root, file, "", errors) else {
         return table;
     };
-    reject_unknown_keys(obj, &["properties"], "properties.json", "", errors);
+    reject_unknown_keys(obj, &["properties"], file, "", errors);
     let Some(props_json) = obj.get("properties") else {
         // Same convention `require_field` uses: the path names the parent (here the root, `""`),
         // not the missing key itself — a path pointing at a key that by definition isn't in the
         // text can never resolve to a location.
-        errors.push("properties.json", "", "отсутствует объект properties");
+        errors.push(file, "", "отсутствует объект properties");
         return table;
     };
-    let Some(props_obj) = expect_object(props_json, "properties.json", "properties", errors) else {
+    let Some(props_obj) = expect_object(props_json, file, "properties", errors) else {
         return table;
     };
     for (name, kind_json) in props_obj {
         let path = join("properties", name);
-        let Some(kind_str) = expect_string(kind_json, "properties.json", &path, errors) else {
+        let Some(kind_str) = expect_string(kind_json, file, &path, errors) else {
             continue;
         };
         let kind = match kind_str.as_str() {
@@ -662,7 +667,7 @@ fn parse_properties_json(text: &str, errors: &mut ErrorSink) -> PropertyTable {
             "time" => PropKind::Time,
             other => {
                 errors.push(
-                    "properties.json",
+                    file,
                     &path,
                     format!("неизвестный вид свойства \"{other}\": ожидался flag, number или time"),
                 );
@@ -671,11 +676,7 @@ fn parse_properties_json(text: &str, errors: &mut ErrorSink) -> PropertyTable {
         };
         if let Err(existing) = table.declare_author(name, kind) {
             let _ = existing;
-            errors.push(
-                "properties.json",
-                &path,
-                format!("свойство \"{name}\" уже объявлено"),
-            );
+            errors.push(file, &path, format!("свойство \"{name}\" уже объявлено"));
         }
     }
     table
@@ -766,22 +767,29 @@ pub struct GameConfig {
 }
 
 /// The handshake between `read_entry` and `load_rest` that `wasm::Engine` drives: `None` before
-/// any successful `read_entry`, or once `load_rest` has consumed one; `Some` in between. Kept
-/// here, next to the two calls whose contract it enforces, rather than in the wasm-bindgen layer,
-/// so the handshake itself needs no browser types and can be tested without one.
+/// any successful `read_entry`, or once `load_rest` has consumed one; `Some` in between. Carries
+/// `game.json`'s own text alongside the config `read_entry` parsed from it, since `load_rest`
+/// needs the text back too — to locate its own errors about fields declared in `game.json` (see
+/// `load_rest`'s doc comment). Kept here, next to the two calls whose contract it enforces, rather
+/// than in the wasm-bindgen layer, so the handshake itself needs no browser types and can be
+/// tested without one.
 #[derive(Default)]
-pub struct PendingConfig(Option<GameConfig>);
+pub struct PendingConfig(Option<(GameConfig, String)>);
 
 impl PendingConfig {
-    /// Records what `result` means for the pending config: success replaces it, failure clears
-    /// it — otherwise a failed `read_entry` would leave `load_rest` silently using the config an
-    /// earlier successful call had left behind.
-    pub fn set(&mut self, result: &Result<(GameConfig, Vec<GameError>), LoadFailure>) {
-        self.0 = result.as_ref().ok().map(|(config, _)| config.clone());
+    /// Records what `result` means for the pending config: success replaces it (keeping `text`
+    /// alongside it), failure clears it — otherwise a failed `read_entry` would leave `load_rest`
+    /// silently using the config an earlier successful call had left behind.
+    pub fn set(&mut self, result: &Result<(GameConfig, Vec<GameError>), LoadFailure>, text: &str) {
+        self.0 = result
+            .as_ref()
+            .ok()
+            .map(|(config, _)| (config.clone(), text.to_string()));
     }
 
-    /// Consumes the pending config, if any — mirrors `load_rest`'s one-shot use of it.
-    pub fn take(&mut self) -> Option<GameConfig> {
+    /// Consumes the pending config and `game.json` text, if any — mirrors `load_rest`'s one-shot
+    /// use of them.
+    pub fn take(&mut self) -> Option<(GameConfig, String)> {
         self.0.take()
     }
 
@@ -789,7 +797,7 @@ impl PendingConfig {
     /// three load calls, which sits between `read_entry` (fills this) and `load_rest` (empties
     /// it via `take`).
     pub fn peek(&self) -> Option<&GameConfig> {
-        self.0.as_ref()
+        self.0.as_ref().map(|(config, _)| config)
     }
 }
 
@@ -825,11 +833,11 @@ pub fn read_texts(
 ) -> NeededMedia {
     let mut scratch = ErrorSink::new();
     let properties = match properties_json {
-        Some(text) => parse_properties_json(text, &mut scratch),
+        Some(text) => parse_properties_json(text, &config.files.properties, &mut scratch),
         None => PropertyTable::new(),
     };
     let parsed_screens = match screens_json {
-        Some(text) => parse_screens_json(text, &properties, &mut scratch),
+        Some(text) => parse_screens_json(text, &config.files.screens, &properties, &mut scratch),
         None => Vec::new(),
     };
     let referenced: std::collections::HashSet<&str> = parsed_screens
@@ -1249,11 +1257,16 @@ fn parse_condition(
             None
         })?;
         let num = expect_number(&arr[2], file, &join(path, "[2]"), errors)?;
-        return Some(Condition::Compare {
-            prop,
-            op,
-            value: num,
-        });
+        // «Формат игры»: время в файлах — секунды, а `World::number_like` отдаёт для `Time`
+        // шаги (world.rs), так что порог сравнения переводится здесь же, при разборе — это
+        // порог, а не длительность, так что `seconds_to_steps`'s минимум в один шаг тут не к
+        // месту: сравнение с нулём должно остаться сравнением с нулём.
+        let value = if properties.kind(prop) == PropKind::Time {
+            seconds_to_steps_delta(num) as f64
+        } else {
+            num
+        };
+        return Some(Condition::Compare { prop, op, value });
     }
     if let Some(obj) = value.as_object() {
         if let Some(fewer) = obj.get("fewer_than") {
@@ -1675,74 +1688,63 @@ const ALL_RULE_KEYS: &[&str] = &[
 fn parse_rule(
     value: &Json,
     index: usize,
+    file: &str,
     properties: &PropertyTable,
     sounds: &[(String, String)],
     music: &[(String, String)],
     errors: &mut ErrorSink,
 ) -> Option<(Rule, std::collections::HashSet<PropertyId>)> {
     let path = format!("rules[{index}]");
-    let obj = expect_object(value, "rules.json", &path, errors)?;
+    let obj = expect_object(value, file, &path, errors)?;
     let kind = match obj.get("kind") {
-        Some(v) => expect_string(v, "rules.json", &join(&path, "kind"), errors),
+        Some(v) => expect_string(v, file, &join(&path, "kind"), errors),
         None => {
             // Same convention `require_field` uses: the path names the rule itself, not the
             // missing key — a path pointing at a key that by definition isn't in the text can
             // never resolve to a location.
-            errors.push("rules.json", &path, "отсутствует вид правила (kind)");
+            errors.push(file, &path, "отсутствует вид правила (kind)");
             None
         }
     };
     match kind.as_deref() {
         Some("move") => {
-            reject_unknown_keys(obj, &["kind", "for"], "rules.json", &path, errors);
-            let for_json = require_field(obj, "for", "rules.json", &path, errors)?;
-            let for_obj = expect_object(for_json, "rules.json", &join(&path, "for"), errors)?;
-            let for_ = resolve_selector(
-                for_obj,
-                properties,
-                "rules.json",
-                &join(&path, "for"),
-                errors,
-            );
+            reject_unknown_keys(obj, &["kind", "for"], file, &path, errors);
+            let for_json = require_field(obj, "for", file, &path, errors)?;
+            let for_obj = expect_object(for_json, file, &join(&path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
             Some((Rule::Move { for_ }, std::collections::HashSet::new()))
         }
         Some("collide") => {
             reject_unknown_keys(
                 obj,
                 &["kind", "a", "b", "effects", "do"],
-                "rules.json",
+                file,
                 &path,
                 errors,
             );
-            let a_json = require_field(obj, "a", "rules.json", &path, errors)?;
-            let b_json = require_field(obj, "b", "rules.json", &path, errors)?;
-            let a_obj = expect_object(a_json, "rules.json", &join(&path, "a"), errors)?;
-            let b_obj = expect_object(b_json, "rules.json", &join(&path, "b"), errors)?;
-            let a = resolve_selector(a_obj, properties, "rules.json", &join(&path, "a"), errors);
-            let b = resolve_selector(b_obj, properties, "rules.json", &join(&path, "b"), errors);
+            let a_json = require_field(obj, "a", file, &path, errors)?;
+            let b_json = require_field(obj, "b", file, &path, errors)?;
+            let a_obj = expect_object(a_json, file, &join(&path, "a"), errors)?;
+            let b_obj = expect_object(b_json, file, &join(&path, "b"), errors)?;
+            let a = resolve_selector(a_obj, properties, file, &join(&path, "a"), errors);
+            let b = resolve_selector(b_obj, properties, file, &join(&path, "b"), errors);
             let effects_json = obj
                 .get("effects")
-                .and_then(|v| expect_object(v, "rules.json", &join(&path, "effects"), errors));
+                .and_then(|v| expect_object(v, file, &join(&path, "effects"), errors));
             if let Some(e) = effects_json {
-                reject_unknown_keys(
-                    e,
-                    &["a", "b"],
-                    "rules.json",
-                    &join(&path, "effects"),
-                    errors,
-                );
+                reject_unknown_keys(e, &["a", "b"], file, &join(&path, "effects"), errors);
             }
             let effects_a = parse_collide_effects(
                 effects_json.and_then(|e| e.get("a")),
                 properties,
-                "rules.json",
+                file,
                 &join(&path, "effects → a"),
                 errors,
             );
             let effects_b = parse_collide_effects(
                 effects_json.and_then(|e| e.get("b")),
                 properties,
-                "rules.json",
+                file,
                 &join(&path, "effects → b"),
                 errors,
             );
@@ -1751,7 +1753,7 @@ fn parse_rule(
                 properties,
                 sounds,
                 music,
-                "rules.json",
+                file,
                 &join(&path, "do"),
                 errors,
             );
@@ -1767,36 +1769,18 @@ fn parse_rule(
             ))
         }
         Some("delete") => {
-            reject_unknown_keys(
-                obj,
-                &["kind", "for", "when", "do"],
-                "rules.json",
-                &path,
-                errors,
-            );
-            let for_json = require_field(obj, "for", "rules.json", &path, errors)?;
-            let for_obj = expect_object(for_json, "rules.json", &join(&path, "for"), errors)?;
-            let for_ = resolve_selector(
-                for_obj,
-                properties,
-                "rules.json",
-                &join(&path, "for"),
-                errors,
-            );
-            let when_json = require_field(obj, "when", "rules.json", &path, errors)?;
-            let when = parse_condition(
-                when_json,
-                properties,
-                "rules.json",
-                &join(&path, "when"),
-                errors,
-            )?;
+            reject_unknown_keys(obj, &["kind", "for", "when", "do"], file, &path, errors);
+            let for_json = require_field(obj, "for", file, &path, errors)?;
+            let for_obj = expect_object(for_json, file, &join(&path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
+            let when_json = require_field(obj, "when", file, &path, errors)?;
+            let when = parse_condition(when_json, properties, file, &join(&path, "when"), errors)?;
             let do_ = parse_common_actions(
                 obj.get("do"),
                 properties,
                 sounds,
                 music,
-                "rules.json",
+                file,
                 &join(&path, "do"),
                 errors,
             );
@@ -1809,18 +1793,13 @@ fn parse_rule(
             reject_unknown_keys(
                 obj,
                 &["kind", "when", "where", "template", "do"],
-                "rules.json",
+                file,
                 &path,
                 errors,
             );
-            let when_json = require_field(obj, "when", "rules.json", &path, errors)?;
-            let when = parse_spawn_condition(
-                when_json,
-                properties,
-                "rules.json",
-                &join(&path, "when"),
-                errors,
-            )?;
+            let when_json = require_field(obj, "when", file, &path, errors)?;
+            let when =
+                parse_spawn_condition(when_json, properties, file, &join(&path, "when"), errors)?;
             let where_json = obj.get("where");
             let place = match where_json.and_then(|v| v.as_str()) {
                 Some("at_parent") => SpawnPlace::AtParent,
@@ -1836,7 +1815,7 @@ fn parse_rule(
                         &path
                     };
                     errors.push(
-                        "rules.json",
+                        file,
                         err_path,
                         "ожидалось \"at_parent\" или \"random_cell\"".to_string(),
                     );
@@ -1847,17 +1826,17 @@ fn parse_rule(
                 && matches!(when, SpawnCondition::FewerThan { .. })
             {
                 errors.push(
-                    "rules.json",
+                    file,
                     &join(&path, "where"),
                     "at_parent недоступен с условием fewer_than: у него нет родителя".to_string(),
                 );
                 return None;
             }
-            let template_json = require_field(obj, "template", "rules.json", &path, errors)?;
+            let template_json = require_field(obj, "template", file, &path, errors)?;
             let (template, template_broken) = parse_template(
                 template_json,
                 properties,
-                "rules.json",
+                file,
                 &join(&path, "template"),
                 errors,
             );
@@ -1867,7 +1846,7 @@ fn parse_rule(
                     .any(|(_, v)| matches!(v, TemplateValue::FromParent(_)))
             {
                 errors.push(
-                    "rules.json",
+                    file,
                     &join(&path, "template"),
                     "from_parent недоступен с условием fewer_than: у него нет родителя".to_string(),
                 );
@@ -1877,7 +1856,7 @@ fn parse_rule(
                 properties,
                 sounds,
                 music,
-                "rules.json",
+                file,
                 &join(&path, "do"),
                 errors,
             );
@@ -1892,16 +1871,16 @@ fn parse_rule(
             ))
         }
         Some(other) => {
-            reject_unknown_keys(obj, ALL_RULE_KEYS, "rules.json", &path, errors);
+            reject_unknown_keys(obj, ALL_RULE_KEYS, file, &path, errors);
             errors.push(
-                "rules.json",
+                file,
                 &join(&path, "kind"),
                 format!("неизвестный вид правила \"{other}\""),
             );
             None
         }
         None => {
-            reject_unknown_keys(obj, ALL_RULE_KEYS, "rules.json", &path, errors);
+            reject_unknown_keys(obj, ALL_RULE_KEYS, file, &path, errors);
             None
         }
     }
@@ -1926,30 +1905,32 @@ type ParsedRules = (RuleSet, Vec<RuleMeta>);
 
 fn parse_rules_json(
     text: &str,
+    file: &str,
     properties: &PropertyTable,
     sounds: &[(String, String)],
     music: &[(String, String)],
     errors: &mut ErrorSink,
 ) -> ParsedRules {
-    let Some(root) = parse_json_or_error("rules.json", text, errors) else {
+    let Some(root) = parse_json_or_error(file, text, errors) else {
         return (RuleSet::default(), Vec::new());
     };
-    let Some(obj) = expect_object(&root, "rules.json", "", errors) else {
+    let Some(obj) = expect_object(&root, file, "", errors) else {
         return (RuleSet::default(), Vec::new());
     };
-    reject_unknown_keys(obj, &["rules"], "rules.json", "", errors);
+    reject_unknown_keys(obj, &["rules"], file, "", errors);
     let Some(rules_json) = obj.get("rules") else {
-        errors.push("rules.json", "", "отсутствует список правил");
+        errors.push(file, "", "отсутствует список правил");
         return (RuleSet::default(), Vec::new());
     };
-    let Some(arr) = expect_array(rules_json, "rules.json", "rules", errors) else {
+    let Some(arr) = expect_array(rules_json, file, "rules", errors) else {
         return (RuleSet::default(), Vec::new());
     };
     let (rules, meta): (Vec<Rule>, Vec<RuleMeta>) = arr
         .iter()
         .enumerate()
         .filter_map(|(i, v)| {
-            let (rule, template_broken) = parse_rule(v, i, properties, sounds, music, errors)?;
+            let (rule, template_broken) =
+                parse_rule(v, i, file, properties, sounds, music, errors)?;
             Some((
                 rule,
                 RuleMeta {
@@ -2016,8 +1997,10 @@ struct Candidate<'a> {
     locator: &'a str,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn require(
     candidates: &[Candidate],
+    file: &str,
     selector: &Selector,
     needed: PropertyId,
     properties: &PropertyTable,
@@ -2044,7 +2027,7 @@ fn require(
             continue;
         }
         errors.push(
-            "rules.json",
+            file,
             rule_label,
             format!(
                 "объекту {} не хватает свойства \"{}\" для этого правила",
@@ -2160,6 +2143,7 @@ fn widen_shapes_by_collide_effects(shapes: &mut [(Shape, String)], rules: &RuleS
 /// `widen_shapes_by_collide_effects` and `keys_edited_properties`.
 fn possible_shapes(
     scene: &[ParsedObject],
+    scene_file: &str,
     rules: &RuleSet,
     rule_meta: &[RuleMeta],
     properties: &PropertyTable,
@@ -2167,7 +2151,7 @@ fn possible_shapes(
     let mut shapes: Vec<(Shape, String)> = scene
         .iter()
         .map(|o| {
-            let locator = join("scene.json", &o.path);
+            let locator = join(scene_file, &o.path);
             let locator = match &o.name {
                 Some(name) => format!("{locator} (имя \"{name}\")"),
                 None => locator,
@@ -2244,6 +2228,7 @@ fn validate_property_sufficiency(
     shapes: &[(Shape, String)],
     rules: &RuleSet,
     rule_meta: &[RuleMeta],
+    file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
 ) {
@@ -2262,6 +2247,7 @@ fn validate_property_sufficiency(
             Rule::Move { for_ } => {
                 require(
                     &candidates,
+                    file,
                     for_,
                     property::POSITION,
                     properties,
@@ -2271,6 +2257,7 @@ fn validate_property_sufficiency(
                 );
                 require(
                     &candidates,
+                    file,
                     for_,
                     property::VELOCITY,
                     properties,
@@ -2289,6 +2276,7 @@ fn validate_property_sufficiency(
                 for (selector, effects) in [(a, effects_a), (b, effects_b)] {
                     require(
                         &candidates,
+                        file,
                         selector,
                         property::POSITION,
                         properties,
@@ -2298,6 +2286,7 @@ fn validate_property_sufficiency(
                     );
                     require(
                         &candidates,
+                        file,
                         selector,
                         property::SIZE,
                         properties,
@@ -2308,6 +2297,7 @@ fn validate_property_sufficiency(
                     if effects.iter().any(|e| matches!(e, CollideEffect::Bounce)) {
                         require(
                             &candidates,
+                            file,
                             selector,
                             property::VELOCITY,
                             properties,
@@ -2325,6 +2315,7 @@ fn validate_property_sufficiency(
                         if let CollideEffect::Add { prop, .. } = effect {
                             require(
                                 &candidates,
+                                file,
                                 selector,
                                 *prop,
                                 properties,
@@ -2339,6 +2330,7 @@ fn validate_property_sufficiency(
             Rule::Delete { for_, when, .. } => match when {
                 Condition::Compare { prop, .. } => require(
                     &candidates,
+                    file,
                     for_,
                     *prop,
                     properties,
@@ -2349,6 +2341,7 @@ fn validate_property_sufficiency(
                 Condition::OutsideScene => {
                     require(
                         &candidates,
+                        file,
                         for_,
                         property::POSITION,
                         properties,
@@ -2358,6 +2351,7 @@ fn validate_property_sufficiency(
                     );
                     require(
                         &candidates,
+                        file,
                         for_,
                         property::SIZE,
                         properties,
@@ -2378,6 +2372,7 @@ fn validate_property_sufficiency(
                         if let TemplateValue::FromParent(parent_prop) = tv {
                             require(
                                 &candidates,
+                                file,
                                 of,
                                 *parent_prop,
                                 properties,
@@ -2404,7 +2399,7 @@ fn validate_property_sufficiency(
                 && reported_do_adds.insert(*prop)
             {
                 errors.push(
-                    "rules.json",
+                    file,
                     &label,
                     format!(
                         "do → add: свойство \"{}\" не встречается ни у одного объекта",
@@ -2527,6 +2522,7 @@ fn collect_used_properties(
 /// встречается нигде — ни на одном объекте сцены, ни в одном правиле.
 fn validate_unused_properties(
     properties: &PropertyTable,
+    properties_file: &str,
     scene: &[ParsedObject],
     rules: &RuleSet,
     errors: &mut ErrorSink,
@@ -2537,7 +2533,7 @@ fn validate_unused_properties(
             continue;
         }
         errors.push_warning(
-            "properties.json",
+            properties_file,
             &join("properties", &def.name),
             format!(
                 "свойство \"{}\" объявлено, но не встречается ни на одном объекте сцены и ни в одном правиле; ожидалось, что объявленное свойство где-то используется",
@@ -2563,6 +2559,7 @@ fn name_suffix(obj: &ParsedObject) -> String {
 /// `position` или `size` не проверяется: его прямоугольник неизвестен.
 fn validate_objects_within_scene(
     scene: &[ParsedObject],
+    scene_file: &str,
     config: &SceneConfig,
     errors: &mut ErrorSink,
 ) {
@@ -2581,7 +2578,7 @@ fn validate_objects_within_scene(
             continue;
         }
         errors.push_warning(
-            "scene.json",
+            scene_file,
             &join(&obj.path, "position"),
             format!(
                 "объект{} стоит за пределами сцены: прямоугольник [{}, {}]..[{}, {}] не пересекается со сценой [0, 0]..[{}, {}]; ожидалось, что объект будет хотя бы частично на сцене",
@@ -2621,6 +2618,7 @@ fn validate_selectors_not_empty(
     shapes: &[(Shape, String)],
     rules: &RuleSet,
     rule_meta: &[RuleMeta],
+    rules_file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
 ) {
@@ -2635,7 +2633,7 @@ fn validate_selectors_not_empty(
             return;
         }
         errors.push_warning(
-            "rules.json",
+            rules_file,
             &join(label, field),
             format!(
                 "отбор {} заведомо не подходит ни одному объекту, какой может существовать в игре; ожидалось, что отбору будет соответствовать хотя бы один объект",
@@ -2963,48 +2961,43 @@ const BUTTON_KEYS: &[&str] = &[
 fn parse_element(
     value: &Json,
     path: &str,
+    file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
 ) -> Option<ParsedElementData> {
-    let obj = expect_object(value, "screens.json", path, errors)?;
-    let kind_json = require_field(obj, "kind", "screens.json", path, errors)?;
-    let kind = expect_string(kind_json, "screens.json", &join(path, "kind"), errors)?;
+    let obj = expect_object(value, file, path, errors)?;
+    let kind_json = require_field(obj, "kind", file, path, errors)?;
+    let kind = expect_string(kind_json, file, &join(path, "kind"), errors)?;
     match kind.as_str() {
         "panel" => {
-            reject_unknown_keys(obj, PANEL_KEYS, "screens.json", path, errors);
-            let placement = parse_placement(obj, "screens.json", path, errors)?;
-            let color_json = require_field(obj, "color", "screens.json", path, errors)?;
-            let color = expect_ui_color(color_json, "screens.json", &join(path, "color"), errors)?;
+            reject_unknown_keys(obj, PANEL_KEYS, file, path, errors);
+            let placement = parse_placement(obj, file, path, errors)?;
+            let color_json = require_field(obj, "color", file, path, errors)?;
+            let color = expect_ui_color(color_json, file, &join(path, "color"), errors)?;
             Some(ParsedElementData::Panel { placement, color })
         }
         "label" => {
-            reject_unknown_keys(obj, LABEL_KEYS, "screens.json", path, errors);
-            let placement = parse_placement(obj, "screens.json", path, errors)?;
-            let text_json = require_field(obj, "text", "screens.json", path, errors)?;
-            let text_str = expect_string(text_json, "screens.json", &join(path, "text"), errors)?;
-            let text = parse_rich_text(
-                &text_str,
-                properties,
-                "screens.json",
-                &join(path, "text"),
-                errors,
-            )?;
-            let font_json = require_field(obj, "font", "screens.json", path, errors)?;
-            let font_name = expect_string(font_json, "screens.json", &join(path, "font"), errors)?;
+            reject_unknown_keys(obj, LABEL_KEYS, file, path, errors);
+            let placement = parse_placement(obj, file, path, errors)?;
+            let text_json = require_field(obj, "text", file, path, errors)?;
+            let text_str = expect_string(text_json, file, &join(path, "text"), errors)?;
+            let text = parse_rich_text(&text_str, properties, file, &join(path, "text"), errors)?;
+            let font_json = require_field(obj, "font", file, path, errors)?;
+            let font_name = expect_string(font_json, file, &join(path, "font"), errors)?;
             let font_size = match obj.get("font_size") {
-                Some(v) => expect_number(v, "screens.json", &join(path, "font_size"), errors)?,
+                Some(v) => expect_number(v, file, &join(path, "font_size"), errors)?,
                 None => 16.0,
             };
             let color = match obj.get("color") {
-                Some(v) => expect_ui_color(v, "screens.json", &join(path, "color"), errors)?,
+                Some(v) => expect_ui_color(v, file, &join(path, "color"), errors)?,
                 None => [1.0, 1.0, 1.0, 1.0],
             };
             let align = match obj.get("align") {
                 Some(v) => {
-                    let s = expect_string(v, "screens.json", &join(path, "align"), errors)?;
+                    let s = expect_string(v, file, &join(path, "align"), errors)?;
                     Align::parse(&s).or_else(|| {
                         errors.push(
-                            "screens.json",
+                            file,
                             &join(path, "align"),
                             format!("неизвестное выравнивание \"{s}\""),
                         );
@@ -3023,43 +3016,35 @@ fn parse_element(
             })
         }
         "button" => {
-            reject_unknown_keys(obj, BUTTON_KEYS, "screens.json", path, errors);
-            let placement = parse_placement(obj, "screens.json", path, errors)?;
-            let text_json = require_field(obj, "text", "screens.json", path, errors)?;
-            let text_str = expect_string(text_json, "screens.json", &join(path, "text"), errors)?;
-            let text = parse_rich_text(
-                &text_str,
-                properties,
-                "screens.json",
-                &join(path, "text"),
-                errors,
-            )?;
-            let font_json = require_field(obj, "font", "screens.json", path, errors)?;
-            let font_name = expect_string(font_json, "screens.json", &join(path, "font"), errors)?;
+            reject_unknown_keys(obj, BUTTON_KEYS, file, path, errors);
+            let placement = parse_placement(obj, file, path, errors)?;
+            let text_json = require_field(obj, "text", file, path, errors)?;
+            let text_str = expect_string(text_json, file, &join(path, "text"), errors)?;
+            let text = parse_rich_text(&text_str, properties, file, &join(path, "text"), errors)?;
+            let font_json = require_field(obj, "font", file, path, errors)?;
+            let font_name = expect_string(font_json, file, &join(path, "font"), errors)?;
             let font_size = match obj.get("font_size") {
-                Some(v) => expect_number(v, "screens.json", &join(path, "font_size"), errors)?,
+                Some(v) => expect_number(v, file, &join(path, "font_size"), errors)?,
                 None => 16.0,
             };
             let text_color = match obj.get("text_color") {
-                Some(v) => expect_ui_color(v, "screens.json", &join(path, "text_color"), errors)?,
+                Some(v) => expect_ui_color(v, file, &join(path, "text_color"), errors)?,
                 None => [1.0, 1.0, 1.0, 1.0],
             };
-            let color_json = require_field(obj, "color", "screens.json", path, errors)?;
-            let color = expect_ui_color(color_json, "screens.json", &join(path, "color"), errors)?;
+            let color_json = require_field(obj, "color", file, path, errors)?;
+            let color = expect_ui_color(color_json, file, &join(path, "color"), errors)?;
             let color_hover = match obj.get("color_hover") {
-                Some(v) => expect_ui_color(v, "screens.json", &join(path, "color_hover"), errors)?,
+                Some(v) => expect_ui_color(v, file, &join(path, "color_hover"), errors)?,
                 None => color,
             };
             let color_pressed = match obj.get("color_pressed") {
-                Some(v) => {
-                    expect_ui_color(v, "screens.json", &join(path, "color_pressed"), errors)?
-                }
+                Some(v) => expect_ui_color(v, file, &join(path, "color_pressed"), errors)?,
                 None => color,
             };
-            let on_click_json = require_field(obj, "on_click", "screens.json", path, errors)?;
+            let on_click_json = require_field(obj, "on_click", file, path, errors)?;
             let on_click = parse_button_command(
                 on_click_json,
-                "screens.json",
+                file,
                 &join(path, "on_click"),
                 "кнопки",
                 errors,
@@ -3078,7 +3063,7 @@ fn parse_element(
         }
         other => {
             errors.push(
-                "screens.json",
+                file,
                 &join(path, "kind"),
                 format!("неизвестный вид элемента \"{other}\": ожидался panel, label или button"),
             );
@@ -3087,26 +3072,21 @@ fn parse_element(
     }
 }
 
-/// Parses the optional `keys` table — same four commands as `on_click`, resolved later by
+/// Parses the optional `keys` table — same five commands as `on_click`, resolved later by
 /// `resolve_on_click` once every screen's name is known. A JSON object's keys are always
 /// strings, so «клавиша названа не строкой» from the checklist can't occur past `expect_object`.
 fn parse_screen_keys(
     value: &Json,
     path: &str,
+    file: &str,
     errors: &mut ErrorSink,
 ) -> Vec<(String, ParsedCommand)> {
-    let Some(obj) = expect_object(value, "screens.json", path, errors) else {
+    let Some(obj) = expect_object(value, file, path, errors) else {
         return Vec::new();
     };
     obj.iter()
         .filter_map(|(code, cmd_json)| {
-            let cmd = parse_button_command(
-                cmd_json,
-                "screens.json",
-                &join(path, code),
-                "клавиши",
-                errors,
-            )?;
+            let cmd = parse_button_command(cmd_json, file, &join(path, code), "клавиши", errors)?;
             Some((code.clone(), cmd))
         })
         .collect()
@@ -3117,7 +3097,7 @@ struct ParsedScreen {
     world_runs: bool,
     elements: Vec<ParsedElementData>,
     keys: Vec<(String, ParsedCommand)>,
-    /// Raw `music` name, not yet resolved against `files.music` — «Звук» →«Два вида звука». Resolution happens in `resolve_screens`, same as `font` on an element.
+    /// Raw `music` name, not yet resolved against `files.music` — «Звук» →«Два вида звука». Resolution happens in `resolve_screens`, same as `font` on an element.
     music: Option<String>,
     path: String,
 }
@@ -3125,34 +3105,34 @@ struct ParsedScreen {
 fn parse_screen(
     value: &Json,
     index: usize,
+    file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
 ) -> Option<ParsedScreen> {
     let path = format!("screens[{index}]");
-    let obj = expect_object(value, "screens.json", &path, errors)?;
+    let obj = expect_object(value, file, &path, errors)?;
     reject_unknown_keys(
         obj,
         &["name", "world_runs", "elements", "keys", "music"],
-        "screens.json",
+        file,
         &path,
         errors,
     );
-    let name = require_field(obj, "name", "screens.json", &path, errors)
-        .and_then(|v| expect_string(v, "screens.json", &join(&path, "name"), errors));
-    let world_runs =
-        require_field(obj, "world_runs", "screens.json", &path, errors).and_then(|v| {
-            v.as_bool().or_else(|| {
-                errors.push(
-                    "screens.json",
-                    &join(&path, "world_runs"),
-                    format!("ожидался признак (true/false), получено {}", kind_name(v)),
-                );
-                None
-            })
-        });
+    let name = require_field(obj, "name", file, &path, errors)
+        .and_then(|v| expect_string(v, file, &join(&path, "name"), errors));
+    let world_runs = require_field(obj, "world_runs", file, &path, errors).and_then(|v| {
+        v.as_bool().or_else(|| {
+            errors.push(
+                file,
+                &join(&path, "world_runs"),
+                format!("ожидался признак (true/false), получено {}", kind_name(v)),
+            );
+            None
+        })
+    });
     let elements_path = join(&path, "elements");
-    let elements_json = require_field(obj, "elements", "screens.json", &path, errors)
-        .and_then(|v| expect_array(v, "screens.json", &elements_path, errors));
+    let elements_json = require_field(obj, "elements", file, &path, errors)
+        .and_then(|v| expect_array(v, file, &elements_path, errors));
     let elements = elements_json
         .map(|arr| {
             arr.iter()
@@ -3161,6 +3141,7 @@ fn parse_screen(
                     parse_element(
                         v,
                         &join(&elements_path, &format!("[{i}]")),
+                        file,
                         properties,
                         errors,
                     )
@@ -3169,7 +3150,7 @@ fn parse_screen(
         })
         .unwrap_or_default();
     let keys = match obj.get("keys") {
-        Some(v) => parse_screen_keys(v, &join(&path, "keys"), errors),
+        Some(v) => parse_screen_keys(v, &join(&path, "keys"), file, errors),
         None => Vec::new(),
     };
     // «Звук»: список — самая частая опечатка (плейлист вместо одного трека), и у
@@ -3178,13 +3159,13 @@ fn parse_screen(
         None => None,
         Some(v) if v.is_array() => {
             errors.push(
-                "screens.json",
+                file,
                 &join(&path, "music"),
                 "плейлиста нет, у экрана один трек".to_string(),
             );
             None
         }
-        Some(v) => expect_string(v, "screens.json", &join(&path, "music"), errors),
+        Some(v) => expect_string(v, file, &join(&path, "music"), errors),
     };
     Some(ParsedScreen {
         name: name?,
@@ -3198,32 +3179,34 @@ fn parse_screen(
 
 fn parse_screens_json(
     text: &str,
+    file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
 ) -> Vec<ParsedScreen> {
-    let Some(root) = parse_json_or_error("screens.json", text, errors) else {
+    let Some(root) = parse_json_or_error(file, text, errors) else {
         return Vec::new();
     };
-    let Some(obj) = expect_object(&root, "screens.json", "", errors) else {
+    let Some(obj) = expect_object(&root, file, "", errors) else {
         return Vec::new();
     };
-    reject_unknown_keys(obj, &["screens"], "screens.json", "", errors);
+    reject_unknown_keys(obj, &["screens"], file, "", errors);
     let Some(screens_json) = obj.get("screens") else {
-        errors.push("screens.json", "", "отсутствует список экранов");
+        errors.push(file, "", "отсутствует список экранов");
         return Vec::new();
     };
-    let Some(arr) = expect_array(screens_json, "screens.json", "screens", errors) else {
+    let Some(arr) = expect_array(screens_json, file, "screens", errors) else {
         return Vec::new();
     };
     arr.iter()
         .enumerate()
-        .filter_map(|(i, v)| parse_screen(v, i, properties, errors))
+        .filter_map(|(i, v)| parse_screen(v, i, file, properties, errors))
         .collect()
 }
 
 fn resolve_font(
     name: &str,
     fonts: &[(String, String)],
+    file: &str,
     path: &str,
     errors: &mut ErrorSink,
 ) -> Option<FontId> {
@@ -3231,7 +3214,7 @@ fn resolve_font(
         Some(id) => Some(id),
         None => {
             errors.push(
-                "screens.json",
+                file,
                 path,
                 format!("шрифт \"{name}\" не объявлен в files.fonts"),
             );
@@ -3243,6 +3226,8 @@ fn resolve_font(
 fn validate_text_refs(
     text: &[TextPart],
     scene_names: &std::collections::HashSet<&str>,
+    file: &str,
+    scene_file: &str,
     path: &str,
     errors: &mut ErrorSink,
 ) -> bool {
@@ -3252,9 +3237,11 @@ fn validate_text_refs(
             && !scene_names.contains(object_name.as_str())
         {
             errors.push(
-                "screens.json",
+                file,
                 path,
-                format!("надпись ссылается на объект \"{object_name}\", которого нет в scene.json"),
+                format!(
+                    "надпись ссылается на объект \"{object_name}\", которого нет в {scene_file}"
+                ),
             );
             ok = false;
         }
@@ -3262,19 +3249,25 @@ fn validate_text_refs(
     ok
 }
 
+/// Resolves a screen name against `name_to_id` for the three places «Экраны и состояние» names
+/// separately: a button's `on_click`, a screen's own `keys`, and `game.json`'s
+/// `start_screen`/`win_screen`/`loss_screen` — each needs its own file and wording rather than
+/// the one generic "кнопка" text every caller used to get regardless of which of the three it was.
 fn resolve_button_target(
     name: &str,
     name_to_id: &std::collections::HashMap<String, ScreenId>,
+    file: &str,
     path: &str,
+    subject: &str,
     errors: &mut ErrorSink,
 ) -> Option<ScreenId> {
     match name_to_id.get(name) {
         Some(&id) => Some(id),
         None => {
             errors.push(
-                "screens.json",
+                file,
                 path,
-                format!("кнопка ссылается на несуществующий экран \"{name}\""),
+                format!("{subject} ссылается на несуществующий экран \"{name}\""),
             );
             None
         }
@@ -3285,18 +3278,21 @@ fn resolve_on_click(
     cmd: &ParsedCommand,
     name_to_id: &std::collections::HashMap<String, ScreenId>,
     parsed_screens: &[ParsedScreen],
+    file: &str,
     path: &str,
+    subject: &str,
     errors: &mut ErrorSink,
 ) -> Option<ButtonCommand> {
     match cmd {
         ParsedCommand::ShowScreen(name) => {
-            resolve_button_target(name, name_to_id, path, errors).map(ButtonCommand::ShowScreen)
+            resolve_button_target(name, name_to_id, file, path, subject, errors)
+                .map(ButtonCommand::ShowScreen)
         }
         ParsedCommand::NewGame(name) => {
-            let id = resolve_button_target(name, name_to_id, path, errors)?;
+            let id = resolve_button_target(name, name_to_id, file, path, subject, errors)?;
             if !parsed_screens[id].world_runs {
                 errors.push(
-                    "screens.json",
+                    file,
                     path,
                     format!("new_game ведёт на экран \"{name}\" без world_runs"),
                 );
@@ -3314,6 +3310,8 @@ fn resolve_on_click(
 fn resolve_element(
     data: &ParsedElementData,
     path: &str,
+    file: &str,
+    scene_file: &str,
     fonts: &[(String, String)],
     scene_names: &std::collections::HashSet<&str>,
     name_to_id: &std::collections::HashMap<String, ScreenId>,
@@ -3333,8 +3331,15 @@ fn resolve_element(
             color,
             align,
         } => {
-            let font = resolve_font(font_name, fonts, &join(path, "font"), errors);
-            let text_ok = validate_text_refs(text, scene_names, &join(path, "text"), errors);
+            let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
+            let text_ok = validate_text_refs(
+                text,
+                scene_names,
+                file,
+                scene_file,
+                &join(path, "text"),
+                errors,
+            );
             let font = font?;
             if !text_ok {
                 return None;
@@ -3359,13 +3364,22 @@ fn resolve_element(
             color_pressed,
             on_click,
         } => {
-            let font = resolve_font(font_name, fonts, &join(path, "font"), errors);
-            let text_ok = validate_text_refs(text, scene_names, &join(path, "text"), errors);
+            let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
+            let text_ok = validate_text_refs(
+                text,
+                scene_names,
+                file,
+                scene_file,
+                &join(path, "text"),
+                errors,
+            );
             let on_click = resolve_on_click(
                 on_click,
                 name_to_id,
                 parsed_screens,
+                file,
                 &join(path, "on_click"),
+                "кнопка",
                 errors,
             );
             let (font, on_click) = (font?, on_click?);
@@ -3412,6 +3426,8 @@ fn rule_end_game_usage(rules: &RuleSet) -> (bool, bool) {
 #[allow(clippy::too_many_arguments)]
 fn resolve_screens(
     parsed: &[ParsedScreen],
+    file: &str,
+    scene_file: &str,
     start_screen_name: &str,
     win_screen_name: Option<&str>,
     loss_screen_name: Option<&str>,
@@ -3427,7 +3443,7 @@ fn resolve_screens(
     for (i, screen) in parsed.iter().enumerate() {
         if name_to_id.insert(screen.name.clone(), i).is_some() {
             errors.push(
-                "screens.json",
+                file,
                 &join(&screen.path, "name"),
                 format!("имя экрана \"{}\" повторяется", screen.name),
             );
@@ -3436,7 +3452,7 @@ fn resolve_screens(
 
     if !parsed.is_empty() && !parsed.iter().any(|s| s.world_runs) {
         errors.push(
-            "screens.json",
+            file,
             "",
             "ни один экран не помечен world_runs — мир не пойдёт никогда".to_string(),
         );
@@ -3459,6 +3475,8 @@ fn resolve_screens(
                     resolve_element(
                         data,
                         &join(&elements_path, &format!("[{i}]")),
+                        file,
+                        scene_file,
                         fonts,
                         &scene_names,
                         &name_to_id,
@@ -3476,7 +3494,9 @@ fn resolve_screens(
                         cmd,
                         &name_to_id,
                         parsed,
+                        file,
                         &join(&keys_path, code),
+                        "клавиша",
                         errors,
                     )?;
                     Some((code.clone(), resolved))
@@ -3487,7 +3507,7 @@ fn resolve_screens(
                     name,
                     music_table,
                     sounds,
-                    "screens.json",
+                    file,
                     &join(&screen.path, "music"),
                     errors,
                 )
@@ -3502,12 +3522,34 @@ fn resolve_screens(
         })
         .collect();
 
-    let start_screen =
-        resolve_button_target(start_screen_name, &name_to_id, "start_screen", errors);
-    let win_screen = win_screen_name
-        .and_then(|name| resolve_button_target(name, &name_to_id, "win_screen", errors));
-    let loss_screen = loss_screen_name
-        .and_then(|name| resolve_button_target(name, &name_to_id, "loss_screen", errors));
+    let start_screen = resolve_button_target(
+        start_screen_name,
+        &name_to_id,
+        "game.json",
+        "start_screen",
+        "поле start_screen",
+        errors,
+    );
+    let win_screen = win_screen_name.and_then(|name| {
+        resolve_button_target(
+            name,
+            &name_to_id,
+            "game.json",
+            "win_screen",
+            "поле win_screen",
+            errors,
+        )
+    });
+    let loss_screen = loss_screen_name.and_then(|name| {
+        resolve_button_target(
+            name,
+            &name_to_id,
+            "game.json",
+            "loss_screen",
+            "поле loss_screen",
+            errors,
+        )
+    });
 
     let (uses_win, uses_loss) = rule_end_game_usage(rules);
     if uses_win && win_screen_name.is_none() {
@@ -3570,7 +3612,7 @@ fn resolve_screens(
     for (i, screen) in screens.iter().enumerate() {
         if !reachable.contains(&i) {
             errors.push_warning(
-                "screens.json",
+                file,
                 &format!("screens[{i}]"),
                 format!(
                     "до экрана \"{}\" не ведёт ни одна кнопка, и он не назван в game.json; ожидалось, что каждый экран достижим",
@@ -3618,7 +3660,9 @@ fn validate_font_files(
             None => errors.push(
                 "game.json",
                 &field_path,
-                format!("файл шрифта \"{path}\" не найден"),
+                format!(
+                    "файл шрифта \"{path}\" не найден; ожидался файл шрифта, названный в game.json → files → fonts"
+                ),
             ),
             Some(b) if !looks_like_font(b) => errors.push(
                 "game.json",
@@ -3648,7 +3692,9 @@ fn validate_sound_files(
             errors.push(
                 "game.json",
                 &field_path,
-                format!("файл \"{path}\" не найден"),
+                format!(
+                    "файл \"{path}\" не найден; ожидался WAV-звук, названный в game.json → files → sounds"
+                ),
             );
             continue;
         };
@@ -3694,7 +3740,9 @@ fn validate_music_files(
             Some(MusicVerdict::Missing) | None => errors.push(
                 "game.json",
                 &field_path,
-                format!("файл \"{path}\" не найден"),
+                format!(
+                    "файл \"{path}\" не найден; ожидался MP3-трек, названный в game.json → files → music"
+                ),
             ),
         }
     }
@@ -3767,7 +3815,12 @@ fn any_toggle_sound_bound(screens: &[Screen]) -> bool {
 
 /// «Звук» → «Загрузка и проверка»: игрок должен иметь способ выключить
 /// звук, если он в игре вообще есть — хоть один `play_sound`, хоть один экран с `music`.
-fn validate_toggle_sound_presence(rules: &RuleSet, screens: &[Screen], errors: &mut ErrorSink) {
+fn validate_toggle_sound_presence(
+    rules: &RuleSet,
+    screens: &[Screen],
+    file: &str,
+    errors: &mut ErrorSink,
+) {
     let any_play_sound = rules.rules.iter().any(|rule| {
         common_actions(rule)
             .iter()
@@ -3776,7 +3829,7 @@ fn validate_toggle_sound_presence(rules: &RuleSet, screens: &[Screen], errors: &
     let any_music = screens.iter().any(|s| s.music.is_some());
     if (any_play_sound || any_music) && !any_toggle_sound_bound(screens) {
         errors.push_warning(
-            "screens.json",
+            file,
             "",
             "в игре есть звук, но toggle_sound не назначен ни одной кнопке и ни одной клавише экрана"
                 .to_string(),
@@ -3791,7 +3844,9 @@ fn validate_toggle_sound_presence(rules: &RuleSet, screens: &[Screen], errors: &
 /// ever hold such a binding.
 fn validate_screen_key_collisions(
     parsed_screens: &[ParsedScreen],
+    screens_file: &str,
     scene_objects: &[ParsedObject],
+    scene_file: &str,
     errors: &mut ErrorSink,
 ) {
     for screen in parsed_screens {
@@ -3805,12 +3860,12 @@ fn validate_screen_key_collisions(
                     continue;
                 }
                 errors.push_warning(
-                    "screens.json",
+                    screens_file,
                     &join(&screen.path, "keys"),
                     format!(
                         "клавиша \"{code}\" экрана \"{}\" совпадает с клавишей, привязанной к объекту {}{}: на этом экране привязка работать не будет",
                         screen.name,
-                        join("scene.json", &obj.path),
+                        join(scene_file, &obj.path),
                         name_suffix(obj),
                     ),
                 );
@@ -3819,7 +3874,10 @@ fn validate_screen_key_collisions(
     }
 }
 
-/// Third and last load call: needs the `GameConfig` from `read_entry`, the four text files
+/// Third and last load call: needs `game_json`'s own text back (some of this call's own errors —
+/// `start_screen`/`win_screen`/`loss_screen`, a missing font/sound/track file — are about fields
+/// declared there, and «Формат игры» → «Проверка данных перед запуском» promises every message a
+/// location, not just a file), the `GameConfig` `read_entry` parsed from it, the four text files
 /// `read_texts` was given, and the binary files `read_texts` named as needed — fonts and sounds by
 /// bytes, music by the executor's own verdict on each readable track (see `MusicVerdict`).
 /// `None`/an empty slice for any of them means the page could not fetch it. A warning is only
@@ -3830,6 +3888,7 @@ fn validate_screen_key_collisions(
 /// «Формат игры»), which doesn't apply here anyway: with errors present the game never starts.
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest(
+    game_json: &str,
     config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -3842,17 +3901,25 @@ pub fn load_rest(
     let mut errors = ErrorSink::new();
 
     let properties = match properties_json {
-        Some(text) => parse_properties_json(text, &mut errors),
+        Some(text) => parse_properties_json(text, &config.files.properties, &mut errors),
         None => {
-            errors.push(&config.files.properties, "", "файл не найден");
+            errors.push(
+                &config.files.properties,
+                "",
+                "файл не найден; ожидался JSON-файл, названный в game.json → files → properties",
+            );
             PropertyTable::new()
         }
     };
 
     let scene_objects = match scene_json {
-        Some(text) => parse_scene_json(text, &properties, &mut errors),
+        Some(text) => parse_scene_json(text, &config.files.scene, &properties, &mut errors),
         None => {
-            errors.push(&config.files.scene, "", "файл не найден");
+            errors.push(
+                &config.files.scene,
+                "",
+                "файл не найден; ожидался JSON-файл, названный в game.json → files → scene",
+            );
             Vec::new()
         }
     };
@@ -3860,21 +3927,30 @@ pub fn load_rest(
     let (rules, rule_meta) = match rules_json {
         Some(text) => parse_rules_json(
             text,
+            &config.files.rules,
             &properties,
             &config.files.sounds,
             &config.files.music,
             &mut errors,
         ),
         None => {
-            errors.push(&config.files.rules, "", "файл не найден");
+            errors.push(
+                &config.files.rules,
+                "",
+                "файл не найден; ожидался JSON-файл, названный в game.json → files → rules",
+            );
             (RuleSet::default(), Vec::new())
         }
     };
 
     let parsed_screens = match screens_json {
-        Some(text) => parse_screens_json(text, &properties, &mut errors),
+        Some(text) => parse_screens_json(text, &config.files.screens, &properties, &mut errors),
         None => {
-            errors.push(&config.files.screens, "", "файл не найден");
+            errors.push(
+                &config.files.screens,
+                "",
+                "файл не найден; ожидался JSON-файл, названный в game.json → files → screens",
+            );
             Vec::new()
         }
     };
@@ -3895,6 +3971,8 @@ pub fn load_rest(
     );
     let screens_config = resolve_screens(
         &parsed_screens,
+        &config.files.screens,
+        &config.files.scene,
         &config.start_screen,
         config.win_screen.as_deref(),
         config.loss_screen.as_deref(),
@@ -3906,8 +3984,21 @@ pub fn load_rest(
         &mut errors,
     );
 
-    let shapes = possible_shapes(&scene_objects, &rules, &rule_meta, &properties);
-    validate_property_sufficiency(&shapes, &rules, &rule_meta, &properties, &mut errors);
+    let shapes = possible_shapes(
+        &scene_objects,
+        &config.files.scene,
+        &rules,
+        &rule_meta,
+        &properties,
+    );
+    validate_property_sufficiency(
+        &shapes,
+        &rules,
+        &rule_meta,
+        &config.files.rules,
+        &properties,
+        &mut errors,
+    );
     // «Формат игры»: предупреждение не мешает игре запуститься — но раз игра уже не запустится
     // из-за ошибок собранных выше, считать эти три предупреждения незачем: правило, не
     // разобравшееся из-за ошибки, просто выпадает из `rules`, и предупреждение по неполному
@@ -3919,33 +4010,61 @@ pub fn load_rest(
     // настоящая нехватка свойства у исправного объекта не теряется из-за того, что у того же или
     // соседнего объекта сломано что-то ещё.
     if errors.has_no_errors() {
-        validate_screen_key_collisions(&parsed_screens, &scene_objects, &mut errors);
-        validate_unused_properties(&properties, &scene_objects, &rules, &mut errors);
-        validate_objects_within_scene(&scene_objects, &config.scene, &mut errors);
-        validate_selectors_not_empty(&shapes, &rules, &rule_meta, &properties, &mut errors);
+        validate_screen_key_collisions(
+            &parsed_screens,
+            &config.files.screens,
+            &scene_objects,
+            &config.files.scene,
+            &mut errors,
+        );
+        validate_unused_properties(
+            &properties,
+            &config.files.properties,
+            &scene_objects,
+            &rules,
+            &mut errors,
+        );
+        validate_objects_within_scene(
+            &scene_objects,
+            &config.files.scene,
+            &config.scene,
+            &mut errors,
+        );
+        validate_selectors_not_empty(
+            &shapes,
+            &rules,
+            &rule_meta,
+            &config.files.rules,
+            &properties,
+            &mut errors,
+        );
         validate_unused_sounds(&config.files.sounds, &rules, &mut errors);
         validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {
-            validate_toggle_sound_presence(&rules, &sc.screens, &mut errors);
+            validate_toggle_sound_presence(&rules, &sc.screens, &config.files.screens, &mut errors);
         }
     }
 
     // One second pass per file, after every message about it has been pushed: a message from
-    // `validate_*` above (e.g. "rules.json" ← property sufficiency) needs the same file text a
-    // parse-time message did, so filling locations any earlier would miss it.
+    // `validate_*` above (e.g. `config.files.rules` ← property sufficiency) needs the same file
+    // text a parse-time message did, so filling locations any earlier would miss it. `game.json`
+    // itself is included here too — `start_screen`/`win_screen`/`loss_screen` and a missing
+    // font/sound/track file are only known to be wrong once `resolve_screens`/`validate_*_files`
+    // run, well after `read_entry`'s own pass over this same text.
+    errors.fill_locations("game.json", game_json);
     if let Some(text) = properties_json {
-        errors.fill_locations("properties.json", text);
+        errors.fill_locations(&config.files.properties, text);
     }
     if let Some(text) = scene_json {
-        errors.fill_locations("scene.json", text);
+        errors.fill_locations(&config.files.scene, text);
     }
     if let Some(text) = rules_json {
-        errors.fill_locations("rules.json", text);
+        errors.fill_locations(&config.files.rules, text);
     }
     if let Some(text) = screens_json {
-        errors.fill_locations("screens.json", text);
+        errors.fill_locations(&config.files.screens, text);
     }
 
     let (errs, warnings) = errors.into_parts();
@@ -4013,6 +4132,7 @@ pub fn load_game_from_texts(
 ) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let (config, entry_warnings) = read_entry(game_json)?;
     match load_rest(
+        game_json,
         config,
         Some(properties_json),
         Some(scene_json),

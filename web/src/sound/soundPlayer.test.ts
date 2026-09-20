@@ -8,23 +8,33 @@ import type { SoundWindowSnapshot } from "./soundWindow";
 
 type PlayCall = { resolve: () => void; reject: (error: unknown) => void };
 
+// `paused` ведёт себя как у настоящего `<audio>`: `play()` снимает паузу сразу, ещё до ответа
+// браузера, отказ возвращает элемент в паузу, `pause()` ставит её.
 function makeFakeAudioElement() {
-  const pauseListeners: Array<() => void> = [];
   const calls: PlayCall[] = [];
   const element = {
     src: "",
     currentTime: 0,
     error: null,
-    addEventListener(type: string, handler: () => void) {
-      if (type === "pause") pauseListeners.push(handler);
-    },
+    paused: true,
+    addEventListener(_type: string, _handler: () => void) {},
     play(): Promise<void> {
+      element.paused = false;
       return new Promise((resolve, reject) => {
-        calls.push({ resolve, reject });
+        const index = calls.length;
+        calls.push({
+          resolve,
+          reject: (error: unknown) => {
+            // Отказ возвращает элемент в паузу, только если поверх него не встал более свежий
+            // `play()`: перекрытый запрос рвётся как AbortError, а играет уже новый трек.
+            if (index === calls.length - 1) element.paused = true;
+            reject(error);
+          },
+        });
       });
     },
     pause() {
-      pauseListeners.forEach((listener) => listener());
+      element.paused = true;
     },
     removeAttribute(name: string) {
       if (name === "src") element.src = "";
@@ -230,6 +240,28 @@ describe("createSoundPlayer — сбои play() после отказа брау
     await Promise.resolve();
     await Promise.resolve();
     expect(warn).toHaveBeenCalledTimes(1);
+  });
+
+  it("пауза, поставленная самим браузером, чинится ближайшей сверкой", async () => {
+    makeGestureCapture();
+    const { element, calls } = makeFakeAudioElement();
+    const assets: SoundAssets = {
+      sounds: new Map(),
+      music: new Map([[1, { url: "blob:track1", path: "menu.mp3" }]]),
+    };
+    const player = createSoundPlayer(FAKE_AUDIO_CONTEXT, element, assets);
+
+    player.handleFrame(snapshot(1));
+    calls[0].resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // Никто из этого кода трека не останавливал — паузу поставил браузер (потерянный вывод,
+    // спрятанная вкладка). Сверка сравнивает должное с тем, что в проигрывателе на самом деле.
+    (element as unknown as { paused: boolean }).paused = true;
+    player.handleFrame(snapshot(1));
+
+    expect(calls).toHaveLength(2);
   });
 
   it("трек без файла не оживляет прежний трек — src очищается, а не остаётся прежним", () => {

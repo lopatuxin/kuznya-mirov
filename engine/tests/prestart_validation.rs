@@ -311,6 +311,28 @@ fn misspelled_random_seed_field_is_reported_not_silently_defaulted() {
     );
 }
 
+/// «Формат игры» → «Проверка данных перед запуском»: сообщение об ошибке называет, что не так
+/// *и что ожидалось* — «неизвестное поле» само по себе не говорит, что можно было написать.
+#[test]
+fn unknown_field_message_names_the_allowed_fields() {
+    let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
+"random_sed":20260907,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
+    let scene = r#"{"objects":[]}"#;
+    let LoadFailure { errors, .. } =
+        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
+            .expect_err("опечатка random_sed — ошибка");
+    let message = &errors
+        .iter()
+        .find(|e| e.file == "game.json" && e.message.contains("random_sed"))
+        .expect("должна быть ошибка про random_sed")
+        .message;
+    assert!(
+        message.contains("random_seed") && message.contains("start_screen"),
+        "сообщение должно называть допустимые поля: {message}"
+    );
+}
+
 /// `files → images` и верхнеуровневое `name` — часть документированного формата (см. «Формат
 /// игры»), просто пока не используются загрузчиком; общая проверка незнакомых ключей не должна
 /// отвергать их как опечатку.
@@ -1075,7 +1097,9 @@ fn error_with_unresolvable_path_keeps_message_without_a_location() {
 
 /// Битый JSON и отсутствующий файл сохраняют своё прежнее поведение: без структурных `line`/
 /// `column` — у битого JSON собственная позиция уже вписана словами в `message` через serde_json,
-/// а у отсутствующего файла позиции нет вовсе, и вторым проходом искать нечего.
+/// а у отсутствующего файла позиции нет вовсе (не открыт — второму проходу негде искать). Ошибка
+/// про сам `game.json` (`start_screen` не находит экран, раз `screens.json` не открыт) — другое
+/// дело: у неё есть текст, и место в нём обязано найтись.
 #[test]
 fn broken_json_and_missing_file_get_no_structured_location() {
     let broken = "{ \"objects\": [ { \"position\": [0,0]";
@@ -1091,13 +1115,28 @@ fn broken_json_and_missing_file_get_no_structured_location() {
 
     let (config, _warnings) = read_entry(GAME).expect("game.json валиден");
     let missing_result =
-        engine::data::load::load_rest(config, None, None, None, None, &[], &[], &[]);
+        engine::data::load::load_rest(GAME, config, None, None, None, None, &[], &[], &[]);
     let LoadFailure { errors, .. } = missing_result.expect_err("отсутствующие файлы — ошибка");
     assert!(
         errors
             .iter()
+            .filter(|e| e.file != "game.json")
             .all(|e| e.line.is_none() && e.column.is_none()),
-        "{errors:?}"
+        "не открытому файлу негде взять место в тексте: {errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.file == "properties.json" && e.message.contains("ожидался")),
+        "сообщение об отсутствующем файле должно называть, что ожидалось: {errors:?}"
+    );
+    let game_json_err = errors
+        .iter()
+        .find(|e| e.file == "game.json")
+        .unwrap_or_else(|| panic!("start_screen не находит ни одного экрана: {errors:?}"));
+    assert!(
+        game_json_err.line.is_some() && game_json_err.column.is_some(),
+        "у ошибки про game.json есть текст — у неё должно быть и место: {game_json_err:?}"
     );
 }
 
@@ -1193,6 +1232,38 @@ fn stray_field_in_scene_json_root_is_reported() {
             .iter()
             .any(|e| e.file == "scene.json" && e.message.contains("cell_pixels")),
         "{errors:?}"
+    );
+}
+
+/// «Формат игры»: движок идёт только по путям из `game.json` → `files`, значит сообщение об
+/// ошибке в `scene.json`/`rules.json` обязано называть настоящий путь, а не литерал.
+#[test]
+fn errors_name_the_actual_path_from_game_json_files_not_a_hardcoded_name() {
+    let game = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
+"random_seed":1,"start_screen":"main","max_objects":100,
+"files":{"properties":"properties.json","scene":"levels/level1.json","rules":"data/rules.json",
+         "screens":"screens.json","fonts":{}}}"##;
+    let scene = r#"{"objects":[{"positon":[0,0],"size":[1,1]}]}"#;
+    let rules = r#"{"rules":[{"kind":"delete","for":{"has":["x"]},"whn":"outside_scene"}]}"#;
+    let LoadFailure { errors, .. } = load_game_from_texts(game, PROPS_EMPTY, scene, rules, SCREENS)
+        .expect_err("опечатки в scene.json и rules.json — ошибка");
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.file == "levels/level1.json" && e.message.contains("positon")),
+        "{errors:?}"
+    );
+    assert!(
+        errors
+            .iter()
+            .any(|e| e.file == "data/rules.json" && e.message.contains("whn")),
+        "{errors:?}"
+    );
+    assert!(
+        !errors
+            .iter()
+            .any(|e| e.file == "scene.json" || e.file == "rules.json"),
+        "путь должен называться так, как в game.json → files, а не жёстко прибитым именем: {errors:?}"
     );
 }
 
@@ -1346,15 +1417,15 @@ fn pending_config_is_cleared_after_a_failed_read_entry() {
     use engine::data::load::PendingConfig;
     let mut pending = PendingConfig::default();
 
-    pending.set(&read_entry(GAME));
+    pending.set(&read_entry(GAME), GAME);
     assert!(
         pending.take().is_some(),
         "успешный read_entry должен оставить конфиг ожидающим"
     );
 
-    pending.set(&read_entry(GAME));
+    pending.set(&read_entry(GAME), GAME);
     let broken = r##"{"scene":{"width":4,"height":4,"background":"#000000"}}"##;
-    pending.set(&read_entry(broken));
+    pending.set(&read_entry(broken), broken);
     assert!(
         pending.take().is_none(),
         "неудачный read_entry не должен оставлять конфиг от более раннего успешного захода"

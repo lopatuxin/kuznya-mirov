@@ -1,5 +1,5 @@
 use super::grid::SpatialGrid;
-use super::input::{InputQueue, StepInput};
+use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
 use super::property::{self, PropertyTable};
 use super::rng::Rng;
 use super::rules::{Outcome, RuleSet};
@@ -22,6 +22,14 @@ pub struct Game {
     rng: Rng,
     step_count: u64,
     input_queue: InputQueue,
+    /// Codes the world currently holds — updated only where `apply_to_world` runs `step::
+    /// apply_input`, in lockstep with it: inserted when a `Press` is actually applied, removed
+    /// when a `Release` is. The one source of truth for "does the world hold this key right now",
+    /// deliberately not `InputQueue`'s own held set, which only says the *page* still thinks a key
+    /// is down — true whether or not any step ever applied its press. Browser auto-repeat, or a
+    /// press still queued when a screen absorbs the matching release, can both leave that
+    /// page-level set stale without this one moving.
+    world_held_keys: std::collections::HashSet<String>,
     grid: SpatialGrid,
     outcome: Option<(Outcome, u64)>,
     max_objects_warned: bool,
@@ -57,6 +65,7 @@ impl Game {
             rng: Rng::new(random_seed),
             step_count: 0,
             input_queue: InputQueue::new(),
+            world_held_keys: std::collections::HashSet::new(),
             grid: SpatialGrid::new(),
             outcome: None,
             max_objects_warned: false,
@@ -77,33 +86,88 @@ impl Game {
         self.input_queue.release(code);
     }
 
-    /// Whether `code` is held right now — a key the world already treats as pressed, whether or
-    /// not the currently active screen's own `keys` table names it.
-    pub fn is_key_held(&self, code: &str) -> bool {
-        self.input_queue.is_held(code)
+    /// Whether the world currently holds `code` — a step actually applied its `Press` and no step
+    /// (nor `release_key`) has applied a matching `Release` since. Deliberately not a question
+    /// about `InputQueue`'s own bookkeeping: what the page has queued can disagree with what the
+    /// world has seen, and this answers about the world. See `release_key`.
+    fn is_key_held(&self, code: &str) -> bool {
+        self.world_held_keys.contains(code)
+    }
+
+    /// Runs `events` against the world and keeps `world_held_keys` in lockstep — the only place
+    /// either happens, so the two can never drift apart. `step`, `release_held_keys` and
+    /// `release_key` all go through this rather than calling `step::apply_input` on their own.
+    fn apply_to_world(&mut self, events: &[KeyEvent]) {
+        step::apply_input(&mut self.world, events);
+        for event in events {
+            match event.action {
+                KeyAction::Press => {
+                    self.world_held_keys.insert(event.code.clone());
+                }
+                KeyAction::Release => {
+                    self.world_held_keys.remove(&event.code);
+                }
+            }
+        }
     }
 
     /// «Экраны и состояние»: applied by the screen layer's `switch_to` when a transition leaves
-    /// a live screen — synthesizes a release for every key held right now, then drops both the
-    /// pending queue and the held set, so a returning player has to press the key again.
+    /// a live screen — synthesizes a release for every key the *world* currently holds, then
+    /// drops both the page's pending queue and its own held set, so a returning player has to
+    /// press the key again. Releasing `world_held_keys` rather than `InputQueue`'s own held set
+    /// matters for the same reason `release_key` checks it: the page can think a key is still
+    /// down (browser auto-repeat, or a press still sitting unconsumed in the queue) when the
+    /// world never actually saw its press, and manufacturing a release for that key would fire a
+    /// `release` binding with no matching `press` ever having run.
     pub fn release_held_keys(&mut self) {
-        let held = self.input_queue.held_keys();
-        step::apply_input(&mut self.world, &[], &held);
+        // «Исполнение игры» → «Повторяемость»: the same input must give the same run on any
+        // machine — a `HashSet`'s own iteration order isn't that, so the codes are sorted before
+        // two releases that write the same property differently can disagree on which wins.
+        let mut codes: Vec<&String> = self.world_held_keys.iter().collect();
+        codes.sort();
+        let events: Vec<KeyEvent> = codes
+            .into_iter()
+            .map(|code| KeyEvent {
+                code: code.clone(),
+                action: KeyAction::Release,
+            })
+            .collect();
+        self.apply_to_world(&events);
         self.input_queue.clear();
     }
 
-    /// «Экраны и состояние» → «Клавиши экрана»: releases one held key immediately, the same way
-    /// `release_held_keys` releases all of them — used when the screen that declares `code`
-    /// absorbs its release, so the world binding a *different* screen set up for it doesn't stay
-    /// stuck. Applied right away rather than queued: a queued release would sit in the input
-    /// queue until the next step, and a screen switch landing before that step clears the queue
-    /// out from under it.
+    /// «Экраны и состояние» → «Клавиши экрана»: releases one key immediately, applying its world
+    /// effect right now instead of going through the input queue — *if and only if* the world
+    /// currently holds it (`is_key_held`). Needed for exactly one case: a key's press reached the
+    /// world on a live screen that did not declare it, the player switches to a *different* live
+    /// screen that does declare it, and releases it there — that release is absorbed (the
+    /// screen's own command runs, the key never reaches the world through the normal `key_up`
+    /// path), but the press already happened and was applied by an earlier step, so without this
+    /// the property it set (e.g. a paddle's velocity) stays on until the player leaves a live
+    /// screen entirely. Applied immediately rather than queued through `key_up`: the absorbed
+    /// release's own command can switch straight to a non-live screen, whose `switch_to` calls
+    /// `release_held_keys` and clears the whole input queue — a release sitting in that queue
+    /// would be thrown out right along with it, leaving the property stuck on.
+    ///
+    /// The guard is `is_key_held` (world state), never "is a `Press` for `code` still sitting in
+    /// the queue" — that queue-shaped question has two different wrong answers. A `Press` can
+    /// still be pending *after* the world already holds the key: browser auto-repeat (suppressed
+    /// at the front edge by `InputQueue::press` now, but the engine must not depend on that), or a
+    /// `Release`-then-`Press` of the same key landing in one gap before the absorbing switch.
+    /// Either would make "no pending `Press`" wrongly say "world doesn't hold it" and silently
+    /// drop a release the world is owed. Conversely a `Press` can still be pending while the world
+    /// has *never* stepped it at all — the scenario this method exists for in the first place —
+    /// which "a pending `Press`" alone can't distinguish from the auto-repeat case above. Only the
+    /// world's own bookkeeping answers both correctly. Whatever the page still has queued for
+    /// `code` is dropped either way: a screen has just decided this key's fate, so nothing left
+    /// over should surface later and re-trigger a binding on its own.
     pub fn release_key(&mut self, code: &str) {
-        step::apply_input(
-            &mut self.world,
-            &[],
-            std::slice::from_ref(&code.to_string()),
-        );
+        if self.is_key_held(code) {
+            self.apply_to_world(std::slice::from_ref(&KeyEvent {
+                code: code.to_string(),
+                action: KeyAction::Release,
+            }));
+        }
         self.input_queue.forget(code);
     }
 
@@ -129,6 +193,7 @@ impl Game {
         self.step_count = 0;
         self.rng = Rng::new(self.random_seed);
         self.input_queue = InputQueue::new();
+        self.world_held_keys.clear();
         self.outcome = None;
     }
 
@@ -137,8 +202,15 @@ impl Game {
     /// win/loss mark here matters as much as emptying the world: `handle_outcome` runs every
     /// tick regardless of the active screen, so a mark left standing would drag the player
     /// straight back to the outcome screen the next tick after `quit` returns them to the menu.
+    /// The input queue and `world_held_keys` are dropped the same way `new_game` drops them: if
+    /// `start_screen` is itself live, `switch_to` never calls `release_held_keys` on the way there
+    /// (leaving one live screen for another doesn't), so anything left standing here would sit on
+    /// top of the just-emptied world — `is_key_held` lying about what a destroyed world holds, a
+    /// held key's repeat swallowed by a page-level `held` that quit never touched.
     pub fn quit(&mut self) {
         self.world = World::new(&self.properties);
+        self.input_queue = InputQueue::new();
+        self.world_held_keys.clear();
         self.outcome = None;
     }
 
@@ -188,7 +260,7 @@ impl Game {
         self.step_count += 1;
         self.ensure_scratch_capacity();
 
-        step::apply_input(&mut self.world, &input.pressed, &input.released);
+        self.apply_to_world(&input.events);
 
         let expired = step::tick_counters(&mut self.world, &mut self.grid_hop_ready);
 

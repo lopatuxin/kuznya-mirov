@@ -84,6 +84,51 @@ fn collide_effect_add_time_delta_keeps_sign_and_zero() {
     );
 }
 
+/// «Формат игры»: время в файлах пишется секундами, `world.number_like` для `Column::Time`
+/// отдаёт шаги — сравнение `["c", "<", 2]` должно значить «меньше двух секунд» (120 шагов), не
+/// «меньше двух шагов».
+#[test]
+fn delete_condition_compares_a_time_property_in_seconds_not_steps() {
+    let props = r#"{"properties":{"c":"time"}}"#;
+    // 1.5с — это 90 шагов, заведомо больше двух шагов, но меньше 120.
+    let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"c":1.5}]}"#;
+    let rules = r#"{"rules":[
+        {"kind":"delete","for":{"has":["c"]},"when":["c","<",2]}
+    ]}"#;
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
+    let id = game.world.ids().next().unwrap();
+
+    game.step(StepInput::empty());
+
+    assert!(
+        !game.world.is_alive(id),
+        "90 шагов (1.5с) меньше 120 шагов (2с) — объект должен быть удалён"
+    );
+}
+
+/// Тот же перевод, только порог — ноль: `seconds_to_steps_delta` не должен подтягивать его до
+/// минимума в один шаг, как это делает длительность.
+#[test]
+fn delete_condition_threshold_of_zero_seconds_stays_zero_steps() {
+    let props = r#"{"properties":{"c":"time"}}"#;
+    // 1/60с округляется к одному шагу — ровно на единицу больше нулевого порога.
+    let scene = r#"{"objects":[{"position":[0,0],"size":[1,1],"c":0.016666667}]}"#;
+    let rules = r#"{"rules":[
+        {"kind":"delete","for":{"has":["c"]},"when":["c","<=",0]}
+    ]}"#;
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
+    let id = game.world.ids().next().unwrap();
+
+    game.step(StepInput::empty());
+
+    assert!(
+        game.world.is_alive(id),
+        "один шаг не меньше и не равен нулю шагов — объект не должен быть удалён"
+    );
+}
+
 /// Created objects only start moving on the step *after* they were spawned.
 #[test]
 fn object_created_on_step_n_first_moves_on_step_n_plus_1() {
@@ -370,5 +415,43 @@ fn grid_hop_counter_does_not_reset_without_an_actual_hop() {
         pos_after_6,
         [1.0, 0.0],
         "счётчик хода не должен был сброситься на пятом шаге без настоящего прыжка"
+    );
+}
+
+/// «Исполнение игры»: a release and a press of the same key landing in the same real-time gap
+/// must reach the world in that same order — the world input queue used to split them into two
+/// lists and apply every release after every press, regardless of which the player actually did
+/// last. Hold the key across one frame, then in a single gap release and immediately re-press it,
+/// and run another frame: the binding must still be on.
+#[test]
+fn a_release_then_a_press_of_the_same_key_in_one_gap_leaves_it_held() {
+    let props = r#"{"properties":{}}"#;
+    let scene = r#"{"objects":[
+        {"position":[0,0],"size":[1,1],"velocity":[0,0],
+         "keys":{"KeyA":{"press":[["velocity",[5,0]]],"release":[["velocity",[0,0]]]}}}
+    ]}"#;
+    let rules = r#"{"rules":[]}"#;
+    let (mut game, _screens, _warnings) =
+        load_game_from_texts(GAME, props, scene, rules, SCREENS).expect("должно загрузиться");
+
+    game.key_down("KeyA");
+    let step_input = game.take_input_snapshot();
+    game.step(step_input);
+    assert_eq!(
+        game.world.vec2(0, engine::core::property::VELOCITY),
+        Some([5.0, 0.0]),
+        "нажатие должно было задать скорость"
+    );
+
+    // One gap, both events for the same key, release arriving first — the way a fast repeat of
+    // the same key can land between two animation frames.
+    game.key_up("KeyA");
+    game.key_down("KeyA");
+    let step_input = game.take_input_snapshot();
+    game.step(step_input);
+    assert_eq!(
+        game.world.vec2(0, engine::core::property::VELOCITY),
+        Some([5.0, 0.0]),
+        "клавиша физически зажата — привязка обязана остаться включённой"
     );
 }

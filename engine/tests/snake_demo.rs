@@ -27,8 +27,9 @@ fn load_demo() -> (
     engine::core::game::Game,
     engine::core::screens::ScreensConfig,
 ) {
+    let game_json = read("game.json");
     let (config, _entry_warnings) =
-        read_entry(&read("game.json")).expect("game.json демо-змейки должен разбираться");
+        read_entry(&game_json).expect("game.json демо-змейки должен разбираться");
     let font_bytes: Vec<(String, Option<Vec<u8>>)> = config
         .files
         .fonts
@@ -48,6 +49,7 @@ fn load_demo() -> (
         .map(|(name, _)| (name.clone(), MusicVerdict::Ok))
         .collect();
     let (game, screens, warnings) = load_rest(
+        &game_json,
         config,
         Some(&read("properties.json")),
         Some(&read("scene.json")),

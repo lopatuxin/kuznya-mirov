@@ -4,33 +4,45 @@ pub enum KeyAction {
     Release,
 }
 
-#[derive(Debug, Clone)]
-struct KeyEvent {
-    code: String,
-    action: KeyAction,
+/// One press or release, in the order it was queued — «Исполнение игры»: a release and a press
+/// of the same key landing in the same real-time gap must reach `step::apply_input` in that same
+/// order, or whichever of the two a fixed press-then-release pass applies last wins regardless of
+/// which the player actually did last.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct KeyEvent {
+    pub code: String,
+    pub action: KeyAction,
 }
 
-/// What a single step sees: which keys were pressed and which were released, frozen for the
-/// duration of that step. During a burst of catch-up steps only the first one gets this;
-/// the rest see `StepInput::empty()`, so a stuck spacebar does not fire five times.
+/// What a single step sees: every press/release queued since the previous step, still in arrival
+/// order — frozen for the duration of that step. During a burst of catch-up steps only the first
+/// one gets this; the rest see `StepInput::empty()`, so a stuck spacebar does not fire five times.
 #[derive(Debug, Clone, Default)]
 pub struct StepInput {
-    pub pressed: Vec<String>,
-    pub released: Vec<String>,
+    pub events: Vec<KeyEvent>,
 }
 
 impl StepInput {
     pub fn empty() -> Self {
         StepInput::default()
     }
+
+    /// Test convenience: whether any key event at all is queued for this step — asserting on this
+    /// reads better than reaching into `events` directly.
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
 }
 
 #[derive(Debug, Clone, Default)]
 pub struct InputQueue {
     pending: Vec<KeyEvent>,
-    /// «Исполнение игры»: клавиши, нажатые прямо сейчас — служебный набор движка, не видимый
-    /// правилам. Уходя с живого экрана, движок отпускает каждую из них, а не только ждёт
-    /// естественного `release` от браузера.
+    /// Codes the *page* still thinks are down — set on `press`, cleared on `release`/`forget`.
+    /// Only for this queue's own bookkeeping: suppressing a repeat of an already-pressed key here,
+    /// and refusing to queue a release with no matching queued press. Not what the world holds —
+    /// `Game::world_held_keys` is that, and `Game::release_held_keys` releases *that* set when
+    /// leaving a live screen, not this one; this set is simply dropped along with the rest of the
+    /// queue at that point.
     held: std::collections::HashSet<String>,
 }
 
@@ -39,50 +51,47 @@ impl InputQueue {
         InputQueue::default()
     }
 
+    /// A press that repeats an already-held key queues nothing more: it's the front edge that
+    /// matters, and browser auto-repeat otherwise keeps queuing `Press` events for a key nothing
+    /// ever released, some of which can still be sitting unconsumed long after the world first
+    /// took the original press. Suppressed here, in the engine, rather than relying on the page to
+    /// filter `event.repeat` — the engine has to stay correct however the page behaves.
     pub fn press(&mut self, code: &str) {
+        if !self.held.insert(code.to_string()) {
+            return;
+        }
         self.pending.push(KeyEvent {
             code: code.to_string(),
             action: KeyAction::Press,
         });
-        self.held.insert(code.to_string());
     }
 
+    /// A no-op when `code` isn't currently held — «Исполнение игры»: a release whose press never
+    /// reached the world must not reach it either.
     pub fn release(&mut self, code: &str) {
+        if !self.held.remove(code) {
+            return;
+        }
         self.pending.push(KeyEvent {
             code: code.to_string(),
             action: KeyAction::Release,
         });
-        self.held.remove(code);
     }
 
-    /// Stage 1: folds everything queued since the previous step into a fixed picture and
-    /// empties the queue.
+    /// Stage 1: folds everything queued since the previous step into a fixed picture, in the
+    /// order it arrived, and empties the queue.
     pub fn take_snapshot(&mut self) -> StepInput {
-        let mut snapshot = StepInput::default();
-        for event in self.pending.drain(..) {
-            match event.action {
-                KeyAction::Press => snapshot.pressed.push(event.code),
-                KeyAction::Release => snapshot.released.push(event.code),
-            }
+        StepInput {
+            events: std::mem::take(&mut self.pending),
         }
-        snapshot
     }
 
-    /// Keys held right now, in no particular order — used only to synthesize the "release
-    /// everything" step when the game leaves a live screen.
-    pub fn held_keys(&self) -> Vec<String> {
-        self.held.iter().cloned().collect()
-    }
-
-    /// Whether `code` is in the held set right now.
-    pub fn is_held(&self, code: &str) -> bool {
-        self.held.contains(code)
-    }
-
-    /// Forgets `code` entirely — used when its release is applied to the world immediately
-    /// instead of going through the queue. The pending events go too: a press still waiting in
-    /// the queue would otherwise be folded into the world a step *after* that release, switching
-    /// the binding on with nothing left in `held` to ever switch it off again.
+    /// Drops every queued event for `code` and forgets the page ever held it — used when a screen
+    /// absorbs `code`'s release (see `Game::release_key`): whatever the page still has queued for
+    /// it (a stray `Press` from before the switch, browser auto-repeat, …) must not surface later
+    /// and re-trigger a binding on its own, now that a screen has already decided this key's fate.
+    /// Says nothing about whether the *world* held `code` — that question belongs to
+    /// `Game::is_key_held`, backed by the world's own bookkeeping, not this queue's.
     pub fn forget(&mut self, code: &str) {
         self.pending.retain(|event| event.code != code);
         self.held.remove(code);
@@ -103,31 +112,53 @@ pub enum MouseEvent {
     Up,
 }
 
-/// Mouse events are queued the same short way keys are: the page just appends, the engine
-/// drains between steps. See «Интерфейс игры» → «Мышь».
-#[derive(Debug, Clone, Default)]
-pub struct MouseQueue {
-    pending: Vec<MouseEvent>,
+/// One raw event queued for the screen layer to judge at drain time — «Экраны и состояние» →
+/// «Клавиши экрана»: a key press/release is judged by whichever screen is active *when this
+/// queue is drained*, not when the event arrived, so it shares one FIFO with mouse events instead
+/// of a queue of its own. That keeps a key arriving between two frames in the same relative order
+/// as a click queued alongside it — the click's own screen switch, if any, is applied first
+/// whenever it was queued first.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UiEvent {
+    Mouse(MouseEvent),
+    KeyDown(String),
+    KeyUp(String),
 }
 
-impl MouseQueue {
+/// Mouse and screen-key events share this one FIFO: the page just appends as they happen, the
+/// engine drains it in order once per `tick`. See «Интерфейс игры» → «Мышь» and «Экраны и
+/// состояние» → «Клавиши экрана».
+#[derive(Debug, Clone, Default)]
+pub struct UiQueue {
+    pending: Vec<UiEvent>,
+}
+
+impl UiQueue {
     pub fn new() -> Self {
-        MouseQueue::default()
+        UiQueue::default()
     }
 
-    pub fn push_move(&mut self, x: f32, y: f32) {
-        self.pending.push(MouseEvent::Move([x, y]));
+    pub fn push_mouse_move(&mut self, x: f32, y: f32) {
+        self.pending.push(UiEvent::Mouse(MouseEvent::Move([x, y])));
     }
 
-    pub fn push_down(&mut self) {
-        self.pending.push(MouseEvent::Down);
+    pub fn push_mouse_down(&mut self) {
+        self.pending.push(UiEvent::Mouse(MouseEvent::Down));
     }
 
-    pub fn push_up(&mut self) {
-        self.pending.push(MouseEvent::Up);
+    pub fn push_mouse_up(&mut self) {
+        self.pending.push(UiEvent::Mouse(MouseEvent::Up));
     }
 
-    pub fn drain(&mut self) -> Vec<MouseEvent> {
+    pub fn push_key_down(&mut self, code: &str) {
+        self.pending.push(UiEvent::KeyDown(code.to_string()));
+    }
+
+    pub fn push_key_up(&mut self, code: &str) {
+        self.pending.push(UiEvent::KeyUp(code.to_string()));
+    }
+
+    pub fn drain(&mut self) -> Vec<UiEvent> {
         std::mem::take(&mut self.pending)
     }
 }
@@ -141,40 +172,81 @@ pub struct MouseState {
     pub captured: Option<usize>,
 }
 
-/// Releases of a key the active screen declared in its own `keys` table — queued the same short
-/// way mouse events are, and drained at the same step boundary, never through the world's input
-/// pipeline. «Экраны и состояние» → «Клавиши экрана».
-#[derive(Debug, Clone, Default)]
-pub struct KeyQueue {
-    pending: Vec<String>,
-}
-
-impl KeyQueue {
-    pub fn new() -> Self {
-        KeyQueue::default()
-    }
-
-    pub fn push_release(&mut self, code: &str) {
-        self.pending.push(code.to_string());
-    }
-
-    pub fn drain(&mut self) -> Vec<String> {
-        std::mem::take(&mut self.pending)
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn snapshot_splits_press_and_release_and_empties_queue() {
+    fn snapshot_keeps_press_and_release_in_arrival_order_and_empties_queue() {
         let mut queue = InputQueue::new();
         queue.press("ArrowUp");
+        queue.press("ArrowDown");
         queue.release("ArrowDown");
         let snap = queue.take_snapshot();
-        assert_eq!(snap.pressed, vec!["ArrowUp".to_string()]);
-        assert_eq!(snap.released, vec!["ArrowDown".to_string()]);
-        assert!(queue.take_snapshot().pressed.is_empty());
+        assert_eq!(
+            snap.events,
+            vec![
+                KeyEvent {
+                    code: "ArrowUp".to_string(),
+                    action: KeyAction::Press
+                },
+                KeyEvent {
+                    code: "ArrowDown".to_string(),
+                    action: KeyAction::Press
+                },
+                KeyEvent {
+                    code: "ArrowDown".to_string(),
+                    action: KeyAction::Release
+                },
+            ]
+        );
+        assert!(queue.take_snapshot().is_empty());
+    }
+
+    /// «Исполнение игры»: a release whose press never reached the queue must not reach it either
+    /// — enforced here, not by every caller checking `held` first.
+    #[test]
+    fn release_of_a_key_never_pressed_is_dropped() {
+        let mut queue = InputQueue::new();
+        queue.release("ArrowDown");
+        let snap = queue.take_snapshot();
+        assert!(snap.is_empty());
+    }
+
+    /// «Исполнение игры»: a release and a press of the same key landing in the same gap must
+    /// reach the step in that same order — the regression this guards against applied every
+    /// release after every press, regardless of which actually came last.
+    #[test]
+    fn a_release_then_a_press_of_the_same_key_keeps_that_order() {
+        let mut queue = InputQueue::new();
+        queue.press("KeyA");
+        queue.take_snapshot();
+        queue.release("KeyA");
+        queue.press("KeyA");
+        let snap = queue.take_snapshot();
+        assert_eq!(
+            snap.events,
+            vec![
+                KeyEvent {
+                    code: "KeyA".to_string(),
+                    action: KeyAction::Release
+                },
+                KeyEvent {
+                    code: "KeyA".to_string(),
+                    action: KeyAction::Press
+                },
+            ]
+        );
+    }
+
+    /// «Исполнение игры»: a press that repeats an already-held key queues nothing — the front
+    /// edge already queued a `Press`, and browser auto-repeat should add no more of them.
+    #[test]
+    fn a_repeated_press_of_an_already_held_key_queues_nothing() {
+        let mut queue = InputQueue::new();
+        queue.press("KeyA");
+        queue.take_snapshot();
+        queue.press("KeyA");
+        assert!(queue.take_snapshot().is_empty());
     }
 }
