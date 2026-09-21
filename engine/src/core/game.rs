@@ -1,3 +1,4 @@
+use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
 use super::property::{self, PropertyTable};
@@ -22,6 +23,19 @@ pub struct Game {
     rng: Rng,
     step_count: u64,
     input_queue: InputQueue,
+    /// «Код игры»: текст файла кода и его путь (для сообщений об ошибке) — хранятся, чтобы
+    /// `new_game` могла каждый раз строить свежий исполнитель. `None`, когда у игры нет
+    /// `files.code`.
+    code_source: Option<String>,
+    code_path: String,
+    /// «Код игры»: имя картинки/звука по их `ImageId`/`SoundId` — код обращается к ним по имени,
+    /// а не по номеру, так что рантайму нужна обратная таблица, которой правилам не требовалось.
+    image_names: Vec<String>,
+    sound_names: Vec<String>,
+    code: Option<code::Runner>,
+    /// «Код игры»: ошибка кода во время партии — раз поднятая, остаётся до `new_game`/`quit`;
+    /// `is_running` смотрит и сюда, и на `outcome`.
+    code_error: Option<CodeError>,
     /// Codes the world currently holds — updated only where `apply_to_world` runs `step::
     /// apply_input`, in lockstep with it: inserted when a `Press` is actually applied, removed
     /// when a `Release` is. The one source of truth for "does the world hold this key right now",
@@ -53,8 +67,13 @@ impl Game {
         random_seed: u64,
         scene_objects: Vec<ObjectSpec>,
         sound_count: usize,
+        code_source: Option<String>,
+        code_path: String,
+        image_names: Vec<String>,
+        sound_names: Vec<String>,
+        start_is_live: bool,
     ) -> Self {
-        Game {
+        let mut game = Game {
             properties,
             world,
             rules,
@@ -65,6 +84,12 @@ impl Game {
             rng: Rng::new(random_seed),
             step_count: 0,
             input_queue: InputQueue::new(),
+            code_source,
+            code_path,
+            image_names,
+            sound_names,
+            code: None,
+            code_error: None,
             world_held_keys: std::collections::HashSet::new(),
             grid: SpatialGrid::new(),
             outcome: None,
@@ -75,6 +100,57 @@ impl Game {
             grid_hop_ready: Vec::new(),
             moved: Vec::new(),
             bounced: Vec::new(),
+        };
+        // «Код игры» → «Экраны и состояние»: код грузится ровно один раз на партию. Партия
+        // начинается либо прямо здесь (стартовый экран без меню — `world_runs` поднят сразу), и
+        // тогда код выполняется здесь и только здесь, либо позже, кнопкой `new_game` (стартовый
+        // экран — меню): тогда партии здесь ещё нет, и код грузится позже, в `new_game`, а не
+        // дважды — здесь и там.
+        if start_is_live {
+            game.load_code();
+        }
+        game
+    }
+
+    /// «Код игры»: строит исполнитель лениво, в начале шага, если у игры есть код, но исполнителя
+    /// ещё нет — покрывает оба пути в обход `new_game`, единственного места, которое иначе его бы
+    /// строило: стартовый экран — меню, `show_screen` уводит сразу на живой экран (движок этого не
+    /// запрещает — «Экраны и состояние»: `show_screen` не трогает мир); и `quit`,
+    /// выбросивший исполнитель, а не начавший партию заново сам, за которым тоже может идти живой
+    /// экран без `new_game`. Счётчик случайности сбрасывается тут же, перед загрузкой, точно как
+    /// в `new_game` — партия, начатая так, идёт так же, как если бы её начал `new_game`. Пустая
+    /// операция, когда исполнитель уже есть (обычный путь — `Game::new`/`new_game` уже собрали
+    /// его) или уже стоит ошибка кода (`is_running` не даст шагам идти дальше).
+    fn ensure_code_loaded(&mut self) {
+        if self.code.is_some() || self.code_error.is_some() || self.code_source.is_none() {
+            return;
+        }
+        self.rng = Rng::new(self.random_seed);
+        self.load_code();
+    }
+
+    /// «Код игры»: (пере)строит исполнитель из хранимого текста файла — общая часть `new`,
+    /// `new_game` и `quit`. Ошибка компиляции здесь означала бы, что файл прошёл проверку при
+    /// загрузке (`data::load`), но на этот раз выполнился иначе — крайне маловероятно (тот же
+    /// текст, тот же бюджет), но не паникует: партия просто стартует уже остановленной ошибкой
+    /// кода, как и любая другая ошибка кода во время игры.
+    fn load_code(&mut self) {
+        self.code = None;
+        self.code_error = None;
+        let Some(source) = self.code_source.clone() else {
+            return;
+        };
+        match code::Runner::compile(
+            &source,
+            &self.code_path,
+            &self.properties,
+            &self.image_names,
+            &self.sound_names,
+            &mut self.rng,
+            &mut self.messages,
+        ) {
+            Ok(runner) => self.code = Some(runner),
+            Err(err) => self.code_error = Some(err),
         }
     }
 
@@ -195,6 +271,9 @@ impl Game {
         self.input_queue = InputQueue::new();
         self.world_held_keys.clear();
         self.outcome = None;
+        // «Код игры»: свежий исполнитель на каждую партию — счётчик случайности уже сброшен
+        // строкой выше, так что вторая партия идёт как первая.
+        self.load_code();
     }
 
     /// «Экраны и состояние»: `quit` throws the run away entirely — the world empties and there
@@ -212,14 +291,30 @@ impl Game {
         self.input_queue = InputQueue::new();
         self.world_held_keys.clear();
         self.outcome = None;
+        // «Код игры»: «quit выбрасывает исполнитель вместе с миром» — never rebuilt here; the
+        // next `new_game` (not `quit`) is the one that loads a fresh one.
+        self.code = None;
+        self.code_error = None;
     }
 
     pub fn is_running(&self) -> bool {
-        self.outcome.is_none()
+        self.outcome.is_none() && self.code_error.is_none()
     }
 
     pub fn outcome(&self) -> Option<(Outcome, u64)> {
         self.outcome
+    }
+
+    /// «Код игры»: ошибка кода во время партии, если она уже остановила игру — `tick` показывает
+    /// её так же, как ошибку загрузки, а `is_running` учитывает её наравне с `outcome`.
+    pub fn code_error(&self) -> Option<&CodeError> {
+        self.code_error.as_ref()
+    }
+
+    /// «Код игры»: путь файла кода из `files.code` — для показа ошибки во время партии в том же
+    /// виде, что ошибку загрузки. Пустая строка, когда у игры нет кода.
+    pub fn code_path(&self) -> &str {
+        &self.code_path
     }
 
     pub fn step_count(&self) -> u64 {
@@ -257,6 +352,7 @@ impl Game {
         if self.outcome.is_some() {
             return;
         }
+        self.ensure_code_loaded();
         self.step_count += 1;
         self.ensure_scratch_capacity();
 
@@ -288,31 +384,63 @@ impl Game {
         // «Звук»: этому и только этому обёртка `SoundMarks` даётся — поднять
         // отметку и никогда её не прочитать; окно целиком (`self.sound_window`) шаг не видит.
         let mut marks = self.sound_window.marks();
-        step::apply_collide_rules(
+        let mut code_env = match self.code.as_mut() {
+            Some(runner) => {
+                // «Код игры»: предел операций — на все вызовы `run` этого шага вместе, не на
+                // каждый по отдельности (see `code::Runner::reset_step_budget`).
+                runner.reset_step_budget();
+                Some(step::CodeEnv {
+                    runner,
+                    messages: &mut self.messages,
+                })
+            }
+            None => None,
+        };
+        if let Err(err) = step::apply_collide_rules(
             &self.rules.rules,
             &mut self.world,
             &pairs,
             &mut self.bounced,
             &mut deletes_from_collide,
+            &mut self.moved,
             &mut outcome_flag,
             &mut marks,
-        );
+            &mut code_env,
+            &mut self.rng,
+        ) {
+            // «Код игры»: ошибка во время партии останавливает игру на месте — остаток шага не
+            // выполняется, `is_running` теперь тоже видит `code_error`. `step` — единственное
+            // поле «Код игры» → требование 20 не заполняет ниже: только `Game` знает номер шага.
+            let mut err = err;
+            err.step = Some(self.step_count);
+            self.code_error = Some(err);
+            return;
+        }
 
         let already_deleted: Vec<u32> = expired.into_iter().chain(deletes_from_collide).collect();
         let mut random_cell_exhausted = false;
-        let (mut all_deleted, creates) = step::queue_create_and_delete_rules(
+        let (mut all_deleted, creates) = match step::queue_create_and_delete_rules(
             &self.rules.rules,
             &mut self.world,
             &self.properties,
             &self.scene,
             &already_deleted,
-            &self.moved,
+            &mut self.moved,
             &pre_move_positions,
             &mut self.rng,
             &mut outcome_flag,
             &mut random_cell_exhausted,
             &mut marks,
-        );
+            &mut code_env,
+        ) {
+            Ok(result) => result,
+            Err(err) => {
+                let mut err = err;
+                err.step = Some(self.step_count);
+                self.code_error = Some(err);
+                return;
+            }
+        };
         if random_cell_exhausted && !self.random_cell_warned {
             self.random_cell_warned = true;
             self.messages.push(

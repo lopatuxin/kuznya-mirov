@@ -84,6 +84,10 @@ pub struct World {
     free_list: Vec<u32>,
     columns: Vec<Column>,
     grid_counter: Vec<i64>,
+    /// «Код игры»: bumped on every `create()` (fresh slot or reused one) so a code handle taken
+    /// while an object was alive can tell it apart from a later, unrelated object that reused the
+    /// same freed slot — see `generation`.
+    generation: Vec<u32>,
 }
 
 impl World {
@@ -97,21 +101,38 @@ impl World {
             free_list: Vec::new(),
             columns,
             grid_counter: Vec::new(),
+            generation: Vec::new(),
         }
     }
 
     pub fn create(&mut self) -> u32 {
         if let Some(id) = self.free_list.pop() {
             self.alive[id as usize] = true;
+            self.generation[id as usize] += 1;
             return id;
         }
         let id = self.alive.len() as u32;
         self.alive.push(true);
         self.grid_counter.push(0);
+        self.generation.push(0);
         for column in &mut self.columns {
             column.push_empty();
         }
         id
+    }
+
+    /// «Код игры»: the object currently occupying slot `id` was created by this many `create()`
+    /// calls into that slot — a code handle is stale (points at a deleted object even though its
+    /// slot may already hold a new one) when this no longer matches the generation it was taken at.
+    pub fn generation(&self, id: u32) -> u32 {
+        self.generation[id as usize]
+    }
+
+    /// «Код игры»: clears one property on a live object without deleting the object itself — the
+    /// runtime write side for `obj.prop = nil`. A no-op past the slot count, same as every other
+    /// per-property accessor here.
+    pub fn clear_property(&mut self, id: u32, prop: PropertyId) {
+        self.columns[prop as usize].clear(id as usize);
     }
 
     pub fn delete(&mut self, id: u32) {

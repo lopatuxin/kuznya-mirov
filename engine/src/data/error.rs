@@ -54,6 +54,21 @@ impl ErrorSink {
         self.errors.push(GameError::new(file, path, message));
     }
 
+    /// Same as `push`, but with `line` already known rather than left for `fill_locations` to
+    /// find by walking JSON — «Код игры»: a code error's line comes straight from the Lua error
+    /// message, and `fill_locations`'s JSON-path walk has no path into a Lua file to find it with.
+    pub fn push_at(
+        &mut self,
+        file: &str,
+        path: &str,
+        message: impl Into<String>,
+        line: Option<usize>,
+    ) {
+        let mut error = GameError::new(file, path, message);
+        error.line = line;
+        self.errors.push(error);
+    }
+
     pub fn push_warning(&mut self, file: &str, path: &str, message: impl Into<String>) {
         self.warnings.push(GameError::new(file, path, message));
     }

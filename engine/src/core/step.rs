@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use super::code::{CodeError, Runner as CodeRunner};
 use super::grid::{Rect, SpatialGrid, largest_dimension};
 use super::input::{KeyAction, KeyEvent};
 use super::property::{self, PropertyId, PropertyTable};
@@ -12,6 +13,69 @@ use super::scene::SceneConfig;
 use super::sound::SoundMarks;
 use super::value::{Value, Vec2};
 use super::world::World;
+
+/// «Код игры»: что `["run", "<функция>"]` требует на месте вызова — исполнитель на партию и то,
+/// чем код смеет пользоваться помимо мира: счётчик случайности и `messages` для `print`.
+/// `None`, когда у игры нет `files.code` — тогда `run` сам по себе ошибка (проверяется при
+/// загрузке, но и здесь на всякий случай, а не паникой).
+pub struct CodeEnv<'a> {
+    pub runner: &'a mut CodeRunner,
+    pub messages: &'a mut Vec<String>,
+}
+
+fn run_missing() -> CodeError {
+    CodeError {
+        message: "run в игре без files.code".to_string(),
+        line: None,
+        function: None,
+        rule: None,
+        step: None,
+    }
+}
+
+/// The one place `["run", "<функция>"]` actually calls into `code::Runner` — every action-list
+/// executor below goes through this rather than calling `CodeEnv::runner.run` itself, so the
+/// «run в игре без files.code» fallback and the marks re-borrow (`Runner::run` takes `SoundMarks`
+/// by value, callers here only ever hold `&mut SoundMarks`) live in one place. `rng` is threaded
+/// in separately, not carried on `CodeEnv`: it is «Исполнение игры»'s one counter shared with
+/// `random_cell`/`pick_one`, so a caller that also needs it for those keeps a single `&mut Rng`
+/// rather than two live borrows of the same field. `rule` is this rule's `rules[N]` label —
+/// «Код игры» → требование 20: the text of a runtime code error names the rule that called it,
+/// and this is the one place that knows both the rule's own index and its call into `Runner::run`.
+#[allow(clippy::too_many_arguments)]
+fn run_code(
+    code: &mut Option<CodeEnv<'_>>,
+    world: &mut World,
+    rng: &mut Rng,
+    deletes: &mut Vec<u32>,
+    moved: &mut [bool],
+    marks: &mut SoundMarks<'_>,
+    rule: &str,
+    function: &str,
+    args: &[u32],
+) -> Result<(), CodeError> {
+    let Some(env) = code else {
+        let mut err = run_missing();
+        err.rule = Some(rule.to_string());
+        err.function = Some(function.to_string());
+        return Err(err);
+    };
+    env.runner
+        .run(
+            function,
+            args,
+            world,
+            rng,
+            deletes,
+            moved,
+            marks.reborrow(),
+            env.messages,
+        )
+        .map_err(|mut err| {
+            err.rule = Some(rule.to_string());
+            err
+        })
+}
 
 pub fn selector_matches(selector: &Selector, world: &World, id: u32) -> bool {
     world.has_all(id, &selector.has) && world.has_none(id, &selector.without)
@@ -162,6 +226,7 @@ fn bounce(world: &mut World, bouncer: u32, other: u32) {
     world.set_vec2(bouncer, property::VELOCITY, new_vel);
 }
 
+#[allow(clippy::too_many_arguments)]
 fn apply_collide_effect(
     world: &mut World,
     id: u32,
@@ -169,7 +234,12 @@ fn apply_collide_effect(
     bounced: &mut [bool],
     other: u32,
     deletes: &mut Vec<u32>,
-) {
+    moved: &mut [bool],
+    marks: &mut SoundMarks<'_>,
+    code: &mut Option<CodeEnv<'_>>,
+    rng: &mut Rng,
+    rule: &str,
+) -> Result<(), CodeError> {
     match effect {
         CollideEffect::Bounce => {
             if !bounced[id as usize] {
@@ -186,17 +256,40 @@ fn apply_collide_effect(
         CollideEffect::Set { prop, value } => world.set_value(id, *prop, value),
         CollideEffect::Give { prop } => world.set_flag(id, *prop, true),
         CollideEffect::Take { prop } => world.set_flag(id, *prop, false),
+        CollideEffect::Run(function) => {
+            run_code(
+                code,
+                world,
+                rng,
+                deletes,
+                moved,
+                marks,
+                rule,
+                function,
+                &[id, other],
+            )?;
+        }
     }
+    Ok(())
 }
 
 /// Prop marked `add`-eligible from `do`: every holder of the property gets the delta, not
-/// just the pair that triggered the rule.
+/// just the pair that triggered the rule. `run_args` is the "who does the function get" for this
+/// rule kind's `do` — «Код игры»: `(a, b)` for `collide`, the deleted object for `delete`, the
+/// spawned object's parent (or nothing) for `spawn`.
+#[allow(clippy::too_many_arguments)]
 fn execute_common_actions(
     world: &mut World,
     actions: &[CommonAction],
     outcome: &mut Option<super::rules::Outcome>,
     marks: &mut SoundMarks<'_>,
-) {
+    deletes: &mut Vec<u32>,
+    moved: &mut [bool],
+    code: &mut Option<CodeEnv<'_>>,
+    rng: &mut Rng,
+    run_args: &[u32],
+    rule: &str,
+) -> Result<(), CodeError> {
     for action in actions {
         match action {
             CommonAction::EndGame(o) => {
@@ -217,21 +310,31 @@ fn execute_common_actions(
             // «Звук»: правило кладёт заявку — поднимает отметку и тут же о ней
             // забывает; звучит ли что-то на самом деле, шаг не спрашивает никогда.
             CommonAction::PlaySound(id) => marks.raise(*id),
+            CommonAction::Run(function) => {
+                run_code(
+                    code, world, rng, deletes, moved, marks, rule, function, run_args,
+                )?;
+            }
         }
     }
+    Ok(())
 }
 
 /// Stage 6: "collide" rules against the pairs found at stage 5.
+#[allow(clippy::too_many_arguments)]
 pub fn apply_collide_rules(
     rules: &[Rule],
     world: &mut World,
     pairs: &[(u32, u32)],
     bounced: &mut [bool],
     deletes: &mut Vec<u32>,
+    moved: &mut [bool],
     outcome: &mut Option<super::rules::Outcome>,
     marks: &mut SoundMarks<'_>,
-) {
-    for rule in rules {
+    code: &mut Option<CodeEnv<'_>>,
+    rng: &mut Rng,
+) -> Result<(), CodeError> {
+    for (index, rule) in rules.iter().enumerate() {
         let Rule::Collide {
             a,
             b,
@@ -242,6 +345,7 @@ pub fn apply_collide_rules(
         else {
             continue;
         };
+        let rule_label = format!("rules[{index}]");
         for &(lo, hi) in pairs {
             let (obj_a, obj_b) = if selector_matches(a, world, lo) && selector_matches(b, world, hi)
             {
@@ -252,14 +356,50 @@ pub fn apply_collide_rules(
                 continue;
             };
             for effect in effects_a {
-                apply_collide_effect(world, obj_a, effect, bounced, obj_b, deletes);
+                apply_collide_effect(
+                    world,
+                    obj_a,
+                    effect,
+                    bounced,
+                    obj_b,
+                    deletes,
+                    moved,
+                    marks,
+                    code,
+                    rng,
+                    &rule_label,
+                )?;
             }
             for effect in effects_b {
-                apply_collide_effect(world, obj_b, effect, bounced, obj_a, deletes);
+                apply_collide_effect(
+                    world,
+                    obj_b,
+                    effect,
+                    bounced,
+                    obj_a,
+                    deletes,
+                    moved,
+                    marks,
+                    code,
+                    rng,
+                    &rule_label,
+                )?;
             }
-            execute_common_actions(world, do_, outcome, marks);
+            execute_common_actions(
+                world,
+                do_,
+                outcome,
+                marks,
+                deletes,
+                moved,
+                code,
+                rng,
+                &[obj_a, obj_b],
+                &rule_label,
+            )?;
         }
     }
+    Ok(())
 }
 
 pub struct PendingCreate {
@@ -415,22 +555,34 @@ struct SpawnContext<'a> {
     pre_move_positions: &'a [Option<Vec2>],
 }
 
+/// «Код игры»: applies whatever `delete(obj)` calls a `do`-action's code just queued to `pending`
+/// too — так заявка из кода видна `fewer_than` того же прохода, так же, как заявки самих правил
+/// этапа 7. `execute_common_actions` only ever appends to `code_deletes` (a plain `Vec`, matching
+/// `code::Runner::run`'s own queue parameter); this drains it into `PendingState::queue_delete`,
+/// which additionally keeps `world_occupied` in step for `random_cell`.
+fn absorb_code_deletes(pending: &mut PendingState, code_deletes: &mut Vec<u32>) {
+    for id in code_deletes.drain(..) {
+        pending.queue_delete(id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Stage 7: "create" and "delete" rules, in file order, accumulating requests only; `do_`
-/// actions (`end_game`, `add`) still run immediately, same as for "collide".
+/// actions (`end_game`, `add`, `run`) still run immediately, same as for "collide".
 pub fn queue_create_and_delete_rules(
     rules: &[Rule],
     world: &mut World,
     properties: &PropertyTable,
     scene: &SceneConfig,
     already_deleted: &[u32],
-    moved: &[bool],
+    moved: &mut [bool],
     pre_move_positions: &[Option<Vec2>],
     rng: &mut Rng,
     outcome: &mut Option<super::rules::Outcome>,
     random_cell_exhausted: &mut bool,
     marks: &mut SoundMarks<'_>,
-) -> (Vec<u32>, Vec<PendingCreate>) {
+    code: &mut Option<CodeEnv<'_>>,
+) -> Result<(Vec<u32>, Vec<PendingCreate>), CodeError> {
     let mut pending = PendingState {
         deleted: already_deleted.iter().copied().collect(),
         world_occupied: world
@@ -443,7 +595,8 @@ pub fn queue_create_and_delete_rules(
         creates: Vec::new(),
     };
 
-    for rule in rules {
+    for (index, rule) in rules.iter().enumerate() {
+        let rule_label = format!("rules[{index}]");
         match rule {
             Rule::Delete { for_, when, do_ } => {
                 let candidates: Vec<u32> = world
@@ -456,7 +609,20 @@ pub fn queue_create_and_delete_rules(
                         if pending.count_selector(of, world) < *count {
                             for id in candidates {
                                 pending.queue_delete(id);
-                                execute_common_actions(world, do_, outcome, marks);
+                                let mut code_deletes = Vec::new();
+                                execute_common_actions(
+                                    world,
+                                    do_,
+                                    outcome,
+                                    marks,
+                                    &mut code_deletes,
+                                    moved,
+                                    code,
+                                    rng,
+                                    &[id],
+                                    &rule_label,
+                                )?;
+                                absorb_code_deletes(&mut pending, &mut code_deletes);
                             }
                         }
                     }
@@ -470,7 +636,20 @@ pub fn queue_create_and_delete_rules(
                         if any_moved {
                             for id in candidates {
                                 pending.queue_delete(id);
-                                execute_common_actions(world, do_, outcome, marks);
+                                let mut code_deletes = Vec::new();
+                                execute_common_actions(
+                                    world,
+                                    do_,
+                                    outcome,
+                                    marks,
+                                    &mut code_deletes,
+                                    moved,
+                                    code,
+                                    rng,
+                                    &[id],
+                                    &rule_label,
+                                )?;
+                                absorb_code_deletes(&mut pending, &mut code_deletes);
                             }
                         }
                     }
@@ -478,7 +657,20 @@ pub fn queue_create_and_delete_rules(
                         for id in candidates {
                             if condition_holds_for_object(when, world, id, scene) {
                                 pending.queue_delete(id);
-                                execute_common_actions(world, do_, outcome, marks);
+                                let mut code_deletes = Vec::new();
+                                execute_common_actions(
+                                    world,
+                                    do_,
+                                    outcome,
+                                    marks,
+                                    &mut code_deletes,
+                                    moved,
+                                    code,
+                                    rng,
+                                    &[id],
+                                    &rule_label,
+                                )?;
+                                absorb_code_deletes(&mut pending, &mut code_deletes);
                             }
                         }
                     }
@@ -508,7 +700,20 @@ pub fn queue_create_and_delete_rules(
                                 random_cell_exhausted,
                             )
                         {
-                            execute_common_actions(world, do_, outcome, marks);
+                            let mut code_deletes = Vec::new();
+                            execute_common_actions(
+                                world,
+                                do_,
+                                outcome,
+                                marks,
+                                &mut code_deletes,
+                                moved,
+                                code,
+                                rng,
+                                &[],
+                                &rule_label,
+                            )?;
+                            absorb_code_deletes(&mut pending, &mut code_deletes);
                         }
                     }
                     SpawnCondition::AfterMoveOf { of } => {
@@ -516,22 +721,38 @@ pub fn queue_create_and_delete_rules(
                             .ids()
                             .filter(|&id| moved[id as usize] && selector_matches(of, world, id))
                             .collect();
-                        let created: Vec<bool> = parents
+                        let created: Vec<(u32, bool)> = parents
                             .into_iter()
                             .map(|parent| {
-                                pending.queue_create(
-                                    *place,
-                                    Some(parent),
-                                    template,
-                                    &ctx,
-                                    rng,
-                                    random_cell_exhausted,
+                                (
+                                    parent,
+                                    pending.queue_create(
+                                        *place,
+                                        Some(parent),
+                                        template,
+                                        &ctx,
+                                        rng,
+                                        random_cell_exhausted,
+                                    ),
                                 )
                             })
                             .collect();
-                        for ok in created {
+                        for (parent, ok) in created {
                             if ok {
-                                execute_common_actions(world, do_, outcome, marks);
+                                let mut code_deletes = Vec::new();
+                                execute_common_actions(
+                                    world,
+                                    do_,
+                                    outcome,
+                                    marks,
+                                    &mut code_deletes,
+                                    moved,
+                                    code,
+                                    rng,
+                                    &[parent],
+                                    &rule_label,
+                                )?;
+                                absorb_code_deletes(&mut pending, &mut code_deletes);
                             }
                         }
                     }
@@ -541,7 +762,7 @@ pub fn queue_create_and_delete_rules(
         }
     }
 
-    (pending.deleted.into_iter().collect(), pending.creates)
+    Ok((pending.deleted.into_iter().collect(), pending.creates))
 }
 
 fn outside_scene(rect: &Rect, scene: &SceneConfig) -> bool {

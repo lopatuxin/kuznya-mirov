@@ -140,6 +140,11 @@ mod tests {
             1,
             Vec::new(),
             0,
+            None,
+            String::new(),
+            Vec::new(),
+            Vec::new(),
+            true,
         )
     }
 

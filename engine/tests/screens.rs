@@ -63,6 +63,7 @@ fn load() -> (
         &[],
         &[],
         &[],
+        None,
     )
     .expect("должно загрузиться");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
@@ -489,6 +490,7 @@ fn load_key_fixture(
         &[],
         &[],
         &[],
+        None,
     )
     .expect("должно загрузиться");
     // Every `KEY_SCREENS_*` fixture in this file pairs a live screen's own `Space` binding with
@@ -989,6 +991,7 @@ fn load_mirror_fixture() -> (
         &[],
         &[],
         &[],
+        None,
     )
     .expect("должно загрузиться");
     // `declares` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — «Экраны и состояние» → «Клавиши экрана»: expected here, any *other* warning still fails the fixture.
@@ -1034,6 +1037,7 @@ fn load_mirror_two_live_fixture() -> (
         &[],
         &[],
         &[],
+        None,
     )
     .expect("должно загрузиться");
     // `declares2` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — expected
@@ -1124,6 +1128,7 @@ fn load_mirror_live_to_pause_fixture() -> (
         &[],
         &[],
         &[],
+        None,
     )
     .expect("должно загрузиться");
     // `paused` is only ever reached programmatically (`ShowScreen`) in the test below, not
@@ -1359,6 +1364,7 @@ fn load_newgame_key_fixture() -> (
         &[],
         &[],
         &[],
+        None,
     )
     .expect("должно загрузиться");
     // `arena`'s own `Space` (screen key) intentionally shadows `KEY_SCENE`'s object binding of the

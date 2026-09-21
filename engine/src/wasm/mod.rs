@@ -74,6 +74,11 @@ fn js_entry_ok(config: &GameConfig, warnings: &[GameError]) -> JsValue {
     set(&files, "scene", &JsValue::from_str(&config.files.scene));
     set(&files, "rules", &JsValue::from_str(&config.files.rules));
     set(&files, "screens", &JsValue::from_str(&config.files.screens));
+    // «Код игры»: только когда объявлен — страница читает его во втором заходе вместе с
+    // остальными текстами, движок этот путь так же, как остальные, не читает сам.
+    if let Some(code) = &config.files.code {
+        set(&files, "code", &JsValue::from_str(code));
+    }
     let fonts = Array::new();
     for (name, path) in &config.files.fonts {
         let entry = Object::new();
@@ -153,6 +158,51 @@ fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> J
 fn js_running() -> JsValue {
     let obj = Object::new();
     set(&obj, "running", &JsValue::TRUE);
+    obj.into()
+}
+
+/// «Код игры» → требование 20: текст ошибки во время партии называет функцию, правило
+/// (`rules.json → rules[N]`) и шаг в начале `message`; место в самом файле кода — `line`, а
+/// `path` пуст: правило — место в другом файле, не в `file`. Страница показывает `{file, path,
+/// message, line, column}` тем же форматом, что ошибку загрузки.
+fn code_error_message(rules_path: &str, err: &crate::core::code::CodeError) -> String {
+    let mut parts = Vec::with_capacity(3);
+    if let Some(function) = &err.function {
+        parts.push(format!("функция \"{function}\""));
+    }
+    if let Some(rule) = &err.rule {
+        parts.push(format!("правило {rules_path} → {rule}"));
+    }
+    if let Some(step) = err.step {
+        parts.push(format!("шаг {step}"));
+    }
+    if parts.is_empty() {
+        err.message.clone()
+    } else {
+        format!("{}: {}", parts.join(", "), err.message)
+    }
+}
+
+/// «Код игры»: ошибка во время партии — та же форма `{running:false, error:{...}}`, что ошибка
+/// загрузки принимает по всей странице, чтобы «страница показала её тем же форматом».
+fn js_code_error(code_path: &str, rules_path: &str, err: &crate::core::code::CodeError) -> JsValue {
+    let obj = Object::new();
+    set(&obj, "running", &JsValue::FALSE);
+    let error = Object::new();
+    set(&error, "file", &JsValue::from_str(code_path));
+    set(&error, "path", &JsValue::from_str(""));
+    set(
+        &error,
+        "message",
+        &JsValue::from_str(&code_error_message(rules_path, err)),
+    );
+    set(
+        &error,
+        "line",
+        &js_optional_usize(err.line.map(|l| l as usize)),
+    );
+    set(&error, "column", &JsValue::NULL);
+    set(&obj, "error", &error);
     obj.into()
 }
 
@@ -432,6 +482,9 @@ pub struct Engine {
     images: Vec<ImageDecl>,
     /// Where `load()`'s atlas build put each declared image's whole strip — parallel to `images`.
     atlas_rects: Vec<AtlasRect>,
+    /// «Код игры» → требование 20: `files.rules` of the loaded game — a code error names the rule
+    /// that called the function as `rules.json → rules[N]`, and the core only knows `rules[N]`.
+    rules_path: String,
     /// «Картинки» → «Кадры»: window time for the interface's own image frames — unlike the
     /// world's own step counter, this never freezes: it keeps advancing on a paused or menu
     /// screen, which is exactly why the interface's own images keep animating there.
@@ -460,6 +513,7 @@ impl Engine {
             pending_config: load::PendingConfig::default(),
             images: Vec::new(),
             atlas_rects: Vec::new(),
+            rules_path: String::new(),
             ui_clock: UiClock::new(),
         })
     }
@@ -498,6 +552,9 @@ impl Engine {
         _scene_json: Option<String>,
         _rules_json: Option<String>,
         screens_json: Option<String>,
+        // «Код игры»: движок его здесь не читает — принят только для единообразия с остальными
+        // текстами второго захода; `load()` читает его по-настоящему.
+        _code_json: Option<String>,
     ) -> JsValue {
         let Some(config) = self.pending_config.peek() else {
             return js_needed_media_ok(&NeededMedia::default(), &[]);
@@ -525,6 +582,7 @@ impl Engine {
         sounds: JsValue,
         music: JsValue,
         images: JsValue,
+        code_json: Option<String>,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -541,6 +599,7 @@ impl Engine {
         // captured before that happens.
         let font_order: Vec<String> = config.files.fonts.iter().map(|(n, _)| n.clone()).collect();
         let image_order: Vec<ImageDecl> = config.files.images.clone();
+        let rules_path = config.files.rules.clone();
         let image_table: Vec<(String, String)> = image_order
             .iter()
             .map(|decl| (decl.name.clone(), decl.path.clone()))
@@ -560,6 +619,7 @@ impl Engine {
             &sound_bytes,
             &music_verdicts,
             &image_verdicts,
+            code_json.as_deref(),
         ) {
             Ok((game, screens_config, warnings)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -615,6 +675,7 @@ impl Engine {
                     }
                 };
                 self.images = image_order;
+                self.rules_path = rules_path;
                 self.ui_clock.reset();
                 self.renderer
                     .set_scene(game.scene.width, game.scene.height, game.scene.background);
@@ -699,6 +760,12 @@ impl Engine {
             viewport,
             dt_seconds,
         );
+
+        // «Код игры»: ошибка кода останавливает игру на месте — страница показывает её вместо
+        // игры, тем же форматом, что ошибку загрузки; кадр в таком виде мира не рисуется.
+        if let Some(err) = game.code_error() {
+            return js_code_error(game.code_path(), &self.rules_path, err);
+        }
 
         let world_instances = compose_instances(game, &self.images, &self.atlas_rects);
         let screen = &config.screens[state.active()];

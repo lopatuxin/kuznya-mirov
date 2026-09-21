@@ -29,6 +29,19 @@ describe("formatErrors", () => {
     expect(text).toBe("scene.json: objects[3] → velocity (строка 4, столбец 34) — ожидалась пара чисел, получено строка");
   });
 
+  it("со строкой без столбца (ошибка кода на Lua) называет только строку", () => {
+    const text = formatErrors([
+      {
+        file: "code.lua",
+        path: "",
+        message: "unexpected symbol near '='",
+        line: 3,
+        column: null,
+      },
+    ]);
+    expect(text).toBe("code.lua (строка 3) — unexpected symbol near '='");
+  });
+
   it("выводит каждую ошибку отдельной строкой, ничего не теряя, независимо от того, есть ли позиция", () => {
     const text = formatErrors([
       { file: "game.json", path: "", message: "битый JSON на позиции 12", line: null, column: null },

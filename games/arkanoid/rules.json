@@ -5,8 +5,12 @@
     { "kind": "collide", "a": { "has": ["keys"] }, "b": { "has": ["solid"] },
       "effects": { "a": [["bounce"], ["set", "velocity", [0, 0]]] } },
 
-    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["solid"] },
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["solid"], "without": ["keys"] },
       "effects": { "a": [["bounce"]] },
+      "do": [["play_sound", "bounce"]] },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["keys"] },
+      "effects": { "a": [["run", "paddle_bounce"]] },
       "do": [["play_sound", "bounce"]] },
 
     { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick"] },

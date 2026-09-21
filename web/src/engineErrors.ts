@@ -6,15 +6,21 @@ export type EngineError = {
   column: number | null;
 };
 
+function formatPosition(error: EngineError): string {
+  if (error.line === null) return "";
+  if (error.column === null) return ` (строка ${error.line})`;
+  return ` (строка ${error.line}, столбец ${error.column})`;
+}
+
 /**
- * Одна строка ошибки или предупреждения предстартовой проверки движка: файл, место внутри него
- * (пусто, если места ещё нет — как у битого JSON), строка и столбец внутри файла (`null`, если
- * позицию определить не удалось — тогда она уже вшита в текст сообщения) и текст. Предупреждения
- * используют этот же тип и этот же формат, что и ошибки (см. «Формат игры» → «Проверка данных
- * перед запуском»).
+ * Одна строка ошибки или предупреждения движка: файл, место внутри него (пусто, если места ещё
+ * нет — как у битого JSON), позиция в файле и текст. Позиция — строка и столбец; у ошибки кода на
+ * Lua столбца нет, только строка; `null` в строке значит, что позицию определить не удалось и она
+ * уже вшита в текст сообщения. Предупреждения используют этот же тип и этот же формат, что и
+ * ошибки (см. «Формат игры» → «Проверка данных перед запуском»).
  */
 export function formatError(error: EngineError): string {
-  const position = error.line !== null && error.column !== null ? ` (строка ${error.line}, столбец ${error.column})` : "";
+  const position = formatPosition(error);
   return error.path
     ? `${error.file}: ${error.path}${position} — ${error.message}`
     : `${error.file}${position} — ${error.message}`;
