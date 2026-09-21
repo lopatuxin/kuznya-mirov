@@ -24,6 +24,13 @@ impl SoundMarks<'_> {
             *slot = 1;
         }
     }
+
+    /// A fresh, shorter-lived handle onto the same marks — «Код игры»: `code::Runner::run` takes
+    /// its own `SoundMarks` by value, so a call site holding one by `&mut` re-borrows it this way
+    /// rather than moving the original out.
+    pub fn reborrow(&mut self) -> SoundMarks<'_> {
+        SoundMarks { marks: self.marks }
+    }
 }
 
 /// The window of numbers the page reads after every call — «Звук» → «Окно чисел»: `[0]` whether sound is enabled, `[1]` the music id to play or `-1` for

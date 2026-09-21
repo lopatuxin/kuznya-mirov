@@ -47,6 +47,7 @@ fn load(
         &[],
         &[],
         &[],
+        None,
     )
 }
 
@@ -64,6 +65,7 @@ fn missing_screens_file_is_reported() {
         &[],
         &[],
         &[],
+        None,
     );
     let LoadFailure { errors, .. } = result.expect_err("отсутствующий screens.json — ошибка");
     assert!(

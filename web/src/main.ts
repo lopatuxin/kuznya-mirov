@@ -7,6 +7,7 @@ import { decodeSoundBuffer, probeMusicVerdict, type MusicVerdict } from "./sound
 import { createSoundPlayer, type MusicAsset, type SoundPlayer } from "./sound/soundPlayer";
 import { readSoundWindow } from "./sound/soundWindow";
 import { buildImagePayload, fetchImageBytes, type ImageEntry } from "./images/imagePayload";
+import { parseTickResult, type RawTickResult, type TickResult } from "./tickResult";
 import { buildWarningsBadge, shouldBlurAfterToggleActivation, type WarningsBadge } from "./warningsPanel";
 
 type FontEntry = { name: string; path: string };
@@ -19,6 +20,8 @@ type ReadEntryFiles = {
   rules: string;
   screens: string;
   fonts: FontEntry[];
+  /** «Код игры»: путь к файлу кода — только если игра объявила `files.code`. */
+  code?: string;
 };
 
 type ReadEntryResult =
@@ -315,27 +318,49 @@ function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundP
   let loggedMessages = 0;
   let frame = 0;
 
+  function drainMessages(): void {
+    const messages = engine.messages() as string[];
+    // «У журнала два писателя»: движок и исполнитель звука пишут в одну и ту же консоль, и по
+    // строке должно быть видно, чья она, — см. `soundPlayer`'s «исполнитель:».
+    for (const message of messages.slice(loggedMessages)) console.warn(`движок: ${message}`);
+    loggedMessages = messages.length;
+  }
+
+  /**
+   * «Код игры»: ошибка кода останавливает партию на месте. Страница забирает `messages` в
+   * последний раз (последние `print` уже случившегося шага), показывает ошибку тем же форматом,
+   * что ошибки загрузки, и глушит звук — дальше только перезагрузка страницы, кадровый цикл
+   * больше не планирует следующий кадр.
+   */
+  function stopOnCodeError(error: EngineError): void {
+    drainMessages();
+    soundPlayer.handleTabHidden();
+    showError(formatError(error));
+  }
+
   function tick(now: number): void {
+    let result: TickResult = { status: "running" };
     try {
-      engine.tick(now);
-      // «Звук» → «Один вызов движка»: страница читает окно после того,
-      // как вызов вернул ей управление, — то есть прямо здесь, а не отдельным пересечением границы.
-      const snapshot = readSoundWindow(memory, engine.sound_window_ptr(), engine.sound_window_len());
-      soundPlayer.handleFrame(snapshot);
+      result = parseTickResult(engine.tick(now) as RawTickResult);
+      if (result.status !== "error") {
+        // «Звук» → «Один вызов движка»: страница читает окно после того,
+        // как вызов вернул ей управление, — то есть прямо здесь, а не отдельным пересечением границы.
+        const snapshot = readSoundWindow(memory, engine.sound_window_ptr(), engine.sound_window_len());
+        soundPlayer.handleFrame(snapshot);
+      }
     } catch (error) {
       // Потеря контекста видеокарты и прочие сбои отрисовки уже обработаны внутри движка; эта
       // защита — на случай непредвиденного исключения, чтобы кадровый цикл страницы не остановился.
       console.error("шаг движка завершился с ошибкой:", error);
     }
 
-    frame += 1;
-    if (frame % MESSAGE_POLL_FRAMES === 0) {
-      const messages = engine.messages() as string[];
-      // «У журнала два писателя»: движок и исполнитель звука пишут в одну и ту же консоль, и по
-      // строке должно быть видно, чья она, — см. `soundPlayer`'s «исполнитель:».
-      for (const message of messages.slice(loggedMessages)) console.warn(`движок: ${message}`);
-      loggedMessages = messages.length;
+    if (result.status === "error") {
+      stopOnCodeError(result.error);
+      return;
     }
+
+    frame += 1;
+    if (frame % MESSAGE_POLL_FRAMES === 0) drainMessages();
 
     requestAnimationFrame(tick);
   }
@@ -374,15 +399,17 @@ async function runGame(gameName: string): Promise<void> {
   }
 
   // Второй заход — только текстовые файлы; до их разбора движок не знает, какие звуки и треки
-  // вообще используются («Звук» → «Загрузка и проверка»).
-  const [propertiesText, sceneText, rulesText, screensText] = await Promise.all([
+  // вообще используются («Звук» → «Загрузка и проверка»). Файл кода — среди них же, только если
+  // игра его объявила: не найден («Код игры») даёт `null`, как и любой другой ненайденный файл.
+  const [propertiesText, sceneText, rulesText, screensText, codeText] = await Promise.all([
     fetchText(`${baseUrl}${entryResult.files.properties}`),
     fetchText(`${baseUrl}${entryResult.files.scene}`),
     fetchText(`${baseUrl}${entryResult.files.rules}`),
     fetchText(`${baseUrl}${entryResult.files.screens}`),
+    entryResult.files.code !== undefined ? fetchText(`${baseUrl}${entryResult.files.code}`) : Promise.resolve(null),
   ]);
 
-  const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText) as ReadTextsResult;
+  const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText) as ReadTextsResult;
 
   // Создаётся при загрузке и стоит в `suspended` до первого нажатия игрока («Звук» →
   // «Проигрывание на странице»), но нужен уже сейчас — им же проверяются треки из `files.music`.
@@ -410,6 +437,7 @@ async function runGame(gameName: string): Promise<void> {
     loadedSounds,
     musicPayload,
     imagesPayload,
+    codeText,
   ) as LoadResult;
   // read_entry (game.json) первым, load (остальные файлы) вторым — тот же порядок, в котором
   // предупреждения собирает сам движок при объединённой загрузке (см. `load_game_from_texts`).

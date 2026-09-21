@@ -72,6 +72,7 @@ fn load(
         &[],
         &[],
         &image_data,
+        None,
     )
 }
 

@@ -69,6 +69,7 @@ fn load(
         &sound_bytes,
         &music_verdicts,
         &[],
+        None,
     )
     .expect("должно загрузиться");
     (game, screens)

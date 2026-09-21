@@ -85,6 +85,7 @@ fn load_demo() -> (
         &sound_bytes,
         &music_verdicts,
         &image_verdicts,
+        None,
     )
     .expect("демо-змейка должна проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");

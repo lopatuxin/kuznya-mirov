@@ -82,6 +82,7 @@ pub enum CollideEffect {
     Set { prop: PropertyId, value: Value },
     Give { prop: PropertyId },
     Take { prop: PropertyId },
+    Run(String),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -95,6 +96,7 @@ pub enum CommonAction {
     EndGame(Outcome),
     Add { prop: PropertyId, value: Value },
     PlaySound(SoundId),
+    Run(String),
 }
 
 #[derive(Debug, Clone)]

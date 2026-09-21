@@ -855,6 +855,9 @@ pub struct FilePaths {
     /// `image_hover`/`image_pressed` панели и кнопки (см. `resolve_image`). Пусто, если
     /// `files.images` не объявлена — «Картинки»: нет таблицы, нет картинок, это не ошибка.
     pub images: Vec<ImageDecl>,
+    /// `files.code` — «Код игры»: необязательный путь к файлу кода на Lua. `None`, когда ключ не
+    /// объявлен — в игре нет кода, она грузится и идёт ровно как раньше.
+    pub code: Option<String>,
 }
 
 /// One `files.images` entry — «Картинки» → «Таблица картинок»: `frames`/`frame_time` default to
@@ -1092,6 +1095,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "fonts",
                 "sounds",
                 "music",
+                "code",
             ],
             "game.json",
             "files",
@@ -1128,8 +1132,12 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             }
             None => Vec::new(),
         };
+        // «Код игры»: необязателен — нет ключа, нет и кода, игра идёт ровно как раньше.
+        let code = f
+            .get("code")
+            .and_then(|v| expect_string(v, "game.json", "files → code", errors));
         (
-            properties, scene_path, rules, screens, fonts, sounds, music, images,
+            properties, scene_path, rules, screens, fonts, sounds, music, images, code,
         )
     });
 
@@ -1145,7 +1153,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let scene = scene?;
     let max_objects = max_objects?;
     let random_seed = random_seed?;
-    let (properties, scene_path, rules, screens, fonts, sounds, music, images) = files?;
+    let (properties, scene_path, rules, screens, fonts, sounds, music, images, code) = files?;
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
@@ -1167,6 +1175,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             sounds,
             music,
             images,
+            code,
         },
         start_screen,
         win_screen,
@@ -1752,6 +1761,7 @@ fn parse_common_action(
             let id = resolve_sound(name, sounds, music, file, &join(path, "[1]"), errors)?;
             Some(CommonAction::PlaySound(id))
         }
+        "run" => parse_run_action_name(arr, file, path, errors).map(CommonAction::Run),
         other => {
             errors.push(
                 file,
@@ -1761,6 +1771,28 @@ fn parse_common_action(
             None
         }
     }
+}
+
+/// `["run", "<функция>"]` — shared by `do` (`CommonAction::Run`) and `effects` (`CollideEffect::
+/// Run`): ровно один аргумент-строка, имя функции — «Код игры». Существование самой функции и
+/// того, что у игры вообще есть `files.code`, здесь не проверяется: это знает только код после
+/// того, как он скомпилирован — см. `validate_run_actions` в `load_rest`.
+fn parse_run_action_name(
+    arr: &[Json],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<String> {
+    let bad_form = "run берёт ровно одну настройку — имя функции кода строкой";
+    if arr.len() != 2 {
+        errors.push(file, path, bad_form.to_string());
+        return None;
+    }
+    let Some(name) = arr[1].as_str() else {
+        errors.push(file, path, bad_form.to_string());
+        return None;
+    };
+    Some(name.to_string())
 }
 
 fn parse_collide_effects(
@@ -1898,6 +1930,7 @@ fn parse_collide_effect(
             errors.push(file, path, "это общее действие, его место в do".to_string());
             None
         }
+        "run" => parse_run_action_name(arr, file, path, errors).map(CollideEffect::Run),
         other => {
             errors.push(
                 file,
@@ -2544,7 +2577,16 @@ fn possible_shapes(
 /// known-incomplete rather than known-absent (see `validate_image_fill`). Run once here, after
 /// `possible_shapes` has widened every shape, instead of at parse time like the `color`+`image`
 /// check, which needs no such widening.
-fn validate_opacity_reachable_image(shapes: &[PossibleShape], errors: &mut ErrorSink) {
+fn validate_opacity_reachable_image(
+    shapes: &[PossibleShape],
+    code: Option<&str>,
+    errors: &mut ErrorSink,
+) {
+    // «Код игры»: слово `image` в тексте кода — код тоже мог дать объекту картинку, проверка
+    // здесь бессильна отличить это от настоящей нехватки источника, так что просто не спорит.
+    if code.is_some_and(|c| code_mentions_word(c, "image")) {
+        return;
+    }
     for ps in shapes {
         if !ps.shape.certain.contains(&property::OPACITY) {
             continue;
@@ -2554,6 +2596,114 @@ fn validate_opacity_reachable_image(shapes: &[PossibleShape], errors: &mut Error
             || ps.shape.broken_properties.contains(&property::IMAGE);
         if !has_image {
             errors.push(&ps.file, &ps.path, OPACITY_WITHOUT_IMAGE);
+        }
+    }
+}
+
+/// «Код игры» → «Проверка перед запуском»: whether `word` appears in `code`'s text as its own
+/// identifier, not merely as a substring of a longer one — such a mention counts as "used" for
+/// the «объявлено и не используется» warnings, and a mention of `image` specifically excuses
+/// `validate_opacity_reachable_image`.
+fn code_mentions_word(code: &str, word: &str) -> bool {
+    if word.is_empty() {
+        return false;
+    }
+    let is_ident = |c: char| c.is_alphanumeric() || c == '_';
+    let mut search_from = 0;
+    while let Some(rel) = code[search_from..].find(word) {
+        let start = search_from + rel;
+        let end = start + word.len();
+        let before_ok = code[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|c| !is_ident(c));
+        let after_ok = code[end..].chars().next().is_none_or(|c| !is_ident(c));
+        if before_ok && after_ok {
+            return true;
+        }
+        search_from = start + word.chars().next().map_or(1, char::len_utf8);
+        if search_from >= code.len() {
+            break;
+        }
+    }
+    false
+}
+
+fn describe_declared_functions(declared: &[String]) -> String {
+    if declared.is_empty() {
+        "в коде не объявлено ни одной функции".to_string()
+    } else {
+        let names = declared
+            .iter()
+            .map(|n| format!("\"{n}\""))
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!("объявлены {names}")
+    }
+}
+
+/// «Код игры» → «Проверка перед запуском»: every `run` is checked once here, after the file (if
+/// any) has compiled and its declared functions are known — `parse_run_action_name` itself never
+/// sees the code, only the action's own shape. `declared` is `None` when the file is missing or
+/// failed to load: that failure already has its own error, and naming every `run` as missing its
+/// function on top of it would blame rules that are not at fault.
+fn validate_run_actions(
+    rules: &RuleSet,
+    rule_meta: &[RuleMeta],
+    file: &str,
+    has_code: bool,
+    declared: Option<&[String]>,
+    errors: &mut ErrorSink,
+) {
+    let check = |name: &str, label: &str, errors: &mut ErrorSink| {
+        if !has_code {
+            errors.push(file, label, "run в игре без files.code".to_string());
+        } else if let Some(declared) = declared
+            && !declared.iter().any(|d| d == name)
+        {
+            errors.push(
+                file,
+                label,
+                format!(
+                    "функции \"{name}\" в коде нет; {}",
+                    describe_declared_functions(declared)
+                ),
+            );
+        }
+    };
+    for (rule, meta) in rules.rules.iter().zip(rule_meta) {
+        let label = format!("rules[{}]", meta.file_index);
+        match rule {
+            Rule::Collide {
+                effects_a,
+                effects_b,
+                do_,
+                ..
+            } => {
+                for e in effects_a {
+                    if let CollideEffect::Run(name) = e {
+                        check(name, &join(&label, "effects → a"), errors);
+                    }
+                }
+                for e in effects_b {
+                    if let CollideEffect::Run(name) = e {
+                        check(name, &join(&label, "effects → b"), errors);
+                    }
+                }
+                for a in do_ {
+                    if let CommonAction::Run(name) = a {
+                        check(name, &join(&label, "do"), errors);
+                    }
+                }
+            }
+            Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => {
+                for a in do_ {
+                    if let CommonAction::Run(name) = a {
+                        check(name, &join(&label, "do"), errors);
+                    }
+                }
+            }
+            Rule::Move { .. } => {}
         }
     }
 }
@@ -2833,7 +2983,9 @@ fn collect_used_properties(
                         | CollideEffect::Take { prop } => {
                             used.insert(*prop);
                         }
-                        CollideEffect::Bounce | CollideEffect::Delete => {}
+                        // «Код игры»: имя функции не свойство — считается использованным по
+                        // тексту файла кода, не здесь; см. `code_names_used_as_words`.
+                        CollideEffect::Bounce | CollideEffect::Delete | CollideEffect::Run(_) => {}
                     }
                 }
                 mark_common_actions_used(&mut used, do_);
@@ -2870,11 +3022,16 @@ fn validate_unused_properties(
     properties_file: &str,
     scene: &[ParsedObject],
     rules: &RuleSet,
+    code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
     let used = collect_used_properties(scene, rules);
     for (id, def) in properties.iter() {
-        if def.builtin || used.contains(&id) {
+        // «Код игры»: имя свойства отдельным словом в тексте кода — тоже использование.
+        if def.builtin
+            || used.contains(&id)
+            || code.is_some_and(|c| code_mentions_word(c, &def.name))
+        {
             continue;
         }
         errors.push_warning(
@@ -4469,11 +4626,12 @@ fn validate_unused_images(
     scene: &[ParsedObject],
     rules: &RuleSet,
     screens: &[Screen],
+    code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
     let used = collect_used_images(scene, rules, screens);
     for (i, decl) in images.iter().enumerate() {
-        if !used.contains(&i) {
+        if !used.contains(&i) && !code.is_some_and(|c| code_mentions_word(c, &decl.name)) {
             errors.push_warning(
                 "game.json",
                 &format!("files → images → {}", decl.name),
@@ -4488,7 +4646,12 @@ fn validate_unused_images(
 
 /// «Звук»: объявленный звук, на который не ссылается ни один `play_sound` — читан
 /// и проверен, просто не нужен, как объявленное и не используемое свойство.
-fn validate_unused_sounds(sounds: &[(String, String)], rules: &RuleSet, errors: &mut ErrorSink) {
+fn validate_unused_sounds(
+    sounds: &[(String, String)],
+    rules: &RuleSet,
+    code: Option<&str>,
+    errors: &mut ErrorSink,
+) {
     let mut used: std::collections::HashSet<SoundId> = std::collections::HashSet::new();
     for rule in &rules.rules {
         let do_ = common_actions(rule);
@@ -4499,7 +4662,7 @@ fn validate_unused_sounds(sounds: &[(String, String)], rules: &RuleSet, errors: 
         }
     }
     for (i, (name, _)) in sounds.iter().enumerate() {
-        if !used.contains(&i) {
+        if !used.contains(&i) && !code.is_some_and(|c| code_mentions_word(c, name)) {
             errors.push_warning(
                 "game.json",
                 &format!("files → sounds → {name}"),
@@ -4636,6 +4799,7 @@ pub fn load_rest(
     sound_bytes: &[(String, Option<Vec<u8>>)],
     music_verdicts: &[(String, MusicVerdict)],
     image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
 ) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -4688,6 +4852,55 @@ pub fn load_rest(
             (RuleSet::default(), Vec::new())
         }
     };
+
+    // «Код игры» → «Проверка перед запуском»: файл кода выполняется один раз здесь, в свежем,
+    // одноразовом исполнителе — мира ещё нет, а `rng`/`messages` одноразовые: `print` и
+    // `math.random` этого прогона в игру не идут (пункт 3). Успешный прогон отдаёт только имена
+    // объявленных функций — сам исполнитель отбрасывается; настоящий, на партию, строит `Game::
+    // new`/`new_game` заново («каждая партия создаёт свежий исполнитель»).
+    let image_names: Vec<String> = config.files.images.iter().map(|d| d.name.clone()).collect();
+    let sound_names: Vec<String> = config.files.sounds.iter().map(|(n, _)| n.clone()).collect();
+    let declared_functions: Option<Vec<String>> = match (&config.files.code, code_json) {
+        (Some(path), None) => {
+            errors.push(
+                path,
+                "",
+                "файл не найден; ожидался файл кода на Lua, названный в game.json → files → code",
+            );
+            None
+        }
+        (Some(path), Some(text)) => {
+            // «Код игры» → «Проверка перед запуском»: на зерне игры, не на захардкоженном 0 —
+            // иначе `if math.random(...) == ... then error(...) end` мог пройти проверку и упасть
+            // уже при старте партии, где используется настоящее зерно.
+            let mut check_rng = crate::core::rng::Rng::new(config.random_seed);
+            let mut check_messages = Vec::new();
+            match crate::core::code::Runner::compile(
+                text,
+                path,
+                &properties,
+                &image_names,
+                &sound_names,
+                &mut check_rng,
+                &mut check_messages,
+            ) {
+                Ok(runner) => Some(runner.declared_functions().to_vec()),
+                Err(err) => {
+                    errors.push_at(path, "", err.message, err.line.map(|l| l as usize));
+                    None
+                }
+            }
+        }
+        (None, _) => None,
+    };
+    validate_run_actions(
+        &rules,
+        &rule_meta,
+        &config.files.rules,
+        config.files.code.is_some(),
+        declared_functions.as_deref(),
+        &mut errors,
+    );
 
     let parsed_screens = match screens_json {
         Some(text) => parse_screens_json(text, &config.files.screens, &properties, &mut errors),
@@ -4748,7 +4961,7 @@ pub fn load_rest(
         &properties,
         &mut errors,
     );
-    validate_opacity_reachable_image(&shapes, &mut errors);
+    validate_opacity_reachable_image(&shapes, code_json, &mut errors);
     // «Формат игры»: предупреждение не мешает игре запуститься — но раз игра уже не запустится
     // из-за ошибок собранных выше, считать эти три предупреждения незачем: правило, не
     // разобравшееся из-за ошибки, просто выпадает из `rules`, и предупреждение по неполному
@@ -4772,6 +4985,7 @@ pub fn load_rest(
             &config.files.properties,
             &scene_objects,
             &rules,
+            code_json,
             &mut errors,
         );
         validate_objects_within_scene(
@@ -4788,7 +5002,7 @@ pub fn load_rest(
             &properties,
             &mut errors,
         );
-        validate_unused_sounds(&config.files.sounds, &rules, &mut errors);
+        validate_unused_sounds(&config.files.sounds, &rules, code_json, &mut errors);
         validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
@@ -4799,6 +5013,7 @@ pub fn load_rest(
                 &scene_objects,
                 &rules,
                 &sc.screens,
+                code_json,
                 &mut errors,
             );
         }
@@ -4872,6 +5087,11 @@ pub fn load_rest(
         config.random_seed,
         scene_specs,
         sound_count,
+        code_json.map(str::to_string),
+        config.files.code.clone().unwrap_or_default(),
+        image_names,
+        sound_names,
+        start_is_live,
     );
     Ok((game, screens_config, warnings))
 }
@@ -4887,6 +5107,27 @@ pub fn load_game_from_texts(
     rules_json: &str,
     screens_json: &str,
 ) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
+    load_game_from_texts_with_code(
+        game_json,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        None,
+    )
+}
+
+/// Same as `load_game_from_texts`, but also runs `files.code`'s prestart check and load — for
+/// tests that exercise «Код игры» without going through the wasm layer's three-round handshake.
+#[allow(clippy::too_many_arguments)]
+pub fn load_game_from_texts_with_code(
+    game_json: &str,
+    properties_json: &str,
+    scene_json: &str,
+    rules_json: &str,
+    screens_json: &str,
+    code_json: Option<&str>,
+) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let (config, entry_warnings) = read_entry(game_json)?;
     match load_rest(
         game_json,
@@ -4899,6 +5140,7 @@ pub fn load_game_from_texts(
         &[],
         &[],
         &[],
+        code_json,
     ) {
         Ok((game, screens, warnings)) => {
             let mut all_warnings = entry_warnings;

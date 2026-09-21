@@ -1,3 +1,4 @@
+pub mod code;
 pub mod game;
 pub mod grid;
 pub mod input;

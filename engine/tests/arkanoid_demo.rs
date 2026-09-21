@@ -84,6 +84,7 @@ fn load() -> engine::core::game::Game {
         &sound_bytes,
         &music_verdicts,
         &image_verdicts,
+        Some(&read("code.lua")),
     )
     .expect("демо-арканоид должен проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
@@ -157,5 +158,84 @@ fn ball_bounces_on_the_smaller_overlap_axis_once_per_step() {
     assert!(
         (position[1] - 1.0).abs() < 1e-9,
         "мяч выталкивается наружу на величину перекрытия: {position:?}"
+    );
+}
+
+/// «Код игры» → пункт 24: `paddle_bounce` — угол зависит только от места удара. Середина — строго
+/// вверх; на полпути к краю — 30°; у края и за краем (прижато) — 60°; скорость по величине не
+/// меняется, мяч ставится вплотную над ракеткой.
+#[test]
+fn paddle_bounce_angle_depends_only_on_where_the_ball_hit() {
+    let angle_for_offset = |offset_cells: f64| -> (f64, f64, f64) {
+        let mut game = load();
+        let ball_flag = game.properties.resolve("ball").unwrap();
+        let ball = game
+            .world
+            .ids()
+            .find(|&id| game.world.flag(id, ball_flag))
+            .expect("мяч есть на сцене");
+        let paddle = game
+            .world
+            .ids()
+            .find(|&id| game.world.has(id, property::KEYS))
+            .expect("у ракетки есть keys");
+        let paddle_pos = game.world.vec2(paddle, property::POSITION).unwrap();
+        let paddle_size = game.world.vec2(paddle, property::SIZE).unwrap();
+        let ball_size = game.world.vec2(ball, property::SIZE).unwrap();
+
+        let paddle_mid = paddle_pos[0] + paddle_size[0] / 2.0;
+        let ball_mid_x = paddle_mid + offset_cells;
+        game.world.set_vec2(
+            ball,
+            property::POSITION,
+            [ball_mid_x - ball_size[0] / 2.0, paddle_pos[1] - 0.5],
+        );
+        let speed = 5.0;
+        game.world.set_vec2(ball, property::VELOCITY, [0.0, speed]);
+
+        game.step(StepInput::empty());
+        assert!(game.is_running(), "{:?}", game.messages());
+
+        let velocity = game.world.vec2(ball, property::VELOCITY).unwrap();
+        let position = game.world.vec2(ball, property::POSITION).unwrap();
+        let got_speed = (velocity[0] * velocity[0] + velocity[1] * velocity[1]).sqrt();
+        assert!(
+            (got_speed - speed).abs() < 1e-9,
+            "скорость по величине не меняется: {velocity:?}"
+        );
+        assert!(velocity[1] < 0.0, "мяч должен полететь вверх: {velocity:?}");
+        assert!(
+            (position[1] - (paddle_pos[1] - ball_size[1])).abs() < 1e-9,
+            "мяч ставится вплотную над ракеткой: {position:?}"
+        );
+        let angle_deg = velocity[0].atan2(-velocity[1]).to_degrees();
+        (angle_deg, velocity[0], velocity[1])
+    };
+
+    let (angle_mid, vx_mid, _) = angle_for_offset(0.0);
+    assert!(
+        angle_mid.abs() < 1e-6,
+        "середина — строго вверх: {angle_mid}"
+    );
+    assert!(vx_mid.abs() < 1e-9);
+
+    let (angle_half, _, _) = angle_for_offset(1.0);
+    assert!(
+        (angle_half - 30.0).abs() < 1e-6,
+        "на полпути к краю — 30°: {angle_half}"
+    );
+
+    let (angle_edge, _, _) = angle_for_offset(2.0);
+    assert!(
+        (angle_edge - 60.0).abs() < 1e-6,
+        "у края — 60°: {angle_edge}"
+    );
+
+    // Still overlapping the paddle's rectangle (half-width 2, ball half-width 0.5) but past the
+    // raw offset that would clamp to exactly the edge.
+    let (angle_beyond, _, _) = angle_for_offset(2.3);
+    assert!(
+        (angle_beyond - 60.0).abs() < 1e-6,
+        "за краем — прижато к 60°: {angle_beyond}"
     );
 }
