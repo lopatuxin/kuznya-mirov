@@ -159,6 +159,23 @@ fn run_in_a_file_with_no_functions_says_so() {
     );
 }
 
+/// «Код игры»: верхний уровень файла может писать в глобальные, и запись `nil` убирает
+/// объявленную выше функцию — `run` на неё находит, что функций в коде нет.
+#[test]
+fn a_function_set_to_nil_at_top_level_is_no_longer_declared() {
+    let props = r#"{"properties":{"ball":"flag"}}"#;
+    let rules = r#"{"rules":[
+        {"kind":"delete","for":{"has":["ball"]},"when":"outside_scene","do":[["run","touch"]]}
+    ]}"#;
+    let errors = errors_for_with_props(props, rules, Some("function touch() end\ntouch = nil"));
+    assert!(
+        messages(&errors)
+            .iter()
+            .any(|m| m.contains("\"touch\"") && m.contains("не объявлено ни одной функции")),
+        "{errors:?}"
+    );
+}
+
 fn errors_for_with_props(
     props: &str,
     rules: &str,
