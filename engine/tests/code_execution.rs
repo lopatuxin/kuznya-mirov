@@ -79,6 +79,110 @@ end
     assert_eq!(game.world.text(id, name), Some("hi"));
 }
 
+/// «Код игры»: «запись `nil` убирает свойство» — у свойства любого вида, заданного сценой, а
+/// после записи оно читается как `nil` (признак — как `false`) и в том же вызове, и в мире.
+#[test]
+fn writing_nil_removes_a_property_of_every_kind() {
+    let props = r#"{"properties":{"score":"number","tag":"flag","cool":"time","marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[1,1],"size":[2,3],"velocity":[3,-4],"collides":true,"marker":true,
+         "score":5,"tag":true,"cool":2.0,"color":"#112233","layer":2,"name":"hero"},
+        {"position":[1,1],"size":[2,3],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},
+         "do":[["run","clear"]]}
+    ]}"#;
+    let code = r##"
+function clear(obj)
+    obj.score = nil
+    assert(obj.score == nil, "score")
+    obj.tag = nil
+    assert(obj.tag == false, "tag")
+    obj.cool = nil
+    assert(obj.cool == nil, "cool")
+    obj.layer = nil
+    assert(obj.layer == nil, "layer")
+    obj.color = nil
+    assert(obj.color == nil, "color")
+    obj.name = nil
+    assert(obj.name == nil, "name")
+    obj.velocity = nil
+    assert(obj.velocity == nil, "velocity")
+end
+"##;
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    assert!(game.code_error().is_none(), "{:?}", game.code_error());
+
+    let score = game.properties.resolve("score").unwrap();
+    let tag = game.properties.resolve("tag").unwrap();
+    let cool = game.properties.resolve("cool").unwrap();
+    let id = 0;
+    assert_eq!(game.world.number_like(id, score), None);
+    assert!(!game.world.flag(id, tag));
+    assert_eq!(game.world.time(id, cool), None);
+    assert_eq!(game.world.layer(id, engine::core::property::LAYER), None);
+    assert_eq!(game.world.color(id, engine::core::property::COLOR), None);
+    assert_eq!(game.world.text(id, engine::core::property::NAME), None);
+    assert_eq!(game.world.vec2(id, engine::core::property::VELOCITY), None);
+}
+
+/// «Код игры»: запись в поле пары `nil` — значение не того вида, ошибка, а не тихий пропуск;
+/// сама пара объекта при этом не меняется.
+#[test]
+fn writing_nil_into_a_pair_field_is_a_code_error() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[1,1],"size":[1,1],"velocity":[3,-4],"collides":true,"marker":true},
+        {"position":[1,1],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","wipe"]]}
+    ]}"#;
+    let code = "function wipe(obj) obj.velocity.x = nil end";
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    let err = game
+        .code_error()
+        .expect("запись nil в поле пары должна остановить партию");
+    assert_eq!(err.line, Some(1), "{err:?}");
+    assert!(err.message.contains("числа"), "{err:?}");
+    assert_eq!(
+        game.world
+            .vec2(0, engine::core::property::VELOCITY)
+            .unwrap(),
+        [3.0, -4.0]
+    );
+}
+
+/// «Код игры» → «Пара»: пару, прочитанную у одного объекта, можно записать в свойство другого —
+/// записывается её значение, а не связь: дальнейшая правка источника копию не меняет.
+#[test]
+fn a_pair_read_from_one_object_can_be_written_into_another() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[1,1],"size":[1,1],"velocity":[3,-4],"collides":true,"marker":true},
+        {"position":[1,1],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","copy"]]}
+    ]}"#;
+    let code = "function copy(a, b) b.velocity = a.velocity; a.velocity.x = 7 end";
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    assert!(game.code_error().is_none(), "{:?}", game.code_error());
+    let velocity = engine::core::property::VELOCITY;
+    assert_eq!(game.world.vec2(0, velocity).unwrap(), [7.0, -4.0]);
+    assert_eq!(game.world.vec2(1, velocity).unwrap(), [3.0, -4.0]);
+}
+
 /// «Код игры» → «Пара»: `ball.velocity.y = -ball.velocity.y` меняет сам объект, не копию.
 #[test]
 fn vec2_write_through_a_read_pair_mutates_the_object() {
@@ -638,36 +742,59 @@ end
     );
 }
 
-/// «Код игры»: подделанная пара с номером свойства за пределами таблицы — ошибка кода, а не
-/// паника движка.
+/// «Код игры»: пара — не объект: `delete(obj.velocity)` — ошибка кода, и текст называет пару.
 #[test]
-fn a_forged_pair_with_an_out_of_range_property_number_is_a_code_error_not_a_panic() {
+fn deleting_a_pair_is_a_code_error_naming_the_pair() {
     let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
     let scene = r##"{"objects":[
         {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
         {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
     ]}"##;
     let rules = r#"{"rules":[
-        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","forge"]]}
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","drop"]]}
     ]}"#;
-    let code = r#"
-function forge(obj)
-    local mt = getmetatable(obj.position)
-    local fake = setmetatable({__kzid = 0, __kzgen = 0, __kzprop = 9999}, mt)
-    local _ = fake.x
-end
-"#;
+    let code = "function drop(obj) delete(obj.position) end";
     let (mut game, _screens, warnings) =
         load(props, scene, rules, code).expect("должно загрузиться");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
     game.step(StepInput::empty());
     let err = game
         .code_error()
-        .expect("подделанный номер свойства должен дать ошибку кода");
-    assert!(!err.message.is_empty());
+        .expect("delete у пары должен дать ошибку кода");
+    assert!(
+        err.message.contains("ожидался объект, получено пара"),
+        "{err:?}"
+    );
 }
 
-/// «Код игры»: `obj == {}` — `false`, не ошибка Lua: `{}` не несёт служебных полей объекта.
+/// «Код игры»: два обработчика одного объекта (аргумент и найденный `find`) равны в обе стороны,
+/// а разные объекты — нет.
+#[test]
+fn two_handles_of_one_object_are_equal_and_different_objects_are_not() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag","ok":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","check"]]}
+    ]}"#;
+    let code = r#"
+function check(a, b)
+    local found = find{has = {"marker"}}[1]
+    a.ok = (a == found) and (found == a) and (a ~= b) and (b ~= found)
+end
+"#;
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    assert!(game.code_error().is_none(), "{:?}", game.code_error());
+    let ok = game.properties.resolve("ok").unwrap();
+    assert!(game.world.flag(0, ok));
+}
+
+/// «Код игры»: `obj == {}` — `false`, не ошибка Lua: таблица не объект.
 #[test]
 fn comparing_an_object_to_an_empty_table_is_false_not_an_error() {
     let props = r#"{"properties":{"marker":"flag","wall":"flag","ok":"flag"}}"#;
@@ -967,8 +1094,8 @@ end
     );
 }
 
-/// «Код игры»: объект — только без `__kzprop`: пара того же объекта не должна оказаться равна
-/// самому объекту (`try_obj_ids` должно отличать пару от объекта).
+/// «Код игры»: пара того же объекта не должна оказаться равна самому объекту — у них один номер
+/// и поколение, но это разные значения.
 #[test]
 fn an_object_is_never_equal_to_its_own_pair_property() {
     let props = r#"{"properties":{"marker":"flag","wall":"flag","ok":"flag"}}"#;

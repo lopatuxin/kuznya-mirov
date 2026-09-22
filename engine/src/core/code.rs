@@ -4,20 +4,25 @@
 //! выбрасывает вместе с миром. Между вызовами он держит песочницу Lua и объявленные ею функции;
 //! [`Runner::run`] вызывает одну из них с объектами-аргументами по месту вызова правила.
 //!
-//! Объекты в коде — обычные Lua-таблицы с двумя служебными полями (`__kzid`/`__kzgen`) и общей
-//! метатаблицей, строятся заново на каждый возврат в Lua через собственные `IntoLua`. Ни одно
+//! Объекты и пары в коде — userdata `luars` ([`ObjRef`]/[`PairRef`]) с общей метатаблицей,
+//! строятся заново на каждый возврат в Lua через собственные `IntoLua`. Не таблицы: у таблицы
+//! `luars` 0.26.3 запись `t.k = nil` обрабатывает сам, не зовя `__newindex` (`pset_shortstr`
+//! отвечает «готово» и на отсутствующий ключ, а `op_set_field` принимает это за обновление
+//! существующего), так что «запись `nil` убирает свойство» до движка бы не доходила; запись в
+//! userdata всегда идёт через `__newindex` (`finishset`). Ни одно
 //! зарегистрированное здесь замыкание не захватывает `LuaTable`/`LuaFunction` (или их контейнер)
 //! по значению: у этих типов `Drop` обращается назад в `GlobalState` того же `Lua`, а замыкания
 //! сами хранятся внутри него же — получилась бы такая пара, чей порядок разрушения `Lua` никаким
 //! порядком полей уже не выправить. Держать разрешено только copy-значения (`LuaValue`) и `Rc`
 //! обычных, не-Lua данных.
 
+use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
 
 use luars::{
     FromLua, IntoLua, Lua, LuaApi, LuaFunction, LuaResult, LuaSandboxApi, LuaState, LuaTable,
-    LuaValue, SafeOption, SandboxConfig, Stdlib,
+    LuaUserdata, LuaValue, SafeOption, SandboxConfig, Stdlib, UserDataTrait,
 };
 
 use super::property::{self, PropertyId, PropertyTable};
@@ -192,69 +197,149 @@ fn require_integer(n: f64) -> Result<i32, String> {
     Ok(n as i32)
 }
 
-const OBJ_ID_KEY: &str = "__kzid";
-const OBJ_GEN_KEY: &str = "__kzgen";
-const OBJ_PROP_KEY: &str = "__kzprop";
+/// Объект в коде: номер слота и его поколение — по ним каждое обращение проверяет, что объект
+/// ещё жив (`live_object`), а не занял ли его слот уже другой. Без `Clone`, как и [`PairRef`]:
+/// у `luars` есть общий `FromLua` для любого `UserDataTrait + Clone` с английским текстом
+/// ошибки, а свой `FromLua` ниже даёт русский, как у остальных ошибок кода.
+#[derive(PartialEq, Eq)]
+struct ObjRef {
+    id: u32,
+    generation: u32,
+}
 
-/// Строит новую Lua-таблицу с целочисленными служебными полями и общей метатаблицей —
-/// единственное место, откуда когда-либо появляется объект или пара в Lua. Требует `state`,
-/// поэтому вызывается только из `IntoLua::into_lua`, где он на секунду доступен.
-fn new_handle_table(
-    state: &mut LuaState,
-    mt: LuaValue,
-    fields: &[(&str, i64)],
-) -> Result<LuaValue, String> {
-    let t = state
-        .create_table_ref(0, fields.len())
-        .map_err(|e| format!("{e:?}"))?;
-    for (key, value) in fields {
-        t.rawset_typed(*key, *value).map_err(|e| format!("{e:?}"))?;
+/// Пара, прочитанная у объекта: запись в её `x`/`y` меняет свойство `prop` самого объекта.
+struct PairRef {
+    id: u32,
+    generation: u32,
+    prop: PropertyId,
+}
+
+impl UserDataTrait for ObjRef {
+    fn type_name(&self) -> &'static str {
+        "object"
     }
-    let mt_ref = state
-        .to_table_ref(mt)
+
+    /// «Код игры»: два обработчика одного объекта равны; объект не равен своей же паре и
+    /// никакому другому значению.
+    fn lua_eq(&self, other: &dyn UserDataTrait) -> Option<bool> {
+        Some(other.as_any().downcast_ref::<ObjRef>() == Some(self))
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+impl UserDataTrait for PairRef {
+    fn type_name(&self) -> &'static str {
+        "pair"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Вид значения для текста ошибки: объект и пару — по-русски, а не общим `userdata`.
+fn kind_name(value: LuaValue) -> &'static str {
+    match value.as_userdata_mut() {
+        Some(ud) if ud.downcast_ref::<ObjRef>().is_some() => "объект",
+        Some(ud) if ud.downcast_ref::<PairRef>().is_some() => "пара",
+        _ => value.type_name(),
+    }
+}
+
+fn userdata_arg<T: UserDataTrait, R>(
+    value: LuaValue,
+    what: &str,
+    read: impl FnOnce(&T) -> R,
+) -> Result<R, String> {
+    value
+        .as_userdata_mut()
+        .and_then(|ud| ud.downcast_ref::<T>())
+        .map(read)
+        .ok_or_else(|| format!("ожидался {what}, получено {}", kind_name(value)))
+}
+
+impl ObjRef {
+    fn from_value(value: LuaValue) -> Result<Self, String> {
+        userdata_arg(value, "объект", |obj: &ObjRef| ObjRef {
+            id: obj.id,
+            generation: obj.generation,
+        })
+    }
+}
+
+impl FromLua for ObjRef {
+    fn from_lua(value: LuaValue, _state: &mut LuaState) -> Result<Self, String> {
+        ObjRef::from_value(value)
+    }
+}
+
+impl PairRef {
+    fn from_value(value: LuaValue) -> Result<Self, String> {
+        userdata_arg(value, "пара", |pair: &PairRef| PairRef {
+            id: pair.id,
+            generation: pair.generation,
+            prop: pair.prop,
+        })
+    }
+}
+
+impl FromLua for PairRef {
+    fn from_lua(value: LuaValue, _state: &mut LuaState) -> Result<Self, String> {
+        PairRef::from_value(value)
+    }
+}
+
+/// Строит userdata с общей метатаблицей — единственное место, откуда когда-либо появляется
+/// объект или пара в Lua. Требует `state`, поэтому вызывается только из `IntoLua::into_lua`,
+/// где он на секунду доступен.
+fn new_handle<T: UserDataTrait>(
+    state: &mut LuaState,
+    data: T,
+    mt: LuaValue,
+) -> Result<LuaValue, String> {
+    let mt = mt
+        .as_table_ptr()
         .ok_or_else(|| "внутренняя ошибка исполнителя кода: нет метатаблицы".to_string())?;
-    t.set_metatable(Some(&mt_ref))
-        .map_err(|e| format!("{e:?}"))?;
-    Ok(t.to_value())
+    state
+        .create_userdata(LuaUserdata::with_metatable(data, mt))
+        .map_err(|e| format!("{e:?}"))
 }
 
 /// Обработчик живого объекта на выходе в Lua — «Код игры»: строится заново при каждом
-/// возвращении объекта (из `find`, из вызова `run`, из чтения пары), не переиспользуется.
+/// возвращении объекта (из `find`, из вызова `run`), не переиспользуется.
 struct ObjHandle {
-    id: u32,
-    generation: u32,
+    obj: ObjRef,
     mt: LuaValue,
 }
 
 impl IntoLua for ObjHandle {
     fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
-        let value = new_handle_table(
-            state,
-            self.mt,
-            &[
-                (OBJ_ID_KEY, self.id as i64),
-                (OBJ_GEN_KEY, self.generation as i64),
-            ],
-        )?;
+        let value = new_handle(state, self.obj, self.mt)?;
         state.push_value(value).map_err(|e| format!("{e:?}"))?;
         Ok(1)
     }
 }
 
 /// Значение, читаемое кодом, до того как оно попадёт в Lua — «Код игры»: строку и пару можно
-/// завернуть в `LuaValue`, только зная исполнитель (`state.create_string`/`create_table_ref`), а
+/// завернуть в `LuaValue`, только зная исполнитель (`state.create_string`/`create_userdata`), а
 /// простые замыкания `luars` этого хендла не получают, только само преобразование на выходе.
 enum PropValue {
     Nil,
     Bool(bool),
     Number(f64),
     Str(String),
-    Vec2 {
-        id: u32,
-        generation: u32,
-        prop: PropertyId,
-        mt: LuaValue,
-    },
+    Vec2 { pair: PairRef, mt: LuaValue },
 }
 
 impl IntoLua for PropValue {
@@ -264,21 +349,8 @@ impl IntoLua for PropValue {
             PropValue::Bool(b) => b.into_lua(state),
             PropValue::Number(n) => n.into_lua(state),
             PropValue::Str(s) => s.into_lua(state),
-            PropValue::Vec2 {
-                id,
-                generation,
-                prop,
-                mt,
-            } => {
-                let value = new_handle_table(
-                    state,
-                    mt,
-                    &[
-                        (OBJ_ID_KEY, id as i64),
-                        (OBJ_GEN_KEY, generation as i64),
-                        (OBJ_PROP_KEY, prop as i64),
-                    ],
-                )?;
+            PropValue::Vec2 { pair, mt } => {
+                let value = new_handle(state, pair, mt)?;
                 state.push_value(value).map_err(|e| format!("{e:?}"))?;
                 Ok(1)
             }
@@ -286,15 +358,17 @@ impl IntoLua for PropValue {
     }
 }
 
-/// Разобранное входное значение записи — строку и пару Lua отдаёт как строку/таблицу, и то, и
-/// другое можно превратить в удобный вид только имея `state` (интернирование строки, чтение полей
-/// таблицы), так что разбор — тоже собственный `FromLua`, а не общий по `LuaValue`.
+/// Разобранное входное значение записи — пару Lua отдаёт либо таблицей `{x = .., y = ..}`, чьи
+/// поля читаются только через `state`, либо парой, прочитанной у объекта (`b.position =
+/// a.position`), чьё значение лежит в мире и берётся уже в `write_property`; так что разбор —
+/// собственный `FromLua`, а не общий по `LuaValue`.
 enum AnyValue {
     Nil,
     Bool(bool),
     Number(f64),
     Str(String),
     Vec2 { x: f64, y: f64 },
+    Pair(PairRef),
 }
 
 impl FromLua for AnyValue {
@@ -323,13 +397,16 @@ impl FromLua for AnyValue {
                 .map_err(|_| "пара без числового y".to_string())?;
             return Ok(AnyValue::Vec2 { x, y });
         }
-        Err(format!("неожиданное значение вида {}", value.type_name()))
+        if let Ok(pair) = PairRef::from_value(value) {
+            return Ok(AnyValue::Pair(pair));
+        }
+        Err(format!("неожиданное значение вида {}", kind_name(value)))
     }
 }
 
-/// Обёртка над таблицей-аргументом (`find{has=..., without=...}`, объект `delete`/`__eq`) —
-/// заворачивает `state.to_table_ref` в `FromLua`, не переживает вызов, и потому безопасна как
-/// параметр замыкания (в отличие от `LuaTable`, которую то же замыкание захватило бы по значению).
+/// Обёртка над таблицей-аргументом `find{has=..., without=...}` — заворачивает
+/// `state.to_table_ref` в `FromLua`, не переживает вызов, и потому безопасна как параметр
+/// замыкания (в отличие от `LuaTable`, которую то же замыкание захватило бы по значению).
 struct TableArg(luars::LuaTableRef);
 
 impl FromLua for TableArg {
@@ -341,39 +418,11 @@ impl FromLua for TableArg {
     }
 }
 
-fn obj_ids(table: &TableArg) -> Result<(u32, u32), String> {
-    let id: i64 = table
-        .0
-        .rawget_typed(OBJ_ID_KEY)
-        .map_err(|e| format!("{e:?}"))?;
-    let generation: i64 = table
-        .0
-        .rawget_typed(OBJ_GEN_KEY)
-        .map_err(|e| format!("{e:?}"))?;
-    Ok((id as u32, generation as u32))
-}
-
-/// `obj_ids`, but `None` instead of an error when the fields are missing or the wrong type, and
-/// also for a pair (carries `OBJ_PROP_KEY` too — an object never does) — «Код игры»: `__eq` needs
-/// this to tell "not an object at all" (`obj == {}`, and `obj == obj.velocity`) apart from a real
-/// error, since the ordinary form would turn a plain `{}` on the other side into a Lua error, and
-/// without the pair check a pair would compare equal to its own owning object (both carry the
-/// same `OBJ_ID_KEY`/`OBJ_GEN_KEY`).
-fn try_obj_ids(table: &TableArg) -> Option<(u32, u32)> {
-    if table.0.rawget_typed::<_, i64>(OBJ_PROP_KEY).is_ok() {
-        return None;
-    }
-    let id: i64 = table.0.rawget_typed(OBJ_ID_KEY).ok()?;
-    let generation: i64 = table.0.rawget_typed(OBJ_GEN_KEY).ok()?;
-    Some((id as u32, generation as u32))
-}
-
 /// Живой ли ещё обработчик объекта — «объект удалён» это ошибка на любое обращение к
 /// устаревшему хендлу, каким бы свойством оно ни было.
-fn live_object(world: &World, table: &TableArg) -> Result<u32, String> {
-    let (id, generation) = obj_ids(table)?;
-    if world.is_alive(id) && world.generation(id) == generation {
-        Ok(id)
+fn live_object(world: &World, obj: &ObjRef) -> Result<u32, String> {
+    if world.is_alive(obj.id) && world.generation(obj.id) == obj.generation {
+        Ok(obj.id)
     } else {
         Err("объект удалён".to_string())
     }
@@ -421,9 +470,11 @@ fn read_property(
                 return Ok(PropValue::Nil);
             }
             Ok(PropValue::Vec2 {
-                id,
-                generation: world.generation(id),
-                prop,
+                pair: PairRef {
+                    id,
+                    generation: world.generation(id),
+                    prop,
+                },
                 mt: vec2_mt,
             })
         }
@@ -450,10 +501,17 @@ fn write_property(
             properties.name(prop)
         ));
     }
-    if matches!(value, AnyValue::Nil) {
-        world.clear_property(id, prop);
-        return Ok(());
-    }
+    let value = match value {
+        AnyValue::Nil => {
+            world.clear_property(id, prop);
+            return Ok(());
+        }
+        AnyValue::Pair(pair) => {
+            let (_, [x, y]) = live_pair(world, &pair)?;
+            AnyValue::Vec2 { x, y }
+        }
+        other => other,
+    };
     match (kind, value) {
         (PropKind::Flag, AnyValue::Bool(b)) => {
             world.set_flag(id, prop, b);
@@ -532,7 +590,7 @@ struct Env {
     vec2_mt: LuaValue,
 }
 
-/// «Код игры»: диспетчер метаметодов `luars` вызывает как `__index`/`__newindex`/`__eq` только
+/// «Код игры»: диспетчер метаметодов `luars` вызывает как `__index`/`__newindex` только
 /// настоящее Lua-замыкание или голый C-указатель на функцию — замыкание Rust с захваченным
 /// состоянием («rclosure», то, что строит `create_function`) он там не распознаёт, и вызов падает
 /// с «attempt to call a function value». Крохотная обёртка на Lua решает это в лоб: диспетчер
@@ -607,13 +665,13 @@ fn install_object_metatable(
     let index_env = env.clone();
     let index_cell = world_cell.clone();
     let index_fn = lua.create_function(
-        move |table: TableArg, key: String| -> Result<PropValue, String> {
+        move |obj: ObjRef, key: String| -> Result<PropValue, String> {
             let ptr = world_ptr(&index_cell)?;
             // SAFETY: `Runner::run` sets this pointer to a live `WorldCtx` right before calling
             // into Lua and clears it right after; Lua is single-threaded, so this closure only
             // ever runs synchronously inside that span.
             let ctx = unsafe { &mut *ptr };
-            let id = live_object(ctx.world, &table)?;
+            let id = live_object(ctx.world, &obj)?;
             let prop = resolve_property(&index_env.properties, &key)?;
             read_property(
                 ctx.world,
@@ -631,11 +689,11 @@ fn install_object_metatable(
     let newindex_env = env.clone();
     let newindex_cell = world_cell.clone();
     let newindex_fn = lua.create_function(
-        move |table: TableArg, key: String, value: AnyValue| -> Result<(), String> {
+        move |obj: ObjRef, key: String, value: AnyValue| -> Result<(), String> {
             let ptr = world_ptr(&newindex_cell)?;
             // SAFETY: see `index_fn` above — same call-scoped pointer.
             let ctx = unsafe { &mut *ptr };
-            let id = live_object(ctx.world, &table)?;
+            let id = live_object(ctx.world, &obj)?;
             let prop = resolve_property(&newindex_env.properties, &key)?;
             write_property(
                 ctx.world,
@@ -651,65 +709,36 @@ fn install_object_metatable(
     let newindex_fn = lua_wrap3(lua, newindex_fn)?;
     mt.set("__newindex", newindex_fn)?;
 
-    let eq_fn = lua.create_function(move |a: TableArg, b: TableArg| -> Result<bool, String> {
-        // «Код игры»: `obj == {}` — false, не ошибка: `{}` не несёт `__kzid`/`__kzgen`, так что
-        // сравнение с не-объектом просто не совпадает, а не падает на попытке прочитать
-        // отсутствующие служебные поля.
-        Ok(match (try_obj_ids(&a), try_obj_ids(&b)) {
-            (Some(x), Some(y)) => x == y,
-            _ => false,
-        })
-    })?;
-    let eq_fn = lua_wrap2(lua, eq_fn)?;
-    mt.set("__eq", eq_fn)?;
-
     Ok(())
 }
 
-/// «Код игры»: `__kzprop` пришёл прямо из Lua-таблицы, не из `PropertyTable::resolve` — обычный
-/// хендл пары его туда кладёт сам движок (см. `new_handle_table`), но код игры мог собрать
-/// такую же таблицу вручную (`setmetatable({...}, getmetatable(existing))`) с любым числом.
-/// Индексация `World`'s колонок этим числом без проверки границ — паника; отбор здесь превращает
-/// подделанный номер в обычную ошибку кода, а не в падение движка.
-fn resolve_prop_in_bounds(
-    properties: &PropertyTable,
-    table: &TableArg,
-) -> Result<PropertyId, String> {
-    let prop: i64 = table
-        .0
-        .rawget_typed(OBJ_PROP_KEY)
-        .map_err(|e| format!("{e:?}"))?;
-    if prop < 0 || prop as usize >= properties.len() {
-        return Err(format!("неизвестное свойство (номер {prop})"));
-    }
-    Ok(prop as PropertyId)
+/// Номер объекта-владельца пары, если он ещё жив, и сама пара — ошибка, когда объект удалён
+/// или код уже убрал у него это свойство (`obj.velocity = nil`).
+fn live_pair(world: &World, pair: &PairRef) -> Result<(u32, [f64; 2]), String> {
+    let id = live_object(
+        world,
+        &ObjRef {
+            id: pair.id,
+            generation: pair.generation,
+        },
+    )?;
+    let value = world
+        .vec2(id, pair.prop)
+        .ok_or_else(|| "у объекта больше нет этой пары".to_string())?;
+    Ok((id, value))
 }
 
-fn install_vec2_metatable(
-    lua: &mut Lua,
-    world_cell: &CtxCell,
-    properties: Rc<PropertyTable>,
-    mt: &LuaTable,
-) -> LuaResult<()> {
+fn install_vec2_metatable(lua: &mut Lua, world_cell: &CtxCell, mt: &LuaTable) -> LuaResult<()> {
     let index_cell = world_cell.clone();
-    let index_properties = properties.clone();
     let index_fn =
-        lua.create_function(move |table: TableArg, key: String| -> Result<f64, String> {
+        lua.create_function(move |pair: PairRef, key: String| -> Result<f64, String> {
             let ptr = world_ptr(&index_cell)?;
             // SAFETY: see `install_object_metatable` — same call-scoped pointer discipline.
             let ctx = unsafe { &mut *ptr };
-            let (id, generation) = obj_ids(&table)?;
-            if !(ctx.world.is_alive(id) && ctx.world.generation(id) == generation) {
-                return Err("объект удалён".to_string());
-            }
-            let prop = resolve_prop_in_bounds(&index_properties, &table)?;
-            let pair = ctx
-                .world
-                .vec2(id, prop)
-                .ok_or_else(|| "объект удалён".to_string())?;
+            let (_, value) = live_pair(ctx.world, &pair)?;
             match key.as_str() {
-                "x" => Ok(pair[0]),
-                "y" => Ok(pair[1]),
+                "x" => Ok(value[0]),
+                "y" => Ok(value[1]),
                 other => Err(format!("у пары нет поля \"{other}\"")),
             }
         })?;
@@ -718,26 +747,21 @@ fn install_vec2_metatable(
 
     let newindex_cell = world_cell.clone();
     let newindex_fn = lua.create_function(
-        move |table: TableArg, key: String, value: f64| -> Result<(), String> {
+        move |pair: PairRef, key: String, value: LuaValue| -> Result<(), String> {
             let ptr = world_ptr(&newindex_cell)?;
             // SAFETY: see `install_object_metatable` — same call-scoped pointer discipline.
             let ctx = unsafe { &mut *ptr };
-            let (id, generation) = obj_ids(&table)?;
-            if !(ctx.world.is_alive(id) && ctx.world.generation(id) == generation) {
-                return Err("объект удалён".to_string());
-            }
-            let prop = resolve_prop_in_bounds(&properties, &table)?;
-            let mut pair = ctx
-                .world
-                .vec2(id, prop)
-                .ok_or_else(|| "объект удалён".to_string())?;
+            let value = value
+                .as_number()
+                .ok_or_else(|| format!("у пары x и y — числа, получено {}", kind_name(value)))?;
+            let (id, mut current) = live_pair(ctx.world, &pair)?;
             match key.as_str() {
-                "x" => pair[0] = value,
-                "y" => pair[1] = value,
+                "x" => current[0] = value,
+                "y" => current[1] = value,
                 other => return Err(format!("у пары нет поля \"{other}\"")),
             }
-            ctx.world.set_vec2(id, prop, pair);
-            if prop == property::POSITION
+            ctx.world.set_vec2(id, pair.prop, current);
+            if pair.prop == property::POSITION
                 && let Some(slot) = ctx.moved.get_mut(id as usize)
             {
                 *slot = true;
@@ -753,7 +777,7 @@ fn install_vec2_metatable(
 
 /// Результат `find{...}` — собственный `IntoLua`: единственное место, где обычное замыкание
 /// всё же получает `&mut LuaState` — на выходе, когда значение уже готово и осталось протолкнуть
-/// его в Lua (см. `new_handle_table`).
+/// его в Lua (см. `new_handle`).
 struct FoundList(Vec<ObjHandle>);
 
 impl IntoLua for FoundList {
@@ -761,15 +785,8 @@ impl IntoLua for FoundList {
         let arr = state
             .create_table_ref(self.0.len(), 0)
             .map_err(|e| format!("{e:?}"))?;
-        for (i, obj) in self.0.into_iter().enumerate() {
-            let value = new_handle_table(
-                state,
-                obj.mt,
-                &[
-                    (OBJ_ID_KEY, obj.id as i64),
-                    (OBJ_GEN_KEY, obj.generation as i64),
-                ],
-            )?;
+        for (i, handle) in self.0.into_iter().enumerate() {
+            let value = new_handle(state, handle.obj, handle.mt)?;
             arr.rawseti_typed((i + 1) as i64, value)
                 .map_err(|e| format!("{e:?}"))?;
         }
@@ -813,8 +830,10 @@ fn install_find(lua: &mut Lua, world_cell: &CtxCell, env: &Env) -> LuaResult<Lua
             for id in ctx.world.ids() {
                 if ctx.world.has_all(id, &has) && ctx.world.has_none(id, &without) {
                     out.push(ObjHandle {
-                        id,
-                        generation: ctx.world.generation(id),
+                        obj: ObjRef {
+                            id,
+                            generation: ctx.world.generation(id),
+                        },
                         mt: env.obj_mt,
                     });
                 }
@@ -826,11 +845,14 @@ fn install_find(lua: &mut Lua, world_cell: &CtxCell, env: &Env) -> LuaResult<Lua
 
 fn install_delete(lua: &mut Lua, world_cell: &CtxCell) -> LuaResult<LuaFunction> {
     let world_cell = world_cell.clone();
-    lua.create_function(move |table: TableArg| -> Result<(), String> {
+    // «Код игры»: мир проверяется раньше аргумента — на верхнем уровне файла объекта взять
+    // неоткуда, и `delete(...)` там с любым аргументом — «мира ещё нет».
+    lua.create_function(move |value: LuaValue| -> Result<(), String> {
         let ptr = world_ptr(&world_cell)?;
+        let obj = ObjRef::from_value(value)?;
         // SAFETY: see `install_object_metatable` — same call-scoped pointer discipline.
         let ctx = unsafe { &mut *ptr };
-        let id = live_object(ctx.world, &table)?;
+        let id = live_object(ctx.world, &obj)?;
         if !ctx.deletes.contains(&id) {
             ctx.deletes.push(id);
         }
@@ -1145,7 +1167,7 @@ impl Runner {
         };
 
         install_object_metatable(lua, world_cell, &env_shared, &obj_mt)?;
-        install_vec2_metatable(lua, world_cell, env_shared.properties.clone(), &vec2_mt)?;
+        install_vec2_metatable(lua, world_cell, &vec2_mt)?;
 
         let find_fn = install_find(lua, world_cell, &env_shared)?;
         let delete_fn = install_delete(lua, world_cell)?;
@@ -1275,10 +1297,11 @@ impl Runner {
         let mut call_config = SandboxConfig::default();
         let names = ["__a", "__b"];
         for (&id, name) in args.iter().zip(names) {
-            let generation = world.generation(id);
             let handle = ObjHandle {
-                id,
-                generation,
+                obj: ObjRef {
+                    id,
+                    generation: world.generation(id),
+                },
                 mt: obj_mt_value,
             };
             self.lua
