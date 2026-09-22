@@ -552,8 +552,6 @@ checksum = "7f66e8d5d03f609abc3a39e6f08e4164ebf1447a732906d39eb9b99b7919ef39"
 [[package]]
 name = "luars"
 version = "0.26.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5c6c2c8be67fc47e6ab546c46b20c2e3576629e0abec27483af20ea048677239"
 dependencies = [
  "chrono",
  "itoa",

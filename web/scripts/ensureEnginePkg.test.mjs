@@ -71,6 +71,19 @@ describe("isEnginePkgStale", () => {
     expect(isEnginePkgStale(pkgManifest, [srcPath])).toBe(false);
   });
 
+  it("правка файла в luars/src (соседний с engine каталог) делает pkg устаревшим", () => {
+    workDir = mkdtempSync(join(tmpdir(), "ensure-engine-pkg-"));
+    const engineDir = join(workDir, "engine");
+    const luarsSrcDir = join(workDir, "luars", "src");
+    const pkgManifest = join(engineDir, "pkg", "package.json");
+    mkdirSync(join(engineDir, "pkg"), { recursive: true });
+    mkdirSync(luarsSrcDir, { recursive: true });
+    touch(pkgManifest, 1_000);
+    touch(join(luarsSrcDir, "lua_vm.rs"), 2_000);
+    // `../luars/src`, как в ENGINE_SOURCE_PATHS: путь от engineDir до соседнего каталога luars.
+    expect(isEnginePkgStale(pkgManifest, [join(engineDir, "../luars/src")])).toBe(true);
+  });
+
   it("исходники отсутствуют (стадия контейнерной сборки без cargo) — не устарел", () => {
     workDir = mkdtempSync(join(tmpdir(), "ensure-engine-pkg-"));
     const pkgManifest = join(workDir, "pkg", "package.json");
