@@ -673,6 +673,41 @@ end
     );
 }
 
+/// «Код игры»: запись `nil` — тоже запись в глобальную: и в уже объявленную переменную, и в
+/// никогда не объявленную, напрямую и через `_G`.
+#[test]
+fn writing_nil_to_a_global_from_a_function_stops_the_game() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","leak"]]}
+    ]}"#;
+    for (code, name) in [
+        ("counter = 5\nfunction leak() counter = nil end", "counter"),
+        ("function leak() ghost = nil end", "ghost"),
+        (
+            "counter = 5\nfunction leak() _G.counter = nil end",
+            "counter",
+        ),
+    ] {
+        let (mut game, _screens, _warnings) =
+            load(props, scene, rules, code).expect("должно загрузиться");
+        game.step(StepInput::empty());
+        let err = game
+            .code_error()
+            .unwrap_or_else(|| panic!("запись nil в глобальную должна остановить партию: {code}"));
+        assert!(
+            err.message.starts_with(&format!(
+                "запись в глобальную переменную из функции: {name}"
+            )),
+            "{code}: {err:?}"
+        );
+    }
+}
+
 /// «Код игры»: `math.random` с аргументами отдаёт Lua integer, не дробное —
 /// `tostring(math.random(3))` даёт `"1"`/`"2"`/`"3"`, не `"1.0"`.
 #[test]
@@ -1063,6 +1098,31 @@ fn disabling_the_env_newindex_guard_is_blocked() {
     assert!(
         game.code_error().is_some(),
         "getmetatable(_ENV).__newindex = nil не должен снять защиту"
+    );
+}
+
+/// «Код игры»: `setmetatable(_ENV, ...)` своей метатаблицей не снимает запрет записи в глобальные.
+#[test]
+fn replacing_the_env_metatable_does_not_lift_the_guard() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","leak"]]}
+    ]}"#;
+    let code = "function leak()\n    pcall(setmetatable, _ENV, {__newindex = function() end})\n    brand_new = 3\nend";
+    let (mut game, _screens, _warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    game.step(StepInput::empty());
+    let err = game
+        .code_error()
+        .expect("setmetatable(_ENV, ...) не должен снять защиту");
+    assert!(
+        err.message
+            .starts_with("запись в глобальную переменную из функции: brand_new"),
+        "{err:?}"
     );
 }
 

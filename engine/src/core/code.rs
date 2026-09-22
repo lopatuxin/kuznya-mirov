@@ -662,17 +662,33 @@ fn install_instruction_hook(lua: &mut Lua, ops: Rc<Cell<u64>>) -> LuaResult<()> 
     Ok(())
 }
 
-/// «Код игры»: `rawset` не смотрит на `__newindex` — `rawset(_ENV, 'x', 1)` писал бы в саму
-/// прокси-таблицу мимо ловушки в обход запрета «запись в глобальную переменную из функции», а
-/// `rawset(_G, ...)`/настоящий `env`, до которого прокси лишь перенаправляет чтение, — та же
-/// дыра в упор. Обёртка отказывает тем же текстом, когда первый аргумент — прокси или настоящее
-/// окружение, а для любой другой таблицы (свои собственные таблицы кода) работает как обычный
-/// `rawset`.
-fn install_protected_rawset(
-    lua: &mut Lua,
-    env: &LuaTable,
-    dynamic_env: &LuaTable,
-) -> LuaResult<()> {
+/// «Код игры»: `_ENV` и `_G` кода — userdata без собственных полей, а не пустая прокси-таблица:
+/// у таблицы `luars` 0.26.3 запись `t.k = nil` при отсутствующем `k` считает сделанной сам
+/// (`pset_shortstr` отвечает «готово», `op_set_tabup`/`op_set_field` не зовут `__newindex`), так
+/// что `counter = nil` из функции молча пропадала бы, а на верхнем уровне файла не убирала бы
+/// объявленное. Чтение и запись в userdata всегда идут через метатаблицу (`finishget`/`finishset`).
+struct Globals;
+
+impl UserDataTrait for Globals {
+    fn type_name(&self) -> &'static str {
+        "globals"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// «Код игры»: `rawset` не смотрит на `__newindex` — `rawset(env, 'x', 1)` писал бы в настоящий
+/// стол глобальных мимо ловушки в обход запрета «запись в глобальную переменную из функции».
+/// Обёртка отказывает тем же текстом, когда первый аргумент — прокси `_ENV`/`_G` (сам `rawset`
+/// userdata не принял бы, но с чужим текстом) или настоящее окружение, а для любой другой таблицы
+/// (свои собственные таблицы кода) работает как обычный `rawset`.
+fn install_protected_rawset(lua: &mut Lua, env: &LuaTable, proxy_env: LuaValue) -> LuaResult<()> {
     let real_rawset: LuaFunction = env.get("rawset")?;
     let wrapped: LuaFunction = lua
         .load(
@@ -684,7 +700,7 @@ fn install_protected_rawset(
                  return real_rawset(t, k, v)\n\
              end",
         )
-        .call((real_rawset, env.clone(), dynamic_env.clone()))?;
+        .call((real_rawset, env.clone(), proxy_env))?;
     env.set("rawset", wrapped)
 }
 
@@ -1230,38 +1246,53 @@ impl Runner {
         // и тот же upvalue-слот (обычная семантика Lua — вложенное замыкание, ссылающееся на
         // upvalue объемлющей функции, а не на её локаль, получает при создании ту же ссылку, не
         // копию), так что один `set_upvalue` на `chunk_fn` до его выполнения накрывает разом всех
-        // потомков. `dynamic_env` — та же прокси-таблица-ловушка, что и раньше (`__index` на
-        // настоящий `env`, `__newindex` — Lua-замыкание, всегда срабатывающее, потому что сама
-        // прокси остаётся вечно пустой), но с ходом «разрешено ли писать» — общей ячейкой
+        // потомков. Прокси — userdata [`Globals`] (почему не таблица — см. её описание) с
+        // метатаблицей-ловушкой: `__index` на настоящий `env`, `__newindex` — Lua-замыкание,
+        // срабатывающее на любую запись, с ходом «разрешено ли писать» — общей ячейкой
         // `loading`, а не одноразовой постройкой уже ПОСЛЕ загрузки: во время самого верхнего
         // уровня файла запись разрешена (`loading.on == true`) и уходит настоящим `rawset` в
         // `env`, а сразу после того, как верхний уровень отработал, `loading.on` навсегда
         // становится `false` — и та же прокси, тот же путь запрещает запись всем, кто вызовет
-        // любую функцию файла позже. `_G`/`_ENV` внутри `env` тоже перенаправляются на
-        // `dynamic_env`, а не на сам `env`, иначе `_G.x = ...` писал бы прямо в настоящий стол в
-        // обход прокси.
+        // любую функцию файла позже. `_G`/`_ENV` внутри `env` тоже перенаправляются на прокси,
+        // а не на сам `env`, иначе `_G.x = ...` писал бы прямо в настоящий стол в обход прокси.
         let loading = lua.create_table()?;
         loading.set("on", true)?;
         // «Код игры»: `__metatable` закрывает и `getmetatable(_ENV).__index` (настоящий `env` без
         // защиты), и `getmetatable(_ENV).__newindex = nil` (снятие самой ловушки) разом —
         // `getmetatable(_ENV)` отдаёт это значение вместо настоящей метатаблицы, а
-        // `setmetatable` на защищённой таблице падает сам, обеих лазеек больше нет.
-        let dynamic_env: LuaTable = lua
+        // `setmetatable` на userdata в `luars` молча ничего не делает (меняет метатаблицу только
+        // у таблицы), обеих лазеек нет.
+        let proxy_mt: LuaTable = lua
             .load(
                 "local real, loading = ...\n\
-                 return setmetatable({}, {__index = real, __newindex = function(t, k, v)\n\
+                 return {__index = real, __newindex = function(t, k, v)\n\
                      if loading.on then\n\
                          rawset(real, k, v)\n\
                      else\n\
                          error('запись в глобальную переменную из функции: ' .. tostring(k), 2)\n\
                      end\n\
-                 end, __metatable = false})",
+                 end, __metatable = false}",
             )
             .call((env.clone(), loading.clone()))?;
-        chunk_fn.set_upvalue(1, dynamic_env.clone())?;
-        env.set("_G", dynamic_env.clone())?;
-        install_protected_rawset(lua, &env, &dynamic_env)?;
-        env.set("_ENV", dynamic_env)?;
+        // SAFETY: `proxy_mt` keeps the table registry-rooted until `build` returns; after that
+        // the userdata's own metatable reference keeps it alive (the GC marks a userdata's
+        // metatable).
+        let proxy_mt_ptr = unsafe { proxy_mt.to_value() }
+            .as_table_ptr()
+            .ok_or_else(|| {
+                lua.global_state_mut()
+                    .error("нет метатаблицы _ENV".to_string())
+            })?;
+        let state = lua.global_state_mut();
+        let proxy_value =
+            state.create_userdata(LuaUserdata::with_metatable(Globals, proxy_mt_ptr))?;
+        // Registry-rooted until `build` returns; after that `env._G` and the chunk's `_ENV`
+        // upvalue keep it alive.
+        let proxy = state.to_ref(proxy_value);
+        chunk_fn.set_upvalue(1, proxy.to_value())?;
+        env.set("_G", proxy.to_value())?;
+        install_protected_rawset(lua, &env, proxy.to_value())?;
+        env.set("_ENV", proxy.to_value())?;
 
         let mut call_config = SandboxConfig::default();
         lua.sandbox_insert_global(&mut call_config, "__load", chunk_fn)?;
