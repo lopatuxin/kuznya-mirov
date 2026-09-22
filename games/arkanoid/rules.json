@@ -13,9 +13,13 @@
       "effects": { "a": [["run", "paddle_bounce"]] },
       "do": [["play_sound", "bounce"]] },
 
-    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick"] },
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick"], "without": ["strong"] },
       "effects": { "a": [["bounce"]], "b": [["delete"]] },
       "do": [["add", "score", 10], ["play_sound", "brick"]] },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick", "strong"] },
+      "effects": { "a": [["bounce"]] },
+      "do": [["run", "strong_brick_hit"]] },
 
     { "kind": "delete", "for": { "has": ["ball"] },
       "when": { "fewer_than": { "count": 1, "of": { "has": ["brick"] } } },

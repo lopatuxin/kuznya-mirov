@@ -174,15 +174,40 @@ pub fn frame_atlas_rect(
     atlas_rects: &[AtlasRect],
 ) -> AtlasRect {
     let decl = &images[image];
+    let frame = frame_index(elapsed_steps, decl.frame_steps, decl.frames);
+    frame_atlas_rect_at(image, frame, images, atlas_rects)
+}
+
+/// «Картинки», требование 23: the atlas rectangle a *given* frame number occupies — used both by
+/// `frame_atlas_rect` (time-driven) and `frame_by` (object-property-driven, see
+/// `compose_world_paints`), which only differ in how they arrive at `frame`.
+fn frame_atlas_rect_at(
+    image: ImageId,
+    frame: u32,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+) -> AtlasRect {
+    let decl = &images[image];
     let whole = atlas_rects[image];
     let frame_w = whole.w / decl.frames.max(1);
-    let frame = frame_index(elapsed_steps, decl.frame_steps, decl.frames);
+    let frame = frame.min(decl.frames.saturating_sub(1));
     AtlasRect {
         x: whole.x + frame * frame_w,
         y: whole.y,
         w: frame_w,
         h: whole.h,
     }
+}
+
+/// «Картинки», требование 23: `frame_by`'s own frame number — the named property, floored and
+/// clamped to the strip's first/last frame; the first frame when the object doesn't carry the
+/// property at all.
+fn frame_by_index(world: &World, id: u32, prop: property::PropertyId, frame_count: u32) -> u32 {
+    let raw = world.number_like(id, prop).unwrap_or(0.0);
+    if raw <= 0.0 {
+        return 0;
+    }
+    (raw.floor() as u64).min(frame_count.saturating_sub(1) as u64) as u32
 }
 
 /// A `Fill`'s resolved `(color, atlas rect)` for the current frame — «Картинки» → «Атлас и
@@ -215,6 +240,9 @@ pub struct RectPaint {
     pub size: [f32; 2],
     pub color: [f32; 4],
     pub atlas_rect: AtlasRect,
+    /// «Картинки», требование 24: quarter turns (0–3) clockwise, from the object's own
+    /// `rotation` — always 0 for a color fill (rotation never affects a plain color).
+    pub rotation_quarters: u8,
 }
 
 /// «Картинки» → «Кадры»: the world's own frame is picked by steps taken (`elapsed_steps`, frozen
@@ -259,12 +287,29 @@ pub fn compose_world_paints(
                 }
                 None => Fill::Color(world.color(id, property::COLOR).expect("filtered above")),
             };
-            let (color, atlas_rect) = fill_paint(&fill, elapsed_steps, images, atlas_rects);
+            let (color, mut atlas_rect) = fill_paint(&fill, elapsed_steps, images, atlas_rects);
+            // «Картинки», требование 23: `frame_by` overrides the time-driven frame `fill_paint`
+            // already picked — the object's own property decides instead.
+            if let Fill::Image { image, .. } = fill
+                && let Some(frame_by) = images[image].frame_by
+            {
+                let frame = frame_by_index(world, id, frame_by, images[image].frames);
+                atlas_rect = frame_atlas_rect_at(image, frame, images, atlas_rects);
+            }
+            // «Картинки», требование 24: заливка цветом поворот не видит.
+            let rotation_quarters = if matches!(fill, Fill::Image { .. }) {
+                world
+                    .rotation(id, property::ROTATION)
+                    .map_or(0, |r| r.quarters())
+            } else {
+                0
+            };
             RectPaint {
                 position: [p[0] as f32, p[1] as f32],
                 size: [s[0] as f32, s[1] as f32],
                 color,
                 atlas_rect,
+                rotation_quarters,
             }
         })
         .collect()
@@ -407,6 +452,8 @@ mod tests {
             path: "x.png".to_string(),
             frames: 1,
             frame_steps: 1,
+            frame_by: None,
+            frame_by_name: None,
         }
     }
 
@@ -540,5 +587,82 @@ mod tests {
         let chosen = button_fill(&base, &hover, &base, 0, &mouse);
         let (_, atlas_rect) = fill_paint(chosen, 0.0, &images, &atlas_rects);
         assert_eq!(atlas_rect, atlas_rects[1]);
+    }
+
+    /// «Картинки», требование 23: `frame_by` picks the frame from the object's own property,
+    /// floored and clamped to the strip's first/last frame — the first frame when the object
+    /// doesn't carry the property at all — ignoring `elapsed_steps` entirely.
+    #[test]
+    fn frame_by_overrides_the_time_driven_frame_with_the_objects_own_property() {
+        let mut properties = PropertyTable::new();
+        let hits = properties
+            .declare_author("hits", crate::core::value::PropKind::Number)
+            .unwrap();
+        let mut world = World::new(&properties);
+
+        let images = vec![ImageDecl {
+            name: "strip".to_string(),
+            path: "strip.png".to_string(),
+            frames: 3,
+            frame_steps: 1,
+            frame_by: Some(hits),
+            frame_by_name: None,
+        }];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 30,
+            h: 10,
+        }];
+
+        let no_hits = world.create();
+        world.set_vec2(no_hits, property::POSITION, [0.0, 0.0]);
+        world.set_vec2(no_hits, property::SIZE, [1.0, 1.0]);
+        world.set_image(no_hits, property::IMAGE, 0);
+
+        let mid = world.create();
+        world.set_vec2(mid, property::POSITION, [0.0, 0.0]);
+        world.set_vec2(mid, property::SIZE, [1.0, 1.0]);
+        world.set_image(mid, property::IMAGE, 0);
+        world.set_number(mid, hits, 1.7);
+
+        let past_end = world.create();
+        world.set_vec2(past_end, property::POSITION, [0.0, 0.0]);
+        world.set_vec2(past_end, property::SIZE, [1.0, 1.0]);
+        world.set_image(past_end, property::IMAGE, 0);
+        world.set_number(past_end, hits, 50.0);
+
+        // `elapsed_steps` is nonzero on purpose: frame_by must ignore it entirely.
+        let paints = compose_world_paints(&world, world.ids(), 999.0, &images, &atlas_rects);
+        assert_eq!(
+            paints[0].atlas_rect,
+            AtlasRect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10
+            },
+            "нет свойства — первый кадр"
+        );
+        assert_eq!(
+            paints[1].atlas_rect,
+            AtlasRect {
+                x: 10,
+                y: 0,
+                w: 10,
+                h: 10
+            },
+            "1.7 округляется вниз до 1"
+        );
+        assert_eq!(
+            paints[2].atlas_rect,
+            AtlasRect {
+                x: 20,
+                y: 0,
+                w: 10,
+                h: 10
+            },
+            "за концом — последний кадр"
+        );
     }
 }

@@ -8,7 +8,7 @@ use super::game::Game;
 use super::input::{MouseEvent, MouseState, UiEvent, UiQueue};
 use super::property::{self, PropertyId, PropertyTable};
 use super::rules::Outcome;
-use super::value::{ImageId, PropKind};
+use super::value::{ImageId, PropKind, Value};
 use super::world::World;
 
 pub type ScreenId = usize;
@@ -177,6 +177,14 @@ fn format_property(world: &World, id: u32, prop: PropertyId, properties: &Proper
             .time(id, prop)
             .map(|steps| format!("{}", steps as f64 / 60.0))
             .unwrap_or_default(),
+        PropKind::Timer => world
+            .timer(id, prop)
+            .map(|steps| format!("{}", steps as f64 / 60.0))
+            .unwrap_or_default(),
+        PropKind::Rotation => world
+            .rotation(id, prop)
+            .map(|r| format!("{}", r.degrees()))
+            .unwrap_or_default(),
         PropKind::Flag => {
             if world.flag(id, prop) {
                 "да".to_string()
@@ -190,14 +198,20 @@ fn format_property(world: &World, id: u32, prop: PropertyId, properties: &Proper
         | PropKind::Layer
         | PropKind::Grid
         | PropKind::Keys
-        | PropKind::Image => String::new(),
+        | PropKind::Image
+        | PropKind::FollowMouse => String::new(),
     }
 }
+
+/// Index into `ScreensConfig::initial_values` — «Экраны и состояние» → «Начальные значения у
+/// new_game», требование 29: `new_game`'s optional third element, one set per distinct list a
+/// button or a screen key declares.
+pub type InitialValuesId = usize;
 
 #[derive(Debug, Clone, Copy)]
 pub enum ButtonCommand {
     ShowScreen(ScreenId),
-    NewGame(ScreenId),
+    NewGame(ScreenId, Option<InitialValuesId>),
     Resume,
     Quit,
     /// «Звук» → «Два вида звука»: touches no world property, so it needs
@@ -253,6 +267,9 @@ pub struct ScreensConfig {
     pub start_screen: ScreenId,
     pub win_screen: Option<ScreenId>,
     pub loss_screen: Option<ScreenId>,
+    /// «Начальные значения у new_game», требование 29: every distinct value list a `new_game`
+    /// command declares, indexed by `InitialValuesId`.
+    pub initial_values: Vec<Vec<(String, PropertyId, Value)>>,
 }
 
 /// The active screen and the one remembered screen `resume` returns to — «Экраны и состояние» → «Команды»: at most one level deep, no further history.
@@ -319,8 +336,11 @@ pub fn apply_command(
 ) {
     match cmd {
         ButtonCommand::ShowScreen(target) => switch_to(state, config, game, target, true),
-        ButtonCommand::NewGame(target) => {
-            game.new_game();
+        ButtonCommand::NewGame(target, values_id) => {
+            match values_id.and_then(|id| config.initial_values.get(id)) {
+                Some(values) => game.new_game_with_values(values),
+                None => game.new_game(),
+            }
             switch_to(state, config, game, target, false);
         }
         ButtonCommand::Resume => {

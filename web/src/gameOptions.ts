@@ -5,12 +5,18 @@ export type GameLoadFailure = { id: string; reason: string };
 export type GameOptionsResult = { options: GameOption[]; failures: GameLoadFailure[] };
 
 /**
+ * Файлы игр не меняют имён между сборками, поэтому браузер всегда сверяет копию из кэша со
+ * стендом («не изменился» — короткий ответ 304), а не отдаёт её сам по своей догадке о свежести.
+ */
+export const GAME_FILE_FETCH: RequestInit = { cache: "no-cache" };
+
+/**
  * Обёртка над `fetch`, которая сводит сетевую ошибку и HTTP-статус вне 2xx к одному и тому же
  * `null` — вызывающему коду всё равно, что именно пошло не так, важно только, что файл недоступен.
  */
 export async function fetchText(url: string): Promise<string | null> {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, GAME_FILE_FETCH);
     return response.ok ? await response.text() : null;
   } catch {
     return null;

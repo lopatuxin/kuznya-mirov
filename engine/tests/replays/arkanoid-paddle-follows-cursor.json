@@ -1,0 +1,10 @@
+{
+  "start": "game",
+  "steps": 1,
+  "input": [
+    { "step": 1, "cursor": [15, 22.5] }
+  ],
+  "checks": [
+    { "step": 1, "object": "paddle", "property": "position", "equals": [13, 22] }
+  ]
+}

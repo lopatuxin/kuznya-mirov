@@ -869,6 +869,31 @@ fn selector_on_a_property_given_at_runtime_is_not_reported_as_matching_nobody() 
     );
 }
 
+/// Зеркало предыдущего теста для `removable`: `lit` есть у всех объектов сцены, но `["take",
+/// "lit"]` в `do` check-правила может снять его во время партии — отбор `for: {"without":
+/// ["lit"]}` правила удаления реально может кому-то подойти. До фикса `widen_shapes_by_rule_actions`
+/// не отслеживал `take`/`set …false` вне `effects` столкновения, и такой отбор ложно считался
+/// заведомо пустым.
+#[test]
+fn selector_on_a_property_taken_in_a_check_rules_do_is_not_reported_as_matching_nobody() {
+    let props = r#"{"properties":{"lit":"flag"}}"#;
+    let scene = r#"{"objects":[
+        {"name":"a","position":[0,0],"size":[1,1],"lit":true},
+        {"name":"b","position":[2,0],"size":[1,1],"lit":true}
+    ]}"#;
+    let rules = r#"{"rules":[
+        {"kind":"check","for":{"has":["lit"]},"do":[["take","lit"]]},
+        {"kind":"delete","for":{"without":["lit"]},"when":"outside_scene"}
+    ]}"#;
+    let (game, _screens, warnings) = load_game_from_texts(GAME, props, scene, rules, SCREENS)
+        .expect("take в do check-правила даёт объектам потерять lit — delete не заведомо пуст");
+    assert_eq!(game.world.alive_count(), 2);
+    assert!(
+        warnings.iter().all(|w| !w.message.contains("не подходит")),
+        "take должен избавить отбор without:[\"lit\"] от ложного предупреждения: {warnings:?}"
+    );
+}
+
 /// Тот же механизм, но свойство появляется не через `give`, а через `keys`: у объекта его нет ни
 /// в `scene.json`, ни в шаблоне, но нажатие клавиши записывает его значением `press`. Отбор,
 /// требующий это свойство, реально может кому-то подойти.
@@ -1131,6 +1156,7 @@ fn broken_json_and_missing_file_get_no_structured_location() {
         &[],
         &[],
         None,
+        false,
     );
     let LoadFailure { errors, .. } = missing_result.expect_err("отсутствующие файлы — ошибка");
     assert!(

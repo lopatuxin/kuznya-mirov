@@ -2,13 +2,13 @@
   "objects": [
     { "name": "head", "position": [10, 10], "size": [1, 1], "velocity": [1, 0],
       "grid": { "interval": 0.12 },
-      "collides": true, "image": "head", "layer": 2,
+      "collides": true, "image": "head", "layer": 2, "rotation": 0,
       "controlled": true, "tail": 0.6, "score": 0,
       "keys": {
-        "ArrowUp":    { "press": [["velocity", [0, -1]]] },
-        "ArrowDown":  { "press": [["velocity", [0, 1]]] },
-        "ArrowLeft":  { "press": [["velocity", [-1, 0]]] },
-        "ArrowRight": { "press": [["velocity", [1, 0]]] }
+        "ArrowUp":    { "press": [["velocity", [0, -1]], ["rotation", 270]] },
+        "ArrowDown":  { "press": [["velocity", [0, 1]], ["rotation", 90]] },
+        "ArrowLeft":  { "press": [["velocity", [-1, 0]], ["rotation", 180]] },
+        "ArrowRight": { "press": [["velocity", [1, 0]], ["rotation", 0]] }
       } },
 
     { "name": "wall_top", "position": [0, 0], "size": [24, 1],

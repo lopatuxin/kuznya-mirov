@@ -73,7 +73,7 @@ fn load() -> engine::core::game::Game {
             )
         })
         .collect();
-    let (mut game, _screens, warnings) = load_rest(
+    let (mut game, _screens, warnings, _images) = load_rest(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -85,6 +85,7 @@ fn load() -> engine::core::game::Game {
         &music_verdicts,
         &image_verdicts,
         Some(&read("code.lua")),
+        false,
     )
     .expect("демо-арканоид должен проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
@@ -159,6 +160,29 @@ fn ball_bounces_on_the_smaller_overlap_axis_once_per_step() {
         (position[1] - 1.0).abs() < 1e-9,
         "мяч выталкивается наружу на величину перекрытия: {position:?}"
     );
+}
+
+/// «Исполнение игры» → «Столкновения»: объект, накрывший стену по ширине целиком, выталкивается к
+/// ближнему краю стены по той оси, где выталкивать меньше, — а не по оси меньшего пересечения,
+/// которая здесь указала бы вниз и увела ракетку за сцену.
+#[test]
+fn paddle_covering_a_wall_is_pushed_out_to_the_nearest_side() {
+    let mut game = load();
+    let named = |game: &engine::core::game::Game, name: &str| {
+        game.world
+            .ids()
+            .find(|&id| game.world.text(id, property::NAME) == Some(name))
+            .unwrap_or_else(|| panic!("{name} есть на сцене"))
+    };
+    let paddle = named(&game, "paddle");
+    let wall = named(&game, "wall_left");
+    game.world.set_vec2(wall, property::SIZE, [1.5, 24.0]);
+    game.world.set_vec2(paddle, property::POSITION, [0.0, 22.0]);
+
+    game.step(StepInput::empty());
+
+    let position = game.world.vec2(paddle, property::POSITION).unwrap();
+    assert_eq!(position, [1.5, 22.0], "ракетка вплотную справа от стены");
 }
 
 /// «Код игры» → пункт 24: `paddle_bounce` — угол зависит только от места удара. Середина — строго

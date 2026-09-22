@@ -73,7 +73,9 @@ fn load(
         &[],
         &image_data,
         None,
+        false,
     )
+    .map(|(game, screens, warnings, _images)| (game, screens, warnings))
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -894,4 +896,54 @@ fn a_game_without_any_images_table_loads_with_no_errors_and_no_image_warnings() 
         load(&game, PROPS_EMPTY, scene, RULES_EMPTY, SCREENS_MAIN, &[])
             .expect("игра без картинок должна грузиться, как и раньше");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
+}
+
+// ---------------------------------------------------------------------------------------------
+// `frame_by` — требование 23. `load_rest` резолвит его один раз против `properties.json` и
+// отдаёт уже разрешённый список сама, а не заставляет вызывающего (`wasm::Engine::load`) клонировать
+// свою собственную копию `config.files.images` заранее и резолвить его ещё раз после.
+// ---------------------------------------------------------------------------------------------
+
+/// Воспроизведённый баг: `wasm::Engine::load` держал свою собственную копию `config.files.images`,
+/// снятую до `load_rest`, и резолвил её `frame_by` заново уже после, вторым проходом, ошибки
+/// которого шли в одноразовый `ErrorSink::new()` и терялись безмолвно — так что при рассинхроне
+/// между двумя резолвами страница молча оставалась без `frame_by`. Проверка — без wasm, прямо на
+/// `load_rest`: список картинок в её собственном `Ok` уже должен нести разрешённый `frame_by`.
+#[test]
+fn load_rest_returns_images_with_frame_by_already_resolved() {
+    let game =
+        game_json(r#","images":{"strip":{"path":"images/strip.png","frames":2,"frame_by":"n"}}"#);
+    let props = r#"{"properties":{"n":"number"}}"#;
+    let (config, _entry_warnings) = read_entry(&game).expect("game.json должен разбираться");
+    let font_bytes: Vec<(String, Option<Vec<u8>>)> =
+        vec![("ui".to_string(), Some(FONT_BYTES.to_vec()))];
+    let image_data = vec![("strip".to_string(), ok_pixels(64, 32))];
+    let (game, _screens, _warnings, images) = load_rest(
+        &game,
+        config,
+        Some(props),
+        Some(SCENE_EMPTY),
+        Some(RULES_EMPTY),
+        Some(SCREENS_MAIN),
+        &font_bytes,
+        &[],
+        &[],
+        &image_data,
+        None,
+        false,
+    )
+    .expect("должно загрузиться");
+    let n = game
+        .properties
+        .resolve("n")
+        .expect("n должно быть в таблице свойств");
+    let strip = images
+        .iter()
+        .find(|decl| decl.name == "strip")
+        .expect("strip должна быть в списке картинок, которые отдаёт load_rest");
+    assert_eq!(
+        strip.frame_by,
+        Some(n),
+        "load_rest должен отдавать уже разрешённый frame_by"
+    );
 }

@@ -353,6 +353,7 @@ fn draw_rect(
     size: [f32; 2],
     color: [f32; 4],
     atlas_rect: AtlasRect,
+    rotation_quarters: f32,
 ) -> DrawRect {
     DrawRect {
         position,
@@ -360,6 +361,7 @@ fn draw_rect(
         color,
         atlas_pos: [atlas_rect.x as f32, atlas_rect.y as f32],
         atlas_size: [atlas_rect.w as f32, atlas_rect.h as f32],
+        rotation_quarters,
     }
 }
 
@@ -376,7 +378,15 @@ fn compose_instances(
     let steps = game.step_count() as f64;
     atlas::compose_world_paints(&game.world, game.world.ids(), steps, images, atlas_rects)
         .into_iter()
-        .map(|paint| draw_rect(paint.position, paint.size, paint.color, paint.atlas_rect))
+        .map(|paint| {
+            draw_rect(
+                paint.position,
+                paint.size,
+                paint.color,
+                paint.atlas_rect,
+                paint.rotation_quarters as f32,
+            )
+        })
         .collect()
 }
 
@@ -409,6 +419,7 @@ fn compose_ui(
                     placement.size,
                     color,
                     atlas_rect,
+                    0.0,
                 ));
             }
             screens::Element::Label {
@@ -444,7 +455,7 @@ fn compose_ui(
                 let chosen = screens::button_fill(fill, fill_hover, fill_pressed, index, mouse);
                 let (color, atlas_rect) =
                     atlas::fill_paint(chosen, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect([x, y], placement.size, color, atlas_rect));
+                rects.push(draw_rect([x, y], placement.size, color, atlas_rect, 0.0));
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
                 texts.push(TextDraw {
@@ -598,9 +609,10 @@ impl Engine {
         // carries is what fixes each one's FontId/SoundId/MusicId/ImageId, so it has to be
         // captured before that happens.
         let font_order: Vec<String> = config.files.fonts.iter().map(|(n, _)| n.clone()).collect();
-        let image_order: Vec<ImageDecl> = config.files.images.clone();
         let rules_path = config.files.rules.clone();
-        let image_table: Vec<(String, String)> = image_order
+        let image_table: Vec<(String, String)> = config
+            .files
+            .images
             .iter()
             .map(|decl| (decl.name.clone(), decl.path.clone()))
             .collect();
@@ -620,8 +632,9 @@ impl Engine {
             &music_verdicts,
             &image_verdicts,
             code_json.as_deref(),
+            false,
         ) {
-            Ok((game, screens_config, warnings)) => {
+            Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
                 // image's own verdict/dimensions, but not whether the whole set fits in one
                 // 2048×2048 canvas — that's the render layer's job, so it only runs once the
@@ -712,9 +725,15 @@ impl Engine {
     }
 
     /// `x`/`y` in window (CSS) pixels — the same unit `screens.json`'s `anchor`/`offset`/`size`
-    /// are written in. Queued, not applied immediately — «Интерфейс игры» → «Мышь».
+    /// are written in. Queued for the interface's own hover/click handling («Интерфейс игры» →
+    /// «Мышь»); the world cursor («Курсор в мире», требование 25–27) is updated right here
+    /// instead, whenever a game is already loaded — regardless of whether the active screen is
+    /// live, so a move made during a pause is still known once the world starts stepping again.
     pub fn mouse_move(&mut self, x: f32, y: f32) {
         self.ui_queue.push_mouse_move(x, y);
+        if let Some(game) = self.game.as_mut() {
+            game.update_cursor([x, y], self.renderer.window_size_css());
+        }
     }
 
     pub fn mouse_down(&mut self) {

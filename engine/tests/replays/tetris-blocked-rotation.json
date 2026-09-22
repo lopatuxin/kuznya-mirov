@@ -1,0 +1,18 @@
+{
+  "start": "game",
+  "values": { "game.level": 0 },
+  "steps": 64,
+  "input": [
+    { "step": 2, "press": "ArrowLeft" },
+    { "step": 33, "press": "KeyX" },
+    { "step": 64, "press": "KeyZ" }
+  ],
+  "checks": [
+    { "step": 32, "object": "current_piece", "property": "position", "equals": [3, 6] },
+    { "step": 33, "object": "current_piece", "property": "position", "equals": [3, 6] },
+    { "step": 33, "object": "current_piece", "property": "rotation", "equals": 90 },
+    { "step": 63, "object": "current_piece", "property": "position", "equals": [1, 7] },
+    { "step": 64, "object": "current_piece", "property": "position", "equals": [1, 7] },
+    { "step": 64, "object": "current_piece", "property": "rotation", "equals": 90 }
+  ]
+}

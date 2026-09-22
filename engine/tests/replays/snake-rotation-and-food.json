@@ -1,0 +1,13 @@
+{
+  "start": "game",
+  "values": { "head.position": [16, 3] },
+  "steps": 98,
+  "input": [
+    { "step": 1, "press": "ArrowDown" }
+  ],
+  "checks": [
+    { "step": 1, "object": "head", "property": "rotation", "equals": 90 },
+    { "step": 98, "object": "head", "property": "score", "equals": 1 },
+    { "step": 98, "object": "head", "property": "position", "equals": [16, 17] }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "start": "game",
+  "values": { "game.level": 0 },
+  "steps": 41,
+  "input": [
+    { "step": 2, "press": "ArrowLeft" },
+    { "step": 40, "press": "KeyX" }
+  ],
+  "checks": [
+    { "step": 30, "object": "current_piece", "property": "position", "equals": [3, 6] },
+    { "step": 39, "object": "current_piece", "property": "position", "equals": [3, 6] },
+    { "step": 40, "object": "current_piece", "property": "position", "equals": [3, 6] },
+    { "step": 41, "object": "current_piece", "property": "position", "equals": [2, 6] }
+  ]
+}

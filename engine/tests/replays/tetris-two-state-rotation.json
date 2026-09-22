@@ -1,0 +1,17 @@
+{
+  "start": "game",
+  "values": { "game.level": 0 },
+  "steps": 15,
+  "input": [
+    { "step": 2, "press": "KeyX" },
+    { "step": 3, "release": "KeyX" },
+    { "step": 10, "press": "KeyX" },
+    { "step": 11, "release": "KeyX" }
+  ],
+  "checks": [
+    { "step": 9, "object": "current_piece", "property": "position", "equals": [6, 6] },
+    { "step": 9, "object": "current_piece", "property": "rotation", "equals": 90 },
+    { "step": 15, "object": "current_piece", "property": "position", "equals": [6, 6] },
+    { "step": 15, "object": "current_piece", "property": "rotation", "equals": 0 }
+  ]
+}

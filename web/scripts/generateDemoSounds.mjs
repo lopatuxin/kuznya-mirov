@@ -1,12 +1,12 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 // Короткие звуки демо-игр синтезируются, а не скачиваются: так у них нет лицензии, которую надо
 // помнить, и их можно пересобрать с другой высотой или длиной правкой одного числа.
 // Запуск: `node scripts/generateDemoSounds.mjs` из `web/`. Результат детерминирован.
 
-const SAMPLE_RATE = 44100;
+export const SAMPLE_RATE = 44100;
 const PEAK = 0.6;
 
 const scriptDir = fileURLToPath(new URL(".", import.meta.url));
@@ -31,7 +31,7 @@ function triangle(phase) {
 
 // Тон с частотой, скользящей от `fromHz` к `toHz`, и экспоненциальным затуханием. Фаза копится
 // по отсчётам, иначе скольжение частоты даёт щелчки.
-function sweep({ seconds, fromHz, toHz, wave, decay }) {
+export function sweep({ seconds, fromHz, toHz, wave, decay }) {
   const count = Math.round(seconds * SAMPLE_RATE);
   const out = new Float64Array(count);
   let phase = 0;
@@ -80,7 +80,7 @@ function normalize(samples) {
   return samples.map((s) => (s / max) * PEAK);
 }
 
-function encodeWav(samples) {
+export function encodeWav(samples) {
   const dataBytes = samples.length * 2;
   const buffer = Buffer.alloc(44 + dataBytes);
   buffer.write("RIFF", 0, "ascii");
@@ -113,7 +113,9 @@ function noiseBurst(seconds, decay, seed) {
   return out;
 }
 
-const SOUNDS = {
+// Экспортируется, чтобы тест сверял длительность каждого файла с ограничением «Файлов, которые
+// делают скрипты» (не длиннее 5 секунд), не запуская запись на диск.
+export const SOUNDS = {
   "snake/sounds/eat.wav": () =>
     sweep({ seconds: 0.12, fromHz: 520, toHz: 1040, wave: square, decay: 3 }),
   "snake/sounds/hit.wav": () =>
@@ -134,12 +136,42 @@ const SOUNDS = {
     ),
   "arkanoid/sounds/lose.wav": () =>
     sweep({ seconds: 0.9, fromHz: 440, toHz: 110, wave: square, decay: 2.5 }),
+
+  "tetris/sounds/move.wav": () =>
+    sweep({ seconds: 0.05, fromHz: 320, toHz: 280, wave: square, decay: 5 }),
+  "tetris/sounds/rotate.wav": () =>
+    sweep({ seconds: 0.07, fromHz: 420, toHz: 720, wave: square, decay: 4 }),
+  "tetris/sounds/land.wav": () =>
+    mix(
+      sweep({ seconds: 0.15, fromHz: 150, toHz: 50, wave: triangle, decay: 6 }),
+      noiseBurst(0.08, 10, 3),
+      0.4,
+    ),
+  "tetris/sounds/clear.wav": () =>
+    sweep({ seconds: 0.18, fromHz: 700, toHz: 1400, wave: square, decay: 3 }),
+  "tetris/sounds/tetris.wav": () =>
+    concat(
+      [659.25, 783.99, 987.77, 1318.5].map((hz, i) =>
+        sweep({ seconds: i === 3 ? 0.3 : 0.1, fromHz: hz, toHz: hz, wave: square, decay: 2 }),
+      ),
+    ),
+  "tetris/sounds/level.wav": () =>
+    concat(
+      [523.25, 659.25, 783.99].map((hz) => sweep({ seconds: 0.14, fromHz: hz, toHz: hz, wave: triangle, decay: 2 })),
+    ),
+  "tetris/sounds/over.wav": () =>
+    sweep({ seconds: 1.2, fromHz: 500, toHz: 80, wave: square, decay: 2 }),
 };
 
-for (const [relativePath, synthesize] of Object.entries(SOUNDS)) {
-  const target = resolve(gamesDir, relativePath);
-  mkdirSync(dirname(target), { recursive: true });
-  const wav = encodeWav(fadeEdges(normalize(synthesize())));
-  writeFileSync(target, wav);
-  console.log(`${relativePath}: ${wav.length} байт`);
+// Модуль импортируется тестом напрямую (см. generateDemoSounds.test.mjs) — без этой проверки
+// такой импорт тут же перезаписывал бы настоящие звуки игр.
+const isMainModule = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+if (isMainModule) {
+  for (const [relativePath, synthesize] of Object.entries(SOUNDS)) {
+    const target = resolve(gamesDir, relativePath);
+    mkdirSync(dirname(target), { recursive: true });
+    const wav = encodeWav(fadeEdges(normalize(synthesize())));
+    writeFileSync(target, wav);
+    console.log(`${relativePath}: ${wav.length} байт`);
+  }
 }

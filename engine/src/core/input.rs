@@ -17,9 +17,13 @@ pub struct KeyEvent {
 /// What a single step sees: every press/release queued since the previous step, still in arrival
 /// order — frozen for the duration of that step. During a burst of catch-up steps only the first
 /// one gets this; the rest see `StepInput::empty()`, so a stuck spacebar does not fire five times.
+/// `cursor` — «Курсор в мире», требование 26: the world-cursor position in scene coordinates, but
+/// only when it changed since the previous step took one; `None` otherwise, including a burst's
+/// later catch-up steps, exactly like `events`.
 #[derive(Debug, Clone, Default)]
 pub struct StepInput {
     pub events: Vec<KeyEvent>,
+    pub cursor: Option<super::value::Vec2>,
 }
 
 impl StepInput {
@@ -83,6 +87,7 @@ impl InputQueue {
     pub fn take_snapshot(&mut self) -> StepInput {
         StepInput {
             events: std::mem::take(&mut self.pending),
+            cursor: None,
         }
     }
 

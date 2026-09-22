@@ -16,6 +16,8 @@ pub const LIFETIME: PropertyId = 8;
 pub const NAME: PropertyId = 9;
 pub const IMAGE: PropertyId = 10;
 pub const OPACITY: PropertyId = 11;
+pub const ROTATION: PropertyId = 12;
+pub const FOLLOW_MOUSE: PropertyId = 13;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -30,6 +32,8 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("name", PropKind::Text),
     ("image", PropKind::Image),
     ("opacity", PropKind::Number),
+    ("rotation", PropKind::Rotation),
+    ("follow_mouse", PropKind::FollowMouse),
 ];
 
 #[derive(Debug, Clone)]

@@ -16,6 +16,10 @@ pub struct DrawRect {
     /// out through the very same instance and the very same draw call.
     pub atlas_pos: [f32; 2],
     pub atlas_size: [f32; 2],
+    /// «Картинки», требование 24: quarter turns (0–3) the sampled image is rotated clockwise
+    /// before it stretches to fill `position`/`size` — the interface's own rectangles (panels,
+    /// buttons) always pass `0.0` here; only a world object's `rotation` ever sets it.
+    pub rotation_quarters: f32,
 }
 
 /// One label or button caption to hand to `glyphon` this frame. `rect_px` is the element's
@@ -353,6 +357,11 @@ impl Renderer {
                     format: wgpu::VertexFormat::Float32x2,
                     offset: 40,
                     shader_location: 5,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 48,
+                    shader_location: 6,
                 },
             ],
         };
@@ -750,14 +759,10 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
 
 /// World pass: scene cells scale up to fill the largest letterboxed rectangle of `canvas_size_px`
 /// that keeps the scene's aspect ratio, centered — «Формат игры»: «сцена вписывается в окно
-/// целиком, с сохранением пропорций».
+/// целиком, с сохранением пропорций». Same formula «Курсор в мире» maps a window cursor back
+/// through — see `core::scene::letterbox`.
 fn world_globals_data(canvas_size_px: [f32; 2], scene_cells: [f32; 2]) -> Globals {
-    let scale = (canvas_size_px[0] / scene_cells[0]).min(canvas_size_px[1] / scene_cells[1]);
-    let viewport_size = [scene_cells[0] * scale, scene_cells[1] * scale];
-    let offset = [
-        (canvas_size_px[0] - viewport_size[0]) / 2.0,
-        (canvas_size_px[1] - viewport_size[1]) / 2.0,
-    ];
+    let (scale, offset) = crate::core::scene::letterbox(canvas_size_px, scene_cells);
     Globals {
         scale: [scale, scale],
         offset,

@@ -23,7 +23,7 @@ use luars::{
 use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
 use super::sound::SoundMarks;
-use super::value::PropKind;
+use super::value::{PropKind, Rotation};
 use super::world::World;
 
 /// «Код игры»: предел операций Lua — на прогон файла при загрузке (свой, отдельный бюджет) и на
@@ -401,6 +401,13 @@ fn read_property(
         PropKind::Time => Ok(world.time(id, prop).map_or(PropValue::Nil, |steps| {
             PropValue::Number(steps as f64 / 60.0)
         })),
+        // «Код игры» → пункт 28: `timer` читается в секундах, как `time`.
+        PropKind::Timer => Ok(world.timer(id, prop).map_or(PropValue::Nil, |steps| {
+            PropValue::Number(steps as f64 / 60.0)
+        })),
+        PropKind::Rotation => Ok(world
+            .rotation(id, prop)
+            .map_or(PropValue::Nil, |r| PropValue::Number(r.degrees() as f64))),
         PropKind::Layer => Ok(world
             .layer(id, prop)
             .map_or(PropValue::Nil, |l| PropValue::Number(l as f64))),
@@ -427,7 +434,8 @@ fn read_property(
                 mt: vec2_mt,
             })
         }
-        PropKind::Grid | PropKind::Keys => Err(format!(
+        // «Код игры» → пункт 28: `follow_mouse` недоступен коду, как `keys` и `grid`.
+        PropKind::Grid | PropKind::Keys | PropKind::FollowMouse => Err(format!(
             "свойство \"{}\" недоступно коду",
             properties.name(prop)
         )),
@@ -444,7 +452,10 @@ fn write_property(
     moved: &mut [bool],
 ) -> Result<(), String> {
     let kind = properties.kind(prop);
-    if matches!(kind, PropKind::Grid | PropKind::Keys) {
+    if matches!(
+        kind,
+        PropKind::Grid | PropKind::Keys | PropKind::FollowMouse
+    ) {
         return Err(format!(
             "свойство \"{}\" недоступно коду",
             properties.name(prop)
@@ -470,6 +481,25 @@ fn write_property(
             Ok(())
         }
         (PropKind::Time, _) => Err("ожидалось число секунд".to_string()),
+        // «Код игры» → пункт 28: `timer` пишется секундами, как `time`; отрицательное значение
+        // становится нулём — `World::set_timer` уже так и клампит.
+        (PropKind::Timer, AnyValue::Number(seconds)) => {
+            world.set_timer(id, prop, seconds_to_steps_delta(seconds));
+            Ok(())
+        }
+        (PropKind::Timer, _) => Err("ожидалось число секунд".to_string()),
+        (PropKind::Rotation, AnyValue::Number(degrees)) => {
+            match Rotation::from_degrees_exact(degrees) {
+                Some(r) => {
+                    world.set_rotation(id, prop, r);
+                    Ok(())
+                }
+                None => Err(format!(
+                    "rotation должен быть 0, 90, 180 или 270, получено {degrees}"
+                )),
+            }
+        }
+        (PropKind::Rotation, _) => Err("ожидалось число (0, 90, 180 или 270)".to_string()),
         (PropKind::Layer, AnyValue::Number(n)) => {
             world.set_layer(id, prop, require_integer(n)?);
             Ok(())
@@ -516,7 +546,9 @@ fn write_property(
             Ok(())
         }
         (PropKind::Vec2, _) => Err("ожидалась пара {x=.., y=..}".to_string()),
-        (PropKind::Grid | PropKind::Keys, _) => unreachable!("checked above"),
+        (PropKind::Grid | PropKind::Keys | PropKind::FollowMouse, _) => {
+            unreachable!("checked above")
+        }
     }
 }
 
