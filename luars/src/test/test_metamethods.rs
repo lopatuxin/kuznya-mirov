@@ -949,3 +949,285 @@ fn test_pairs_yield_multiple_times_in_pairs_metamethod() {
         result
     );
 }
+
+// ===== __newindex on nil writes to a missing key =====
+
+#[test]
+fn test_newindex_called_for_dot_assign_nil_on_missing_key() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local calls = {}
+        local t = setmetatable({}, {__newindex = function(tbl, key, value)
+            calls[#calls + 1] = {key, value}
+        end})
+        t.missing = nil
+        assert(#calls == 1)
+        assert(calls[1][1] == "missing")
+        assert(calls[1][2] == nil)
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[test]
+fn test_newindex_called_for_bracket_assign_nil_on_missing_key() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local calls = {}
+        local t = setmetatable({}, {__newindex = function(tbl, key, value)
+            calls[#calls + 1] = key
+        end})
+        local k = "missing"
+        t[k] = nil
+        assert(#calls == 1 and calls[1] == "missing")
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[test]
+fn test_newindex_not_called_when_key_already_live() {
+    // Setting an existing (live) key to nil is a normal update, not a
+    // "missing key" write — real Lua does not invoke `__newindex` for it.
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local calls = 0
+        local t = setmetatable({a = 1}, {__newindex = function() calls = calls + 1 end})
+        t.a = nil
+        assert(calls == 0)
+        assert(rawget(t, "a") == nil)
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+#[test]
+fn test_newindex_nil_on_missing_key_without_metatable_is_noop() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local t = {}
+        t.missing = nil
+        assert(rawget(t, "missing") == nil)
+        assert(next(t) == nil)
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+/// A "global" write goes through the same `pset_shortstr` as `t.k = v`, just addressed via the
+/// `_ENV` upvalue (`SetTabUp`) instead of a register — writing `nil` to a name missing from the
+/// environment table must call its `__newindex` too, not silently count as done.
+#[test]
+fn test_newindex_called_for_global_write_nil_on_missing_key_via_env() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let result = vm.main_state().execute(
+        r#"
+        local calls = {}
+        local e = setmetatable({}, {__newindex = function(tbl, key, value)
+            calls[#calls + 1] = key
+        end})
+        do
+            local _ENV = e
+            local function assign()
+                zz = nil
+            end
+            assign()
+        end
+        assert(#calls == 1 and calls[1] == "zz")
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+}
+
+// ===== setmetatable argument checking =====
+
+#[test]
+fn test_setmetatable_errors_on_non_table() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let err = vm.main_state().execute("setmetatable(1, {})").unwrap_err();
+    let full = vm.main_state().get_full_error(err);
+    assert!(
+        full.message
+            .contains("bad argument #1 to 'setmetatable' (table expected, got number)"),
+        "{}",
+        full.message
+    );
+}
+
+#[test]
+fn test_setmetatable_errors_on_userdata() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    vm.set_global("ud", LuaValue::lightuserdata(std::ptr::null_mut()))
+        .unwrap();
+    let err = vm.main_state().execute("setmetatable(ud, {})").unwrap_err();
+    let full = vm.main_state().get_full_error(err);
+    assert!(
+        full.message
+            .contains("bad argument #1 to 'setmetatable' (table expected, got userdata)"),
+        "{}",
+        full.message
+    );
+}
+
+#[test]
+fn test_setmetatable_protected_metatable_errors() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    let err = vm
+        .main_state()
+        .execute(
+            r#"
+        local t = setmetatable({}, {__metatable = false})
+        setmetatable(t, {})
+    "#,
+        )
+        .unwrap_err();
+    let full = vm.main_state().get_full_error(err);
+    assert!(
+        full.message.contains("cannot change a protected metatable"),
+        "{}",
+        full.message
+    );
+}
+
+// ===== Rust closures (rclosure) as metamethods =====
+
+#[test]
+fn test_rclosure_as_index_metamethod() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let index_fn = vm
+        .create_closure(|state: &mut LuaState| -> LuaResult<usize> {
+            let key = state.get_arg(2).unwrap_or_default();
+            let len = key.as_str().map_or(0, |s| s.len() as i64);
+            state.push_value(LuaValue::integer(len))?;
+            Ok(1)
+        })
+        .unwrap();
+    vm.set_global("idx", index_fn).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        local t = setmetatable({}, {__index = idx})
+        return t.hello
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(result.unwrap()[0].as_integer(), Some(5));
+}
+
+#[test]
+fn test_rclosure_as_newindex_metamethod() {
+    use std::cell::Cell;
+    use std::rc::Rc;
+
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let calls = Rc::new(Cell::new(0i64));
+    let calls_clone = calls.clone();
+    let newindex_fn = vm
+        .create_closure(move |state: &mut LuaState| -> LuaResult<usize> {
+            let value = state.get_arg(3).unwrap_or_default();
+            assert!(value.is_nil());
+            calls_clone.set(calls_clone.get() + 1);
+            Ok(0)
+        })
+        .unwrap();
+    vm.set_global("newidx", newindex_fn).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        local t = setmetatable({}, {__newindex = newidx})
+        t.a = nil
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+    assert_eq!(calls.get(), 1);
+}
+
+/// Regression for the GC atomic-phase bug in `call_c_function`: it restored a caller's top to
+/// `ci.top`, but `call_tm_res`/`call_tm_res1`/`call_tm_res_into` place a metamethod call exactly
+/// at `func_idx == ci.top`, so a single-result rclosure metamethod's return value ended up one
+/// slot above the restored top — unrooted for the GC atomic phase's "clear dead stack slice above
+/// top" pass (`gc/mod.rs`). Many separate top-level `execute` calls (not one loop inside a single
+/// call) are needed to let the incremental GC reach its atomic phase in between.
+#[test]
+fn test_rclosure_index_survives_many_separate_top_level_calls() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let index_fn = vm
+        .create_closure(|state: &mut LuaState| -> LuaResult<usize> {
+            let key = state.get_arg(2).unwrap_or_default();
+            let len = key.as_str().map_or(0, |s| s.len() as i64);
+            state.push_value(LuaValue::integer(len))?;
+            Ok(1)
+        })
+        .unwrap();
+    vm.set_global("idx", index_fn).unwrap();
+    vm.main_state()
+        .execute("t = setmetatable({}, {__index = idx})")
+        .unwrap();
+
+    for i in 0..20000 {
+        let result = vm.main_state().execute("return t.hello");
+        match result {
+            Ok(vals) => {
+                assert_eq!(
+                    vals.first().and_then(|v| v.as_integer()),
+                    Some(5),
+                    "iter {i}"
+                );
+            }
+            Err(e) => {
+                let full = vm.main_state().get_full_error(e);
+                panic!("iter {i} errored: {}", full.message);
+            }
+        }
+    }
+}
+
+/// Regression for a fix of the bug above that first bumped `ci.top` itself in
+/// `call_c_function`: `call_tm_res`/`call_tm_res1`/`call_tm_res_into` reuse `ci.top` as the
+/// fixed slot for every metamethod call from a given Lua frame, so persisting a bumped value
+/// there drifted the slot one register higher on every iteration of a loop that calls an
+/// rclosure `__index` repeatedly from the same frame.
+#[test]
+fn test_rclosure_index_survives_many_calls_in_one_loop() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let index_fn = vm
+        .create_closure(|state: &mut LuaState| -> LuaResult<usize> {
+            let key = state.get_arg(2).unwrap_or_default();
+            let len = key.as_str().map_or(0, |s| s.len() as i64);
+            state.push_value(LuaValue::integer(len))?;
+            Ok(1)
+        })
+        .unwrap();
+    vm.set_global("idx", index_fn).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        local t = setmetatable({}, {__index = idx})
+        for i = 1, 20000 do
+            assert(t.hello == 5, i)
+        end
+        return "ok"
+    "#,
+    );
+    assert!(result.is_ok(), "{:?}", result.err());
+}

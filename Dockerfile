@@ -30,6 +30,11 @@ COPY engine/Cargo.toml engine/Cargo.lock ./
 COPY engine/src/ src/
 COPY engine/shaders/ shaders/
 
+# «Своя копия luars»: `engine/Cargo.toml` зависит от неё по пути `../luars` — то есть, при
+# `WORKDIR /app/engine`, от `/app/luars`.
+COPY luars/Cargo.toml /app/luars/Cargo.toml
+COPY luars/src/ /app/luars/src/
+
 RUN wasm-pack build --target web --release -- --locked
 
 # --- Stage 2: собрать страницу (Vite) ---

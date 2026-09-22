@@ -285,4 +285,16 @@ pub trait LuaSandboxApi {
         name: &str,
         value: T,
     ) -> LuaResult<()>;
+
+    /// Set the host's instruction budget: unlike [`SandboxConfig::instruction_limit`], which
+    /// `execute_sandboxed` resets on every call, this persists across calls — the host sums
+    /// usage over as many calls as it likes and calls this again to reset it (e.g. once per
+    /// simulation step). Every Lua VM instruction, in and out of `pcall`, spends one unit; once
+    /// it reaches zero, this and every later operation error with
+    /// [`crate::LuaError::InstructionBudgetExceeded`] until the host calls this again.
+    fn set_instruction_budget(&mut self, limit: u64);
+
+    /// Remaining units of the budget set by [`Self::set_instruction_budget`], or `None` when no
+    /// budget is set (no counting is done in that case).
+    fn instruction_budget_remaining(&mut self) -> Option<u64>;
 }

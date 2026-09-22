@@ -10,5 +10,7 @@ Dockerfile
 engine/target
 engine/pkg
 
+luars/target
+
 web/node_modules
 web/dist

@@ -134,6 +134,26 @@ impl_lua_typed_callback!(
     ((A, a) => 1, (B, b) => 2, (C, c) => 3, (D, d) => 4, (E, e) => 5, (T6, t6) => 6, (T7, t7) => 7, (T8, t8) => 8)
 );
 
+/// A host closure taking the raw argument list, in place of fixed `FromLua`
+/// positions. `Vec<LuaValue>` (not a tuple) keeps this from overlapping the
+/// fixed-arity impls above. Unlike those — which default a missing argument
+/// to `LuaValue::nil()` and so cannot tell "not passed" from "passed as nil"
+/// — this sees the real argument count, trailing nils included, straight
+/// from `LuaState::get_args`.
+impl<Func, R> LuaTypedCallback<Vec<LuaValue>, R> for Func
+where
+    Func: Fn(Vec<LuaValue>) -> R + 'static,
+    R: IntoLua,
+{
+    fn invoke_typed(&self, state: &mut LuaState) -> LuaResult<usize> {
+        let args = state.get_args();
+        match (self)(args).into_lua(state) {
+            Ok(count) => Ok(count),
+            Err(msg) => Err(state.error(msg)),
+        }
+    }
+}
+
 impl<Func, Fut, R> LuaTypedAsyncCallback<(), R> for Func
 where
     Func: Fn() -> Fut + 'static,

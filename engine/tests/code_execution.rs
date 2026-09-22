@@ -130,6 +130,38 @@ end
     assert_eq!(game.world.vec2(id, engine::core::property::VELOCITY), None);
 }
 
+/// «Код игры» → требование 8: своя таблица кода игры (не объект, не `_ENV`/`_G`) с
+/// метатаблицей-ловушкой на `__newindex` — запись `nil` в отсутствующий в ней ключ вызывает
+/// ловушку, а не молча считается сделанной.
+#[test]
+fn own_table_with_a_newindex_trap_fires_it_on_a_nil_write_to_a_missing_key() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","touch"]]}
+    ]}"#;
+    let code = r#"
+function touch()
+    local t = setmetatable({}, { __newindex = function(tbl, k, v) print("trap", k) end })
+    t.missing = nil
+    print("done")
+end
+"#;
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    assert!(game.code_error().is_none(), "{:?}", game.code_error());
+    assert!(
+        game.messages().iter().any(|m| m == "print: trap\tmissing"),
+        "{:?}",
+        game.messages()
+    );
+}
+
 /// «Код игры»: запись в поле пары `nil` — значение не того вида, ошибка, а не тихий пропуск;
 /// сама пара объекта при этом не меняется.
 #[test]
@@ -314,6 +346,22 @@ fn print_pushes_into_messages_with_tab_join() {
     );
 }
 
+/// «Код игры»: `print` форматирует числа так же, как `tostring` — `1.0` для `1.0`, а не `1` из
+/// `Display`, и `-nan` для `0/0`, а не `NaN`.
+#[test]
+fn print_formats_floats_like_tostring() {
+    let props = r#"{"properties":{}}"#;
+    let scene = r#"{"objects":[]}"#;
+    let rules = r#"{"rules":[]}"#;
+    let code = "print(1.0, 0/0)";
+    let (game, _screens, _warnings) = load(props, scene, rules, code).expect("должно загрузиться");
+    assert!(
+        game.messages().iter().any(|m| m == "print: 1.0\t-nan"),
+        "{:?}",
+        game.messages()
+    );
+}
+
 /// «Исполнение игры» → «Повторяемость»: `math.random` в коде берёт числа у того же счётчика,
 /// что и правила — тот же посев, та же последовательность, и вторая партия повторяет первую.
 #[test]
@@ -447,6 +495,34 @@ end
         "{}",
         err.message
     );
+    assert!(err.line.is_some(), "{err:?}");
+}
+
+/// «Код игры»: `while true do f() end` — цикл из частых вызовов функции упирается в предел так
+/// же, как пустой цикл, и называет строку кода игры.
+#[test]
+fn while_true_calling_a_function_hits_the_instruction_limit_and_names_the_line() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","loop"]]}
+    ]}"#;
+    let code = "function f() end\nfunction loop()\n    while true do f() end\nend\n";
+    let (mut game, _screens, _warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    game.step(StepInput::empty());
+    let err = game
+        .code_error()
+        .expect("предел операций должен остановить партию");
+    assert!(
+        err.message.contains("превышен предел операций кода"),
+        "{}",
+        err.message
+    );
+    assert_eq!(err.line, Some(3), "{err:?}");
 }
 
 /// «Код игры»: функция, жадная до памяти, упирается в предел памяти исполнителя.
@@ -510,7 +586,11 @@ fn error_during_a_step_names_file_line_function_rule_and_step() {
     assert_eq!(err.function.as_deref(), Some("touch"), "{err:?}");
     assert_eq!(err.rule.as_deref(), Some("rules[1]"), "{err:?}");
     assert_eq!(err.step, Some(1), "{err:?}");
-    assert!(err.message.contains("nosuch"), "{}", err.message);
+    assert_eq!(
+        err.message, "неизвестное свойство \"nosuch\"",
+        "{}",
+        err.message
+    );
 }
 
 /// «Код игры»: обращение к удалённому объекту — ошибка, даже когда его номер уже занял новый
@@ -775,6 +855,34 @@ end
         "{:?}",
         game.messages()
     );
+}
+
+/// «Код игры»: `nil` в конце и единственный аргумент `nil`, а не только посередине — и вовсе без
+/// аргументов, `print` печатает настоящее число переданных значений, не арность.
+#[test]
+fn print_reports_the_real_argument_count_with_nil_at_the_end_or_alone() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","say"]]}
+    ]}"#;
+    let code = r#"
+function say()
+    print(1, nil)
+    print(nil)
+    print()
+end
+"#;
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    assert!(game.code_error().is_none(), "{:?}", game.code_error());
+    let messages: Vec<&str> = game.messages().iter().map(String::as_str).collect();
+    assert_eq!(messages, vec!["print: 1\tnil", "print: nil", "print: "]);
 }
 
 /// «Код игры»: пара — не объект: `delete(obj.velocity)` — ошибка кода, и текст называет пару.
@@ -1055,6 +1163,56 @@ fn rawset_on_the_env_proxy_is_blocked() {
     );
 }
 
+/// «Код игры»: `rawset` на значении, которое не таблица, — тот же текст и та же строка кода
+/// игры, что у обычного Lua, а не место замыкания, которое ставит эту защиту.
+#[test]
+fn rawset_on_a_non_table_names_the_lua_message_and_the_game_code_line() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","bad"]]}
+    ]}"#;
+    let code = "function bad() rawset(1, 2, 3) end";
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    let err = game
+        .code_error()
+        .expect("rawset(1, 2, 3) должен остановить партию");
+    assert_eq!(
+        err.message, "bad argument #1 to 'rawset' (table expected)",
+        "{err:?}"
+    );
+    assert_eq!(err.line, Some(1), "{err:?}");
+}
+
+/// «Код игры»: `error({})` — объект ошибки не строка, без текста места, но со строкой кода игры,
+/// откуда он брошен.
+#[test]
+fn error_with_a_non_string_object_names_the_game_code_line() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","bad"]]}
+    ]}"#;
+    let code = "function bad()\n    error({})\nend";
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    let err = game
+        .code_error()
+        .expect("error({{}}) должен остановить партию");
+    assert_eq!(err.line, Some(2), "{err:?}");
+}
+
 /// «Код игры»: `getmetatable(_ENV).__index` — тот же настоящий стол глобальных, без защиты, если
 /// его отдать как есть; `__metatable` на прокси должен закрыть и этот путь.
 #[test]
@@ -1151,6 +1309,29 @@ end
     assert!(
         game.code_error().is_some(),
         "getmetatable(obj) не должен отдавать метатаблицу, которую можно поменять"
+    );
+}
+
+/// «Код игры»: `setmetatable(obj, {})` — объект userdata, не таблица, обычный Lua отказывает
+/// `setmetatable` на любом значении кроме таблицы.
+#[test]
+fn setmetatable_on_an_object_stops_the_game() {
+    let props = r#"{"properties":{"marker":"flag","wall":"flag"}}"#;
+    let scene = r##"{"objects":[
+        {"position":[0,0],"size":[1,1],"collides":true,"marker":true},
+        {"position":[0,0],"size":[1,1],"collides":true,"wall":true}
+    ]}"##;
+    let rules = r#"{"rules":[
+        {"kind":"collide","a":{"has":["marker"]},"b":{"has":["wall"]},"do":[["run","tamper"]]}
+    ]}"#;
+    let code = "function tamper(obj) setmetatable(obj, {}) end";
+    let (mut game, _screens, warnings) =
+        load(props, scene, rules, code).expect("должно загрузиться");
+    assert_eq!(warnings, Vec::new(), "{warnings:?}");
+    game.step(StepInput::empty());
+    assert!(
+        game.code_error().is_some(),
+        "setmetatable(obj, {{}}) должен остановить партию, obj — не таблица"
     );
 }
 

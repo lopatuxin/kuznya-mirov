@@ -661,4 +661,16 @@ impl LuaSandboxApi for Lua {
         config.insert_global(name, value);
         Ok(())
     }
+
+    fn set_instruction_budget(&mut self, limit: u64) {
+        self.global_state_owner
+            .main_state()
+            .set_instruction_budget(limit);
+    }
+
+    fn instruction_budget_remaining(&mut self) -> Option<u64> {
+        self.global_state_owner
+            .main_state()
+            .instruction_budget_remaining()
+    }
 }

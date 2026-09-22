@@ -30,8 +30,9 @@ use crate::lua_vm::{
 use crate::platform_time::unix_nanos;
 use crate::stdlib::debug::{objtypename, ordererror, pub_getfuncname};
 use crate::{
-    AsyncReturnValue, DebugInfo, FromLua, IntoLua, LuaAnyRef, LuaFullError, LuaFunctionRef,
-    LuaProto, LuaRegistrable, LuaStringRef, LuaTableRef, RefAliveToken, UserDataRef,
+    AsyncReturnValue, CodeFrame, DebugInfo, FromLua, IntoLua, LuaAnyRef, LuaFullError,
+    LuaFunctionRef, LuaProto, LuaRegistrable, LuaStringRef, LuaTableRef, RefAliveToken,
+    UserDataRef,
 };
 
 /// Internal description of a call frame to be pushed.
@@ -202,6 +203,12 @@ pub struct LuaState {
 
     #[cfg(feature = "sandbox")]
     pub(crate) sandbox_limits: Option<SandboxRuntimeLimits>,
+
+    /// Instruction budget set by the host via [`LuaState::set_instruction_budget`]:
+    /// unlike `sandbox_limits` (reset fresh on every `execute_sandboxed` call), this
+    /// persists across calls until the host sets it again.
+    #[cfg(feature = "sandbox")]
+    pub(crate) instruction_budget: Option<u64>,
 }
 
 impl LuaState {
@@ -242,6 +249,8 @@ impl LuaState {
             pending_future: None,
             #[cfg(feature = "sandbox")]
             sandbox_limits: None,
+            #[cfg(feature = "sandbox")]
+            instruction_budget: None,
         }
     }
 
@@ -887,9 +896,11 @@ impl LuaState {
 
     /// Set a runtime error message.
     ///
-    /// Mirrors Lua 5.5's luaG_runerror boundary: VM/runtime errors raised from
-    /// an active Lua frame carry source information immediately, while errors
-    /// raised from C/host frames keep their raw message.
+    /// Mirrors Lua 5.5's luaG_runerror for an error raised directly from an
+    /// active Lua frame: the location is that frame's own current line. For an
+    /// error raised from a C/host frame (a library or host function), mirrors
+    /// `luaL_error`'s `luaL_where(L, 1)`: the location is the *caller's* line,
+    /// since the C frame itself carries no line info.
     #[cold]
     #[inline(never)]
     pub fn error(&mut self, msg: String) -> LuaError {
@@ -903,7 +914,16 @@ impl LuaState {
             return msg;
         };
 
-        let Some(location) = Self::frame_error_location(ci) else {
+        let location_ci = if ci.is_c() {
+            if ci.previous.is_null() {
+                return msg;
+            }
+            unsafe { &*ci.previous }
+        } else {
+            ci
+        };
+
+        let Some(location) = Self::frame_error_location(location_ci) else {
             return msg;
         };
 
@@ -1075,6 +1095,46 @@ impl LuaState {
         }
 
         result
+    }
+
+    /// Every Lua frame live on the call stack right now, deepest (most recently called) frame
+    /// first — the same frames [`Self::generate_traceback`] walks, but as data a host can search
+    /// structurally instead of by re-parsing formatted text. Called from [`Self::get_full_error`]
+    /// at the moment an error is reported: an unprotected call (`execute_sandboxed`/`call`)
+    /// leaves its erroring frames on the stack rather than popping them (they propagate as
+    /// `Err` through `?`, same as C Lua's uncaught error unwinding — see `Self::call`'s own
+    /// doc comment), so they are still here whichever error kind is being reported, including
+    /// one raised from deep inside GC allocation (`OutOfMemory`) or the instruction budget check
+    /// (`InstructionBudgetExceeded`), neither of which carries any location in its own message. A
+    /// `pcall` that catches an error pops its frames back down on the way out (see
+    /// `Self::pcall_inner`), so nothing from an earlier, already-handled error lingers here.
+    pub(crate) fn capture_code_frames(&self) -> Vec<CodeFrame> {
+        let valid_frames = &self.call_stack[..self.call_depth];
+        valid_frames
+            .iter()
+            .rev()
+            .filter_map(|ci| {
+                if !ci.is_lua() || ci.chunk_ptr.is_null() {
+                    return None;
+                }
+                // SAFETY: a live Lua frame's `chunk_ptr` names a prototype kept alive for as
+                // long as the frame is on the call stack.
+                let chunk = unsafe { &*ci.chunk_ptr };
+                let source = chunk
+                    .source_name
+                    .as_deref()
+                    .unwrap_or("[string]")
+                    .to_string();
+                let line = if ci.pc > 0 && (ci.pc as usize - 1) < chunk.line_info.len() {
+                    chunk.line_info[ci.pc as usize - 1]
+                } else if !chunk.line_info.is_empty() {
+                    chunk.line_info[0]
+                } else {
+                    0
+                };
+                Some(CodeFrame { source, line })
+            })
+            .collect()
     }
 
     /// Set yield values
@@ -2595,12 +2655,17 @@ impl LuaState {
     }
 
     pub fn get_full_error(&mut self, e: LuaError) -> LuaFullError {
+        let frames = self.capture_code_frames();
         let message = self.get_error_msg(e);
         let message = match e {
             LuaError::CompileError => message,
             _ => self.render_error_message(&message),
         };
-        LuaFullError { kind: e, message }
+        LuaFullError {
+            kind: e,
+            message,
+            frames,
+        }
     }
 
     fn render_error_message(&mut self, error_msg: &str) -> String {
@@ -4526,11 +4591,37 @@ impl LuaState {
     #[cfg(feature = "sandbox")]
     #[inline(always)]
     pub(crate) fn has_active_instruction_watch(&self) -> bool {
-        self.hook_mask != 0 || self.sandbox_limits.is_some()
+        self.hook_mask != 0 || self.sandbox_limits.is_some() || self.instruction_budget.is_some()
+    }
+
+    /// Set the host's instruction budget: unlike [`SandboxConfig::instruction_limit`],
+    /// which `execute_sandboxed` resets on every call, this persists across calls —
+    /// the host sums usage over as many calls as it likes and calls this again to
+    /// reset it (e.g. once per simulation step). Every Lua VM instruction, in and
+    /// out of `pcall`, spends one unit; once it reaches zero, this and every later
+    /// operation error with [`LuaError::InstructionBudgetExceeded`] until the host
+    /// calls this again.
+    #[cfg(feature = "sandbox")]
+    pub fn set_instruction_budget(&mut self, limit: u64) {
+        self.instruction_budget = Some(limit);
+    }
+
+    /// Remaining units of the budget set by [`LuaState::set_instruction_budget`],
+    /// or `None` when no budget is set (no counting is done in that case).
+    #[cfg(feature = "sandbox")]
+    pub fn instruction_budget_remaining(&self) -> Option<u64> {
+        self.instruction_budget
     }
 
     #[cfg(feature = "sandbox")]
     pub(crate) fn check_sandbox_runtime_limits(&mut self) -> LuaResult<()> {
+        if let Some(remaining) = self.instruction_budget {
+            if remaining == 0 {
+                return Err(LuaError::InstructionBudgetExceeded);
+            }
+            self.instruction_budget = Some(remaining - 1);
+        }
+
         let Some(mut limits) = self.sandbox_limits else {
             return Ok(());
         };

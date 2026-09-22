@@ -5,24 +5,22 @@
 //! [`Runner::run`] вызывает одну из них с объектами-аргументами по месту вызова правила.
 //!
 //! Объекты и пары в коде — userdata `luars` ([`ObjRef`]/[`PairRef`]) с общей метатаблицей,
-//! строятся заново на каждый возврат в Lua через собственные `IntoLua`. Не таблицы: у таблицы
-//! `luars` 0.26.3 запись `t.k = nil` обрабатывает сам, не зовя `__newindex` (`pset_shortstr`
-//! отвечает «готово» и на отсутствующий ключ, а `op_set_field` принимает это за обновление
-//! существующего), так что «запись `nil` убирает свойство» до движка бы не доходила; запись в
-//! userdata всегда идёт через `__newindex` (`finishset`). Ни одно
-//! зарегистрированное здесь замыкание не захватывает `LuaTable`/`LuaFunction` (или их контейнер)
-//! по значению: у этих типов `Drop` обращается назад в `GlobalState` того же `Lua`, а замыкания
-//! сами хранятся внутри него же — получилась бы такая пара, чей порядок разрушения `Lua` никаким
-//! порядком полей уже не выправить. Держать разрешено только copy-значения (`LuaValue`) и `Rc`
-//! обычных, не-Lua данных.
+//! строятся заново на каждый возврат в Lua через собственные `IntoLua`. Не таблицы — решение
+//! «Объект и пара в коде — userdata `luars`, а не таблица» (Журнал Кузни, 2026-09-22): `type` их
+//! называет `userdata`, не `table`. Ни одно зарегистрированное здесь замыкание не захватывает
+//! `LuaTable`/`LuaFunction` (или их контейнер) по значению: у этих типов `Drop` обращается назад
+//! в `GlobalState` того же `Lua`, а замыкания сами хранятся внутри него же — получилась бы такая
+//! пара, чей порядок разрушения `Lua` никаким порядком полей уже не выправить. Держать разрешено
+//! только copy-значения (`LuaValue`) и `Rc` обычных, не-Lua данных.
 
 use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
 
 use luars::{
-    FromLua, IntoLua, Lua, LuaApi, LuaFunction, LuaResult, LuaSandboxApi, LuaState, LuaTable,
-    LuaUserdata, LuaValue, SafeOption, SandboxConfig, Stdlib, UserDataTrait,
+    FromLua, IntoLua, Lua, LuaApi, LuaError, LuaFunction, LuaResult, LuaSandboxApi, LuaState,
+    LuaTable, LuaUserdata, LuaValue, SafeOption, SandboxConfig, Stdlib, UserDataTrait,
+    lua_float_to_string,
 };
 
 use super::property::{self, PropertyId, PropertyTable};
@@ -32,21 +30,14 @@ use super::value::{PropKind, Rotation};
 use super::world::World;
 
 /// «Код игры»: предел операций Lua — на прогон файла при загрузке (свой, отдельный бюджет) и на
-/// все вызовы `run` одного шага партии вместе (общий бюджет). `SandboxConfig::instruction_limit`
-/// (`luars`) ограничивает только один вызов `execute_sandboxed` и не отдаёт наружу, сколько
-/// операций тот в действительности потратил (сам остаток живёт в `pub(crate)` поле `LuaState`,
-/// см. `with_sandbox_runtime_limits`/`check_sandbox_runtime_limits` в `luars` 0.26.3) — счёт по
-/// всем вызовам шага вместе даёт `debug.sethook(hook, "", 1)`: программный `LuaState::set_hook`
-/// крейт тоже держит `pub(crate)`, но сам `debug` — обычная библиотека Lua, доступная изнутри
-/// движка через настоящую (не песочную) `Lua::execute`. Счётный хук ставится один раз в `build`
-/// и вызывается на каждой отдельной операции Lua: count=1 — единственное значение, застрахованное
-/// от `hook_on_call`, который перевзводит остаток `count` при входе в любую функцию и с бо́льшим
-/// `count` дал бы коду с частыми вызовами функций (цикл вида `while true do f() end`) обходить
-/// предел, ни разу не исчерпав остаток между двумя вызовами (проверено по `execute/hook.rs` в
-/// исходниках `luars` 0.26.3 и отдельным тестом на именно таком цикле). Хук копит сумму в
-/// `Runner::step_ops`, общую для всех вызовов `run` до следующего `Game::step`
-/// (`reset_step_budget`); то же поле, ещё не сброшенное ни разу, служит и бюджетом самого файла
-/// при загрузке.
+/// все вызовы `run` одного шага партии вместе (общий бюджет). Своя копия `luars` держит этот
+/// остаток прямо в `LuaState` и списывает с него на каждой операции для всех вызовов
+/// `run`/`execute_sandboxed` вместе, пока хозяин не выставит бюджет заново (`Lua::
+/// set_instruction_budget`/`instruction_budget_remaining` — публичные методы `LuaSandboxApi`) —
+/// `pcall` его не сбрасывает и не обходит. `SandboxConfig::instruction_limit` остаётся отдельным,
+/// per-call пределом одного вызова `execute_sandboxed`, как у автора, и здесь не используется.
+/// Бюджет выставляется в `build` перед прогоном верхнего уровня файла и в
+/// `Runner::reset_step_budget` в начале каждого шага партии.
 const INSTRUCTION_LIMIT: u64 = 1_000_000;
 /// «Код игры»: предел памяти исполнителя — на весь его срок жизни, не на отдельный вызов
 /// (`SafeOption::max_memory_limit`, а не временный `SandboxConfig::memory_limit_bytes`).
@@ -622,51 +613,9 @@ struct Env {
     vec2_mt: LuaValue,
 }
 
-/// «Код игры»: диспетчер метаметодов `luars` вызывает как `__index`/`__newindex` только
-/// настоящее Lua-замыкание или голый C-указатель на функцию — замыкание Rust с захваченным
-/// состоянием («rclosure», то, что строит `create_function`) он там не распознаёт, и вызов падает
-/// с «attempt to call a function value». Крохотная обёртка на Lua решает это в лоб: диспетчер
-/// метаметода вызывает обёртку (настоящее Lua-замыкание), а та вызывает rclosure обычным
-/// вызовом — путём, для которого rclosure и сделан: именно так уже работают `find`/`delete`/
-/// `print`/`math.random`.
-fn lua_wrap2(lua: &mut Lua, f: LuaFunction) -> LuaResult<LuaFunction> {
-    lua.load("local f = ...\nreturn function(a, b) return f(a, b) end")
-        .call(f)
-}
-
-fn lua_wrap3(lua: &mut Lua, f: LuaFunction) -> LuaResult<LuaFunction> {
-    lua.load("local f = ...\nreturn function(a, b, c) return f(a, b, c) end")
-        .call(f)
-}
-
-/// «Код игры»: installs the count hook that backs `INSTRUCTION_LIMIT` — see that constant's own
-/// doc comment for why `debug.sethook`/count=1 rather than `SandboxConfig::instruction_limit`.
-/// `ops` is bumped once per Lua VM instruction for the rest of this `Lua`'s life, across every
-/// later `execute_sandboxed` call; `Runner::reset_step_budget` is the only thing that zeroes it.
-fn install_instruction_hook(lua: &mut Lua, ops: Rc<Cell<u64>>) -> LuaResult<()> {
-    let hook_fn = lua.create_function(
-        move |_event: Option<LuaValue>, _line: Option<LuaValue>| -> Result<(), String> {
-            let used = ops.get() + 1;
-            ops.set(used);
-            if used > INSTRUCTION_LIMIT {
-                return Err(format!(
-                    "превышен предел операций кода ({INSTRUCTION_LIMIT}) за шаг"
-                ));
-            }
-            Ok(())
-        },
-    )?;
-    lua.set_global("__kzhook", hook_fn)?;
-    lua.execute("debug.sethook(__kzhook, '', 1)")?;
-    lua.set_global("__kzhook", LuaValue::nil())?;
-    Ok(())
-}
-
-/// «Код игры»: `_ENV` и `_G` кода — userdata без собственных полей, а не пустая прокси-таблица:
-/// у таблицы `luars` 0.26.3 запись `t.k = nil` при отсутствующем `k` считает сделанной сам
-/// (`pset_shortstr` отвечает «готово», `op_set_tabup`/`op_set_field` не зовут `__newindex`), так
-/// что `counter = nil` из функции молча пропадала бы, а на верхнем уровне файла не убирала бы
-/// объявленное. Чтение и запись в userdata всегда идут через метатаблицу (`finishget`/`finishset`).
+/// «Код игры»: `_ENV` и `_G` кода — userdata без собственных полей, а не пустая прокси-таблица —
+/// решение «`_ENV` и `_G` кода игры — userdata, а не пустая таблица» (Журнал Кузни, 2026-09-22):
+/// `type(_G)` даёт `userdata`, `rawget`/`next`/`#` на `_G` — ошибка, а не пустой ответ.
 struct Globals;
 
 impl UserDataTrait for Globals {
@@ -685,23 +634,57 @@ impl UserDataTrait for Globals {
 
 /// «Код игры»: `rawset` не смотрит на `__newindex` — `rawset(env, 'x', 1)` писал бы в настоящий
 /// стол глобальных мимо ловушки в обход запрета «запись в глобальную переменную из функции».
-/// Обёртка отказывает тем же текстом, когда первый аргумент — прокси `_ENV`/`_G` (сам `rawset`
+/// Замыкание отказывает тем же текстом, когда первый аргумент — прокси `_ENV`/`_G` (сам `rawset`
 /// userdata не принял бы, но с чужим текстом) или настоящее окружение, а для любой другой таблицы
-/// (свои собственные таблицы кода) работает как обычный `rawset`.
+/// (свои собственные таблицы кода) работает как обычный `rawset`. Никакой Lua-обёртки между этим
+/// замыканием и game-кодом больше нет — место у ошибки «table expected» и любой другой отсюда
+/// потому остаётся строкой самого game-кода: `luars` берёт для ошибки C-функции место кадра,
+/// который её вызвал, а вызывающий здесь — сам вызов `rawset(...)` в файле игры, не промежуточная
+/// Lua-функция.
 fn install_protected_rawset(lua: &mut Lua, env: &LuaTable, proxy_env: LuaValue) -> LuaResult<()> {
-    let real_rawset: LuaFunction = env.get("rawset")?;
-    let wrapped: LuaFunction = lua
-        .load(
-            "local real_rawset, real_env, proxy_env = ...\n\
-             return function(t, k, v)\n\
-                 if t == real_env or t == proxy_env then\n\
-                     error('запись в глобальную переменную из функции: ' .. tostring(k), 2)\n\
-                 end\n\
-                 return real_rawset(t, k, v)\n\
-             end",
-        )
-        .call((real_rawset, env.clone(), proxy_env))?;
+    // SAFETY: `env` stays alive on `Runner` for the whole party (it is `Runner::env`); the copy
+    // is only compared for identity inside a closure that only runs while that same `Runner`
+    // (and so `lua`, and so this table) is alive — see the note at the top of this file on why a
+    // `LuaValue` copy is used here instead of holding `LuaTable` itself.
+    let real_env = unsafe { env.to_value() };
+    let wrapped = lua.create_function(
+        move |table: LuaValue, key: LuaValue, value: LuaValue| -> Result<ProtectedRawSet, String> {
+            if table == real_env || table == proxy_env {
+                return Err(format!(
+                    "запись в глобальную переменную из функции: {}",
+                    tostring_like(&key)
+                ));
+            }
+            Ok(ProtectedRawSet { table, key, value })
+        },
+    )?;
     env.set("rawset", wrapped)
+}
+
+/// A `rawset` call's arguments, once known not to target a protected environment — checked and
+/// applied here, not in the closure `install_protected_rawset` registers, because that needs
+/// `&mut LuaState` (`LuaState::to_table_ref`), which this file only ever gets through
+/// `FromLua`/`IntoLua` (see the note at the top of this file); an error from here still names the
+/// same calling line as one from that closure, since `into_lua` runs within the same call.
+struct ProtectedRawSet {
+    table: LuaValue,
+    key: LuaValue,
+    value: LuaValue,
+}
+
+impl IntoLua for ProtectedRawSet {
+    fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
+        let table = state
+            .to_table_ref(self.table)
+            .ok_or_else(|| "bad argument #1 to 'rawset' (table expected)".to_string())?;
+        if self.key.as_number().is_some_and(f64::is_nan) {
+            return Err("table index is NaN".to_string());
+        }
+        table
+            .rawset_typed(self.key, self.value)
+            .map_err(|e| format!("{e:?}"))?;
+        self.table.into_lua(state)
+    }
 }
 
 fn install_object_metatable(
@@ -731,7 +714,6 @@ fn install_object_metatable(
             )
         },
     )?;
-    let index_fn = lua_wrap2(lua, index_fn)?;
     mt.set("__index", index_fn)?;
 
     let newindex_env = env.clone();
@@ -754,7 +736,6 @@ fn install_object_metatable(
             )
         },
     )?;
-    let newindex_fn = lua_wrap3(lua, newindex_fn)?;
     mt.set("__newindex", newindex_fn)?;
 
     Ok(())
@@ -790,7 +771,6 @@ fn install_vec2_metatable(lua: &mut Lua, world_cell: &CtxCell, mt: &LuaTable) ->
                 other => Err(format!("у пары нет поля \"{other}\"")),
             }
         })?;
-    let index_fn = lua_wrap2(lua, index_fn)?;
     mt.set("__index", index_fn)?;
 
     let newindex_cell = world_cell.clone();
@@ -817,7 +797,6 @@ fn install_vec2_metatable(lua: &mut Lua, world_cell: &CtxCell, mt: &LuaTable) ->
             Ok(())
         },
     )?;
-    let newindex_fn = lua_wrap3(lua, newindex_fn)?;
     mt.set("__newindex", newindex_fn)?;
 
     Ok(())
@@ -935,33 +914,37 @@ fn install_play_sound(
     })
 }
 
+/// «Код игры»: те же строки, что `tostring` без `__tostring` — ничего из того, что попадает в
+/// код игры, его не определяет — но не через сам `Display` `LuaValue`: для чисел с плавающей
+/// точкой он расходится с `tostring` (`NaN`/полное разложение больших степеней десяти вместо
+/// `-nan`/`1e300` с точкой). Числа поэтому идут через `lua_float_to_string`, тот же форматтер,
+/// что использует `tostring` библиотеки; остальные виды значений — через `Display`, который для
+/// них с `tostring` совпадает.
+fn tostring_like(value: &LuaValue) -> String {
+    if value.is_float() {
+        return lua_float_to_string(value.as_number().expect("is_float"));
+    }
+    value.to_string()
+}
+
 /// «Код игры»: печатает через табуляцию, как обычный Lua, с любым числом аргументов, включая
-/// `nil` посередине — типизированные замыкания `luars` не видят настоящее число аргументов
-/// (`nil` по умолчанию за недостающие неотличим от переданного явно), так что счёт и склейку
-/// делает тонкая Lua-обёртка через `select('#', ...)`, тем же приёмом, что `lua_wrap2`/
-/// `lua_wrap3` оборачивают метаметоды, и отдаёт Rust уже готовую строку.
+/// `nil` посередине — `Fn(Vec<LuaValue>)` видит настоящее число переданных аргументов (в отличие
+/// от фиксированной арности, где отсутствующий и переданный `nil` неразличимы). Каждый аргумент
+/// идёт через `tostring_like`, а не через настоящий `tostring` как значение из `get_global`:
+/// `LuaFunction`, захваченная здесь по значению, была бы ровно тем захватом, что запрещает
+/// заметка в начале файла — её `Drop` обращается назад в `GlobalState`, а сама она хранилась бы
+/// внутри него же, в этом самом замыкании.
 fn install_print(lua: &mut Lua, base_cell: &CtxCell) -> LuaResult<LuaFunction> {
     let base_cell = base_cell.clone();
-    let sink = lua.create_function(move |line: String| -> Result<(), String> {
+    lua.create_function(move |args: Vec<LuaValue>| -> Result<(), String> {
         let ptr = base_ptr(&base_cell)?;
         // SAFETY: `Runner::compile`/`Runner::run` set this pointer for the whole span of the
         // call into Lua and clear it right after; Lua is single-threaded.
         let ctx = unsafe { &mut *ptr };
-        ctx.messages.push(format!("print: {line}"));
+        let parts: Vec<String> = args.iter().map(tostring_like).collect();
+        ctx.messages.push(format!("print: {}", parts.join("\t")));
         Ok(())
-    })?;
-    lua.load(
-        "local sink = ...\n\
-         return function(...)\n\
-             local n = select('#', ...)\n\
-             local parts = {}\n\
-             for i = 1, n do\n\
-                 parts[i] = tostring(select(i, ...))\n\
-             end\n\
-             return sink(table.concat(parts, '\\t'))\n\
-         end",
-    )
-    .call(sink)
+    })
 }
 
 /// «Код игры»: без аргументов `math.random` — дробное число, с аргументами — Lua integer
@@ -1047,7 +1030,7 @@ fn install_math_random(lua: &mut Lua, base_cell: &CtxCell) -> LuaResult<LuaFunct
 
 /// `Runner::build`'s result before `compile` assembles it into a `Runner` — named only to keep
 /// `clippy::type_complexity` quiet.
-type BuildOutput = (LuaTable, LuaTable, LuaTable, Vec<String>, Rc<Cell<u64>>);
+type BuildOutput = (LuaTable, LuaTable, LuaTable, Vec<String>);
 
 /// Один загруженный, готовый к работе файл кода игры — создаётся заново и для проверки при
 /// загрузке, и для каждой партии («каждая партия создаёт свежий исполнитель»).
@@ -1067,9 +1050,6 @@ pub struct Runner {
     declared_functions: Vec<String>,
     base_cell: CtxCell,
     world_cell: CtxCell,
-    /// «Код игры»: операции, потраченные всеми вызовами `run` с последнего `reset_step_budget` —
-    /// делит счётный хук, установленный в `build`, со всей жизнью `lua` (см. `INSTRUCTION_LIMIT`).
-    step_ops: Rc<Cell<u64>>,
     lua: Lua,
 }
 
@@ -1122,7 +1102,7 @@ impl Runner {
         restore_ctx(&base_cell, prev);
 
         match result {
-            Ok((env, obj_mt, vec2_mt, declared_functions, step_ops)) => Ok(Runner {
+            Ok((env, obj_mt, vec2_mt, declared_functions)) => Ok(Runner {
                 chunk_name: chunk_name.to_string(),
                 env,
                 obj_mt,
@@ -1130,12 +1110,16 @@ impl Runner {
                 declared_functions,
                 base_cell,
                 world_cell,
-                step_ops,
                 lua,
             }),
             Err(err) => {
                 let full = lua.get_error_message(err);
-                Err(parse_full_error(chunk_name, full))
+                Err(match err {
+                    LuaError::InstructionBudgetExceeded => {
+                        budget_exceeded_error(deepest_code_line(chunk_name, &full))
+                    }
+                    _ => parse_full_error(chunk_name, full),
+                })
             }
         }
     }
@@ -1154,21 +1138,16 @@ impl Runner {
         // «Код игры»: `Lua::new` не ставит стандартную библиотеку сама — `create_sandbox_env`
         // только копирует из настоящих глобальных то, что там уже есть, так что без этого
         // `math`/`string`/`table`/`utf8` и базовые функции в песочнице были бы просто пусты.
-        // `Debug` открывается только на настоящих (не песочных) глобальных, для собственного
-        // использования движком (`debug.sethook` ниже) — `base_config.debug` остаётся `false`,
-        // так что в песочный `_ENV` кода игры она не копируется.
         lua.open_stdlibs(&[
             Stdlib::Basic,
             Stdlib::Math,
             Stdlib::String,
             Stdlib::Table,
             Stdlib::Utf8,
-            Stdlib::Debug,
         ])?;
-        // «Код игры»: предел операций — целиком на счётном хуке ниже, не здесь — `SandboxConfig::
-        // instruction_limit` сбрасывался бы заново на каждый вызов `execute_sandboxed` (свой
-        // отдельный бюджет на один вызов) и срабатывал бы раньше общего хука на первом же вызове
-        // шага, показывая английское сообщение `luars` вместо русского текста хука.
+        // «Код игры»: предел операций — целиком на бюджете `LuaState` (`INSTRUCTION_LIMIT`), не
+        // здесь — `SandboxConfig::instruction_limit` остаётся отдельным, per-call пределом одного
+        // вызова `execute_sandboxed`, как у автора, и тут не используется.
         let base_config = SandboxConfig {
             basic: true,
             math: true,
@@ -1189,8 +1168,7 @@ impl Runner {
             .get_upvalue(1)?
             .ok_or_else(|| lua.global_state_mut().error("код без _ENV".to_string()))?;
 
-        let step_ops: Rc<Cell<u64>> = Rc::new(Cell::new(0));
-        install_instruction_hook(lua, step_ops.clone())?;
+        lua.set_instruction_budget(INSTRUCTION_LIMIT);
 
         let obj_mt = lua.create_table()?;
         let vec2_mt = lua.create_table()?;
@@ -1257,11 +1235,10 @@ impl Runner {
         // а не на сам `env`, иначе `_G.x = ...` писал бы прямо в настоящий стол в обход прокси.
         let loading = lua.create_table()?;
         loading.set("on", true)?;
-        // «Код игры»: `__metatable` закрывает и `getmetatable(_ENV).__index` (настоящий `env` без
-        // защиты), и `getmetatable(_ENV).__newindex = nil` (снятие самой ловушки) разом —
-        // `getmetatable(_ENV)` отдаёт это значение вместо настоящей метатаблицы, а
-        // `setmetatable` на userdata в `luars` молча ничего не делает (меняет метатаблицу только
-        // у таблицы), обеих лазеек нет.
+        // «Код игры»: `__metatable` закрывает `getmetatable(_ENV).__index` — иначе он отдавал бы
+        // настоящий `env` без защиты; `setmetatable(_ENV, ...)` на этой userdata и без того ошибка
+        // («table expected, got userdata» — `setmetatable` требует таблицу первым аргументом), так
+        // что снять саму ловушку через него нельзя в любом случае.
         let proxy_mt: LuaTable = lua
             .load(
                 "local real, loading = ...\n\
@@ -1311,7 +1288,7 @@ impl Runner {
             })
             .collect();
 
-        Ok((env, obj_mt, vec2_mt, names, step_ops))
+        Ok((env, obj_mt, vec2_mt, names))
     }
 
     /// Имена функций, объявленных на верхнем уровне файла — для собственной проверки `run`
@@ -1321,10 +1298,10 @@ impl Runner {
     }
 
     /// «Код игры»: «предел на все вызовы кода за шаг» — `Game::step` calls this once per step,
-    /// before any `run`, so the budget the instruction hook enforces (see `INSTRUCTION_LIMIT`)
-    /// covers every `run` call of that step together, not each call separately.
+    /// before any `run`, so the budget (see `INSTRUCTION_LIMIT`) covers every `run` call of that
+    /// step together, not each call separately.
     pub fn reset_step_budget(&mut self) {
-        self.step_ops.set(0);
+        self.lua.set_instruction_budget(INSTRUCTION_LIMIT);
     }
 
     /// Вызывает `function` с объектами-аргументами по месту вызова правила — формы, которые
@@ -1400,56 +1377,79 @@ impl Runner {
 
     fn wrap(&mut self, err: luars::LuaError, function: &str) -> CodeError {
         let full = self.lua.get_error_message(err);
-        let mut error = parse_full_error(&self.chunk_name, full);
+        let mut error = match err {
+            LuaError::InstructionBudgetExceeded => {
+                budget_exceeded_error(deepest_code_line(&self.chunk_name, &full))
+            }
+            _ => parse_full_error(&self.chunk_name, full),
+        };
         error.function = Some(function.to_string());
         error
     }
 }
 
-/// The line a chunk-position prefix (Lua's own `luaO_chunkid` convention for a chunk loaded from
-/// a string: `[string "code.lua"]:12: ...`) names for `chunk_name`, wherever it first appears in
-/// `text` — not only as `text`'s own prefix. A `luars` error raised directly from Lua code
-/// (`error(...)`, a parse error) carries this prefix on `text` itself, but one raised from a Rust
-/// closure (`Err(String)` from `find`/`delete`/a property read or write — everything this file
-/// registers) never does: `luars` only stamps a raised error's message with source position when
-/// the frame raising it is itself a Lua frame, and the frame active inside a Rust closure is the
-/// C/host frame the VM pushed to call it, not a Lua one (confirmed against `luars` 0.26.3's own
-/// `LuaState::add_runtime_error_info`). That closure's error still shows up as the first line of
-/// `text`'s own stack traceback instead — `[C]: in function` immediately followed by the deepest
-/// Lua frame that called it, which is exactly the line coding this call — so scanning the whole
-/// text for the first occurrence of the chunk's own prefix, not just checking it as a prefix,
-/// finds the right line either way.
-fn find_chunk_line(chunk_name: &str, text: &str) -> Option<u32> {
-    let prefix = format!("[string \"{chunk_name}\"]:");
-    let rest = &text[text.find(prefix.as_str())? + prefix.len()..];
-    rest[..rest.find(':')?].trim().parse().ok()
+/// «Код игры»: тот же русский текст, что раньше давал счётный хук — своя копия `luars` различает
+/// исчерпание бюджета как отдельный вариант `LuaError::InstructionBudgetExceeded` (проверяется до
+/// разбора текста ошибки, не через её сообщение), но само сообщение об исчерпании — статичное
+/// английское `"instruction budget exceeded"`, без места в коде и без числа операций: строку даёт
+/// [`deepest_code_line`].
+fn budget_exceeded_error(line: Option<u32>) -> CodeError {
+    CodeError {
+        message: format!("превышен предел операций кода ({INSTRUCTION_LIMIT}) за шаг"),
+        line,
+        function: None,
+        rule: None,
+        step: None,
+    }
 }
 
+/// Строка кода игры в момент ошибки — самый глубокий (последний вызванный) кадр среди тех, что
+/// `luars` вернула в `LuaFullError::frames`, чей источник совпадает с `chunk_name`. То же самое
+/// когда-то находил `find_chunk_line` разбором текста трассировки: например, ошибка предела
+/// операций внутри Lua-ловушки `__newindex` прокси `_ENV` (`install_object_metatable` рядом,
+/// `proxy_mt` в `build`) случается в кадре ЭТОЙ ловушки, а не игрового файла — источник её кадра
+/// не `chunk_name`, и он пропускается в пользу кадра игрового файла под ним. `frames` пуст для
+/// ошибки разбора файла (до первого вызова ни одного Lua-кадра ещё нет) и для любой ошибки,
+/// пойманной `pcall` и не долетевшей досюда — `luars` заново обходит живой стек кадров при каждой
+/// ошибке, ничего не хранит между ними.
+fn deepest_code_line(chunk_name: &str, full: &luars::LuaFullError) -> Option<u32> {
+    full.frames()
+        .iter()
+        .find(|frame| frame.source == chunk_name)
+        .map(|frame| frame.line)
+}
+
+/// Lua ставит место ошибки в начало текста — `[string "code.lua"]:7:` у ошибки разбора,
+/// `code.lua:7:` у `error(...)` во время исполнения и у ошибки, которую вернула функция хозяина
+/// (`lua_state.rs`, `luaL_error`-подобное место вызывающей строки); снимается здесь только с
+/// текста сообщения. Сама строка берётся через [`deepest_code_line`], кроме ошибки разбора файла
+/// (`LuaError::CompileError`) — до первого вызова кадров ещё нет, и её строка остаётся текстовой,
+/// как и раньше.
 fn parse_full_error(chunk_name: &str, full: luars::LuaFullError) -> CodeError {
     let text = full.message();
     let first_line = text.lines().next().unwrap_or(text);
-    // Lua ставит место ошибки в начало текста — `[string "code.lua"]:7:` у ошибки разбора и
-    // `code.lua:7:` у `error(...)` во время исполнения; строка уже лежит в `line`, в тексте ей
-    // не место.
     let prefixes = [
         format!("[string \"{chunk_name}\"]:"),
         format!("{chunk_name}:"),
     ];
-    let message = prefixes
-        .iter()
-        .find_map(|prefix| {
-            let rest = first_line.strip_prefix(prefix.as_str())?;
-            let digits = rest.find(|c: char| !c.is_ascii_digit())?;
-            if digits == 0 {
-                return None;
-            }
-            rest[digits..].strip_prefix(':').map(str::trim_start)
-        })
-        .unwrap_or(first_line)
-        .to_string();
+    let stripped = prefixes.iter().find_map(|prefix| {
+        let rest = first_line.strip_prefix(prefix.as_str())?;
+        let digits = rest.find(|c: char| !c.is_ascii_digit())?;
+        if digits == 0 {
+            return None;
+        }
+        let line: u32 = rest[..digits].parse().ok()?;
+        let message = rest[digits..].strip_prefix(':')?.trim_start().to_string();
+        Some((line, message))
+    });
+    let text_line = stripped.as_ref().map(|(line, _)| *line);
+    let message = stripped
+        .map(|(_, message)| message)
+        .unwrap_or_else(|| first_line.to_string());
+    let line = deepest_code_line(chunk_name, &full).or(text_line);
     CodeError {
         message,
-        line: find_chunk_line(chunk_name, text),
+        line,
         function: None,
         rule: None,
         step: None,
@@ -1516,5 +1516,380 @@ mod tests {
             &mut messages,
         );
         assert!(result.is_ok(), "{:?}", result.err());
+    }
+
+    /// Регресс на изъян диспетчера метаметодов «своей» `luars` (замыкание Rust напрямую в роли
+    /// метаметода, требование 10): `call_c_function` восстанавливал top вызывающего кадра по
+    /// его `ci.top`, а `call_tm_res`/`call_tm_res1`/`call_tm_res_into` кладут метаметод ровно на
+    /// `func_pos == ci.top`, так что однозначный результат оказывался на слот выше top —
+    /// атомная фаза GC чистит стек выше top и могла обнулить его раньше, чем он попадёт в
+    /// регистр вызывающей стороны. На шестом же ОТДЕЛЬНОМ вызове `Runner::run` подряд `__index`
+    /// объекта начинал молча отдавать `nil` вместо только что записанного числа (тот же цикл
+    /// внутри ОДНОГО вызова `run`, сколько угодно раз подряд, не ломался никогда — расходится
+    /// именно число отдельных вызовов `execute_sandboxed`, то есть число атомных фаз GC).
+    /// Исправлено в `luars/src/lua_vm/execute/call.rs`: top не опускается ниже
+    /// `func_idx + nresults`, пока не пройдёт `check_gc_safe_point`. Тест держит регресс закрытым.
+    #[test]
+    fn object_property_survives_many_separate_run_calls() {
+        let mut properties = PropertyTable::new();
+        properties
+            .declare_author("score", PropKind::Number)
+            .unwrap();
+        let score = properties.resolve("score").unwrap();
+        let mut world = World::new(&properties);
+        let id = world.create();
+        world.set_number(id, score, 0.0);
+
+        let mut rng = Rng::new(1);
+        let mut messages = Vec::new();
+        let mut runner = Runner::compile(
+            "function bump(obj) obj.score = obj.score + 1 end",
+            "code.lua",
+            &properties,
+            &[],
+            &[],
+            &mut rng,
+            &mut messages,
+        )
+        .expect("compile");
+
+        let mut deletes = Vec::new();
+        let mut moved = vec![false; 1];
+        const CALLS: i64 = 20;
+        for call in 0..CALLS {
+            runner.reset_step_budget();
+            let mut sound_window = super::super::sound::SoundWindow::new(0);
+            let result = runner.run(
+                "bump",
+                &[id],
+                &mut world,
+                &mut rng,
+                &mut deletes,
+                &mut moved,
+                sound_window.marks(),
+                &mut messages,
+            );
+            assert!(result.is_ok(), "call {call}: {:?}", result.err());
+        }
+        assert_eq!(world.number_like(id, score), Some(CALLS as f64));
+    }
+
+    /// «Фаза 07» → нефункциональные требования: замер скорости, снятый до и после переключения
+    /// исполнителя — до правок на скачанной `luars` со счётным хуком, после — на своей копии с
+    /// библиотечным бюджетом. `compute` — вычислительная функция кода игры: цикл с арифметикой,
+    /// записью в таблицу и вызовами функции `add`; каждый вызов `run` укладывается в бюджет шага,
+    /// а между вызовами бюджет обнуляется, как между шагами партии (`Game::step`).
+    #[test]
+    #[ignore]
+    fn benchmark_repeated_run_calls() {
+        const LOOP_ITERATIONS: u32 = 5000;
+        const CALLS: usize = 300;
+
+        let mut properties = PropertyTable::new();
+        properties
+            .declare_author("score", PropKind::Number)
+            .unwrap();
+        let score = properties.resolve("score").unwrap();
+        let mut world = World::new(&properties);
+        let id = world.create();
+
+        let mut rng = Rng::new(1);
+        let mut messages = Vec::new();
+        let source = format!(
+            "function add(a, b) return a + b end\n\
+             function compute(obj)\n\
+                 local t = {{}}\n\
+                 local acc = 0\n\
+                 for i = 1, {LOOP_ITERATIONS} do\n\
+                     t[i] = add(acc, i)\n\
+                     acc = t[i]\n\
+                 end\n\
+                 obj.score = acc\n\
+                 return acc\n\
+             end"
+        );
+        let mut runner = Runner::compile(
+            &source,
+            "code.lua",
+            &properties,
+            &[],
+            &[],
+            &mut rng,
+            &mut messages,
+        )
+        .expect("compile");
+
+        let mut deletes = Vec::new();
+        let mut moved = vec![false; world.slot_count()];
+
+        let start = std::time::Instant::now();
+        for _ in 0..CALLS {
+            runner.reset_step_budget();
+            let mut sound_window = super::super::sound::SoundWindow::new(0);
+            let result = runner.run(
+                "compute",
+                &[id],
+                &mut world,
+                &mut rng,
+                &mut deletes,
+                &mut moved,
+                sound_window.marks(),
+                &mut messages,
+            );
+            assert!(result.is_ok(), "{:?}", result.err());
+        }
+        let elapsed = start.elapsed();
+        println!(
+            "{CALLS} вызовов run по {LOOP_ITERATIONS} итераций цикла: {elapsed:?} ({:?} на вызов)",
+            elapsed / CALLS as u32
+        );
+
+        let expected_sum = (u64::from(LOOP_ITERATIONS) * u64::from(LOOP_ITERATIONS + 1) / 2) as f64;
+        assert_eq!(world.number_like(id, score), Some(expected_sum));
+    }
+
+    /// Compiles `source` and runs `function` once (with a single live object argument when
+    /// `with_obj`), returning the resulting error, if any — the shared harness for
+    /// [`matrix_matches_head_message_and_line`].
+    fn run_and_capture_error(source: &str, function: &str, with_obj: bool) -> Option<CodeError> {
+        let mut properties = PropertyTable::new();
+        properties
+            .declare_author("score", PropKind::Number)
+            .unwrap();
+        let mut rng = Rng::new(1);
+        let mut messages = Vec::new();
+        let mut runner = Runner::compile(
+            source,
+            "code.lua",
+            &properties,
+            &[],
+            &[],
+            &mut rng,
+            &mut messages,
+        )
+        .expect("compile");
+        let mut world = World::new(&properties);
+        let id = world.create();
+        let args: &[u32] = if with_obj { &[id] } else { &[] };
+        let mut deletes = Vec::new();
+        let mut moved = vec![false; world.slot_count()];
+        let mut sound_window = super::super::sound::SoundWindow::new(0);
+        runner
+            .run(
+                function,
+                args,
+                &mut world,
+                &mut rng,
+                &mut deletes,
+                &mut moved,
+                sound_window.marks(),
+                &mut messages,
+            )
+            .err()
+    }
+
+    /// Compiles `source`, returning the error from loading it, if any — the load-time
+    /// counterpart of [`run_and_capture_error`].
+    fn load_and_capture_error(source: &str) -> Option<CodeError> {
+        let properties = PropertyTable::new();
+        let mut rng = Rng::new(1);
+        let mut messages = Vec::new();
+        Runner::compile(
+            source,
+            "code.lua",
+            &properties,
+            &[],
+            &[],
+            &mut rng,
+            &mut messages,
+        )
+        .err()
+    }
+
+    /// «Фаза 07» → ревью правки требования 12: `CodeError.line` — строка самого глубокого кадра
+    /// чанка кода игры на стеке в момент ошибки (`deepest_code_line`), тот же кадр, что раньше
+    /// находил `find_chunk_line` разбором текста трассировки. Таблица случаев снята вручную на
+    /// HEAD (коммит с чистой копией `luars`, до правок этой фазы) через временный git worktree —
+    /// `message` и `line` совпадают построчно с тем, что даёт HEAD; единственное намеренное
+    /// расхождение — `setmetatable(obj, {})` (требование 9: обычный Lua отказывает, HEAD молчал).
+    #[test]
+    fn matrix_matches_head_message_and_line() {
+        struct Case {
+            name: &'static str,
+            source: &'static str,
+            function: &'static str,
+            with_obj: bool,
+            message: &'static str,
+            line: Option<u32>,
+        }
+
+        let cases = [
+            Case {
+                name: "ошибка Lua в функции (арифметика с nil)",
+                source: "function f(obj) return nil + 1 end",
+                function: "f",
+                with_obj: true,
+                message: "attempt to perform arithmetic on a nil value",
+                line: Some(1),
+            },
+            Case {
+                name: "опечатка в имени свойства при чтении",
+                source: "function f(obj) return obj.nosuch end",
+                function: "f",
+                with_obj: true,
+                message: "неизвестное свойство \"nosuch\"",
+                line: Some(1),
+            },
+            Case {
+                name: "опечатка в имени свойства при записи",
+                source: "function f(obj) obj.nosuch = 1 end",
+                function: "f",
+                with_obj: true,
+                message: "неизвестное свойство \"nosuch\"",
+                line: Some(1),
+            },
+            Case {
+                name: "error('boom')",
+                source: "function f() error('boom') end",
+                function: "f",
+                with_obj: false,
+                message: "boom",
+                line: Some(1),
+            },
+            Case {
+                name: "error('boom', 2) прямо из функции правила",
+                source: "function f() error('boom', 2) end",
+                function: "f",
+                with_obj: false,
+                message: "boom",
+                line: Some(1),
+            },
+            Case {
+                name: "error('boom', 2) во вложенной функции",
+                source: "function g() error('boom', 2) end\nfunction f() g() end",
+                function: "f",
+                with_obj: false,
+                message: "boom",
+                line: Some(1),
+            },
+            Case {
+                name: "error('boom', 0)",
+                source: "function f() error('boom', 0) end",
+                function: "f",
+                with_obj: false,
+                message: "boom",
+                line: Some(1),
+            },
+            Case {
+                name: "assert(false, 'x')",
+                source: "function f() assert(false, 'x') end",
+                function: "f",
+                with_obj: false,
+                message: "x",
+                line: Some(1),
+            },
+            Case {
+                name: "rawset(1,2,3)",
+                source: "function f() rawset(1, 2, 3) end",
+                function: "f",
+                with_obj: false,
+                message: "bad argument #1 to 'rawset' (table expected)",
+                line: Some(1),
+            },
+            Case {
+                name: "запись в глобальную из функции",
+                source: "function f() counter = 1 end",
+                function: "f",
+                with_obj: false,
+                message: "запись в глобальную переменную из функции: counter",
+                line: Some(1),
+            },
+            Case {
+                name: "предел операций в шаге — простой цикл",
+                source: "function f() while true do end end",
+                function: "f",
+                with_obj: false,
+                message: "превышен предел операций кода (1000000) за шаг",
+                line: Some(1),
+            },
+            Case {
+                name: "предел операций в шаге — цикл в pcall",
+                source: "function f() pcall(function() while true do end end) end",
+                function: "f",
+                with_obj: false,
+                message: "превышен предел операций кода (1000000) за шаг",
+                line: Some(1),
+            },
+            Case {
+                name: "предел операций в шаге — while true do f() end",
+                source: "function noop() end\nfunction f() while true do noop() end end",
+                function: "f",
+                with_obj: false,
+                message: "превышен предел операций кода (1000000) за шаг",
+                line: Some(2),
+            },
+        ];
+
+        for case in cases {
+            let err = run_and_capture_error(case.source, case.function, case.with_obj)
+                .unwrap_or_else(|| panic!("{}: ожидалась ошибка", case.name));
+            assert_eq!(err.message, case.message, "{}: {err:?}", case.name);
+            assert_eq!(err.line, case.line, "{}: {err:?}", case.name);
+        }
+
+        // `error({})`/`error({}, 0)`: объект ошибки не строка — `tostring`-адрес меняется между
+        // запусками, сравнивается форма, не байты.
+        for source in [
+            "function f() error({}) end",
+            "function f() error({}, 0) end",
+        ] {
+            let err = run_and_capture_error(source, "f", false).expect("ожидалась ошибка");
+            assert!(err.message.starts_with("table: 0x"), "{err:?}");
+            assert_eq!(err.line, Some(1), "{err:?}");
+        }
+
+        // Нехватка памяти — само по себе и после пойманной `pcall`-ошибки: число байт у своей
+        // копии `luars` отличается от HEAD (другой учёт аллокатора), сообщение и строка совпадают.
+        for source in [
+            "function f() local s = string.rep('x', 20*1024*1024) end",
+            "function f() pcall(function() error('x') end) local s = string.rep('y', 20*1024*1024) end",
+        ] {
+            let err = run_and_capture_error(source, "f", false).expect("ожидалась ошибка");
+            assert!(
+                err.message
+                    .starts_with("out of memory: Memory limit exceeded:"),
+                "{err:?}"
+            );
+            assert_eq!(err.line, Some(1), "{err:?}");
+        }
+
+        // Предел операций при загрузке — свой отдельный бюджет, строка тоже совпадает с HEAD.
+        for (source, line) in [
+            ("while true do end", Some(1u32)),
+            ("function f() end\nwhile true do y = 1 end", Some(2)),
+        ] {
+            let err = load_and_capture_error(source).expect("ожидалась ошибка");
+            assert_eq!(
+                err.message, "превышен предел операций кода (1000000) за шаг",
+                "{err:?}"
+            );
+            assert_eq!(err.line, line, "{err:?}");
+        }
+
+        // Ошибка разбора файла — как на HEAD (до первого вызова кадров ещё нет, строка остаётся
+        // текстовой).
+        let err = load_and_capture_error("if true then\n").expect("ожидалась ошибка");
+        assert_eq!(err.line, Some(2), "{err:?}");
+
+        // Единственное намеренное расхождение с HEAD: на HEAD `setmetatable(obj, {})` не было
+        // ошибкой (обычный `rawset`-обход не считался изъяном), теперь обычный Lua 5.4/5.5
+        // отказывает на любом значении кроме таблицы (требование 9).
+        let err = run_and_capture_error("function f(obj) setmetatable(obj, {}) end", "f", true)
+            .expect("setmetatable(obj, {}) — намеренное расхождение с HEAD: теперь ошибка");
+        assert_eq!(
+            err.message,
+            "bad argument #1 to 'setmetatable' (table expected, got userdata)"
+        );
+        assert_eq!(err.line, Some(1));
     }
 }

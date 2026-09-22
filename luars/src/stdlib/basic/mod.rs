@@ -288,7 +288,7 @@ fn lua_tonumber(l: &mut LuaState) -> LuaResult<usize> {
 /// Format a float value matching Lua 5.5's tostringbuffFloat behavior:
 /// First try %.15g (max digits preserving tostring(tonumber(x)) == x),
 /// then %.17g if roundtrip fails, and append ".0" if result looks integer-like.
-pub(crate) fn lua_float_to_string(n: f64) -> String {
+pub fn lua_float_to_string(n: f64) -> String {
     if n.is_nan() {
         return "-nan".to_string();
     }
@@ -813,40 +813,45 @@ fn lua_setmetatable(l: &mut LuaState) -> LuaResult<usize> {
         .get_arg(2)
         .ok_or_else(|| l.error("bad argument #2 to 'setmetatable' (value expected)".to_string()))?;
 
-    if let Some(table_ref) = table.as_table_mut() {
-        // Check for __metatable protection on existing metatable
-        if let Some(existing_mt) = table_ref.get_metatable()
-            && let Some(mt_table) = existing_mt.as_table()
-        {
-            let key = l.create_string("__metatable")?;
-            let has_protection = mt_table.raw_get(&key).is_some_and(|v| !v.is_nil());
-            if has_protection {
-                return Err(l.error("cannot change a protected metatable".to_string()));
-            }
-        }
+    let Some(table_ref) = table.as_table_mut() else {
+        return Err(l.error(format!(
+            "bad argument #1 to 'setmetatable' (table expected, got {})",
+            table.type_name()
+        )));
+    };
 
-        match metatable.kind() {
-            LuaValueKind::Nil => {
-                table_ref.set_metatable(None);
-            }
-            LuaValueKind::Table => {
-                table_ref.set_metatable(Some(metatable));
-            }
-            _ => {
-                return Err(
-                    l.error("setmetatable() second argument must be a table or nil".to_string())
-                );
-            }
+    // Check for __metatable protection on existing metatable
+    if let Some(existing_mt) = table_ref.get_metatable()
+        && let Some(mt_table) = existing_mt.as_table()
+    {
+        let key = l.create_string("__metatable")?;
+        let has_protection = mt_table.raw_get(&key).is_some_and(|v| !v.is_nil());
+        if has_protection {
+            return Err(l.error("cannot change a protected metatable".to_string()));
         }
+    }
 
-        // GC write barrier: if the table is BLACK and the new metatable is WHITE,
-        // the GC must be notified. barrier_back turns the table back to GRAY
-        // so it gets re-traversed and the metatable gets properly marked.
-        // Without this, the metatable can be swept (freed) while the table still
-        // references it → dangling pointer → heap corruption.
-        if let Some(gc_ptr) = table.as_gc_ptr() {
-            l.gc_barrier_back(gc_ptr);
+    match metatable.kind() {
+        LuaValueKind::Nil => {
+            table_ref.set_metatable(None);
         }
+        LuaValueKind::Table => {
+            table_ref.set_metatable(Some(metatable));
+        }
+        _ => {
+            return Err(
+                l.error("setmetatable() second argument must be a table or nil".to_string())
+            );
+        }
+    }
+
+    // GC write barrier: if the table is BLACK and the new metatable is WHITE,
+    // the GC must be notified. barrier_back turns the table back to GRAY
+    // so it gets re-traversed and the metatable gets properly marked.
+    // Without this, the metatable can be swept (freed) while the table still
+    // references it → dangling pointer → heap corruption.
+    if let Some(gc_ptr) = table.as_gc_ptr() {
+        l.gc_barrier_back(gc_ptr);
     }
 
     // Lua 5.5: luaC_checkfinalizer - register object if __gc is present

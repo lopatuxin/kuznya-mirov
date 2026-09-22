@@ -29,6 +29,11 @@ pub enum LuaError {
     /// Attempt to access a borrowed userdata whose parent has been
     /// garbage collected or scope has ended. Static message.
     ExpiredReference,
+
+    /// The host's instruction budget (`LuaState::set_instruction_budget`) reached
+    /// zero. Distinct from `RuntimeError` so the host can tell it apart from any
+    /// other error and substitute its own message. Static message.
+    InstructionBudgetExceeded,
 }
 
 impl LuaError {
@@ -36,6 +41,7 @@ impl LuaError {
     pub fn static_message(&self) -> Option<&'static str> {
         match self {
             LuaError::ExpiredReference => Some("attempt to use an expired reference"),
+            LuaError::InstructionBudgetExceeded => Some("instruction budget exceeded"),
             _ => None,
         }
     }
@@ -54,6 +60,7 @@ impl std::fmt::Display for LuaError {
             LuaError::CloseThread => write!(f, "Close Thread"),
             LuaError::ErrorInErrorHandling => write!(f, "Error In Error Handling"),
             LuaError::ExpiredReference => write!(f, "Expired Reference"),
+            LuaError::InstructionBudgetExceeded => write!(f, "Instruction Budget Exceeded"),
         }
     }
 }
@@ -78,6 +85,22 @@ pub struct LuaFullError {
     pub kind: LuaError,
     /// The human-readable error message with source location and traceback
     pub message: String,
+    /// Every Lua frame live on the call stack when the error was raised, deepest (most
+    /// recently called) frame first — see [`LuaState::capture_code_frames`](
+    /// super::LuaState::capture_code_frames). Populated the same way for every error kind, so a
+    /// host can find its own chunk's line for `InstructionBudgetExceeded` or a non-string
+    /// `error(...)` object exactly as for any other error, without parsing `message`.
+    pub frames: Vec<CodeFrame>,
+}
+
+/// One Lua frame's source and current line, as [`LuaFullError::frames`] holds it.
+#[derive(Debug, Clone)]
+pub struct CodeFrame {
+    /// The frame's chunk source name, exactly as given to `Lua::load(..).set_name(..)` (the
+    /// raw name, never the `[string "..."]`-wrapped display form `debug.traceback` prints).
+    pub source: String,
+    /// The line the frame's saved program counter points at.
+    pub line: u32,
 }
 
 impl std::fmt::Display for LuaFullError {
@@ -103,5 +126,11 @@ impl LuaFullError {
     #[inline]
     pub fn message(&self) -> &str {
         &self.message
+    }
+
+    /// Returns the call stack's frames at the moment the error was raised, deepest first.
+    #[inline]
+    pub fn frames(&self) -> &[CodeFrame] {
+        &self.frames
     }
 }

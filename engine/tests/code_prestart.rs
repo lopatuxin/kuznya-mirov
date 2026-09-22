@@ -62,6 +62,21 @@ fn syntax_error_names_the_line() {
     assert!(errors[0].line.is_some(), "{:?}", errors[0]);
 }
 
+/// «Код игры»: превышение предела операций во время верхнего уровня файла при загрузке — ошибка
+/// проверки перед запуском, со своим (не общим со степом) бюджетом, и называет строку.
+#[test]
+fn instruction_budget_exceeded_at_load_names_the_line() {
+    let errors = errors_for(RULES_EMPTY, Some("x = 1\nwhile true do end"));
+    assert_eq!(errors.len(), 1, "{errors:?}");
+    assert_eq!(errors[0].file, "code.lua");
+    assert!(
+        errors[0].message.contains("превышен предел операций кода"),
+        "{:?}",
+        errors[0]
+    );
+    assert_eq!(errors[0].line, Some(2), "{:?}", errors[0]);
+}
+
 /// «Код игры»: `find`/`delete`/`play_sound` на верхнем уровне файла — мира ещё нет.
 #[test]
 fn find_at_top_level_is_a_world_not_ready_error() {

@@ -9,9 +9,17 @@ const enginePkgManifest = resolve(engineDir, "pkg/package.json");
 
 // Только исходники движка, не весь `engine/` — иначе `engine/pkg` сам оказался бы под
 // наблюдением, и каждая пересборка тут же считалась бы новым изменением, требующим пересборки.
-const ENGINE_SOURCE_PATHS = ["src", "shaders", "Cargo.toml", "Cargo.lock"].map((entry) =>
-  resolve(engineDir, entry),
-);
+// `luars` — своя копия библиотеки, от которой зависит `engine/Cargo.toml`: правка её исходников
+// тоже должна делать `pkg` устаревшим, как и правка самого движка.
+const ENGINE_SOURCE_PATHS = [
+  "src",
+  "shaders",
+  "Cargo.toml",
+  "Cargo.lock",
+  "../luars/src",
+  "../luars/Cargo.toml",
+  "../luars/Cargo.lock",
+].map((entry) => resolve(engineDir, entry));
 
 /**
  * Самое позднее время правки файла или дерева файлов по `path`. Отсутствующий путь (например,

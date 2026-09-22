@@ -112,6 +112,63 @@ fn test_error() {
     assert!(result.is_err());
 }
 
+/// `error({})` — a non-string error object carries no location text at all (real Lua does not
+/// prepend one to a non-string error), but the call stack it was raised from is still there
+/// structurally.
+#[test]
+fn test_error_with_a_table_object_reports_frames_structurally() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let err = vm
+        .main_state()
+        .execute("local function f()\n  error({})\nend\nf()")
+        .unwrap_err();
+    let full = vm.main_state().get_full_error(err);
+
+    assert_eq!(full.frames[0].source, "@chunk", "{:?}", full.frames);
+    assert_eq!(full.frames[0].line, 2, "{:?}", full.frames);
+}
+
+/// An error a `pcall` catches pops its frames back off the call stack on the way out — the next,
+/// genuinely different error must not inherit them.
+#[test]
+fn test_pcall_caught_error_leaves_no_stale_frames_for_the_next_error() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let err = vm
+        .main_state()
+        .execute("pcall(function() error('a') end)\n\n\nerror('b')")
+        .unwrap_err();
+    let full = vm.main_state().get_full_error(err);
+
+    assert_eq!(full.frames[0].source, "@chunk", "{:?}", full.frames);
+    assert_eq!(full.frames[0].line, 4, "{:?}", full.frames);
+}
+
+/// Running out of memory deep inside execution is raised bare (`Err(LuaError::OutOfMemory)`,
+/// no message text at all) from GC allocation code, not through `LuaState::error`, yet the
+/// erroring frames are still structurally there — same mechanism as any other error.
+#[test]
+fn test_out_of_memory_reports_frames_structurally() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+    // Give the state room to load and open its stdlib, then pull the limit in tight so a single
+    // large allocation inside `f` is the one that overflows it.
+    vm.gc.set_temporary_memory_limit(2000);
+
+    let err = vm
+        .main_state()
+        .execute("local function f()\n  local s = string.rep('x', 1000000)\nend\nf()")
+        .unwrap_err();
+    let full = vm.main_state().get_full_error(err);
+
+    assert!(matches!(full.kind, crate::lua_vm::LuaError::OutOfMemory));
+    assert_eq!(full.frames[0].source, "@chunk", "{:?}", full.frames);
+    assert_eq!(full.frames[0].line, 2, "{:?}", full.frames);
+}
+
 #[test]
 fn test_pcall() {
     let mut vm = GlobalState::new(SafeOption::default());

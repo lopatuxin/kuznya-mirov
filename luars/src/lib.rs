@@ -54,13 +54,14 @@ pub use lua_vm::SandboxConfig;
 pub use lua_vm::async_thread::{
     AsyncCallHandle, AsyncFuture, AsyncReturnValue, AsyncThread, IntoAsyncLua,
 };
-pub use lua_vm::lua_error::{LuaError, LuaFullError};
+pub use lua_vm::lua_error::{CodeFrame, LuaError, LuaFullError};
 pub use lua_vm::{
     CFunction, CallInfo, DebugInfo, GlobalState, Instruction, LuaAnyRef, LuaFunctionRef, LuaResult,
     LuaState, LuaStringRef, LuaTableRef, OpCode, UserDataRef,
 };
 pub use lua_vm::{LUA_MASKCALL, LUA_MASKCOUNT, LUA_MASKLINE, LUA_MASKRET};
 pub use stdlib::Stdlib;
+pub use stdlib::basic::lua_float_to_string;
 
 #[cfg(feature = "unsafe-send")]
 mod send_impls {

@@ -292,7 +292,7 @@ pub fn call_tm_res(
         let r = lua_execute(lua_state, caller_depth);
         lua_state.dec_n_ccalls();
         r?;
-    } else if metamethod.is_cfunction() {
+    } else if metamethod.is_c_callable() {
         call_c_function(lua_state, func_pos, 2, 1)?;
     } else {
         return Err(crate::stdlib::debug::callerror(lua_state, &metamethod));
@@ -356,7 +356,7 @@ pub fn call_tm_res1(
         let r = lua_execute(lua_state, caller_depth);
         lua_state.dec_n_ccalls();
         r?;
-    } else if metamethod.is_cfunction() {
+    } else if metamethod.is_c_callable() {
         call_c_function(lua_state, func_pos, 1, 1)?;
     } else {
         return Err(crate::stdlib::debug::callerror(lua_state, &metamethod));
@@ -424,7 +424,7 @@ pub fn call_tm_res_into(
         let r = lua_execute(lua_state, caller_depth);
         lua_state.dec_n_ccalls();
         r?;
-    } else if metamethod.is_cfunction() {
+    } else if metamethod.is_c_callable() {
         call_c_function(lua_state, func_pos, 2, 1)?;
     } else {
         return Err(debug::callerror(lua_state, metamethod));
@@ -513,7 +513,7 @@ pub fn call_tm(
         let r = lua_execute(lua_state, caller_depth);
         lua_state.dec_n_ccalls();
         r?;
-    } else if metamethod.is_cfunction() {
+    } else if metamethod.is_c_callable() {
         call::call_c_function(lua_state, func_pos, 3, 0)?;
     } else {
         return Err(crate::stdlib::debug::callerror(lua_state, &metamethod));

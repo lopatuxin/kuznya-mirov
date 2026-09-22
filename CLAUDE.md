@@ -18,6 +18,12 @@ code and those notes is a bug in the code, not in the docs — do not "fix" the 
 are `[target.wasm32-unknown-unknown.dependencies]` only — they are not compiled for the native
 target, so `cargo check`/`test`/`clippy` without `--target` stay fast and do not need a GPU.
 
+`luars/` is the project's own copy of the `luars` 0.26.3 Lua runtime (MIT, author's `LICENSE`
+kept); `engine/` depends on it by path, without a Cargo workspace. Upstream releases are not pulled
+in: fix a runtime defect in `luars/` itself, with a test in `luars/src/test/`, instead of adding a
+workaround in `engine/`. `cargo test` in `engine/` does not run the library's tests — run
+`cargo test` in `luars/` as well after changing it.
+
 This machine has no MSVC toolchain, so the default `x86_64-pc-windows-msvc` Rust host cannot link.
 The installed default toolchain is `stable-x86_64-pc-windows-gnu` (MinGW-w64 from WinLibs), which
 does link natively — `rustup default` should stay on the gnu toolchain here. `wasm32-unknown-unknown`
@@ -29,14 +35,15 @@ Build/package for the browser: `cargo build --target wasm32-unknown-unknown` fro
 `web/` depends on that `pkg` output as a file dependency, and `engine/pkg` is gitignored, so it does
 not exist on a fresh clone. `web/package.json` handles this itself: `predev` and `prebuild` scripts
 run `node scripts/ensureEnginePkg.mjs`, which invokes the `wasm-pack` command above when `engine/pkg`
-is missing or when `engine/src`, `engine/shaders`, `engine/Cargo.toml` or `engine/Cargo.lock` were
-modified more recently than `engine/pkg` was built, then `npm run dev` or `npm run build` in `web/`
-continues as normal. So on a clean clone, just `npm install && npm run build` (or `npm run dev`) in
-`web/` builds the engine first and the page second, with no manual step, and editing engine source
-gets picked up by the next `npm run dev`/`build` without deleting `pkg` by hand. The container build
-(`Dockerfile`) is unaffected: its `web-builder` stage only copies in the already-built `engine/pkg`,
-never the engine sources, so the mtime check finds no source files to compare and never re-triggers
-`wasm-pack` in a stage that has no `cargo`.
+is missing or when `engine/src`, `engine/shaders`, `engine/Cargo.toml`, `engine/Cargo.lock`,
+`luars/src`, `luars/Cargo.toml` or `luars/Cargo.lock` were modified more recently than `engine/pkg`
+was built, then `npm run dev` or `npm run build` in `web/` continues as normal. So on a clean clone,
+just `npm install && npm run build` (or `npm run dev`) in `web/` builds the engine first and the
+page second, with no manual step, and editing engine or `luars` source gets picked up by the next
+`npm run dev`/`build` without deleting `pkg` by hand. In the container build (`Dockerfile`) the
+`wasm-builder` stage copies `engine/` and `luars/` sources and builds `pkg`; the `web-builder` stage
+only copies in that already-built `engine/pkg`, never the sources, so the mtime check finds no
+source files to compare and never re-triggers `wasm-pack` in a stage that has no `cargo`.
 
 # Common Mistakes
 

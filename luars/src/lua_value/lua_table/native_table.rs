@@ -434,14 +434,7 @@ impl NativeTable {
         debug_assert!(key.is_short_string());
 
         if self.node.is_null() {
-            return if tt == LUA_VNIL {
-                ShortStrSetResult::Done {
-                    new_key: false,
-                    mem_delta: 0,
-                }
-            } else {
-                ShortStrSetResult::FinishNewKey
-            };
+            return ShortStrSetResult::FinishNewKey;
         }
 
         let mp = self.mainposition_string(key);
@@ -457,16 +450,13 @@ impl NativeTable {
                         mem_delta: 0,
                     };
                 }
-                return if tt == LUA_VNIL {
-                    ShortStrSetResult::Done {
-                        new_key: false,
-                        mem_delta: 0,
-                    }
-                } else {
-                    ShortStrSetResult::FinishNode {
-                        new_key: true,
-                        node_index: self.node_index(mp),
-                    }
+                // Dead node: the key has no live value, so a metatable's `__newindex`
+                // must be checked before completing the write — even when the new
+                // value is nil (C Lua's luaV_finishset: an empty slot always routes
+                // through the metamethod check first).
+                return ShortStrSetResult::FinishNode {
+                    new_key: true,
+                    node_index: self.node_index(mp),
                 };
             }
         }
@@ -498,17 +488,11 @@ impl NativeTable {
                             mem_delta: 0,
                         };
                     }
-                    // Reactivate dead key
-                    return if tt == LUA_VNIL {
-                        ShortStrSetResult::Done {
-                            new_key: false,
-                            mem_delta: 0,
-                        }
-                    } else {
-                        ShortStrSetResult::FinishNode {
-                            new_key: true,
-                            node_index: self.node_index(node),
-                        }
+                    // Reactivate dead key: an empty slot always routes through the
+                    // metatable's `__newindex` check first — even for a nil value.
+                    return ShortStrSetResult::FinishNode {
+                        new_key: true,
+                        node_index: self.node_index(node),
                     };
                 }
                 let next = (*node).next;
@@ -516,13 +500,6 @@ impl NativeTable {
                     break;
                 }
                 node = node.offset(next as isize);
-            }
-
-            if tt == LUA_VNIL {
-                return ShortStrSetResult::Done {
-                    new_key: false,
-                    mem_delta: 0,
-                };
             }
 
             // Key NOT FOUND in chain.  Return FinishNode / FinishNewKey WITHOUT
@@ -557,6 +534,11 @@ impl NativeTable {
         value: &LuaValue,
         result: ShortStrSetResult,
     ) -> (bool, isize) {
+        // Committing nil into an empty slot is a no-op: a nil value has no raw
+        // representation to store, whether or not `result` names a slot to reuse.
+        if value.is_nil() {
+            return (false, 0);
+        }
         match result {
             ShortStrSetResult::Done { new_key, mem_delta } => (new_key, mem_delta),
             ShortStrSetResult::FinishNode {

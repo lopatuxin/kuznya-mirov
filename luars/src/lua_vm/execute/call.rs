@@ -204,9 +204,18 @@ pub fn call_c_function(
 
     let ci_idx = lua_state.call_depth() - 1;
     if nresults >= 0 {
-        // Fixed results: restore caller's frame top
-        let frame_top = lua_state.get_call_info(ci_idx).top as usize;
-        lua_state.set_top_raw(frame_top);
+        // Fixed results: restore caller's frame top, but never below the
+        // slots the results were just written into. call_tm_res / call_tm_res1 /
+        // call_tm_res_into place a metamethod call exactly at func_idx == ci.top,
+        // so ci.top alone can sit one slot below a 1-result call's return value,
+        // leaving it above top and unrooted for the GC atomic phase's "clear dead
+        // stack slice above top" pass (gc/mod.rs). Only the local top used for this
+        // call is raised — call_tm_res* reuse `ci.top` itself as the fixed slot for
+        // every subsequent metamethod call from the same frame, so writing back into
+        // `ci.top` here would drift it upward on each call in a loop.
+        let new_top = func_idx + nresults as usize;
+        let ci_top = lua_state.get_call_info(ci_idx).top as usize;
+        lua_state.set_top_raw(ci_top.max(new_top));
     } else {
         // MULTRET: top = func_idx + n
         let new_top = func_idx + n;

@@ -11,7 +11,7 @@ opt-level = "s"
 lto = true
 
 [dependencies]
-luars = { version = "0.26.3", features = ["sandbox"] }
+luars = { path = "../luars", features = ["sandbox"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 

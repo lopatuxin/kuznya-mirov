@@ -427,6 +427,7 @@ fn test_lua_full_error_is_std_error() {
     let full = lua_vm::lua_error::LuaFullError {
         kind: lua_vm::LuaError::CompileError,
         message: "syntax error".to_string(),
+        frames: Vec::new(),
     };
     assert_error(&full);
 }
