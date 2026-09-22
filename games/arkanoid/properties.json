@@ -3,6 +3,8 @@
     "ball": "flag",
     "solid": "flag",
     "brick": "flag",
-    "score": "number"
+    "score": "number",
+    "strong": "flag",
+    "hits": "number"
   }
 }

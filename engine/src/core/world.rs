@@ -1,12 +1,13 @@
 use super::keys::KeyTable;
 use super::property::{PropertyId, PropertyTable};
-use super::value::{GridSpec, ImageId, PropKind, Value, Vec2};
+use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2};
 
 #[derive(Debug, Clone)]
 enum Column {
     Flag(Vec<bool>),
     Number(Vec<Option<f64>>),
     Time(Vec<Option<i64>>),
+    Timer(Vec<Option<i64>>),
     Vec2(Vec<Option<Vec2>>),
     Color(Vec<Option<[f32; 4]>>),
     Layer(Vec<Option<i32>>),
@@ -14,6 +15,8 @@ enum Column {
     Grid(Vec<Option<GridSpec>>),
     Keys(Vec<Option<KeyTable>>),
     Image(Vec<Option<ImageId>>),
+    Rotation(Vec<Option<Rotation>>),
+    FollowMouse(Vec<Option<FollowAxis>>),
 }
 
 impl Column {
@@ -22,6 +25,7 @@ impl Column {
             PropKind::Flag => Column::Flag(Vec::new()),
             PropKind::Number => Column::Number(Vec::new()),
             PropKind::Time => Column::Time(Vec::new()),
+            PropKind::Timer => Column::Timer(Vec::new()),
             PropKind::Vec2 => Column::Vec2(Vec::new()),
             PropKind::Color => Column::Color(Vec::new()),
             PropKind::Layer => Column::Layer(Vec::new()),
@@ -29,6 +33,8 @@ impl Column {
             PropKind::Grid => Column::Grid(Vec::new()),
             PropKind::Keys => Column::Keys(Vec::new()),
             PropKind::Image => Column::Image(Vec::new()),
+            PropKind::Rotation => Column::Rotation(Vec::new()),
+            PropKind::FollowMouse => Column::FollowMouse(Vec::new()),
         }
     }
 
@@ -37,6 +43,7 @@ impl Column {
             Column::Flag(v) => v.push(false),
             Column::Number(v) => v.push(None),
             Column::Time(v) => v.push(None),
+            Column::Timer(v) => v.push(None),
             Column::Vec2(v) => v.push(None),
             Column::Color(v) => v.push(None),
             Column::Layer(v) => v.push(None),
@@ -44,6 +51,8 @@ impl Column {
             Column::Grid(v) => v.push(None),
             Column::Keys(v) => v.push(None),
             Column::Image(v) => v.push(None),
+            Column::Rotation(v) => v.push(None),
+            Column::FollowMouse(v) => v.push(None),
         }
     }
 
@@ -52,6 +61,7 @@ impl Column {
             Column::Flag(v) => v[id] = false,
             Column::Number(v) => v[id] = None,
             Column::Time(v) => v[id] = None,
+            Column::Timer(v) => v[id] = None,
             Column::Vec2(v) => v[id] = None,
             Column::Color(v) => v[id] = None,
             Column::Layer(v) => v[id] = None,
@@ -59,6 +69,8 @@ impl Column {
             Column::Grid(v) => v[id] = None,
             Column::Keys(v) => v[id] = None,
             Column::Image(v) => v[id] = None,
+            Column::Rotation(v) => v[id] = None,
+            Column::FollowMouse(v) => v[id] = None,
         }
     }
 
@@ -67,6 +79,7 @@ impl Column {
             Column::Flag(v) => v[id],
             Column::Number(v) => v[id].is_some(),
             Column::Time(v) => v[id].is_some(),
+            Column::Timer(v) => v[id].is_some(),
             Column::Vec2(v) => v[id].is_some(),
             Column::Color(v) => v[id].is_some(),
             Column::Layer(v) => v[id].is_some(),
@@ -74,6 +87,8 @@ impl Column {
             Column::Grid(v) => v[id].is_some(),
             Column::Keys(v) => v[id].is_some(),
             Column::Image(v) => v[id].is_some(),
+            Column::Rotation(v) => v[id].is_some(),
+            Column::FollowMouse(v) => v[id].is_some(),
         }
     }
 }
@@ -196,7 +211,7 @@ impl World {
     pub fn number_like(&self, id: u32, prop: PropertyId) -> Option<f64> {
         match &self.columns[prop as usize] {
             Column::Number(v) => v[id as usize],
-            Column::Time(v) => v[id as usize].map(|t| t as f64),
+            Column::Time(v) | Column::Timer(v) => v[id as usize].map(|t| t as f64),
             _ => None,
         }
     }
@@ -204,6 +219,15 @@ impl World {
     pub fn time(&self, id: u32, prop: PropertyId) -> Option<i64> {
         match &self.columns[prop as usize] {
             Column::Time(v) => v[id as usize],
+            _ => None,
+        }
+    }
+
+    /// «Свойства» → `timer`: the value in steps, still counting down toward zero — `None` when
+    /// the object doesn't carry this property at all.
+    pub fn timer(&self, id: u32, prop: PropertyId) -> Option<i64> {
+        match &self.columns[prop as usize] {
+            Column::Timer(v) => v[id as usize],
             _ => None,
         }
     }
@@ -220,6 +244,25 @@ impl World {
         }
     }
 
+    /// «Свойства» → `timer`: writes a value already in steps, clamped so it never goes below
+    /// zero — `add`/`set`/a key edit/code all funnel through this rather than clamping at each
+    /// call site.
+    pub fn set_timer(&mut self, id: u32, prop: PropertyId, value: i64) {
+        if let Column::Timer(v) = &mut self.columns[prop as usize] {
+            v[id as usize] = Some(value.max(0));
+        }
+    }
+
+    /// Stage 3: one step's worth of countdown — stays at zero once it gets there, never deletes
+    /// the object.
+    pub fn tick_timer(&mut self, id: u32, prop: PropertyId) {
+        if let Column::Timer(v) = &mut self.columns[prop as usize]
+            && let Some(cur) = v[id as usize].as_mut()
+        {
+            *cur = (*cur - 1).max(0);
+        }
+    }
+
     pub fn add_number_like(&mut self, id: u32, prop: PropertyId, delta: f64) {
         match &mut self.columns[prop as usize] {
             Column::Number(v) => {
@@ -232,6 +275,24 @@ impl World {
                     *cur += delta.round() as i64;
                 }
             }
+            Column::Timer(v) => {
+                if let Some(cur) = v[id as usize].as_mut() {
+                    *cur = (*cur + delta.round() as i64).max(0);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// «Правила игры», требование 11: writes a resolved `add`/`set` number to a `number`/`time`/
+    /// `timer` property, unconditionally (like `set_value`, not the "already present" guard
+    /// `add_number_like` has) — dispatched by column kind, so the caller needs no `PropKind` of
+    /// its own; a `time`/`timer` value must already be in steps (see `resolve_number_expr`).
+    pub fn set_number_like(&mut self, id: u32, prop: PropertyId, value: f64) {
+        match &mut self.columns[prop as usize] {
+            Column::Number(v) => v[id as usize] = Some(value),
+            Column::Time(v) => v[id as usize] = Some(value.round() as i64),
+            Column::Timer(v) => v[id as usize] = Some((value.round() as i64).max(0)),
             _ => {}
         }
     }
@@ -324,6 +385,32 @@ impl World {
         }
     }
 
+    pub fn rotation(&self, id: u32, prop: PropertyId) -> Option<Rotation> {
+        match &self.columns[prop as usize] {
+            Column::Rotation(v) => v[id as usize],
+            _ => None,
+        }
+    }
+
+    pub fn set_rotation(&mut self, id: u32, prop: PropertyId, value: Rotation) {
+        if let Column::Rotation(v) = &mut self.columns[prop as usize] {
+            v[id as usize] = Some(value);
+        }
+    }
+
+    pub fn follow_mouse(&self, id: u32, prop: PropertyId) -> Option<FollowAxis> {
+        match &self.columns[prop as usize] {
+            Column::FollowMouse(v) => v[id as usize],
+            _ => None,
+        }
+    }
+
+    pub fn set_follow_mouse(&mut self, id: u32, prop: PropertyId, value: FollowAxis) {
+        if let Column::FollowMouse(v) = &mut self.columns[prop as usize] {
+            v[id as usize] = Some(value);
+        }
+    }
+
     pub fn grid_counter(&self, id: u32) -> i64 {
         self.grid_counter[id as usize]
     }
@@ -339,11 +426,14 @@ impl World {
             Value::Flag(b) => self.set_flag(id, prop, *b),
             Value::Number(n) => self.set_number(id, prop, *n),
             Value::Time(t) => self.set_time(id, prop, *t),
+            Value::Timer(t) => self.set_timer(id, prop, *t),
             Value::Vec2(v) => self.set_vec2(id, prop, *v),
             Value::Color(c) => self.set_color(id, prop, *c),
             Value::Layer(l) => self.set_layer(id, prop, *l),
             Value::Text(s) => self.set_text(id, prop, s.clone()),
             Value::Image(i) => self.set_image(id, prop, *i),
+            Value::Rotation(r) => self.set_rotation(id, prop, *r),
+            Value::FollowMouse(a) => self.set_follow_mouse(id, prop, *a),
         }
     }
 
@@ -352,11 +442,14 @@ impl World {
             PropKind::Flag => Some(Value::Flag(self.flag(id, prop))),
             PropKind::Number => self.number_like(id, prop).map(Value::Number),
             PropKind::Time => self.time(id, prop).map(Value::Time),
+            PropKind::Timer => self.timer(id, prop).map(Value::Timer),
             PropKind::Vec2 => self.vec2(id, prop).map(Value::Vec2),
             PropKind::Color => self.color(id, prop).map(Value::Color),
             PropKind::Layer => self.layer(id, prop).map(Value::Layer),
             PropKind::Text => self.text(id, prop).map(|s| Value::Text(s.to_string())),
             PropKind::Image => self.image(id, prop).map(Value::Image),
+            PropKind::Rotation => self.rotation(id, prop).map(Value::Rotation),
+            PropKind::FollowMouse => self.follow_mouse(id, prop).map(Value::FollowMouse),
             PropKind::Grid | PropKind::Keys => None,
         }
     }

@@ -1,13 +1,13 @@
 use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
-use super::property::{self, PropertyTable};
+use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
 use super::rules::{Outcome, RuleSet};
 use super::scene::{ObjectSpec, SceneConfig};
 use super::sound::SoundWindow;
 use super::step;
-use super::value::Vec2;
+use super::value::{Value, Vec2};
 use super::world::World;
 
 #[derive(Debug)]
@@ -54,6 +54,14 @@ pub struct Game {
     grid_hop_ready: Vec<bool>,
     moved: Vec<bool>,
     bounced: Vec<bool>,
+
+    /// «Курсор в мире»: the world cursor's current scene-coordinate position, updated every time
+    /// the page reports a mouse move (live screen or not — требование 26: сдвиги на паузе
+    /// копятся). `None` until the cursor has moved at least once.
+    cursor_current: Option<Vec2>,
+    /// The position the most recent step actually took — compared against `cursor_current` at
+    /// `take_input_snapshot` time to decide whether *this* step gets a cursor at all.
+    cursor_last_step: Option<Vec2>,
 }
 
 impl Game {
@@ -100,6 +108,8 @@ impl Game {
             grid_hop_ready: Vec::new(),
             moved: Vec::new(),
             bounced: Vec::new(),
+            cursor_current: None,
+            cursor_last_step: None,
         };
         // «Код игры» → «Экраны и состояние»: код грузится ровно один раз на партию. Партия
         // начинается либо прямо здесь (стартовый экран без меню — `world_runs` поднят сразу), и
@@ -247,11 +257,19 @@ impl Game {
         self.input_queue.forget(code);
     }
 
-    /// «Экраны и состояние» → «Жизнь партии»: rebuilds the world from the
-    /// parsed copy of `scene.json` — the file itself is never reopened — resets the step
-    /// counter, the random-number generator (same seed, so the second playthrough replays the
-    /// same way the first one would), the input queue, and the sticky win/loss mark.
+    /// «Экраны и состояние» → «Жизнь партии»: same as `new_game_with_values`, with no initial
+    /// values — the common case, and the one every native test still calls directly.
     pub fn new_game(&mut self) {
+        self.new_game_with_values(&[]);
+    }
+
+    /// «Экраны и состояние» → «Начальные значения у new_game», требование 29: rebuilds the world
+    /// from the parsed copy of `scene.json` — the file itself is never reopened — resets the
+    /// step counter, the random-number generator (same seed, so the second playthrough replays
+    /// the same way the first one would), the input queue and the sticky win/loss mark, then
+    /// writes `initial_values` — each `(name, prop, value)` addresses the scene object of that
+    /// `name` with the smallest id — over the freshly built world, before the first step.
+    pub fn new_game_with_values(&mut self, initial_values: &[(String, PropertyId, Value)]) {
         self.world = World::new(&self.properties);
         for spec in &self.scene_objects {
             let id = self.world.create();
@@ -266,11 +284,25 @@ impl Game {
                 self.world.set_keys(id, property::KEYS, keys.clone());
             }
         }
+        for (name, prop, value) in initial_values {
+            if let Some(id) = self
+                .world
+                .ids()
+                .filter(|&id| self.world.text(id, property::NAME) == Some(name.as_str()))
+                .min()
+            {
+                self.world.set_value(id, *prop, value);
+            }
+        }
         self.step_count = 0;
         self.rng = Rng::new(self.random_seed);
         self.input_queue = InputQueue::new();
         self.world_held_keys.clear();
         self.outcome = None;
+        // «Курсор в мире»: не сбрасывает саму позицию (мышь физически не двигалась), только
+        // «доставлена ли она уже шагу» — первый шаг новой партии видит текущее положение курсора,
+        // как если бы оно только что сдвинулось.
+        self.cursor_last_step = None;
         // «Код игры»: свежий исполнитель на каждую партию — счётчик случайности уже сброшен
         // строкой выше, так что вторая партия идёт как первая.
         self.load_code();
@@ -335,8 +367,28 @@ impl Game {
         &mut self.sound_window
     }
 
+    /// «Курсор в мире»: translates a window-pixel cursor position through `self.scene`'s own
+    /// letterbox (`SceneConfig::window_to_scene`) and remembers it — called on every mouse move,
+    /// whether or not the active screen is live, so a move made during a pause is still known once
+    /// the world starts stepping again (требование 26).
+    pub fn update_cursor(&mut self, window_pos: [f32; 2], viewport: [f32; 2]) {
+        self.set_cursor_cell(self.scene.window_to_scene(window_pos, viewport));
+    }
+
+    /// The same remembering `update_cursor` does, already in scene coordinates — «Тесты по
+    /// записанному вводу», требование 31: a replay's own `cursor` is given in scene cells
+    /// directly, bypassing the window-pixel translation that has its own, separate tests.
+    pub fn set_cursor_cell(&mut self, cell: Vec2) {
+        self.cursor_current = Some(cell);
+    }
+
     pub fn take_input_snapshot(&mut self) -> StepInput {
-        self.input_queue.take_snapshot()
+        let mut snapshot = self.input_queue.take_snapshot();
+        if self.cursor_current.is_some() && self.cursor_current != self.cursor_last_step {
+            snapshot.cursor = self.cursor_current;
+            self.cursor_last_step = self.cursor_current;
+        }
+        snapshot
     }
 
     fn ensure_scratch_capacity(&mut self) {
@@ -357,8 +409,10 @@ impl Game {
         self.ensure_scratch_capacity();
 
         self.apply_to_world(&input.events);
+        step::apply_follow_mouse(&mut self.world, input.cursor, &self.scene);
 
-        let expired = step::tick_counters(&mut self.world, &mut self.grid_hop_ready);
+        let expired =
+            step::tick_counters(&mut self.world, &mut self.grid_hop_ready, &self.properties);
 
         let pre_move_positions: Vec<Option<Vec2>> = (0..self.world.slot_count() as u32)
             .map(|id| self.world.vec2(id, property::POSITION))
@@ -367,20 +421,8 @@ impl Game {
         for moved in self.moved.iter_mut() {
             *moved = false;
         }
-        step::apply_move_rules(
-            &self.rules.rules,
-            &mut self.world,
-            &mut self.grid_hop_ready,
-            &mut self.moved,
-        );
-
-        let pairs = step::find_collision_pairs(&self.world, &mut self.grid);
-
-        for bounced in self.bounced.iter_mut() {
-            *bounced = false;
-        }
         let mut outcome_flag = None;
-        let mut deletes_from_collide = Vec::new();
+        let mut stage4_deleted: Vec<u32> = expired.clone();
         // «Звук»: этому и только этому обёртка `SoundMarks` даётся — поднять
         // отметку и никогда её не прочитать; окно целиком (`self.sound_window`) шаг не видит.
         let mut marks = self.sound_window.marks();
@@ -396,6 +438,31 @@ impl Game {
             }
             None => None,
         };
+        if let Err(err) = step::apply_stage4(
+            &self.rules.rules,
+            &mut self.world,
+            &self.scene,
+            &mut self.grid_hop_ready,
+            &mut self.moved,
+            &mut stage4_deleted,
+            &mut self.grid,
+            &mut marks,
+            &mut code_env,
+            &mut self.rng,
+            &mut outcome_flag,
+        ) {
+            let mut err = err;
+            err.step = Some(self.step_count);
+            self.code_error = Some(err);
+            return;
+        }
+
+        let pairs = step::find_collision_pairs(&self.world, &mut self.grid);
+
+        for bounced in self.bounced.iter_mut() {
+            *bounced = false;
+        }
+        let mut deletes_from_collide = Vec::new();
         if let Err(err) = step::apply_collide_rules(
             &self.rules.rules,
             &mut self.world,
@@ -407,6 +474,8 @@ impl Game {
             &mut marks,
             &mut code_env,
             &mut self.rng,
+            &stage4_deleted,
+            &mut self.grid,
         ) {
             // «Код игры»: ошибка во время партии останавливает игру на месте — остаток шага не
             // выполняется, `is_running` теперь тоже видит `code_error`. `step` — единственное
@@ -417,7 +486,10 @@ impl Game {
             return;
         }
 
-        let already_deleted: Vec<u32> = expired.into_iter().chain(deletes_from_collide).collect();
+        let already_deleted: Vec<u32> = stage4_deleted
+            .into_iter()
+            .chain(deletes_from_collide)
+            .collect();
         let mut random_cell_exhausted = false;
         let (mut all_deleted, creates) = match step::queue_create_and_delete_rules(
             &self.rules.rules,
@@ -432,6 +504,7 @@ impl Game {
             &mut random_cell_exhausted,
             &mut marks,
             &mut code_env,
+            &mut self.grid,
         ) {
             Ok(result) => result,
             Err(err) => {

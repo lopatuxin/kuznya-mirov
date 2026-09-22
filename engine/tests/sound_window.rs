@@ -58,7 +58,7 @@ fn load(
         .iter()
         .map(|name| (name.to_string(), MusicVerdict::Ok))
         .collect();
-    let (game, screens, _warnings) = load_rest(
+    let (game, screens, _warnings, _images) = load_rest(
         game_json,
         config,
         Some(props),
@@ -70,6 +70,7 @@ fn load(
         &music_verdicts,
         &[],
         None,
+        false,
     )
     .expect("должно загрузиться");
     (game, screens)
@@ -316,7 +317,7 @@ fn menu_click_in_the_same_call_writes_the_new_screens_music() {
     // Тот же вызов: щелчок меняет экран, а запись в окно происходит уже после этого — «Звук
     // снаружи движка»: должное пишется после мыши и клавиш экрана.
     screens::apply_command(
-        ButtonCommand::NewGame(game_id),
+        ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -363,7 +364,7 @@ fn toggle_sound_flips_the_flag_new_game_and_quit_leave_it_alone_and_pause_is_sil
     assert!(!state.sound_enabled());
 
     screens::apply_command(
-        ButtonCommand::NewGame(game_id),
+        ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -434,7 +435,7 @@ fn load_keym_game() -> (
         .position(|s| s.name == "game")
         .unwrap();
     screens::apply_command(
-        ButtonCommand::NewGame(game_id),
+        ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,

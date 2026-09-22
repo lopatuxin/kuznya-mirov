@@ -1,0 +1,13 @@
+{
+  "start": "game",
+  "values": { "game.level": 0 },
+  "steps": 97,
+  "input": [],
+  "checks": [
+    { "step": 2, "object": "current_piece", "property": "position", "equals": [6, 6] },
+    { "step": 48, "object": "current_piece", "property": "position", "equals": [6, 6] },
+    { "step": 49, "object": "current_piece", "property": "position", "equals": [6, 7] },
+    { "step": 96, "object": "current_piece", "property": "position", "equals": [6, 7] },
+    { "step": 97, "object": "current_piece", "property": "position", "equals": [6, 8] }
+  ]
+}

@@ -52,7 +52,7 @@ fn load() -> (
 ) {
     let (config, _entry_warnings) = read_entry(GAME).expect("game.json должен разбираться");
     let font_bytes = vec![("ui".to_string(), Some(FONT_BYTES.to_vec()))];
-    let (game, screens, warnings) = load_rest(
+    let (game, screens, warnings, _images) = load_rest(
         GAME,
         config,
         Some(PROPS),
@@ -64,6 +64,7 @@ fn load() -> (
         &[],
         &[],
         None,
+        false,
     )
     .expect("должно загрузиться");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
@@ -127,7 +128,7 @@ fn a_key_queued_before_the_call_is_applied_by_this_calls_own_steps() {
         .position(|s| s.name == "game")
         .unwrap();
     screens::apply_command(
-        screens::ButtonCommand::NewGame(game_id),
+        screens::ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -168,6 +169,7 @@ fn end_game_switches_to_the_loss_screen_with_the_world_still_alive() {
                 .iter()
                 .position(|s| s.name == "game")
                 .unwrap(),
+            None,
         ),
         &mut game,
         &config,
@@ -220,7 +222,7 @@ fn quit_from_the_outcome_screen_clears_the_sticky_mark_so_the_menu_stays() {
         .unwrap();
 
     screens::apply_command(
-        screens::ButtonCommand::NewGame(game_id),
+        screens::ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -261,7 +263,7 @@ fn new_game_resets_the_outcome_mark_and_the_second_run_does_not_end_instantly() 
         .unwrap();
 
     screens::apply_command(
-        screens::ButtonCommand::NewGame(game_id),
+        screens::ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -273,7 +275,7 @@ fn new_game_resets_the_outcome_mark_and_the_second_run_does_not_end_instantly() 
 
     // "Ещё раз": new_game again, from the loss screen.
     screens::apply_command(
-        screens::ButtonCommand::NewGame(game_id),
+        screens::ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -309,7 +311,7 @@ fn leaving_a_live_screen_releases_held_keys_and_a_returning_player_must_press_ag
         .position(|s| s.name == "pause")
         .unwrap();
     screens::apply_command(
-        screens::ButtonCommand::NewGame(game_id),
+        screens::ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -376,7 +378,7 @@ fn button_press_release_inside_fires_and_release_outside_does_not() {
         .position(|s| s.name == "pause")
         .unwrap();
     screens::apply_command(
-        screens::ButtonCommand::NewGame(game_id),
+        screens::ButtonCommand::NewGame(game_id, None),
         &mut game,
         &config,
         &mut state,
@@ -479,7 +481,7 @@ fn load_key_fixture(
 ) {
     let (config, _entry_warnings) = read_entry(KEY_GAME).expect("game.json должен разбираться");
     let font_bytes = vec![("ui".to_string(), Some(FONT_BYTES.to_vec()))];
-    let (game, screens, warnings) = load_rest(
+    let (game, screens, warnings, _images) = load_rest(
         KEY_GAME,
         config,
         Some(KEY_PROPS),
@@ -491,6 +493,7 @@ fn load_key_fixture(
         &[],
         &[],
         None,
+        false,
     )
     .expect("должно загрузиться");
     // Every `KEY_SCREENS_*` fixture in this file pairs a live screen's own `Space` binding with
@@ -980,7 +983,7 @@ fn load_mirror_fixture() -> (
 ) {
     let (config, _entry_warnings) = read_entry(MIRROR_GAME).expect("game.json должен разбираться");
     let font_bytes = vec![("ui".to_string(), Some(FONT_BYTES.to_vec()))];
-    let (game, screens, warnings) = load_rest(
+    let (game, screens, warnings, _images) = load_rest(
         MIRROR_GAME,
         config,
         Some(MIRROR_PROPS),
@@ -992,6 +995,7 @@ fn load_mirror_fixture() -> (
         &[],
         &[],
         None,
+        false,
     )
     .expect("должно загрузиться");
     // `declares` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — «Экраны и состояние» → «Клавиши экрана»: expected here, any *other* warning still fails the fixture.
@@ -1026,7 +1030,7 @@ fn load_mirror_two_live_fixture() -> (
     let (config, _entry_warnings) =
         read_entry(MIRROR_TWO_LIVE_GAME).expect("game.json должен разбираться");
     let font_bytes = vec![("ui".to_string(), Some(FONT_BYTES.to_vec()))];
-    let (game, screens, warnings) = load_rest(
+    let (game, screens, warnings, _images) = load_rest(
         MIRROR_TWO_LIVE_GAME,
         config,
         Some(MIRROR_PROPS),
@@ -1038,6 +1042,7 @@ fn load_mirror_two_live_fixture() -> (
         &[],
         &[],
         None,
+        false,
     )
     .expect("должно загрузиться");
     // `declares2` deliberately absorbs the same `Space` `MIRROR_SCENE`'s object binds — expected
@@ -1117,7 +1122,7 @@ fn load_mirror_live_to_pause_fixture() -> (
     let (config, _entry_warnings) =
         read_entry(MIRROR_LIVE_TO_PAUSE_GAME).expect("game.json должен разбираться");
     let font_bytes = vec![("ui".to_string(), Some(FONT_BYTES.to_vec()))];
-    let (game, screens, warnings) = load_rest(
+    let (game, screens, warnings, _images) = load_rest(
         MIRROR_LIVE_TO_PAUSE_GAME,
         config,
         Some(MIRROR_PROPS),
@@ -1129,6 +1134,7 @@ fn load_mirror_live_to_pause_fixture() -> (
         &[],
         &[],
         None,
+        false,
     )
     .expect("должно загрузиться");
     // `paused` is only ever reached programmatically (`ShowScreen`) in the test below, not
@@ -1251,7 +1257,7 @@ fn new_game_clears_world_held_keys_so_a_later_absorbed_release_does_not_touch_th
 
     // "New game" rebuilds the world from scratch — `world_held_keys` must go with it.
     screens::apply_command(
-        screens::ButtonCommand::NewGame(undeclared_id),
+        screens::ButtonCommand::NewGame(undeclared_id, None),
         &mut game,
         &config,
         &mut state,
@@ -1353,7 +1359,7 @@ fn load_newgame_key_fixture() -> (
     let (config, _entry_warnings) =
         read_entry(NEWGAME_KEY_GAME).expect("game.json должен разбираться");
     let font_bytes = vec![("ui".to_string(), Some(FONT_BYTES.to_vec()))];
-    let (game, screens, warnings) = load_rest(
+    let (game, screens, warnings, _images) = load_rest(
         NEWGAME_KEY_GAME,
         config,
         Some(KEY_PROPS),
@@ -1365,6 +1371,7 @@ fn load_newgame_key_fixture() -> (
         &[],
         &[],
         None,
+        false,
     )
     .expect("должно загрузиться");
     // `arena`'s own `Space` (screen key) intentionally shadows `KEY_SCENE`'s object binding of the

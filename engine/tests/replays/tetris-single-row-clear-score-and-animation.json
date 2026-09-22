@@ -1,0 +1,45 @@
+{
+  "start": "game",
+  "values": { "game.level": 0 },
+  "steps": 6445,
+  "input": [
+    { "step": 3, "press": "ArrowLeft" }, { "step": 4, "release": "ArrowLeft" },
+    { "step": 5, "press": "ArrowLeft" }, { "step": 6, "release": "ArrowLeft" },
+    { "step": 7, "press": "ArrowLeft" }, { "step": 8, "release": "ArrowLeft" },
+
+    { "step": 972, "press": "ArrowLeft" }, { "step": 973, "release": "ArrowLeft" },
+    { "step": 974, "press": "ArrowLeft" }, { "step": 975, "release": "ArrowLeft" },
+    { "step": 976, "press": "ArrowLeft" }, { "step": 977, "release": "ArrowLeft" },
+    { "step": 978, "press": "ArrowLeft" }, { "step": 979, "release": "ArrowLeft" },
+
+    { "step": 1848, "press": "ArrowLeft" }, { "step": 1849, "release": "ArrowLeft" },
+    { "step": 1850, "press": "ArrowLeft" }, { "step": 1851, "release": "ArrowLeft" },
+    { "step": 1852, "press": "ArrowLeft" }, { "step": 1853, "release": "ArrowLeft" },
+    { "step": 1854, "press": "ArrowLeft" }, { "step": 1855, "release": "ArrowLeft" },
+
+    { "step": 2628, "press": "ArrowLeft" }, { "step": 2629, "release": "ArrowLeft" },
+    { "step": 2630, "press": "ArrowLeft" }, { "step": 2631, "release": "ArrowLeft" },
+    { "step": 2632, "press": "ArrowLeft" }, { "step": 2633, "release": "ArrowLeft" },
+    { "step": 2634, "press": "ArrowLeft" }, { "step": 2635, "release": "ArrowLeft" },
+
+    { "step": 3360, "press": "ArrowLeft" }, { "step": 3361, "release": "ArrowLeft" },
+    { "step": 3362, "press": "ArrowLeft" }, { "step": 3363, "release": "ArrowLeft" },
+    { "step": 3364, "press": "ArrowLeft" }, { "step": 3365, "release": "ArrowLeft" },
+    { "step": 3366, "press": "ArrowLeft" }, { "step": 3367, "release": "ArrowLeft" },
+
+    { "step": 4920, "press": "ArrowLeft" }, { "step": 4921, "release": "ArrowLeft" },
+    { "step": 4922, "press": "ArrowLeft" }, { "step": 4923, "release": "ArrowLeft" },
+    { "step": 4924, "press": "ArrowLeft" }, { "step": 4925, "release": "ArrowLeft" },
+    { "step": 4926, "press": "ArrowLeft" }, { "step": 4927, "release": "ArrowLeft" },
+
+    { "step": 5462, "press": "ArrowRight" }, { "step": 5463, "release": "ArrowRight" },
+    { "step": 5464, "press": "ArrowRight" }, { "step": 5465, "release": "ArrowRight" },
+    { "step": 5466, "press": "ArrowRight" }, { "step": 5467, "release": "ArrowRight" }
+  ],
+  "checks": [
+    { "step": 6439, "object": "game", "property": "rows", "equals": 0 },
+    { "step": 6440, "object": "game", "property": "score", "equals": 40 },
+    { "step": 6440, "object": "game", "property": "rows", "equals": 1 },
+    { "step": 6445, "object": "game", "property": "rows", "equals": 1 }
+  ]
+}

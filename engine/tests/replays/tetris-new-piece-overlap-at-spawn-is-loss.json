@@ -1,0 +1,9 @@
+{
+  "start": "game",
+  "values": { "game.level": 19 },
+  "steps": 457,
+  "input": [],
+  "checks": [
+    { "step": 457, "screen": "over" }
+  ]
+}

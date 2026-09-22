@@ -1,0 +1,12 @@
+{
+  "start": "game",
+  "values": { "ball.position": [1.5, 1.5], "ball.velocity": [0, 6] },
+  "steps": 5,
+  "input": [],
+  "checks": [
+    { "step": 1, "object": "brick1", "property": "hits", "equals": 1 },
+    { "step": 3, "object": "brick1", "property": "hits", "equals": 2 },
+    { "step": 5, "count": { "has": ["brick"] }, "equals": 32 },
+    { "step": 5, "object": "paddle", "property": "score", "equals": 10 }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "start": "game",
+  "values": { "game.level": 0 },
+  "steps": 45,
+  "input": [
+    { "step": 2, "press": "ArrowDown" }
+  ],
+  "checks": [
+    { "step": 41, "count": { "has": ["landed"] }, "equals": 4 },
+    { "step": 41, "object": "game", "property": "score", "equals": 19 }
+  ]
+}

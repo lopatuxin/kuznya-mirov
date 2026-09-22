@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { loadGameOptions } from "./gameOptions";
+import { fetchText, loadGameOptions } from "./gameOptions";
 
 type MockResponse = { ok: boolean; text: string };
 
@@ -67,5 +67,16 @@ describe("loadGameOptions", () => {
     mockFetch({});
 
     await expect(loadGameOptions()).rejects.toThrow();
+  });
+});
+
+describe("fetchText", () => {
+  it("всегда сверяет файл игры со стендом, а не берёт копию из кэша браузера на догадку", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, text: async () => "{}" }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchText("/games/tetris/screens.json");
+
+    expect(fetchMock).toHaveBeenCalledWith("/games/tetris/screens.json", { cache: "no-cache" });
   });
 });

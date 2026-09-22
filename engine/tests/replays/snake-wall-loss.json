@@ -1,0 +1,9 @@
+{
+  "start": "game",
+  "values": { "head.position": [20, 10] },
+  "steps": 25,
+  "input": [],
+  "checks": [
+    { "step": 25, "screen": "loss" }
+  ]
+}

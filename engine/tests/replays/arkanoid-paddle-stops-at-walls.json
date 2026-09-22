@@ -1,0 +1,16 @@
+{
+  "start": "game",
+  "steps": 4,
+  "input": [
+    { "step": 1, "cursor": [1.5, 22.5] },
+    { "step": 2, "cursor": [0, 22.5] },
+    { "step": 3, "cursor": [22.5, 22.5] },
+    { "step": 4, "cursor": [24, 22.5] }
+  ],
+  "checks": [
+    { "step": 1, "object": "paddle", "property": "position", "equals": [1, 22] },
+    { "step": 2, "object": "paddle", "property": "position", "equals": [1, 22] },
+    { "step": 3, "object": "paddle", "property": "position", "equals": [19, 22] },
+    { "step": 4, "object": "paddle", "property": "position", "equals": [19, 22] }
+  ]
+}

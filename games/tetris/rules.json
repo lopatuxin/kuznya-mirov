@@ -1,0 +1,138 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["level"] },
+      "do": [["run", "tick"]] },
+
+    { "kind": "check", "for": { "has": ["pivot", "want_left"] },
+      "do": [
+        ["shift", { "group": { "has": ["falling"] }, "by": [-1, 0],
+                    "blocked_by": { "has": ["solid"] },
+                    "if_blocked": [["run", "on_shift_blocked"]] }],
+        ["run", "on_shift_result"],
+        ["take", "want_left"]
+      ] },
+
+    { "kind": "check", "for": { "has": ["pivot", "want_right"] },
+      "do": [
+        ["shift", { "group": { "has": ["falling"] }, "by": [1, 0],
+                    "blocked_by": { "has": ["solid"] },
+                    "if_blocked": [["run", "on_shift_blocked"]] }],
+        ["run", "on_shift_result"],
+        ["take", "want_right"]
+      ] },
+
+    { "kind": "check", "for": { "has": ["pivot", "want_cw"] },
+      "do": [
+        ["turn", { "group": { "has": ["falling"] }, "around": { "has": ["pivot"] },
+                   "dir": 1, "blocked_by": { "has": ["solid"] },
+                   "if_blocked": [["run", "on_turn_blocked"]] }],
+        ["run", "on_turn_result"],
+        ["take", "want_cw"]
+      ] },
+
+    { "kind": "check", "for": { "has": ["pivot", "want_ccw"] },
+      "do": [
+        ["turn", { "group": { "has": ["falling"] }, "around": { "has": ["pivot"] },
+                   "dir": -1, "blocked_by": { "has": ["solid"] },
+                   "if_blocked": [["run", "on_turn_blocked"]] }],
+        ["run", "on_turn_result"],
+        ["take", "want_ccw"]
+      ] },
+
+    { "kind": "check", "for": { "has": ["pivot", "want_fall"] },
+      "do": [
+        ["shift", { "group": { "has": ["falling"] }, "by": [0, 1],
+                    "blocked_by": { "has": ["solid"] },
+                    "if_blocked": [["run", "on_landed"]] }],
+        ["run", "on_fall_result"],
+        ["take", "want_fall"]
+      ] },
+
+    { "kind": "collide", "a": { "has": ["falling"] }, "b": { "has": ["landed"] },
+      "do": [["end_game", "loss"], ["play_sound", "over"]] },
+
+    { "kind": "spawn",
+      "when": { "all": [
+        { "fewer_than": { "count": 1, "of": { "has": ["in_window"] } } },
+        { "not": { "fewer_than": { "count": 1, "of": { "has": ["next_i"] } } } }
+      ] },
+      "where": { "at": [13, 8] },
+      "template": { "in_window": true, "size": [1, 1] },
+      "pick_one": [
+        { "image": "cube_i",
+          "cells": [[-1, 1], [0, 1], { "at": [1, 1], "window_pivot": true }, [2, 1]] }
+      ] },
+
+    { "kind": "spawn",
+      "when": { "all": [
+        { "fewer_than": { "count": 1, "of": { "has": ["in_window"] } } },
+        { "not": { "fewer_than": { "count": 1, "of": { "has": ["next_o"] } } } }
+      ] },
+      "where": { "at": [13, 8] },
+      "template": { "in_window": true, "size": [1, 1] },
+      "pick_one": [
+        { "image": "cube_o",
+          "cells": [[0, 1], { "at": [1, 1], "window_pivot": true }, [0, 2], [1, 2]] }
+      ] },
+
+    { "kind": "spawn",
+      "when": { "all": [
+        { "fewer_than": { "count": 1, "of": { "has": ["in_window"] } } },
+        { "not": { "fewer_than": { "count": 1, "of": { "has": ["next_t"] } } } }
+      ] },
+      "where": { "at": [13, 8] },
+      "template": { "in_window": true, "size": [1, 1] },
+      "pick_one": [
+        { "image": "cube_t",
+          "cells": [[0, 1], { "at": [1, 1], "window_pivot": true }, [2, 1], [1, 2]] }
+      ] },
+
+    { "kind": "spawn",
+      "when": { "all": [
+        { "fewer_than": { "count": 1, "of": { "has": ["in_window"] } } },
+        { "not": { "fewer_than": { "count": 1, "of": { "has": ["next_s"] } } } }
+      ] },
+      "where": { "at": [13, 8] },
+      "template": { "in_window": true, "size": [1, 1] },
+      "pick_one": [
+        { "image": "cube_s",
+          "cells": [{ "at": [1, 1], "window_pivot": true }, [2, 1], [0, 2], [1, 2]] }
+      ] },
+
+    { "kind": "spawn",
+      "when": { "all": [
+        { "fewer_than": { "count": 1, "of": { "has": ["in_window"] } } },
+        { "not": { "fewer_than": { "count": 1, "of": { "has": ["next_z"] } } } }
+      ] },
+      "where": { "at": [13, 8] },
+      "template": { "in_window": true, "size": [1, 1] },
+      "pick_one": [
+        { "image": "cube_z",
+          "cells": [[0, 1], { "at": [1, 1], "window_pivot": true }, [1, 2], [2, 2]] }
+      ] },
+
+    { "kind": "spawn",
+      "when": { "all": [
+        { "fewer_than": { "count": 1, "of": { "has": ["in_window"] } } },
+        { "not": { "fewer_than": { "count": 1, "of": { "has": ["next_j"] } } } }
+      ] },
+      "where": { "at": [13, 8] },
+      "template": { "in_window": true, "size": [1, 1] },
+      "pick_one": [
+        { "image": "cube_j",
+          "cells": [[0, 1], { "at": [1, 1], "window_pivot": true }, [2, 1], [2, 2]] }
+      ] },
+
+    { "kind": "spawn",
+      "when": { "all": [
+        { "fewer_than": { "count": 1, "of": { "has": ["in_window"] } } },
+        { "not": { "fewer_than": { "count": 1, "of": { "has": ["next_l"] } } } }
+      ] },
+      "where": { "at": [13, 8] },
+      "template": { "in_window": true, "size": [1, 1] },
+      "pick_one": [
+        { "image": "cube_l",
+          "cells": [[0, 1], { "at": [1, 1], "window_pivot": true }, [2, 1], [0, 2]] }
+      ] }
+  ]
+}

@@ -1,0 +1,15 @@
+{
+  "start": "game",
+  "values": { "game.level": 19 },
+  "steps": 145,
+  "input": [],
+  "checks": [
+    { "step": 41, "count": { "has": ["landed"] }, "equals": 4 },
+    { "step": 50, "count": { "has": ["pivot"] }, "equals": 0 },
+    { "step": 51, "count": { "has": ["pivot"] }, "equals": 1 },
+
+    { "step": 133, "count": { "has": ["landed"] }, "equals": 12 },
+    { "step": 142, "count": { "has": ["pivot"] }, "equals": 0 },
+    { "step": 143, "count": { "has": ["pivot"] }, "equals": 1 }
+  ]
+}

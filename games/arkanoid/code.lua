@@ -21,3 +21,16 @@ function paddle_bounce(ball, paddle)
   ball.velocity.y = -speed * math.cos(angle)
   ball.position.y = paddle.position.y - ball.size.y
 end
+
+-- Прочный кирпич: удар считает hits и на третьем разбивается — «Арканоид», требование 51.
+function strong_brick_hit(ball, brick)
+  brick.hits = brick.hits + 1
+  play_sound("brick")
+  if brick.hits >= 3 then
+    local scorers = find({ has = { "score" } })
+    for i = 1, #scorers do
+      scorers[i].score = scorers[i].score + 10
+    end
+    delete(brick)
+  end
+end

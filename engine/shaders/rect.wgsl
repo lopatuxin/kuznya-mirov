@@ -32,6 +32,8 @@ struct InstanceInput {
     // stretched over the whole rectangle exactly like a real image would be.
     @location(4) atlas_pos: vec2<f32>,
     @location(5) atlas_size: vec2<f32>,
+    // «Картинки», требование 24: quarter turns (0–3) clockwise; a color fill always gets 0.
+    @location(6) rotation_quarters: f32,
 };
 
 struct VertexOutput {
@@ -47,10 +49,25 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     let ndc_x = (px.x / globals.canvas_size_px.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (px.y / globals.canvas_size_px.y) * 2.0;
 
+    // «Картинки», требование 24: rotates the *sampled* corner by `rotation_quarters` clockwise
+    // before it stretches to fill the drawn rectangle — the rectangle itself never changes
+    // shape, only which part of the atlas lands where. Derived by tracing each quarter turn's
+    // corner-to-corner mapping once and folding it into one integer-indexed formula: `k=1`
+    // samples `(y, 1-x)`, `k=2` samples `(1-x, 1-y)`, `k=3` samples `(1-y, x)`.
+    let k = i32(instance.rotation_quarters + 0.5);
+    var sample_unit = vertex.unit;
+    if (k == 1) {
+        sample_unit = vec2<f32>(vertex.unit.y, 1.0 - vertex.unit.x);
+    } else if (k == 2) {
+        sample_unit = vec2<f32>(1.0 - vertex.unit.x, 1.0 - vertex.unit.y);
+    } else if (k == 3) {
+        sample_unit = vec2<f32>(1.0 - vertex.unit.y, vertex.unit.x);
+    }
+
     var out: VertexOutput;
     out.clip_position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
     out.color = instance.color;
-    out.uv = (instance.atlas_pos + vertex.unit * instance.atlas_size) / ATLAS_SIZE;
+    out.uv = (instance.atlas_pos + sample_unit * instance.atlas_size) / ATLAS_SIZE;
     return out;
 }
 

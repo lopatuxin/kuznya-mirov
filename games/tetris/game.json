@@ -1,0 +1,37 @@
+{
+  "name": "Тетрис",
+  "scene": { "width": 17, "height": 27, "background": "#0e1018" },
+  "random_seed": 20260921,
+  "max_objects": 4096,
+  "start_screen": "menu",
+  "loss_screen": "over",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf" },
+    "sounds": {
+      "move": "sounds/move.wav",
+      "rotate": "sounds/rotate.wav",
+      "land": "sounds/land.wav",
+      "clear": "sounds/clear.wav",
+      "tetris": "sounds/tetris.wav",
+      "level": "sounds/level.wav",
+      "over": "sounds/over.wav"
+    },
+    "music": { "game": "music/game.mp3" },
+    "images": {
+      "cube_i": { "path": "images/cube_i.png" },
+      "cube_o": { "path": "images/cube_o.png" },
+      "cube_t": { "path": "images/cube_t.png" },
+      "cube_s": { "path": "images/cube_s.png" },
+      "cube_z": { "path": "images/cube_z.png" },
+      "cube_j": { "path": "images/cube_j.png" },
+      "cube_l": { "path": "images/cube_l.png" },
+      "wall": { "path": "images/wall.png" },
+      "flash": { "path": "images/flash.png", "frames": 2, "frame_by": "flash_on" }
+    }
+  }
+}

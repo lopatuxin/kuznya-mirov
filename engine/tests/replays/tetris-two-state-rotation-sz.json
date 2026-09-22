@@ -1,0 +1,20 @@
+{
+  "start": "game",
+  "values": { "game.level": 19 },
+  "steps": 198,
+  "input": [
+    { "step": 100, "press": "KeyX" }, { "step": 101, "release": "KeyX" },
+    { "step": 108, "press": "KeyX" }, { "step": 109, "release": "KeyX" },
+    { "step": 186, "press": "KeyX" }, { "step": 187, "release": "KeyX" },
+    { "step": 194, "press": "KeyX" }, { "step": 195, "release": "KeyX" }
+  ],
+  "checks": [
+    { "step": 100, "object": "current_piece", "property": "position", "equals": [6, 6] },
+    { "step": 100, "object": "current_piece", "property": "rotation", "equals": 270 },
+    { "step": 108, "object": "current_piece", "property": "rotation", "equals": 0 },
+
+    { "step": 186, "object": "current_piece", "property": "position", "equals": [6, 6] },
+    { "step": 186, "object": "current_piece", "property": "rotation", "equals": 270 },
+    { "step": 194, "object": "current_piece", "property": "rotation", "equals": 0 }
+  ]
+}

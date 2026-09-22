@@ -61,7 +61,9 @@ fn load(
         &music_verdicts,
         &[],
         None,
+        false,
     )
+    .map(|(game, screens, warnings, _images)| (game, screens, warnings))
 }
 
 /// Minimal valid 16-bit mono PCM WAV, `frames` samples at 44.1kHz.
@@ -688,6 +690,71 @@ fn an_unreferenced_track_is_never_read_so_a_bad_verdict_for_it_is_not_an_error()
 // ---------------------------------------------------------------------------------------------
 // Warnings — the game still starts.
 // ---------------------------------------------------------------------------------------------
+
+/// Воспроизведённый баг: `common_actions`/`walk_common_actions` не заходили в `if_blocked`
+/// `shift`/`turn`, так что `play_sound` внутри него не считался использованием звука.
+#[test]
+fn play_sound_inside_if_blocked_counts_as_used() {
+    let game = game_json(r#","sounds":{"thud":"sounds/thud.wav"}"#);
+    let props = r#"{"properties":{"g":"flag","wall":"flag"}}"#;
+    let scene = r#"{"objects":[
+        {"position":[0,0],"size":[1,1],"g":true},
+        {"position":[0.5,0],"size":[1,1],"wall":true}
+    ]}"#;
+    let rules = r#"{"rules":[
+        {"kind":"check","for":{"has":["g"]},
+         "do":[["shift",{"group":{"has":["g"]},"by":[1,0],"blocked_by":{"has":["wall"]},
+                          "if_blocked":[["play_sound","thud"]]}]]}
+    ]}"#;
+    let (_game, _screens, warnings) = load(
+        &game,
+        props,
+        scene,
+        rules,
+        SCREENS_MAIN,
+        &[("thud", &wav_bytes(100))],
+        &[],
+    )
+    .expect("должно загрузиться");
+    assert!(
+        warnings.iter().all(|w| !w.message.contains("thud")),
+        "play_sound в if_blocked должен считаться использованием звука: {warnings:?}"
+    );
+}
+
+/// Тот же баг, для второй проверки, которая тоже читает `common_actions` — «в игре есть звук,
+/// но toggle_sound не назначен» должна сработать и когда единственный `play_sound` спрятан в
+/// `if_blocked`, а не только у нижнего уровня `do`.
+#[test]
+fn play_sound_inside_if_blocked_satisfies_toggle_sound_requirement() {
+    let game = game_json(r#","sounds":{"thud":"sounds/thud.wav"}"#);
+    let props = r#"{"properties":{"g":"flag","wall":"flag"}}"#;
+    let scene = r#"{"objects":[
+        {"position":[0,0],"size":[1,1],"g":true},
+        {"position":[0.5,0],"size":[1,1],"wall":true}
+    ]}"#;
+    let rules = r#"{"rules":[
+        {"kind":"check","for":{"has":["g"]},
+         "do":[["shift",{"group":{"has":["g"]},"by":[1,0],"blocked_by":{"has":["wall"]},
+                          "if_blocked":[["play_sound","thud"]]}]]}
+    ]}"#;
+    let (_game, _screens, warnings) = load(
+        &game,
+        props,
+        scene,
+        rules,
+        SCREENS_MAIN,
+        &[("thud", &wav_bytes(100))],
+        &[],
+    )
+    .expect("должно загрузиться");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.message.contains("toggle_sound не назначен")),
+        "{warnings:?}"
+    );
+}
 
 #[test]
 fn unused_sound_is_a_warning() {

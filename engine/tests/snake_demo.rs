@@ -74,7 +74,7 @@ fn load_demo() -> (
             )
         })
         .collect();
-    let (game, screens, warnings) = load_rest(
+    let (game, screens, warnings, _images) = load_rest(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -86,6 +86,7 @@ fn load_demo() -> (
         &music_verdicts,
         &image_verdicts,
         None,
+        false,
     )
     .expect("демо-змейка должна проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");

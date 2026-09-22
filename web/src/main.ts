@@ -1,7 +1,7 @@
 import init, { Engine } from "engine";
 import { computeCanvasLayout } from "./canvasLayout";
 import { formatError, formatErrorScreen, type EngineError } from "./engineErrors";
-import { fetchText, loadGameOptions, type GameOptionsResult } from "./gameOptions";
+import { GAME_FILE_FETCH, fetchText, loadGameOptions, type GameOptionsResult } from "./gameOptions";
 import { gameListSearch, resolveGameName } from "./gameSelection";
 import { decodeSoundBuffer, probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import { createSoundPlayer, type MusicAsset, type SoundPlayer } from "./sound/soundPlayer";
@@ -125,7 +125,7 @@ function logWarnings(warnings: EngineError[]): void {
  */
 async function fetchBinary(url: string): Promise<Uint8Array | null> {
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, GAME_FILE_FETCH);
     return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
   } catch {
     return null;
