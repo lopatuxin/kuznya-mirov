@@ -64,6 +64,29 @@ pub struct Game {
     cursor_last_step: Option<Vec2>,
 }
 
+/// «Экраны и состояние» / «Редактор», требование 16: builds a fresh world from `scene_objects` —
+/// one object per entry, in file order (`World::create` hands out slots in call order and nothing
+/// here ever deletes one, so `scene_objects[n]` always lands in slot `n`), its `values`/`grid`/
+/// `keys` written — with no other new-game side effect (no rng, step counter, input, code).
+/// Shared by `new_game_with_values`, `show_scene` and `data::load::load_rest`'s own initial world.
+pub(crate) fn world_from_scene(properties: &PropertyTable, scene_objects: &[ObjectSpec]) -> World {
+    let mut world = World::new(properties);
+    for spec in scene_objects {
+        let id = world.create();
+        for (prop, value) in &spec.values {
+            world.set_value(id, *prop, value);
+        }
+        if let Some(grid) = &spec.grid {
+            world.set_grid(id, property::GRID, *grid);
+            world.set_grid_counter(id, grid.interval_steps);
+        }
+        if let Some(keys) = &spec.keys {
+            world.set_keys(id, property::KEYS, keys.clone());
+        }
+    }
+    world
+}
+
 impl Game {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
@@ -270,20 +293,7 @@ impl Game {
     /// writes `initial_values` — each `(name, prop, value)` addresses the scene object of that
     /// `name` with the smallest id — over the freshly built world, before the first step.
     pub fn new_game_with_values(&mut self, initial_values: &[(String, PropertyId, Value)]) {
-        self.world = World::new(&self.properties);
-        for spec in &self.scene_objects {
-            let id = self.world.create();
-            for (prop, value) in &spec.values {
-                self.world.set_value(id, *prop, value);
-            }
-            if let Some(grid) = &spec.grid {
-                self.world.set_grid(id, property::GRID, *grid);
-                self.world.set_grid_counter(id, grid.interval_steps);
-            }
-            if let Some(keys) = &spec.keys {
-                self.world.set_keys(id, property::KEYS, keys.clone());
-            }
-        }
+        self.world = world_from_scene(&self.properties, &self.scene_objects);
         for (name, prop, value) in initial_values {
             if let Some(id) = self
                 .world
@@ -306,6 +316,14 @@ impl Game {
         // «Код игры»: свежий исполнитель на каждую партию — счётчик случайности уже сброшен
         // строкой выше, так что вторая партия идёт как первая.
         self.load_code();
+    }
+
+    /// «Редактор», требование 16: rebuilds `world` from the scene exactly like `new_game`, but
+    /// with no initial values, no code (compiled or run) and none of `new_game`'s other resets —
+    /// no partiya at all, just the scene's own objects for the editor to look at. Idempotent: the
+    /// editor calls it once after every successful `load()`.
+    pub fn show_scene(&mut self) {
+        self.world = world_from_scene(&self.properties, &self.scene_objects);
     }
 
     /// «Экраны и состояние»: `quit` throws the run away entirely — the world empties and there

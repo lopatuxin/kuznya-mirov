@@ -1,45 +1,14 @@
 import init, { Engine } from "engine";
 import { computeCanvasLayout } from "./canvasLayout";
 import { formatError, formatErrorScreen, type EngineError } from "./engineErrors";
-import { GAME_FILE_FETCH, fetchText, loadGameOptions, type GameOptionsResult } from "./gameOptions";
+import { loadGameOptions, type GameOptionsResult } from "./gameOptions";
 import { gameListSearch, resolveGameName } from "./gameSelection";
-import { decodeSoundBuffer, probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
+import { createHttpProjectFileReader, loadProject, type LoadedMusicVerdict, type LoadedSound } from "./projectLoader";
+import { decodeSoundBuffer } from "./sound/soundLoader";
 import { createSoundPlayer, type MusicAsset, type SoundPlayer } from "./sound/soundPlayer";
 import { readSoundWindow } from "./sound/soundWindow";
-import { buildImagePayload, fetchImageBytes, type ImageEntry } from "./images/imagePayload";
 import { parseTickResult, type RawTickResult, type TickResult } from "./tickResult";
 import { buildWarningsBadge, shouldBlurAfterToggleActivation, type WarningsBadge } from "./warningsPanel";
-
-type FontEntry = { name: string; path: string };
-type SoundEntry = { index: number; name: string; path: string };
-type MusicEntry = { index: number; name: string; path: string };
-
-type ReadEntryFiles = {
-  properties: string;
-  scene: string;
-  rules: string;
-  screens: string;
-  fonts: FontEntry[];
-  /** «Код игры»: путь к файлу кода — только если игра объявила `files.code`. */
-  code?: string;
-};
-
-type ReadEntryResult =
-  | { ok: true; files: ReadEntryFiles; warnings: EngineError[] }
-  | { ok: false; errors: EngineError[]; warnings: EngineError[] };
-
-/** Шаг два загрузки — «Звук» → «Загрузка и проверка»: какие двоичные
- *  файлы вообще стоит читать, теперь, когда текстовые файлы разобраны. */
-type ReadTextsResult = { fonts: FontEntry[]; sounds: SoundEntry[]; music: MusicEntry[]; images: ImageEntry[] };
-
-type LoadResult =
-  | { ok: true; warnings: EngineError[] }
-  | { ok: false; errors: EngineError[]; warnings: EngineError[] };
-
-type LoadedFont = { name: string; bytes: Uint8Array | null };
-type LoadedSound = { index: number; path: string; bytes: Uint8Array | null };
-type LoadedMusic = { index: number; path: string; bytes: Uint8Array | null };
-type MusicVerdictEntry = { index: number; verdict: MusicVerdict };
 
 const MESSAGE_POLL_FRAMES = 60;
 
@@ -120,69 +89,6 @@ function logWarnings(warnings: EngineError[]): void {
 }
 
 /**
- * Тот же сетевой контракт, что у `fetchText` — сетевая ошибка и не-2xx статус сводятся к `null`, —
- * но для двоичных файлов шрифтов.
- */
-async function fetchBinary(url: string): Promise<Uint8Array | null> {
-  try {
-    const response = await fetch(url, GAME_FILE_FETCH);
-    return response.ok ? new Uint8Array(await response.arrayBuffer()) : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * По одному файлу на запись `files.fonts`; ненайденный файл становится `bytes: null` — движок сам
- * решает, ошибка это или нет (шрифт не объявлен в `screens.json` — не ошибка, объявлен — ошибка
- * предстартовой проверки).
- */
-async function fetchFonts(baseUrl: string, fonts: FontEntry[]): Promise<LoadedFont[]> {
-  const bytesList = await Promise.all(fonts.map((font) => fetchBinary(`${baseUrl}${font.path}`)));
-  return fonts.map((font, index) => ({ name: font.name, bytes: bytesList[index] ?? null }));
-}
-
-/**
- * По одному файлу на запись `read_texts().sounds` — все объявленные звуки, всегда. Ненайденный
- * файл становится `bytes: null`, как и у шрифтов: движок сам решает, ошибка это или нет.
- */
-async function fetchSoundBytes(baseUrl: string, sounds: SoundEntry[]): Promise<LoadedSound[]> {
-  const bytesList = await Promise.all(sounds.map((sound) => fetchBinary(`${baseUrl}${sound.path}`)));
-  return sounds.map((sound, index) => ({ index: sound.index, path: sound.path, bytes: bytesList[index] ?? null }));
-}
-
-/**
- * По одному файлу на запись `read_texts().music` — только треки, которые называет хоть один экран
- * («Звук» → «Загрузка и проверка»).
- */
-async function fetchMusicBytes(baseUrl: string, music: MusicEntry[]): Promise<LoadedMusic[]> {
-  const bytesList = await Promise.all(music.map((track) => fetchBinary(`${baseUrl}${track.path}`)));
-  return music.map((track, index) => ({ index: track.index, path: track.path, bytes: bytesList[index] ?? null }));
-}
-
-/**
- * Приговор исполнителя каждому читаемому треку — «Звук» → «Загрузка и проверка»: движок байтов трека не держит вовсе, а по MP3 отвечает браузер. Заодно собирает
- * Blob-адрес для тех треков, что приговор прошли: распаковывать их во второй раз при первом
- * проигрывании незачем.
- */
-async function buildMusicAssets(
-  audioContext: AudioContext,
-  loaded: LoadedMusic[],
-): Promise<{ payload: MusicVerdictEntry[]; assets: Map<number, MusicAsset> }> {
-  const verdicts = await Promise.all(loaded.map((track) => probeMusicVerdict(audioContext, track.bytes)));
-  const assets = new Map<number, MusicAsset>();
-  const payload = loaded.map((track, i) => {
-    const verdict = verdicts[i] as MusicVerdict;
-    if (verdict === "ok" && track.bytes) {
-      const url = URL.createObjectURL(new Blob([track.bytes as BlobPart], { type: "audio/mpeg" }));
-      assets.set(track.index, { url, path: track.path });
-    }
-    return { index: track.index, verdict };
-  });
-  return { payload, assets };
-}
-
-/**
  * Разжимает каждый принятый движком звук в готовый `AudioBuffer` до старта кадрового цикла —
  * «Звук» → «Два вида звука». Расхождение между движком (принял WAV) и браузером
  * (не смог его разжать) сюда всё же заведено одной строкой в журнал — «У журнала два писателя»:
@@ -205,6 +111,22 @@ async function decodeSoundAssets(
     }),
   );
   return buffers;
+}
+
+/**
+ * Blob-адреса треков, годных к проигрыванию (приговор «ok»), — только для страницы игры: у неё
+ * одной звук вообще играет, поэтому только она их и строит («Редактор» получает лишь приговоры,
+ * без байтов, и не создаёт ни одного Blob-адреса — см. `projectLoader.ts`).
+ */
+function buildMusicAssets(tracks: LoadedMusicVerdict[]): Map<number, MusicAsset> {
+  const assets = new Map<number, MusicAsset>();
+  for (const track of tracks) {
+    if (track.verdict === "ok" && track.bytes) {
+      const url = URL.createObjectURL(new Blob([track.bytes as BlobPart], { type: "audio/mpeg" }));
+      assets.set(track.index, { url, path: track.path });
+    }
+  }
+  return assets;
 }
 
 /**
@@ -372,8 +294,9 @@ async function runGame(gameName: string): Promise<void> {
   if (!canvas || !errorBox || !musicElement) return;
 
   const baseUrl = `/games/${gameName}/`;
+  const reader = createHttpProjectFileReader(baseUrl);
 
-  const gameJsonText = await fetchText(`${baseUrl}game.json`);
+  const gameJsonText = await reader.readText("game.json");
   if (gameJsonText === null) {
     showError(`Не удалось получить game.json игры «${gameName}» по адресу ${baseUrl}game.json.`);
     return;
@@ -391,70 +314,23 @@ async function runGame(gameName: string): Promise<void> {
     return;
   }
 
-  const entryResult = engine.read_entry(gameJsonText) as ReadEntryResult;
-  if (!entryResult.ok) {
-    logWarnings(entryResult.warnings);
-    showError(formatErrorScreen(entryResult.errors, entryResult.warnings));
+  // Создаётся внутри `loadProject`, сразу после `read_texts` — стоит в `suspended` до первого
+  // нажатия игрока («Звук» → «Проигрывание на странице»), но нужен уже там: им же проверяются
+  // треки из `files.music`.
+  const result = await loadProject(engine, reader, gameJsonText, () => new AudioContext());
+  logWarnings(result.warnings);
+  if (result.status === "rejected") {
+    showError(formatErrorScreen(result.errors, result.warnings));
     return;
   }
 
-  // Второй заход — только текстовые файлы; до их разбора движок не знает, какие звуки и треки
-  // вообще используются («Звук» → «Загрузка и проверка»). Файл кода — среди них же, только если
-  // игра его объявила: не найден («Код игры») даёт `null`, как и любой другой ненайденный файл.
-  const [propertiesText, sceneText, rulesText, screensText, codeText] = await Promise.all([
-    fetchText(`${baseUrl}${entryResult.files.properties}`),
-    fetchText(`${baseUrl}${entryResult.files.scene}`),
-    fetchText(`${baseUrl}${entryResult.files.rules}`),
-    fetchText(`${baseUrl}${entryResult.files.screens}`),
-    entryResult.files.code !== undefined ? fetchText(`${baseUrl}${entryResult.files.code}`) : Promise.resolve(null),
-  ]);
-
-  const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText) as ReadTextsResult;
-
-  // Создаётся при загрузке и стоит в `suspended` до первого нажатия игрока («Звук» →
-  // «Проигрывание на странице»), но нужен уже сейчас — им же проверяются треки из `files.music`.
-  const audioContext = new AudioContext();
-
-  // Третий заход — все двоичные файлы разом: шрифты, все звуки, только названные экранами треки,
-  // все объявленные картинки.
-  const [fonts, loadedSounds, loadedMusic, loadedImages] = await Promise.all([
-    fetchFonts(baseUrl, needed.fonts),
-    fetchSoundBytes(baseUrl, needed.sounds),
-    fetchMusicBytes(baseUrl, needed.music),
-    fetchImageBytes(baseUrl, needed.images, fetchBinary),
-  ]);
-  const [{ payload: musicPayload, assets: musicAssets }, imagesPayload] = await Promise.all([
-    buildMusicAssets(audioContext, loadedMusic),
-    buildImagePayload(loadedImages),
-  ]);
-
-  const loadResult = engine.load(
-    propertiesText,
-    sceneText,
-    rulesText,
-    screensText,
-    fonts,
-    loadedSounds,
-    musicPayload,
-    imagesPayload,
-    codeText,
-  ) as LoadResult;
-  // read_entry (game.json) первым, load (остальные файлы) вторым — тот же порядок, в котором
-  // предупреждения собирает сам движок при объединённой загрузке (см. `load_game_from_texts`).
-  const warnings = [...entryResult.warnings, ...loadResult.warnings];
-  logWarnings(warnings);
-  if (!loadResult.ok) {
-    showError(formatErrorScreen(loadResult.errors, warnings));
-    return;
-  }
-
-  const badge = buildWarningsBadge(warnings);
+  const badge = buildWarningsBadge(result.warnings);
   if (badge) showWarningsBadge(badge);
 
-  const soundBuffers = await decodeSoundAssets(audioContext, loadedSounds);
-  const soundPlayer = createSoundPlayer(audioContext, musicElement, {
+  const soundBuffers = await decodeSoundAssets(result.audioContext, result.loadedSounds);
+  const soundPlayer = createSoundPlayer(result.audioContext, musicElement, {
     sounds: soundBuffers,
-    music: musicAssets,
+    music: buildMusicAssets(result.musicTracks),
   });
 
   attachInput(engine);

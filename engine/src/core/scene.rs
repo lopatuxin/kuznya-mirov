@@ -1,3 +1,6 @@
+use super::property;
+use super::world::World;
+
 #[derive(Debug, Clone, Copy)]
 pub struct SceneConfig {
     pub width: u32,
@@ -39,9 +42,86 @@ impl SceneConfig {
     }
 }
 
+/// A rectangle in canvas CSS pixels, top-left origin — `object_rect`'s result, handed to the
+/// editor as `{x, y, width, height}`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CanvasRect {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// «Редактор», требование 19: object `id`'s canvas rectangle — `position`/`size` letterboxed the
+/// same way the renderer draws the world (`render::gpu::world_globals_data`). `None` when the
+/// object doesn't exist (id past the world's slot count) or lacks `position`/`size`. Rotation
+/// never changes this rectangle — a rotated image stretches to fill the same one.
+pub fn object_rect(
+    world: &World,
+    scene: &SceneConfig,
+    id: u32,
+    viewport: [f32; 2],
+) -> Option<CanvasRect> {
+    if id as usize >= world.slot_count() {
+        return None;
+    }
+    let position = world.vec2(id, property::POSITION)?;
+    let size = world.vec2(id, property::SIZE)?;
+    let scene_cells = [scene.width as f32, scene.height as f32];
+    let (scale, offset) = letterbox(viewport, scene_cells);
+    Some(CanvasRect {
+        x: offset[0] + position[0] as f32 * scale,
+        y: offset[1] + position[1] as f32 * scale,
+        width: size[0] as f32 * scale,
+        height: size[1] as f32 * scale,
+    })
+}
+
+/// «Редактор», требование 18: the topmost object (largest `layer`, ties broken by the larger
+/// object number) whose canvas rectangle contains `point` (CSS pixels, canvas top-left origin) —
+/// left/top edges included, right/bottom excluded. A candidate needs `position`, `size` and a
+/// `color` or `image` fill — the same shape `render::atlas::compose_world_paints` draws; an
+/// object with neither is invisible and a click never picks it. `None` off every object, or in
+/// the margin around the letterboxed scene.
+pub fn object_at(
+    world: &World,
+    scene: &SceneConfig,
+    point: [f32; 2],
+    viewport: [f32; 2],
+) -> Option<u32> {
+    let mut best: Option<(i32, u32)> = None;
+    for id in world.ids() {
+        let has_fill = world.color(id, property::COLOR).is_some()
+            || world.image(id, property::IMAGE).is_some();
+        if !has_fill {
+            continue;
+        }
+        let Some(rect) = object_rect(world, scene, id, viewport) else {
+            continue;
+        };
+        if point[0] < rect.x
+            || point[1] < rect.y
+            || point[0] >= rect.x + rect.width
+            || point[1] >= rect.y + rect.height
+        {
+            continue;
+        }
+        let layer = world.layer(id, property::LAYER).unwrap_or(0);
+        let replace = match best {
+            None => true,
+            Some((best_layer, _)) => layer >= best_layer,
+        };
+        if replace {
+            best = Some((layer, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::property::PropertyTable;
 
     #[test]
     fn window_to_scene_maps_the_centered_scene_rectangle_one_to_one() {
@@ -71,6 +151,125 @@ mod tests {
         assert_eq!(cell, [0.0, 0.0]);
         let cell = scene.window_to_scene([5000.0, 5000.0], [800.0, 600.0]);
         assert_eq!(cell, [10.0, 20.0]);
+    }
+
+    /// «Редактор», требование 19: same letterboxed scale/offset `world_globals_data` draws the
+    /// world with — a 10×20 scene in an 800×600 canvas scales by 30 (`min(80, 30)`), centered
+    /// with a 0px vertical margin and a 250px horizontal one (`(800 - 10*30) / 2`).
+    #[test]
+    fn object_rect_computes_the_letterboxed_pixel_rectangle() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        let scene = SceneConfig {
+            width: 10,
+            height: 20,
+            background: [0.0; 4],
+        };
+        let id = world.create();
+        world.set_vec2(id, property::POSITION, [1.0, 2.0]);
+        world.set_vec2(id, property::SIZE, [2.0, 1.0]);
+
+        let rect = object_rect(&world, &scene, id, [800.0, 600.0]).expect("has position and size");
+        assert!((rect.x - 280.0).abs() < 1e-3, "{rect:?}");
+        assert!((rect.y - 60.0).abs() < 1e-3, "{rect:?}");
+        assert!((rect.width - 60.0).abs() < 1e-3, "{rect:?}");
+        assert!((rect.height - 30.0).abs() < 1e-3, "{rect:?}");
+    }
+
+    #[test]
+    fn object_rect_is_none_without_position_size_or_a_matching_object() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        let scene = SceneConfig {
+            width: 10,
+            height: 20,
+            background: [0.0; 4],
+        };
+        let bare = world.create();
+        assert_eq!(object_rect(&world, &scene, bare, [800.0, 600.0]), None);
+        assert_eq!(object_rect(&world, &scene, 99, [800.0, 600.0]), None);
+    }
+
+    #[test]
+    fn object_at_picks_the_highest_layer_ties_broken_by_the_larger_number() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        let scene = SceneConfig {
+            width: 10,
+            height: 10,
+            background: [0.0; 4],
+        };
+        let viewport = [100.0, 100.0]; // scale 10, no letterbox margin
+
+        let mut stacked = |layer: i32, color: [f32; 4]| {
+            let id = world.create();
+            world.set_vec2(id, property::POSITION, [0.0, 0.0]);
+            world.set_vec2(id, property::SIZE, [5.0, 5.0]);
+            world.set_color(id, property::COLOR, color);
+            world.set_layer(id, property::LAYER, layer);
+            id
+        };
+        stacked(0, [1.0, 0.0, 0.0, 1.0]);
+        stacked(5, [0.0, 1.0, 0.0, 1.0]);
+        let tie = stacked(5, [0.0, 0.0, 1.0, 1.0]);
+
+        assert_eq!(object_at(&world, &scene, [10.0, 10.0], viewport), Some(tie));
+    }
+
+    #[test]
+    fn object_at_misses_the_margin_and_a_fill_less_object() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        let scene = SceneConfig {
+            width: 10,
+            height: 20,
+            background: [0.0; 4],
+        };
+        let viewport = [800.0, 600.0]; // scale 30, offset [250, 0]
+
+        let invisible = world.create();
+        world.set_vec2(invisible, property::POSITION, [0.0, 0.0]);
+        world.set_vec2(invisible, property::SIZE, [10.0, 20.0]);
+
+        // In the letterboxed margin, left of the scene entirely.
+        assert_eq!(object_at(&world, &scene, [10.0, 300.0], viewport), None);
+        // Inside the scene rectangle, but its only object has no color or image.
+        assert_eq!(object_at(&world, &scene, [400.0, 300.0], viewport), None);
+    }
+
+    #[test]
+    fn object_at_edges_are_left_and_top_inclusive_right_and_bottom_exclusive() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        let scene = SceneConfig {
+            width: 10,
+            height: 10,
+            background: [0.0; 4],
+        };
+        let viewport = [100.0, 100.0]; // scale 10, no margin
+
+        let id = world.create();
+        world.set_vec2(id, property::POSITION, [2.0, 2.0]);
+        world.set_vec2(id, property::SIZE, [3.0, 3.0]);
+        world.set_color(id, property::COLOR, [1.0, 1.0, 1.0, 1.0]);
+        // rect is x: [20, 50), y: [20, 50)
+
+        assert_eq!(
+            object_at(&world, &scene, [20.0, 20.0], viewport),
+            Some(id),
+            "top-left included"
+        );
+        assert_eq!(object_at(&world, &scene, [49.9, 49.9], viewport), Some(id));
+        assert_eq!(
+            object_at(&world, &scene, [50.0, 30.0], viewport),
+            None,
+            "right excluded"
+        );
+        assert_eq!(
+            object_at(&world, &scene, [30.0, 50.0], viewport),
+            None,
+            "bottom excluded"
+        );
     }
 }
 

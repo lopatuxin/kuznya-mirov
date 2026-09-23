@@ -1,6 +1,6 @@
 use serde_json::Value as Json;
 
-use crate::core::game::Game;
+use crate::core::game::{self, Game};
 use crate::core::keys::{KeyBinding, KeyEdit, KeyTable};
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::rules::{
@@ -6317,22 +6317,11 @@ pub fn load_rest(
     // «Экраны и состояние»: миру родиться только если у стартового экрана поднят world_runs —
     // на экране меню его просто нет, пока игрок не нажмёт «Играть».
     let start_is_live = screens_config.screens[screens_config.start_screen].world_runs;
-    let mut world = World::new(&properties);
-    if start_is_live {
-        for spec in &scene_specs {
-            let id = world.create();
-            for (prop, value) in &spec.values {
-                world.set_value(id, *prop, value);
-            }
-            if let Some(grid) = &spec.grid {
-                world.set_grid(id, property::GRID, *grid);
-                world.set_grid_counter(id, grid.interval_steps);
-            }
-            if let Some(table) = &spec.keys {
-                world.set_keys(id, property::KEYS, table.clone());
-            }
-        }
-    }
+    let world = if start_is_live {
+        game::world_from_scene(&properties, &scene_specs)
+    } else {
+        World::new(&properties)
+    };
 
     let sound_count = config.files.sounds.len();
     let game = Game::new(

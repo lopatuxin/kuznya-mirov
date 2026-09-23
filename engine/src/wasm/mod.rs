@@ -674,24 +674,28 @@ impl Engine {
                         }
                     })
                     .collect();
-                self.atlas_rects = match self.renderer.build_atlas(&atlas_images) {
+                let atlas_rects = match self.renderer.build_atlas(&atlas_images) {
                     Ok(rects) => rects,
                     // `atlas::pack` already writes its own complete message (not fitting isn't
                     // the only failure it reports — an oversized image or a wrong pixel count
                     // are, too), so it goes out verbatim rather than under a second, guessed-at
                     // header.
                     Err(e) => {
+                        self.clear_game();
                         return js_load_err(
                             &[GameError::new("game.json", "files → images", e)],
                             &warnings,
                         );
                     }
                 };
+                self.atlas_rects = atlas_rects;
                 self.images = image_order;
                 self.rules_path = rules_path;
                 self.ui_clock.reset();
                 self.renderer
                     .set_scene(game.scene.width, game.scene.height, game.scene.background);
+                // «Редактор», требование 20: повторный `load` не копит шрифты прошлой игры.
+                self.renderer.reset_fonts();
                 for name in &font_order {
                     let bytes = font_bytes
                         .iter()
@@ -708,7 +712,79 @@ impl Engine {
                 self.ui_queue = UiQueue::new();
                 js_load_ok(&warnings)
             }
-            Err(failure) => js_load_err(&failure.errors, &failure.warnings),
+            Err(failure) => {
+                self.clear_game();
+                js_load_err(&failure.errors, &failure.warnings)
+            }
+        }
+    }
+
+    /// «Редактор», требование 20: a failed `load()` leaves the engine exactly as before any game
+    /// was ever loaded — `show_scene`/`draw`/`object_at`/`object_rect` all see no game, and fonts
+    /// don't linger for a repeated `load()` to pile onto.
+    fn clear_game(&mut self) {
+        self.game = None;
+        self.screens_config = None;
+        self.screen_state = None;
+        self.images = Vec::new();
+        self.atlas_rects = Vec::new();
+        self.rules_path = String::new();
+        self.renderer.reset_fonts();
+    }
+
+    /// «Редактор», требование 16: rebuilds the world from the loaded scene, ready for `draw` —
+    /// no partiya, no code, no initial values. Does nothing without a successfully loaded game.
+    pub fn show_scene(&mut self) {
+        if let Some(game) = self.game.as_mut() {
+            game.show_scene();
+        }
+    }
+
+    /// «Редактор», требование 17: draws one frame of the world alone — no interface, no text; an
+    /// image's own frame is the world's frozen step, same as `tick`'s own `compose_instances`. An
+    /// empty frame without a loaded game.
+    pub fn draw(&mut self) {
+        let world_instances = match self.game.as_ref() {
+            Some(game) => compose_instances(game, &self.images, &self.atlas_rects),
+            None => Vec::new(),
+        };
+        if let Err(e) = self.renderer.render_frame(&world_instances, &[], &[]) {
+            web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
+        }
+    }
+
+    /// «Редактор», требование 18: the topmost object at `(x, y)` — canvas CSS pixels, canvas
+    /// top-left origin — or `undefined` off every object, in the letterboxed scene's own margin,
+    /// or without a loaded game. See `core::scene::object_at`.
+    pub fn object_at(&self, x: f32, y: f32) -> JsValue {
+        let Some(game) = self.game.as_ref() else {
+            return JsValue::UNDEFINED;
+        };
+        let viewport = self.renderer.window_size_css();
+        match crate::core::scene::object_at(&game.world, &game.scene, [x, y], viewport) {
+            Some(id) => JsValue::from_f64(id as f64),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», требование 19: object `id`'s canvas rectangle — `{x, y, width, height}` in CSS
+    /// pixels — or `undefined` without a loaded game, without that object, or without its own
+    /// `position`/`size`. See `core::scene::object_rect`.
+    pub fn object_rect(&self, id: u32) -> JsValue {
+        let Some(game) = self.game.as_ref() else {
+            return JsValue::UNDEFINED;
+        };
+        let viewport = self.renderer.window_size_css();
+        match crate::core::scene::object_rect(&game.world, &game.scene, id, viewport) {
+            Some(rect) => {
+                let obj = Object::new();
+                set(&obj, "x", &JsValue::from_f64(rect.x as f64));
+                set(&obj, "y", &JsValue::from_f64(rect.y as f64));
+                set(&obj, "width", &JsValue::from_f64(rect.width as f64));
+                set(&obj, "height", &JsValue::from_f64(rect.height as f64));
+                obj.into()
+            }
+            None => JsValue::UNDEFINED,
         }
     }
 
