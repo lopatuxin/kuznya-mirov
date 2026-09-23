@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { EditorIcon } from "./EditorIcon";
 import { ProjectSelection } from "./ProjectSelection";
 import { ProjectWindow } from "./ProjectWindow";
 import { resolveProjectName } from "./projectName";
@@ -32,12 +33,17 @@ export function App(): React.JSX.Element {
       return <ProjectSelection onOpenFolder={setFolderSource} />;
     case "invalid":
       return (
-        <div className="project-error">
-          <p>Параметр project=«{resolution.value}» недопустим — разрешены только латинские буквы, цифры, «_» и «-».</p>
-          <button type="button" onClick={backToProjects}>
-            ← К проектам
-          </button>
-        </div>
+        <main className="editor-home">
+          <div className="editor-home__inner editor-home__inner--narrow">
+            <div className="editor-alert editor-alert--error">
+              <EditorIcon name="error" size={16} />
+              Параметр project=«{resolution.value}» недопустим — разрешены только латинские буквы, цифры, «_» и «-».
+            </div>
+            <button type="button" className="editor-button editor-button--outline" onClick={backToProjects}>
+              <EditorIcon name="arrow-left" size={15} />К проектам
+            </button>
+          </div>
+        </main>
       );
     case "valid":
       // `listedProjectName` не `null` именно потому, что `resolution.status === "valid"` — `listedSource` не `null` тоже.

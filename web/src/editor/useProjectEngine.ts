@@ -10,6 +10,8 @@ import { createReloadDebouncer } from "./reloadDebouncer";
 export type ProjectEngineState = {
   engine: Engine | null;
   result: ProjectLoadResult | null;
+  /** Когда пришёл `result` — последняя загрузка или перезагрузка после правки файлов. */
+  loadedAt: Date | null;
   headerNotice: string | null;
   /** Отказ `init()`/`Engine.create` — тот же текст, что в этом случае показывает страница игры. */
   engineError: string | null;
@@ -28,6 +30,7 @@ function formatEngineBootError(error: unknown): string {
 export function useProjectEngine(canvasRef: RefObject<HTMLCanvasElement | null>, source: ProjectSource): ProjectEngineState {
   const [engine, setEngine] = useState<Engine | null>(null);
   const [result, setResult] = useState<ProjectLoadResult | null>(null);
+  const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const [headerNotice, setHeaderNotice] = useState<string | null>(null);
   const [engineError, setEngineError] = useState<string | null>(null);
 
@@ -87,6 +90,7 @@ export function useProjectEngine(canvasRef: RefObject<HTMLCanvasElement | null>,
         if (cancelled) return;
         if (gameJsonText === null) {
           setResult({ status: "entry-missing" });
+          setLoadedAt(new Date());
         } else {
           const loadResult = await loadProject(engineInstance, reader, gameJsonText, () => audioContext);
           if (cancelled) return;
@@ -94,6 +98,7 @@ export function useProjectEngine(canvasRef: RefObject<HTMLCanvasElement | null>,
           // без неё `show_scene` было бы нечего собирать, движок сам ничего не делает.
           if (loadResult.status === "ok") engineInstance.show_scene();
           setResult(loadResult);
+          setLoadedAt(new Date());
         }
         // Новая загрузка обновляет список опрашиваемых путей («Редактор», требование 32): опрос
         // перезапускается с новым списком, а таблица отпечатков — общая на весь проект — остаётся.
@@ -140,5 +145,5 @@ export function useProjectEngine(canvasRef: RefObject<HTMLCanvasElement | null>,
     };
   }, [canvasRef, source]);
 
-  return { engine, result, headerNotice, engineError };
+  return { engine, result, loadedAt, headerNotice, engineError };
 }

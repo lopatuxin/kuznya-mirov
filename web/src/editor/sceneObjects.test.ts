@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildObjectPropertiesView,
   parseSceneObjects,
+  parseSceneSize,
   resolveSelectionAfterReload,
   summarizeSceneObjects,
 } from "./sceneObjects";
@@ -32,7 +33,7 @@ describe("parseSceneObjects", () => {
 describe("summarizeSceneObjects", () => {
   it("нумерует по месту в файле и берёт name строкой", () => {
     const objects = [{ name: "голова" }, { name: "хвост" }];
-    expect(summarizeSceneObjects(objects)).toEqual([
+    expect(summarizeSceneObjects(objects).map(({ index, name }) => ({ index, name }))).toEqual([
       { index: 0, name: "голова" },
       { index: 1, name: "хвост" },
     ]);
@@ -40,11 +41,40 @@ describe("summarizeSceneObjects", () => {
 
   it("отдаёт null, когда name не строка или её нет", () => {
     const objects = [{ name: 5 }, {}, "не объект"];
-    expect(summarizeSceneObjects(objects)).toEqual([
+    expect(summarizeSceneObjects(objects).map(({ index, name }) => ({ index, name }))).toEqual([
       { index: 0, name: null },
       { index: 1, name: null },
       { index: 2, name: null },
     ]);
+  });
+
+  it("берёт цвет только в виде #rrggbb и картинку строкой, объект без position и size — не на сцене", () => {
+    const objects = [
+      { position: [0, 0], size: [1, 1], color: "#2b2f3a" },
+      { position: [1, 1], size: [1, 1], image: "head" },
+      { position: [2, 2], color: 5 },
+      { score: 0, color: "red" },
+    ];
+    expect(summarizeSceneObjects(objects)).toEqual([
+      { index: 0, name: null, color: "#2b2f3a", image: null, isOnScene: true },
+      { index: 1, name: null, color: null, image: "head", isOnScene: true },
+      { index: 2, name: null, color: null, image: null, isOnScene: false },
+      { index: 3, name: null, color: null, image: null, isOnScene: false },
+    ]);
+  });
+});
+
+describe("parseSceneSize", () => {
+  it("берёт ширину и высоту сцены из game.json", () => {
+    expect(parseSceneSize(JSON.stringify({ scene: { width: 17, height: 27 } }))).toEqual({ width: 17, height: 27 });
+  });
+
+  it("файл не прочитан, не JSON или размера нет — null", () => {
+    expect(parseSceneSize(null)).toBe(null);
+    expect(parseSceneSize("{не json")).toBe(null);
+    expect(parseSceneSize("null")).toBe(null);
+    expect(parseSceneSize(JSON.stringify({ name: "x" }))).toBe(null);
+    expect(parseSceneSize(JSON.stringify({ scene: { width: 0, height: 5 } }))).toBe(null);
   });
 });
 
