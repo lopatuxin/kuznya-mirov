@@ -105,6 +105,7 @@ pub struct Renderer {
 
     font_system: glyphon::FontSystem,
     swash_cache: glyphon::SwashCache,
+    text_cache: glyphon::Cache,
     text_atlas: glyphon::TextAtlas,
     text_viewport: glyphon::Viewport,
     text_renderer: glyphon::TextRenderer,
@@ -440,6 +441,7 @@ impl Renderer {
             atlas_texture,
             font_system: glyphon::FontSystem::new(),
             swash_cache: glyphon::SwashCache::new(),
+            text_cache,
             text_atlas,
             text_viewport,
             text_renderer,
@@ -483,6 +485,24 @@ impl Renderer {
         let font_id = self.fonts.len();
         self.fonts.push(family);
         font_id
+    }
+
+    /// «Редактор», требование 20: a repeated `load()` must not pile fonts up under the previous
+    /// game's ones — dropped and rebuilt fresh, so the next game's `load_font` calls hand out
+    /// `FontId`s starting at 0 again, matching its own `files.fonts` order. `glyphon`'s glyph
+    /// atlas caches rasters by `CacheKey`, which embeds the `fontdb::ID` the fresh `FontSystem`
+    /// hands out — the same IDs as the dropped one — so `swash_cache` and `text_atlas` are
+    /// rebuilt too, or a new font's glyphs would come back as the old font's rasters.
+    pub fn reset_fonts(&mut self) {
+        self.font_system = glyphon::FontSystem::new();
+        self.fonts.clear();
+        self.swash_cache = glyphon::SwashCache::new();
+        self.text_atlas = glyphon::TextAtlas::new(
+            &self.device,
+            &self.queue,
+            &self.text_cache,
+            self.config.format,
+        );
     }
 
     /// «Картинки» → «Атлас и отрисовка»: packs `images` (already checked, one whole strip per

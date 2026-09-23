@@ -3,6 +3,12 @@ services:
     build: .
     ports:
       - "${WEB_PORT:-8090}:80"
+    volumes:
+      # Редактор (Фаза 08, требование 1) сам замечает правки в файлах проекта и перезагружает его —
+      # для этого стенд должен раздавать games/ из рабочей копии репозитория, а не из образа: правка
+      # видна сразу, без docker compose build. Только для чтения — редактор в games/ не пишет.
+      # Образ по-прежнему несёт свою копию games/ (см. Dockerfile) для публикации без такого монтирования.
+      - ./games:/usr/share/nginx/html/games:ro
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://localhost/health"]
       interval: 10s

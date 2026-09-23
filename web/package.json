@@ -12,10 +12,15 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "engine": "file:../engine/pkg"
+    "engine": "file:../engine/pkg",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^4.7.0",
     "lamejs": "^1.2.1",
     "typescript": "^5.7.3",
     "vite": "^6.0.11",

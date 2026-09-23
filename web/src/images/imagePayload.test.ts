@@ -28,14 +28,14 @@ describe("fetchImageBytes + buildImagePayload", () => {
       { index: 2, name: "tail", path: "images/tail.png" },
       { index: 9, name: "food", path: "images/food.png" },
     ];
-    const bytesByUrl = new Map<string, Uint8Array | null>([
-      ["/games/snake/images/head.png", new Uint8Array([1])],
-      ["/games/snake/images/tail.png", null],
-      ["/games/snake/images/food.png", new Uint8Array([2])],
+    const bytesByPath = new Map<string, Uint8Array | null>([
+      ["images/head.png", new Uint8Array([1])],
+      ["images/tail.png", null],
+      ["images/food.png", new Uint8Array([2])],
     ]);
-    const fetchBinary = async (url: string): Promise<Uint8Array | null> => bytesByUrl.get(url) ?? null;
+    const readBinary = async (path: string): Promise<Uint8Array | null> => bytesByPath.get(path) ?? null;
 
-    const loaded = await fetchImageBytes("/games/snake/", images, fetchBinary);
+    const loaded = await fetchImageBytes(images, readBinary);
     const payload = await buildImagePayload(loaded);
 
     expect(payload.map((entry) => entry.index)).toEqual([5, 2, 9]);

@@ -1,6 +1,7 @@
 import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
@@ -45,6 +46,37 @@ export function resolveGameFilePath(requestUrl: string, directoryPath: string): 
   }
 }
 
+export type GamesFileResponse = {
+  headers: Record<string, string>;
+  /** `null` — ответ на `HEAD`, без тела. */
+  body: Buffer | null;
+};
+
+/**
+ * Ответ на запрос файла из `games/` — заголовки `ETag` и `Last-Modified` по размеру и времени
+ * изменения файла, тело только на `GET` («Редактор», требование 32: опрос ходит `HEAD`-запросами и
+ * так находит правку без пересборки образа). `filePath` — уже проверенный существующий файл
+ * (`resolveGameFilePath`); стат может всё равно упасть, если файл исчез между проверкой и этим
+ * вызовом — вызывающий код гасит это в 404 так же, как отсутствие файла с самого начала.
+ */
+export function buildGamesFileResponse(filePath: string, method: string): GamesFileResponse {
+  const stats = statSync(filePath);
+  const headers: Record<string, string> = {
+    "Content-Type": CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream",
+    "Content-Length": String(stats.size),
+    ETag: `"${stats.size.toString(16)}-${stats.mtimeMs.toString(16)}"`,
+    "Last-Modified": stats.mtime.toUTCString(),
+  };
+  if (method === "HEAD") return { headers, body: null };
+
+  // Файл может измениться между этим statSync и чтением ниже — Content-Length ответа берём из
+  // длины уже прочитанного буфера, а не из более раннего stats.size, чтобы заголовок не разошёлся
+  // с реально отданным телом.
+  const body = readFileSync(filePath);
+  headers["Content-Length"] = String(body.length);
+  return { headers, body };
+}
+
 /**
  * Игровые папки (`games/snake/`, `games/arkanoid/`) лежат рядом с web/, вне корня Vite. Плагин
  * раздаёт их по `/games/...` в dev-режиме и копирует в outDir при сборке, чтобы движок мог
@@ -74,16 +106,18 @@ function serveGamesFolder(): Plugin {
         }
         // Между проверкой и чтением файл может исчезнуть или стать недоступным: такой запрос —
         // тот же самый «файла нет», что и не прошедший проверку путь, а не отказ сервера.
-        let content: Buffer;
+        let response: GamesFileResponse;
         try {
-          content = readFileSync(filePath);
+          response = buildGamesFileResponse(filePath, req.method ?? "GET");
         } catch {
           res.statusCode = 404;
           res.end();
           return;
         }
-        res.setHeader("Content-Type", CONTENT_TYPES[extname(filePath)] ?? "application/octet-stream");
-        res.end(content);
+        for (const [name, value] of Object.entries(response.headers)) {
+          res.setHeader(name, value);
+        }
+        res.end(response.body ?? undefined);
       });
     },
     // writeBundle, а не closeBundle: dev-сервер при остановке тоже прогоняет closeBundle через
@@ -105,7 +139,9 @@ export default defineConfig({
   // несуществующий путь (SPA-фолбэк), и страница не может отличить отсутствующий файл игры
   // от существующего по коду ответа.
   appType: "mpa",
-  plugins: [serveGamesFolder()],
+  // React стоит только у редактора (`web/src/editor/**`); страница игры (`index.html`/`main.ts`)
+  // на нём не написана, и плагин её сборку не трогает — babel обрабатывает только .tsx/.jsx.
+  plugins: [serveGamesFolder(), react()],
   optimizeDeps: {
     // Пакет wasm-bindgen сам находит свой .wasm через import.meta.url; esbuild-предбандлинг
     // ломает этот путь, поэтому пакет исключён из dep-оптимизации Vite.
@@ -116,6 +152,16 @@ export default defineConfig({
       // node_modules/engine — символьная ссылка на engine/pkg (file:-зависимость), которая лежит
       // вне корня web/; без явного разрешения Vite отдаёт её файлы с 403.
       allow: [rootDir, resolve(rootDir, "../engine/pkg")],
+    },
+  },
+  build: {
+    // Вторая страница сборки — «Редактор», требование 1: `/editor.html` на собранном сайте и в
+    // контейнере, без изменений в nginx.
+    rollupOptions: {
+      input: {
+        main: resolve(rootDir, "index.html"),
+        editor: resolve(rootDir, "editor.html"),
+      },
     },
   },
 });
