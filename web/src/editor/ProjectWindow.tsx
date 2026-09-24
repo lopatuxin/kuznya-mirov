@@ -1,22 +1,18 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { formatError } from "../engineErrors";
 import { parseGameDisplayName } from "../gamesIndex";
 import { EditorIcon } from "./EditorIcon";
 import { ErrorsPanel } from "./ErrorsPanel";
 import { ObjectList } from "./ObjectList";
 import { PanelResizeHandle } from "./PanelResizeHandle";
+import { parsePropertyDeclarations } from "./propertiesDeclarations";
+import { parseProjectImageNames } from "./projectFiles";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { SceneCanvas } from "./SceneCanvas";
 import { fallbackDisplayName, type ProjectSource } from "./projectSource";
-import {
-  buildObjectPropertiesView,
-  parseSceneObjects,
-  parseSceneSize,
-  resolveSelectionAfterReload,
-  summarizeSceneObjects,
-} from "./sceneObjects";
-import { useProjectEngine } from "./useProjectEngine";
+import { buildObjectPropertiesView, parseSceneObjects, parseSceneSize, summarizeSceneObjects } from "./sceneObjects";
+import { useSceneEditing } from "./useSceneEditing";
 import { useStoredPanelWidth } from "./useStoredPanelWidth";
 
 type ProjectWindowProps = { source: ProjectSource; onBackToProjects: () => void };
@@ -62,36 +58,75 @@ function ScenePlaceholder({ isLoading, hasEngineFailed }: ScenePlaceholderProps)
 }
 
 /**
+ * Поле ввода в фокусе — «Редактор», требование 19: глобальные клавиши там ведут себя как обычно у
+ * поля. Галочка, выпадающий список и палитра цвета своих клавиш для Ctrl+D/Delete/Ctrl+Z не держат
+ * — фокус на них глобальные клавиши не гасит, иначе кнопка сразу после щелчка по галочке не отвечала бы.
+ */
+function isEditableElementFocused(): boolean {
+  const active = document.activeElement;
+  if (active === null) return false;
+  if (active instanceof HTMLTextAreaElement) return true;
+  if (active instanceof HTMLInputElement) {
+    return active.type !== "checkbox" && active.type !== "color";
+  }
+  return (active as HTMLElement).isContentEditable;
+}
+
+/**
  * Окно открытого проекта — «Редактор», требование 8: полоса сверху, список/сцена/свойства в
  * три колонки, ошибки во всю ширину снизу; каждая панель прокручивается сама по себе. Боковые
  * панели автор растягивает мышью за их внутренний край.
  */
 export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const { engine, result, loadedAt, headerNotice, engineError } = useProjectEngine(canvasRef, source);
-  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
+  const sceneEditing = useSceneEditing(canvasRef, source);
+  const { engine, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, saveState, canUndo, selectedIndex, setSelectedIndex } = sceneEditing;
   const [objectsWidth, setObjectsWidth] = useStoredPanelWidth("kuznya-editor.objects-width", 260);
   const [propertiesWidth, setPropertiesWidth] = useStoredPanelWidth("kuznya-editor.properties-width", 320);
 
   const gameJsonText = result && result.status !== "entry-missing" ? result.gameJsonText : null;
-  const sceneText = result && result.status !== "entry-missing" ? result.sceneText : null;
   const projectName = displayNameFor(source, gameJsonText);
   const sceneAvailable = result?.status === "ok";
   // Ни результата загрузки, ни отказа движка ещё нет — самая первая загрузка проекта ещё идёт
   // («Редактор», требование про «Загрузка…» вместо «Сцены нет» и «Ошибок и предупреждений нет»).
   const isLoading = result === null && engineError === null;
+  // Текст сцены известен (правка держит его в памяти) — панель свойств и перенос мышью доступны, даже
+  // если сама игра не запускается из-за ошибки в другом файле (крайний случай: сломан rules.json).
+  const canEdit = sceneText !== null && propertiesText !== null;
 
   const objects = useMemo(() => parseSceneObjects(sceneText), [sceneText]);
   const objectSummaries = useMemo(() => summarizeSceneObjects(objects), [objects]);
   const propertiesView = useMemo(() => buildObjectPropertiesView(objects, selectedIndex), [objects, selectedIndex]);
   const sceneSize = useMemo(() => parseSceneSize(gameJsonText), [gameJsonText]);
+  const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
+  const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const selectedObject = selectedIndex !== null ? (objectSummaries[selectedIndex] ?? null) : null;
 
-  // После перезагрузки выбран объект с тем же номером, если он есть в новом `scene.json`; иначе
-  // выбор снят («Редактор», требование 36). Эффект, а не запись состояния прямо во время рендера.
+  // Последний selectedIndex и действия правки — в ref, чтобы не переставлять слушатель на каждый рендер.
+  const shortcutStateRef = useRef({ selectedIndex, undo: sceneEditing.undo, copyObject: sceneEditing.copyObject, deleteObject: sceneEditing.deleteObject });
+  shortcutStateRef.current = { selectedIndex, undo: sceneEditing.undo, copyObject: sceneEditing.copyObject, deleteObject: sceneEditing.deleteObject };
+
+  // Ctrl+D, Delete и Ctrl+Z — «Редактор», требование 19: не тогда, когда фокус в поле ввода.
   useEffect(() => {
-    setSelectedIndex((current) => resolveSelectionAfterReload(current, objects.length));
-  }, [objects]);
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (isEditableElementFocused()) return;
+      const current = shortcutStateRef.current;
+      if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "z") {
+        event.preventDefault();
+        current.undo();
+      } else if (event.ctrlKey && !event.shiftKey && !event.altKey && event.key.toLowerCase() === "d") {
+        if (current.selectedIndex === null) return;
+        event.preventDefault();
+        current.copyObject(current.selectedIndex);
+      } else if (event.key === "Delete") {
+        if (current.selectedIndex === null) return;
+        event.preventDefault();
+        current.deleteObject(current.selectedIndex);
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, []);
 
   const errorLines = [
     ...(engineError !== null ? [engineError] : []),
@@ -118,6 +153,9 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
         source={source}
         headerNotice={headerNotice}
         loadedAt={loadedAt}
+        saveState={saveState}
+        canUndo={canUndo}
+        onUndo={sceneEditing.undo}
         onBackToProjects={onBackToProjects}
       />
 
@@ -131,16 +169,32 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
           canvasRef={canvasRef}
           engine={engine}
           sceneSize={sceneSize}
+          objects={objects}
+          canEditScene={canEdit}
           selectedIndex={selectedIndex}
           selectedLabel={selectedObject === null ? null : (selectedObject.name ?? `№ ${selectedObject.index}`)}
           onSelect={setSelectedIndex}
+          onMoveObject={sceneEditing.moveObject}
         />
         {!sceneAvailable && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
       </main>
 
       <aside className="project-window__properties">
         <PanelResizeHandle edge="left" width={propertiesWidth} onWidthChange={setPropertiesWidth} label="Ширина панели свойств" />
-        <PropertiesPanel view={propertiesView} selectedObject={selectedObject} />
+        <PropertiesPanel
+          key={selectedIndex ?? "none"}
+          view={propertiesView}
+          selectedObject={selectedObject}
+          canEdit={canEdit}
+          imageNames={imageNames}
+          declaredProperties={declaredProperties}
+          onSetValue={(key, value) => selectedIndex !== null && sceneEditing.setPropertyValue(selectedIndex, key, value)}
+          onRemove={(key) => selectedIndex !== null && sceneEditing.removeProperty(selectedIndex, key)}
+          onAdd={(key, value) => selectedIndex !== null && sceneEditing.addProperty(selectedIndex, key, value)}
+          onDeclare={(key, kind, value) => selectedIndex !== null && sceneEditing.declareProperty(selectedIndex, key, kind, value)}
+          onCopy={() => selectedIndex !== null && sceneEditing.copyObject(selectedIndex)}
+          onDelete={() => selectedIndex !== null && sceneEditing.deleteObject(selectedIndex)}
+        />
       </aside>
 
       <footer className="project-window__problems">

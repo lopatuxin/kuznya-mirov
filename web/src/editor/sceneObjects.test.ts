@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildObjectPropertiesView,
+  getObjectGeometry,
   parseSceneObjects,
   parseSceneSize,
   resolveSelectionAfterReload,
@@ -64,6 +65,19 @@ describe("summarizeSceneObjects", () => {
   });
 });
 
+describe("getObjectGeometry", () => {
+  it("отдаёт position и size объекта", () => {
+    const objects = [{ position: [2, 6], size: [1, 1] }];
+    expect(getObjectGeometry(objects, 0)).toEqual({ position: [2, 6], size: [1, 1] });
+  });
+
+  it("без position или size — null", () => {
+    expect(getObjectGeometry([{ size: [1, 1] }], 0)).toBe(null);
+    expect(getObjectGeometry([{ position: [1, 1] }], 0)).toBe(null);
+    expect(getObjectGeometry([], 0)).toBe(null);
+  });
+});
+
 describe("parseSceneSize", () => {
   it("берёт ширину и высоту сцены из game.json", () => {
     expect(parseSceneSize(JSON.stringify({ scene: { width: 17, height: 27 } }))).toEqual({ width: 17, height: 27 });
@@ -93,8 +107,8 @@ describe("buildObjectPropertiesView", () => {
     expect(buildObjectPropertiesView(objects, 0)).toEqual({
       status: "object",
       properties: [
-        { key: "position", valueText: "[1,2]" },
-        { key: "color", valueText: '"#e04040"' },
+        { key: "position", value: [1, 2], valueText: "[1,2]" },
+        { key: "color", value: "#e04040", valueText: '"#e04040"' },
       ],
     });
   });

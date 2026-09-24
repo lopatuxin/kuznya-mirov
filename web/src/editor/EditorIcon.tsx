@@ -13,6 +13,10 @@ const ICON_PATHS = {
   pointer: ["M4 4l7.07 17 2.51-7.39L21 11.07Z"],
   "chevron-down": ["m6 9 6 6 6-6"],
   "chevron-up": ["m18 15-6-6-6 6"],
+  copy: ["M20 9H11a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2v-9a2 2 0 0 0-2-2Z", "M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"],
+  trash: ["M3 6h18", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2", "M10 11v6", "M14 11v6"],
+  undo: ["M9 14 4 9l5-5", "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"],
+  plus: ["M12 5v14", "M5 12h14"],
 } as const;
 
 export type EditorIconName = keyof typeof ICON_PATHS;

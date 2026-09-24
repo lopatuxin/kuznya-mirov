@@ -13,7 +13,7 @@ export type SceneSize = { width: number; height: number };
 export type ObjectPropertiesView =
   | { status: "none" }
   | { status: "not-object"; json: string }
-  | { status: "object"; properties: { key: string; valueText: string }[] };
+  | { status: "object"; properties: { key: string; value: unknown; valueText: string }[] };
 
 /**
  * Список и свойства редактор берёт из текста `scene.json` сам, отдельно от разбора движком —
@@ -47,6 +47,23 @@ function readStringField(entry: unknown, key: string): string | null {
 
 function hasOwnField(entry: unknown, key: string): boolean {
   return entry !== null && typeof entry === "object" && !Array.isArray(entry) && key in entry;
+}
+
+function readVec2Field(entry: unknown, key: string): [number, number] | null {
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
+  const value = (entry as Record<string, unknown>)[key];
+  if (!Array.isArray(value) || value.length < 2) return null;
+  const [x, y] = value as unknown[];
+  return typeof x === "number" && typeof y === "number" ? [x, y] : null;
+}
+
+/** `position` и `size` объекта — «Редактор», требование 8: клетка переноса меряется от них, не от прямоугольника на холсте. */
+export function getObjectGeometry(objects: unknown[], index: number): { position: [number, number]; size: [number, number] } | null {
+  const entry = objects[index];
+  const position = readVec2Field(entry, "position");
+  const size = readVec2Field(entry, "size");
+  if (position === null || size === null) return null;
+  return { position, size };
 }
 
 /**
@@ -99,6 +116,7 @@ export function buildObjectPropertiesView(objects: unknown[], selectedIndex: num
   }
   const properties = Object.entries(entry as Record<string, unknown>).map(([key, value]) => ({
     key,
+    value,
     valueText: JSON.stringify(value),
   }));
   return { status: "object", properties };

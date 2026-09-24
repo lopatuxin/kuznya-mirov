@@ -54,9 +54,10 @@ export function ProjectSelection({ onOpenFolder }: ProjectSelectionProps): React
     if (!window.showDirectoryPicker) return;
     let handle: FileSystemDirectoryHandle;
     try {
-      handle = await window.showDirectoryPicker({ mode: "read" });
+      // «Редактор», требование 26: правка пишет файлы папки сама, разрешение на запись просится сразу.
+      handle = await window.showDirectoryPicker({ mode: "readwrite" });
     } catch {
-      // Отмена окна выбора ничего не меняет — требование 7.
+      // Отказ в разрешении и отмена окна выбора не отличаются для вызывающей стороны — требование 7, 26.
       return;
     }
     onOpenFolder({ kind: "folder", handle, displayName: handle.name });
@@ -107,7 +108,13 @@ export function ProjectSelection({ onOpenFolder }: ProjectSelectionProps): React
               ))}
             {state.status === "loaded" && state.result.options.map((option) => <ProjectCard key={option.id} option={option} />)}
 
-            <button type="button" className="project-card project-card--folder" disabled={!CAN_OPEN_FOLDER} onClick={() => void handleOpenFolder()}>
+            <button
+              type="button"
+              className="project-card project-card--folder"
+              disabled={!CAN_OPEN_FOLDER}
+              title={CAN_OPEN_FOLDER ? "Без разрешения на запись папку не открыть" : undefined}
+              onClick={() => void handleOpenFolder()}
+            >
               <span className="project-card__monogram">
                 <EditorIcon name="folder" size={20} />
               </span>

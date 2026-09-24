@@ -77,6 +77,17 @@ pub fn object_rect(
     })
 }
 
+/// «Редактор», требование 30: moves an already-loaded object to `position`, in the world alone —
+/// the scene it was built from and the files on disk stay untouched, so the next `show_scene`
+/// rebuilds the world from the unchanged file. Does nothing without that object or without its
+/// own `position` property.
+pub fn move_object(world: &mut World, id: u32, position: super::value::Vec2) {
+    if id as usize >= world.slot_count() || !world.has(id, property::POSITION) {
+        return;
+    }
+    world.set_vec2(id, property::POSITION, position);
+}
+
 /// «Редактор», требование 18: the topmost object (largest `layer`, ties broken by the larger
 /// object number) whose canvas rectangle contains `point` (CSS pixels, canvas top-left origin) —
 /// left/top edges included, right/bottom excluded. A candidate needs `position`, `size` and a
@@ -188,6 +199,51 @@ mod tests {
         let bare = world.create();
         assert_eq!(object_rect(&world, &scene, bare, [800.0, 600.0]), None);
         assert_eq!(object_rect(&world, &scene, 99, [800.0, 600.0]), None);
+    }
+
+    #[test]
+    fn move_object_sets_position_and_leaves_other_properties_and_objects_alone() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        let scene = SceneConfig {
+            width: 10,
+            height: 10,
+            background: [0.0; 4],
+        };
+        let moved = world.create();
+        world.set_vec2(moved, property::POSITION, [1.0, 2.0]);
+        world.set_vec2(moved, property::SIZE, [1.0, 1.0]);
+        world.set_color(moved, property::COLOR, [1.0, 0.0, 0.0, 1.0]);
+        let other = world.create();
+        world.set_vec2(other, property::POSITION, [4.0, 4.0]);
+
+        move_object(&mut world, moved, [5.37, 7.0]);
+
+        assert_eq!(world.vec2(moved, property::POSITION), Some([5.37, 7.0]));
+        assert_eq!(world.vec2(moved, property::SIZE), Some([1.0, 1.0]));
+        assert_eq!(world.vec2(other, property::POSITION), Some([4.0, 4.0]));
+
+        let viewport = [100.0, 100.0]; // scale 10, no margin
+        let rect = object_rect(&world, &scene, moved, viewport).expect("has position and size");
+        assert!((rect.x - 53.7).abs() < 1e-3, "{rect:?}");
+        assert!((rect.y - 70.0).abs() < 1e-3, "{rect:?}");
+        assert_eq!(
+            object_at(&world, &scene, [54.0, 71.0], viewport),
+            Some(moved)
+        );
+    }
+
+    #[test]
+    fn move_object_does_nothing_without_the_object_or_its_position() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        let bare = world.create();
+
+        move_object(&mut world, bare, [5.0, 5.0]);
+        assert_eq!(world.vec2(bare, property::POSITION), None);
+
+        move_object(&mut world, 99, [5.0, 5.0]);
+        assert_eq!(world.slot_count(), 1, "no slot created for a missing id");
     }
 
     #[test]
