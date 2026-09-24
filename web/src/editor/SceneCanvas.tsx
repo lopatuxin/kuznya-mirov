@@ -1,7 +1,8 @@
 import type { Engine } from "engine";
 import { useEffect, useRef, type RefObject } from "react";
 import { computeCanvasLayout } from "../canvasLayout";
-import type { SceneSize } from "./sceneObjects";
+import { cellSizeFromObjectRect, computeDragPosition, hasCrossedDragThreshold } from "./dragPlacement";
+import { getObjectGeometry, type SceneSize } from "./sceneObjects";
 import { fitSceneStage } from "./sceneStageLayout";
 
 type SceneCanvasProps = {
@@ -9,10 +10,27 @@ type SceneCanvasProps = {
   canvasRef: RefObject<HTMLCanvasElement | null>;
   engine: Engine | null;
   sceneSize: SceneSize | null;
+  /** `scene.json`, разобранный в объекты — для геометрии переноса (требование 8), не для отрисовки. */
+  objects: unknown[];
+  /** `scene.json` не разобрать или движок не готов к правке — перенос не начинается (крайний случай). */
+  canEditScene: boolean;
   selectedIndex: number | null;
   /** Подпись над рамкой выбранного объекта — его имя или номер. */
   selectedLabel: string | null;
   onSelect: (index: number | null) => void;
+  /** Отпускание после переноса — «Редактор», требование 9: одно действие с новым местом объекта. */
+  onMoveObject: (objectIndex: number, position: readonly [number, number]) => void;
+};
+
+type DragState = {
+  objectIndex: number;
+  pointerId: number;
+  startClientX: number;
+  startClientY: number;
+  startPosition: readonly [number, number];
+  cellSizePx: number;
+  hasStartedDrag: boolean;
+  lastPosition: readonly [number, number];
 };
 
 type CanvasRect = { x: number; y: number; width: number; height: number };
@@ -77,7 +95,17 @@ function drawSelection(context: CanvasRenderingContext2D, rect: CanvasRect, labe
  * `object_at` (требование 23), щелчок по полям вокруг сцены снимает выбор. За размером следит
  * `ResizeObserver` на части окна со сценой, а не `window.resize`, как у страницы игры.
  */
-export function SceneCanvas({ canvasRef, engine, sceneSize, selectedIndex, selectedLabel, onSelect }: SceneCanvasProps): React.JSX.Element {
+export function SceneCanvas({
+  canvasRef,
+  engine,
+  sceneSize,
+  objects,
+  canEditScene,
+  selectedIndex,
+  selectedLabel,
+  onSelect,
+  onMoveObject,
+}: SceneCanvasProps): React.JSX.Element {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
@@ -85,8 +113,21 @@ export function SceneCanvas({ canvasRef, engine, sceneSize, selectedIndex, selec
   selectedIndexRef.current = selectedIndex;
   const selectedLabelRef = useRef(selectedLabel);
   selectedLabelRef.current = selectedLabel;
+  const objectsRef = useRef(objects);
+  objectsRef.current = objects;
+  const canEditSceneRef = useRef(canEditScene);
+  canEditSceneRef.current = canEditScene;
+  const onMoveObjectRef = useRef(onMoveObject);
+  onMoveObjectRef.current = onMoveObject;
+  const dragRef = useRef<DragState | null>(null);
   const sceneWidth = sceneSize?.width ?? null;
   const sceneHeight = sceneSize?.height ?? null;
+
+  // Внешняя правка или другое действие поменяли `scene.json` во время переноса — «Редактор», крайний
+  // случай: перенос отменяется, мир движок уже собрал заново из показанного своей перезагрузкой.
+  useEffect(() => {
+    dragRef.current = null;
+  }, [objects]);
 
   useEffect(() => {
     const area = areaRef.current;
@@ -155,11 +196,76 @@ export function SceneCanvas({ canvasRef, engine, sceneSize, selectedIndex, selec
     };
   }, [engine]);
 
-  function handleCanvasClick(event: React.MouseEvent<HTMLCanvasElement>): void {
-    if (!engine) return;
+  /**
+   * Нажатие выбирает объект под указателем — «Редактор», требование 7 (выбор на нажатии, не на
+   * отпускании). Правка недоступна или под указателем нет объекта с `position`/`size` в тексте —
+   * перенос не заводится, но выбор всё равно работает (крайний случай: `scene.json` не разобрать).
+   */
+  function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
+    if (!engine || event.button !== 0) return;
     const bounds = event.currentTarget.getBoundingClientRect();
-    const result = engine.object_at(event.clientX - bounds.left, event.clientY - bounds.top) as number | undefined;
-    onSelect(typeof result === "number" ? result : null);
+    const hit = engine.object_at(event.clientX - bounds.left, event.clientY - bounds.top) as number | undefined;
+    // Открытое поле свойства записывается в прежний объект (требование 13) до смены выбора: иначе
+    // панель пересоздаётся под новый номер раньше, чем браузер снимет фокус, и черновик пропадёт.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    onSelect(typeof hit === "number" ? hit : null);
+    if (typeof hit !== "number" || !canEditSceneRef.current) return;
+
+    const geometry = getObjectGeometry(objectsRef.current, hit);
+    const rect = engine.object_rect(hit) as { width: number } | undefined;
+    if (geometry === null || !rect) return;
+
+    dragRef.current = {
+      objectIndex: hit,
+      pointerId: event.pointerId,
+      startClientX: event.clientX,
+      startClientY: event.clientY,
+      startPosition: geometry.position,
+      cellSizePx: cellSizeFromObjectRect(rect.width, geometry.size[0]),
+      hasStartedDrag: false,
+      lastPosition: geometry.position,
+    };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  }
+
+  function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>): void {
+    const drag = dragRef.current;
+    if (!engine || drag === null || drag.pointerId !== event.pointerId) return;
+    const deltaX = event.clientX - drag.startClientX;
+    const deltaY = event.clientY - drag.startClientY;
+    if (!drag.hasStartedDrag) {
+      // «Редактор», требование 7: сдвиг дальше 4 пикселей начинает перенос.
+      if (!hasCrossedDragThreshold(deltaX, deltaY)) return;
+      drag.hasStartedDrag = true;
+    }
+    const position = computeDragPosition(drag.startPosition, [deltaX, deltaY], drag.cellSizePx, event.ctrlKey);
+    if (position[0] === drag.lastPosition[0] && position[1] === drag.lastPosition[1]) return;
+    drag.lastPosition = position;
+    engine.move_object(drag.objectIndex, position[0], position[1]);
+  }
+
+  function endDrag(event: React.PointerEvent<HTMLCanvasElement>): void {
+    const drag = dragRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag.hasStartedDrag) onMoveObjectRef.current(drag.objectIndex, drag.lastPosition);
+  }
+
+  /** Браузер сам отменил перенос (например, второй палец на тачскрине) — объект возвращается на прежнее место, без действия. */
+  function handlePointerCancel(event: React.PointerEvent<HTMLCanvasElement>): void {
+    const drag = dragRef.current;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
+    dragRef.current = null;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    if (drag.hasStartedDrag) engine?.move_object(drag.objectIndex, drag.startPosition[0], drag.startPosition[1]);
+  }
+
+  function handleKeyDown(event: React.KeyboardEvent<HTMLCanvasElement>): void {
+    const drag = dragRef.current;
+    if (event.key !== "Escape" || drag === null) return;
+    dragRef.current = null;
+    engine?.move_object(drag.objectIndex, drag.startPosition[0], drag.startPosition[1]);
   }
 
   function handleAreaClick(event: React.MouseEvent<HTMLDivElement>): void {
@@ -170,7 +276,16 @@ export function SceneCanvas({ canvasRef, engine, sceneSize, selectedIndex, selec
     <div ref={areaRef} className="scene-view" onClick={handleAreaClick}>
       <div ref={stageRef} className="scene-view__stage">
         <canvas ref={canvasRef} className="scene-view__world" />
-        <canvas ref={overlayCanvasRef} className="scene-view__overlay" onClick={handleCanvasClick} />
+        <canvas
+          ref={overlayCanvasRef}
+          className="scene-view__overlay"
+          tabIndex={-1}
+          onPointerDown={handlePointerDown}
+          onPointerMove={handlePointerMove}
+          onPointerUp={endDrag}
+          onPointerCancel={handlePointerCancel}
+          onKeyDown={handleKeyDown}
+        />
       </div>
       {sceneSize !== null && (
         <span className="scene-view__size">

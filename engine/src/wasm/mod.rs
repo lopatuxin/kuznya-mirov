@@ -788,6 +788,17 @@ impl Engine {
         }
     }
 
+    /// «Редактор», требование 30: moves object `id` to `(x, y)` — scene cells — in the world
+    /// alone. The scene `show_scene` built the world from, and the files on disk, are untouched:
+    /// the next `show_scene` rebuilds the world from the scene as it was. Does nothing without a
+    /// loaded game, without that object, or without its own `position`. See
+    /// `core::scene::move_object`.
+    pub fn move_object(&mut self, id: u32, x: f32, y: f32) {
+        if let Some(game) = self.game.as_mut() {
+            crate::core::scene::move_object(&mut game.world, id, [x as f64, y as f64]);
+        }
+    }
+
     /// Queued, not applied immediately — judged against whichever screen is active once `tick`
     /// drains the queue, same as a mouse event: dropped outright on a screen with no
     /// `world_runs`, except a key named in that screen's own `keys` table — «Экраны и

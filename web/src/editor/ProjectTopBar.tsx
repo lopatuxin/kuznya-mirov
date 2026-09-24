@@ -1,5 +1,6 @@
 import { EditorIcon } from "./EditorIcon";
 import { EditorLogoMark } from "./EditorLogoMark";
+import type { SaveState } from "./editSession";
 import type { ProjectSource } from "./projectSource";
 
 type ProjectTopBarProps = {
@@ -8,6 +9,9 @@ type ProjectTopBarProps = {
   headerNotice: string | null;
   /** Когда проект последний раз загрузился или перезагрузился после правки файлов. */
   loadedAt: Date | null;
+  saveState: SaveState;
+  canUndo: boolean;
+  onUndo: () => void;
   onBackToProjects: () => void;
 };
 
@@ -30,8 +34,22 @@ function ProjectStatus({ headerNotice, loadedAt }: Pick<ProjectTopBarProps, "hea
   );
 }
 
-/** Верхняя полоса окна проекта — «Редактор», требование 8: кнопка «К проектам» и название проекта. */
-export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, onBackToProjects }: ProjectTopBarProps): React.JSX.Element {
+/** «Не сохранено — …» — «Редактор», требования 2, 4: строка появляется, пока показанный текст не записан. */
+function SaveStateNotice({ saveState }: { saveState: SaveState }): React.JSX.Element | null {
+  if (saveState.status === "saved") return null;
+  return (
+    <span className="project-topbar__notice" title={saveState.reason}>
+      <EditorIcon name="warning" size={14} />
+      Не сохранено — {saveState.reason}
+    </span>
+  );
+}
+
+/**
+ * Верхняя полоса окна проекта — «Редактор», требование 8: кнопка «К проектам» и название проекта.
+ * «Отменить» и строка «Не сохранено» — требования 2, 4, 21: кнопка неактивна без истории.
+ */
+export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, saveState, canUndo, onUndo, onBackToProjects }: ProjectTopBarProps): React.JSX.Element {
   return (
     <header className="project-topbar">
       <EditorLogoMark size={26} />
@@ -48,7 +66,12 @@ export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, onB
           </>
         )}
       </span>
+      <button type="button" className="editor-button" disabled={!canUndo} title="Отменить (Ctrl+Z)" onClick={onUndo}>
+        <EditorIcon name="undo" size={15} />
+        Отменить
+      </button>
       <div className="project-topbar__status">
+        <SaveStateNotice saveState={saveState} />
         <ProjectStatus headerNotice={headerNotice} loadedAt={loadedAt} />
       </div>
     </header>

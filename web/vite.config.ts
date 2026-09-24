@@ -1,6 +1,9 @@
+import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { rename, writeFile } from "node:fs/promises";
 import { extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import type { IncomingMessage } from "node:http";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
@@ -77,6 +80,58 @@ export function buildGamesFileResponse(filePath: string, method: string): GamesF
   return { headers, body };
 }
 
+export type PutTargetResult = { status: "forbidden" } | { status: "not-allowed" } | { status: "ok"; filePath: string };
+
+/**
+ * Проверка пути записи — «Редактор», требование 28: пишутся только `.json` внутри `games/<имя>/`.
+ * `..`, абсолютный путь и битая процентная кодировка сводятся к тому же выходу за `directoryPath`,
+ * что и у чтения (`isPathWithinDirectory`), — 403; путь внутри каталога, но не `.json` или не в
+ * подпапке проекта (`games/<путь>.json` без имени проекта, сам каталог) — 405.
+ */
+export function resolvePutTarget(requestUrl: string, directoryPath: string): PutTargetResult {
+  let requestPath: string;
+  try {
+    requestPath = decodeURIComponent(requestUrl.split("?")[0] ?? "");
+  } catch {
+    return { status: "forbidden" };
+  }
+  // Нулевой байт роняет запись файла так же, как statSync у чтения — тут его некому поймать заранее.
+  if (requestPath.includes("\0")) return { status: "forbidden" };
+
+  const filePath = resolve(join(directoryPath, requestPath));
+  if (!isPathWithinDirectory(filePath, directoryPath) || filePath === directoryPath) {
+    return { status: "forbidden" };
+  }
+
+  const relativeSegments = filePath.slice(directoryPath.length + 1).split(sep);
+  const isInsideProjectFolder = relativeSegments.length >= 2 && relativeSegments.every((segment) => segment !== "");
+  if (!isInsideProjectFolder || extname(filePath) !== ".json") {
+    return { status: "not-allowed" };
+  }
+  return { status: "ok", filePath };
+}
+
+/** Тело запроса целиком — раздача `games/` не подключает парсер тела, читает поток сама. */
+function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolvePromise, reject) => {
+    const chunks: Buffer[] = [];
+    req.on("data", (chunk: Buffer) => chunks.push(chunk));
+    req.on("end", () => resolvePromise(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+}
+
+/**
+ * Пишет файл проекта во временный рядом и переименовывает — «Редактор», требование 29: наполовину
+ * записанный файл не виден ни опросу редактора (своё имя, не `.json`), ни `rename`, который в POSIX
+ * и NTFS атомарно подменяет старое содержимое новым.
+ */
+export async function writeGamesFileAtomically(filePath: string, body: Buffer): Promise<void> {
+  const tempPath = `${filePath}.tmp-${randomBytes(6).toString("hex")}`;
+  await writeFile(tempPath, body);
+  await rename(tempPath, filePath);
+}
+
 /**
  * Игровые папки (`games/snake/`, `games/arkanoid/`) лежат рядом с web/, вне корня Vite. Плагин
  * раздаёт их по `/games/...` в dev-режиме и копирует в outDir при сборке, чтобы движок мог
@@ -95,6 +150,32 @@ function serveGamesFolder(): Plugin {
     },
     configureServer(server) {
       server.middlewares.use("/games", (req, res) => {
+        // «Редактор», требование 28: PUT пишет файл — своей веткой, до чтения ниже.
+        if (req.method === "PUT") {
+          const target = resolvePutTarget(req.url ?? "", gamesDir);
+          if (target.status === "forbidden") {
+            res.statusCode = 403;
+            res.end();
+            return;
+          }
+          if (target.status === "not-allowed") {
+            res.statusCode = 405;
+            res.end();
+            return;
+          }
+          readRequestBody(req)
+            .then((body) => writeGamesFileAtomically(target.filePath, body))
+            .then(() => {
+              res.statusCode = 204;
+              res.end();
+            })
+            .catch(() => {
+              res.statusCode = 500;
+              res.end();
+            });
+          return;
+        }
+
         // Отвечаем 404 сами, не через next(): за этим префиксом ничего, кроме игровых файлов, не
         // раздаётся, а next() на невалидном пути передал бы тот же необработанный %-эскейп штатному
         // статическому middleware Vite, который на нём падает своим decodeURI с 500.
