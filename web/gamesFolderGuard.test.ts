@@ -94,6 +94,15 @@ describe("resolvePutTarget", () => {
     expect(resolvePutTarget("/tetris/scene.json", gamesDir)).toEqual({
       status: "ok",
       filePath: resolve(gamesDir, "tetris/scene.json"),
+      createDirectory: false,
+    });
+  });
+
+  it("файл в подпапке проекта на любой глубине — ok (фаза 09: files.scene/properties могут лежать не прямо в папке)", () => {
+    expect(resolvePutTarget("/tetris/assets/wall.json", gamesDir)).toEqual({
+      status: "ok",
+      filePath: resolve(gamesDir, "tetris/assets/wall.json"),
+      createDirectory: false,
     });
   });
 
@@ -120,6 +129,43 @@ describe("resolvePutTarget", () => {
   it("не .json — not-allowed", () => {
     expect(resolvePutTarget("/tetris/wall.png", gamesDir)).toEqual({ status: "not-allowed" });
   });
+
+  describe("replays/", () => {
+    let dir: string | null = null;
+
+    afterEach(() => {
+      if (dir !== null) rmSync(dir, { recursive: true, force: true });
+      dir = null;
+    });
+
+    it("запись в replays/ существующего проекта — ok, папку можно создать (требование 34)", () => {
+      dir = mkdtempSync(join(tmpdir(), "kuznya-games-put-target-"));
+      mkdirSync(join(dir, "tetris"));
+
+      expect(resolvePutTarget("/tetris/replays/2026-03-04-09-05-07.json", dir)).toEqual({
+        status: "ok",
+        filePath: resolve(dir, "tetris/replays/2026-03-04-09-05-07.json"),
+        createDirectory: true,
+      });
+    });
+
+    it("запись в replays/ несуществующего проекта — forbidden", () => {
+      dir = mkdtempSync(join(tmpdir(), "kuznya-games-put-target-"));
+
+      expect(resolvePutTarget("/tetris/replays/2026-03-04-09-05-07.json", dir)).toEqual({ status: "forbidden" });
+    });
+
+    it("вложенная папка внутри replays/ — ok формой, но без создания папки (как у любого пути без папки, фаза 09)", () => {
+      dir = mkdtempSync(join(tmpdir(), "kuznya-games-put-target-"));
+      mkdirSync(join(dir, "tetris"));
+
+      expect(resolvePutTarget("/tetris/replays/sub/2026-03-04-09-05-07.json", dir)).toEqual({
+        status: "ok",
+        filePath: resolve(dir, "tetris/replays/sub/2026-03-04-09-05-07.json"),
+        createDirectory: false,
+      });
+    });
+  });
 });
 
 describe("writeGamesFileAtomically", () => {
@@ -135,7 +181,7 @@ describe("writeGamesFileAtomically", () => {
     const filePath = join(dir, "scene.json");
     writeFileSync(filePath, '{"objects":[]}');
 
-    return writeGamesFileAtomically(filePath, Buffer.from('{"objects":[1]}')).then(() => {
+    return writeGamesFileAtomically(filePath, Buffer.from('{"objects":[1]}'), false).then(() => {
       expect(readFileSync(filePath, "utf8")).toBe('{"objects":[1]}');
       const leftovers = readdirSync(dir as string).filter((name) => name.includes(".tmp-"));
       expect(leftovers).toEqual([]);
@@ -147,9 +193,27 @@ describe("writeGamesFileAtomically", () => {
     mkdirSync(join(dir, "tetris"));
     const filePath = join(dir, "tetris", "scene.json");
 
-    return writeGamesFileAtomically(filePath, Buffer.from("{}")).then(() => {
+    return writeGamesFileAtomically(filePath, Buffer.from("{}"), false).then(() => {
       expect(existsSync(filePath)).toBe(true);
       expect(readFileSync(filePath, "utf8")).toBe("{}");
+    });
+  });
+
+  it("без createDirectory не создаёт недостающую папку — отказ, как в фазе 09", async () => {
+    dir = mkdtempSync(join(tmpdir(), "kuznya-games-put-"));
+    const filePath = join(dir, "tetris", "scene.json");
+
+    await expect(writeGamesFileAtomically(filePath, Buffer.from("{}"), false)).rejects.toThrow();
+    expect(existsSync(filePath)).toBe(false);
+  });
+
+  it("создаёт replays/ на самой первой записи партии — требование 34", () => {
+    dir = mkdtempSync(join(tmpdir(), "kuznya-games-put-"));
+    mkdirSync(join(dir, "tetris"));
+    const filePath = join(dir, "tetris", "replays", "2026-03-04-09-05-07.json");
+
+    return writeGamesFileAtomically(filePath, Buffer.from('{"format":1,"steps":0,"events":[]}'), true).then(() => {
+      expect(readFileSync(filePath, "utf8")).toBe('{"format":1,"steps":0,"events":[]}');
     });
   });
 });

@@ -225,7 +225,7 @@ fn parse_vec2(value: &Json, file: &str, path: &str, errors: &mut ErrorSink) -> O
 /// Parses one scalar value against the kind declared for `prop`. Time values are converted to
 /// steps right here, so nothing downstream ever sees seconds again. `prop` itself (not just its
 /// kind) matters once: `size` may not be negative, everything else with the same kind can be.
-fn parse_scalar_value(
+pub(crate) fn parse_scalar_value(
     value: &Json,
     prop: PropertyId,
     properties: &PropertyTable,
@@ -356,7 +356,12 @@ fn parse_scalar_value(
     }
 }
 
-fn parse_grid(value: &Json, file: &str, path: &str, errors: &mut ErrorSink) -> Option<GridSpec> {
+pub(crate) fn parse_grid(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<GridSpec> {
     let obj = expect_object(value, file, path, errors)?;
     reject_unknown_keys(obj, &["interval"], file, path, errors);
     let interval_json = require_field(obj, "interval", file, path, errors)?;

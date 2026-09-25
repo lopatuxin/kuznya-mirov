@@ -150,9 +150,11 @@ impl World {
         self.columns[prop as usize].clear(id as usize);
     }
 
+    /// «Редактор», требование 32: a number past `slot_count` — a stale replay `delete`, or one
+    /// from another project's recording — is simply skipped, not a panicking index.
     pub fn delete(&mut self, id: u32) {
         let idx = id as usize;
-        if !self.alive[idx] {
+        if !self.alive.get(idx).copied().unwrap_or(false) {
             return;
         }
         self.alive[idx] = false;
@@ -475,6 +477,14 @@ mod tests {
             None,
             "stale value is gone"
         );
+    }
+
+    #[test]
+    fn delete_past_slot_count_is_ignored_not_a_panic() {
+        let table = PropertyTable::new();
+        let mut world = World::new(&table);
+        world.delete(999);
+        assert!(!world.is_alive(999));
     }
 
     #[test]

@@ -2,24 +2,38 @@ import type { Engine } from "engine";
 import { useEffect, useRef, type RefObject } from "react";
 import { computeCanvasLayout } from "../canvasLayout";
 import { cellSizeFromObjectRect, computeDragPosition, hasCrossedDragThreshold } from "./dragPlacement";
-import { getObjectGeometry, type SceneSize } from "./sceneObjects";
+import type { SceneSize } from "./sceneObjects";
 import { fitSceneStage } from "./sceneStageLayout";
+
+type ObjectGeometry = { position: readonly [number, number]; size: readonly [number, number] };
 
 type SceneCanvasProps = {
   /** Тот же холст, на котором `useProjectEngine` создал движок — требование Engine.create(canvas). */
   canvasRef: RefObject<HTMLCanvasElement | null>;
   engine: Engine | null;
   sceneSize: SceneSize | null;
-  /** `scene.json`, разобранный в объекты — для геометрии переноса (требование 8), не для отрисовки. */
-  objects: unknown[];
-  /** `scene.json` не разобрать или движок не готов к правке — перенос не начинается (крайний случай). */
+  /**
+   * Место и размер объекта по его номеру, для геометрии переноса (требование 8) — из текста
+   * `scene.json` в правке, из живого мира в партии на паузе («Редактор», требование 20).
+   */
+  getObjectGeometry: (objectId: number) => ObjectGeometry | null;
+  /** Ссылка меняется, когда объекты изменились под переносом извне — отменяет его на лету. */
+  objectsVersion: unknown;
+  /** `scene.json`/живой мир недоступны правке — перенос не начинается (крайний случай). */
   canEditScene: boolean;
+  /** Мышь и клавиатура принадлежат игре, а не выбору/переносу — «Редактор», требование 4: партия идёт. */
+  isGameInputActive: boolean;
   selectedIndex: number | null;
   /** Подпись над рамкой выбранного объекта — его имя или номер. */
   selectedLabel: string | null;
   onSelect: (index: number | null) => void;
-  /** Отпускание после переноса — «Редактор», требование 9: одно действие с новым местом объекта. */
-  onMoveObject: (objectIndex: number, position: readonly [number, number]) => void;
+  /**
+   * Отпускание после переноса — «Редактор», требование 9: одно действие с новым местом объекта.
+   * `previousPosition` — место на начало переноса, для отмены правки на ходу (требование 21): его
+   * не восстановить из движка в момент отпускания — `move_object` уже успел передвинуть объект
+   * там во время самого переноса, так что «текущее» свойство к этому моменту и есть новое место.
+   */
+  onMoveObject: (objectIndex: number, position: readonly [number, number], previousPosition: readonly [number, number]) => void;
 };
 
 type DragState = {
@@ -99,8 +113,10 @@ export function SceneCanvas({
   canvasRef,
   engine,
   sceneSize,
-  objects,
+  getObjectGeometry,
+  objectsVersion,
   canEditScene,
+  isGameInputActive,
   selectedIndex,
   selectedLabel,
   onSelect,
@@ -113,21 +129,55 @@ export function SceneCanvas({
   selectedIndexRef.current = selectedIndex;
   const selectedLabelRef = useRef(selectedLabel);
   selectedLabelRef.current = selectedLabel;
-  const objectsRef = useRef(objects);
-  objectsRef.current = objects;
+  const getObjectGeometryRef = useRef(getObjectGeometry);
+  getObjectGeometryRef.current = getObjectGeometry;
   const canEditSceneRef = useRef(canEditScene);
   canEditSceneRef.current = canEditScene;
+  const isGameInputActiveRef = useRef(isGameInputActive);
+  isGameInputActiveRef.current = isGameInputActive;
   const onMoveObjectRef = useRef(onMoveObject);
   onMoveObjectRef.current = onMoveObject;
   const dragRef = useRef<DragState | null>(null);
   const sceneWidth = sceneSize?.width ?? null;
   const sceneHeight = sceneSize?.height ?? null;
 
-  // Внешняя правка или другое действие поменяли `scene.json` во время переноса — «Редактор», крайний
+  // Внешняя правка или другое действие поменяли объекты во время переноса — «Редактор», крайний
   // случай: перенос отменяется, мир движок уже собрал заново из показанного своей перезагрузкой.
   useEffect(() => {
     dragRef.current = null;
-  }, [objects]);
+  }, [objectsVersion]);
+
+  // Партия пошла или встала на паузу — начатый мышью перенос больше не имеет смысла в новом режиме.
+  useEffect(() => {
+    dragRef.current = null;
+  }, [isGameInputActive]);
+
+  // Клавиатура доходит до игры, только когда фокус на холсте, — «Редактор», требование 4.
+  useEffect(() => {
+    if (!isGameInputActive || !engine) return;
+    const activeEngine = engine;
+    const overlayCanvas = overlayCanvasRef.current;
+    // Отпускание уходит игре, только если до неё дошло нажатие: отпускание сочетания редактора
+    // (P от Ctrl+Shift+P) или клавиши, нажатой до фокуса на холсте, игре не принадлежит.
+    const pressedCodes = new Set<string>();
+    function handleKeyDown(event: KeyboardEvent): void {
+      if (document.activeElement !== overlayCanvas) return;
+      event.preventDefault();
+      pressedCodes.add(event.code);
+      activeEngine.key_down(event.code);
+    }
+    function handleKeyUp(event: KeyboardEvent): void {
+      if (!pressedCodes.delete(event.code)) return;
+      event.preventDefault();
+      activeEngine.key_up(event.code);
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("keyup", handleKeyUp);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("keyup", handleKeyUp);
+    };
+  }, [isGameInputActive, engine]);
 
   useEffect(() => {
     const area = areaRef.current;
@@ -203,6 +253,12 @@ export function SceneCanvas({
    */
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
     if (!engine || event.button !== 0) return;
+    // Партия идёт — щелчок по холсту даёт ему фокус и уходит игре, а не выбору («Редактор», требование 4).
+    if (isGameInputActiveRef.current) {
+      event.currentTarget.focus();
+      engine.mouse_down();
+      return;
+    }
     const bounds = event.currentTarget.getBoundingClientRect();
     const hit = engine.object_at(event.clientX - bounds.left, event.clientY - bounds.top) as number | undefined;
     // Открытое поле свойства записывается в прежний объект (требование 13) до смены выбора: иначе
@@ -211,7 +267,7 @@ export function SceneCanvas({
     onSelect(typeof hit === "number" ? hit : null);
     if (typeof hit !== "number" || !canEditSceneRef.current) return;
 
-    const geometry = getObjectGeometry(objectsRef.current, hit);
+    const geometry = getObjectGeometryRef.current(hit);
     const rect = engine.object_rect(hit) as { width: number } | undefined;
     if (geometry === null || !rect) return;
 
@@ -228,9 +284,19 @@ export function SceneCanvas({
     event.currentTarget.setPointerCapture(event.pointerId);
   }
 
+  /**
+   * Пока партия идёт, указатель над холстом принадлежит игре целиком — «Редактор», требование 4:
+   * `mouse_move` идёт независимо от того, зажата ли кнопка.
+   */
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>): void {
+    if (!engine) return;
+    if (isGameInputActiveRef.current) {
+      const bounds = event.currentTarget.getBoundingClientRect();
+      engine.mouse_move(event.clientX - bounds.left, event.clientY - bounds.top);
+      return;
+    }
     const drag = dragRef.current;
-    if (!engine || drag === null || drag.pointerId !== event.pointerId) return;
+    if (drag === null || drag.pointerId !== event.pointerId) return;
     const deltaX = event.clientX - drag.startClientX;
     const deltaY = event.clientY - drag.startClientY;
     if (!drag.hasStartedDrag) {
@@ -245,11 +311,15 @@ export function SceneCanvas({
   }
 
   function endDrag(event: React.PointerEvent<HTMLCanvasElement>): void {
+    if (isGameInputActiveRef.current) {
+      engine?.mouse_up();
+      return;
+    }
     const drag = dragRef.current;
     if (drag === null || drag.pointerId !== event.pointerId) return;
     dragRef.current = null;
     event.currentTarget.releasePointerCapture(event.pointerId);
-    if (drag.hasStartedDrag) onMoveObjectRef.current(drag.objectIndex, drag.lastPosition);
+    if (drag.hasStartedDrag) onMoveObjectRef.current(drag.objectIndex, drag.lastPosition, drag.startPosition);
   }
 
   /** Браузер сам отменил перенос (например, второй палец на тачскрине) — объект возвращается на прежнее место, без действия. */
@@ -280,6 +350,7 @@ export function SceneCanvas({
           ref={overlayCanvasRef}
           className="scene-view__overlay"
           tabIndex={-1}
+          data-game-input={isGameInputActive ? "true" : undefined}
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={endDrag}

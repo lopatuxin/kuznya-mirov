@@ -15,12 +15,21 @@ export type EditedTexts = { sceneText?: string; propertiesText?: string };
 
 export type ProjectEngineState = {
   engine: Engine | null;
+  /** `wasm.memory` того же `init()`, что завёл движок — «Редактор», партия: чтение окна звука. */
+  memory: WebAssembly.Memory | null;
   result: ProjectLoadResult | null;
   /** Когда пришёл `result` — последняя загрузка или перезагрузка после правки файлов. */
   loadedAt: Date | null;
   headerNotice: string | null;
   /** Отказ `init()`/`Engine.create` — тот же текст, что в этом случае показывает страница игры. */
   engineError: string | null;
+  /**
+   * Изменение файлов проекта пришло, пока гейт закрыт («Редактор», требование 37: партия и повтор
+   * идут на прежних файлах) — перезагрузка сама не начинается, только отмечается здесь.
+   */
+  hasQueuedReload: boolean;
+  /** Открывает или закрывает гейт перезагрузки; открытие с отложенным изменением перезагружает сразу. */
+  setReloadGateOpen: (isOpen: boolean) => void;
   /**
    * Загрузка по правке — «Редактор», требование 1: те же три захода в тот же движок, но
    * `scene.json`/`properties.json` берутся из `edited`, а остальное — из кэша последней настоящей
@@ -59,15 +68,18 @@ export function useProjectEngine(
   ) => void,
 ): ProjectEngineState {
   const [engine, setEngine] = useState<Engine | null>(null);
+  const [memory, setMemory] = useState<WebAssembly.Memory | null>(null);
   const [result, setResult] = useState<ProjectLoadResult | null>(null);
   const [loadedAt, setLoadedAt] = useState<Date | null>(null);
   const [headerNotice, setHeaderNotice] = useState<string | null>(null);
   const [engineError, setEngineError] = useState<string | null>(null);
-  const [editingApi, setEditingApi] = useState<Pick<ProjectEngineState, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount">>({
+  const [hasQueuedReload, setHasQueuedReload] = useState(false);
+  const [editingApi, setEditingApi] = useState<Pick<ProjectEngineState, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount" | "setReloadGateOpen">>({
     runEditedLoad: null,
     getCachedText: () => undefined,
     setCachedText: () => {},
     getWriteCount: () => 0,
+    setReloadGateOpen: () => {},
   });
 
   // Обёртка над последним `onFullReload`, чтобы её не пришлось класть в зависимости эффекта —
@@ -101,8 +113,9 @@ export function useProjectEngine(
       const canvas = canvasRef.current;
       if (!canvas) return;
 
+      let wasm: Awaited<ReturnType<typeof init>>;
       try {
-        await init();
+        wasm = await init();
       } catch (error) {
         if (!cancelled) setEngineError(formatEngineBootError(error));
         return;
@@ -121,6 +134,7 @@ export function useProjectEngine(
       }
       createdEngine = engineInstance;
       setEngine(engineInstance);
+      setMemory(wasm.memory);
 
       const baseReader = createReaderForSource(source);
       const cache = createCachingProjectFileReader(baseReader);
@@ -164,7 +178,7 @@ export function useProjectEngine(
             listedProjectBaseUrl(source),
             recordingReader.getReadPaths(),
             listedProjectFingerprints,
-            debouncer.notify,
+            notifyChanged,
           );
         }
       }
@@ -204,12 +218,35 @@ export function useProjectEngine(
 
       const debouncer = createReloadDebouncer(runReload);
       disposeDebouncer = debouncer.dispose;
+
+      // Гейт перезагрузки — «Редактор», требование 37: партия и повтор идут на файлах, какими они
+      // были на «Запуске»/«Повторе»; изменение, пришедшее с закрытым гейтом, только показывается
+      // строкой в верхней полосе (`hasQueuedReload`) — и не пропадает, а перезагружает сразу же,
+      // как только «Стоп» откроет гейт обратно.
+      let isReloadGateOpen = true;
+      let hasQueuedChange = false;
+      function notifyChanged(): void {
+        if (isReloadGateOpen) {
+          debouncer.notify();
+          return;
+        }
+        hasQueuedChange = true;
+        if (!cancelled) setHasQueuedReload(true);
+      }
+      function setReloadGateOpen(isOpen: boolean): void {
+        isReloadGateOpen = isOpen;
+        if (!isOpen || !hasQueuedChange) return;
+        hasQueuedChange = false;
+        if (!cancelled) setHasQueuedReload(false);
+        debouncer.notify();
+      }
+
       // Слежение за папкой с диска подключается сразу, ещё до конца первой загрузки («Редактор»,
       // требование 33) — изменение, сохранённое во время неё, не теряется: дребезг сам запускает
       // ещё одну перезагрузку следом за идущей.
-      disposeWatch = source.kind === "folder" ? watchFolderProject(source.handle, debouncer.notify, setHeaderNotice) : () => {};
+      disposeWatch = source.kind === "folder" ? watchFolderProject(source.handle, notifyChanged, setHeaderNotice) : () => {};
 
-      setEditingApi({ runEditedLoad, getCachedText: cache.getCachedText, setCachedText: cache.setCachedText, getWriteCount: cache.getWriteCount });
+      setEditingApi({ runEditedLoad, getCachedText: cache.getCachedText, setCachedText: cache.setCachedText, getWriteCount: cache.getWriteCount, setReloadGateOpen });
 
       await debouncer.runNow();
     }
@@ -221,7 +258,9 @@ export function useProjectEngine(
       disposeWatch?.();
       disposePoll?.();
       disposeDebouncer?.();
-      setEditingApi({ runEditedLoad: null, getCachedText: () => undefined, setCachedText: () => {}, getWriteCount: () => 0 });
+      setEditingApi({ runEditedLoad: null, getCachedText: () => undefined, setCachedText: () => {}, getWriteCount: () => 0, setReloadGateOpen: () => {} });
+      setHasQueuedReload(false);
+      setMemory(null);
       void activeQueueTail.finally(() => {
         createdEngine?.free();
         createdAudioContext?.close().catch(() => {});
@@ -229,5 +268,5 @@ export function useProjectEngine(
     };
   }, [canvasRef, source]);
 
-  return { engine, result, loadedAt, headerNotice, engineError, ...editingApi };
+  return { engine, memory, result, loadedAt, headerNotice, engineError, hasQueuedReload, ...editingApi };
 }

@@ -4,6 +4,7 @@ use super::code::{CodeError, Runner as CodeRunner};
 use super::grid::{Rect, SpatialGrid, largest_dimension};
 use super::input::{KeyAction, KeyEvent};
 use super::property::{self, PropertyId, PropertyTable};
+use super::report::{DeleteCause, RuleFired, StepReportBuilder};
 use super::rng::Rng;
 use super::rules::{
     CollideEffect, CommonAction, Condition, NumberExpr, Outcome, Rule, Selector, SetValue,
@@ -50,6 +51,7 @@ fn run_code(
     deletes: &mut Vec<u32>,
     moved: &mut [bool],
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     rule: &str,
     function: &str,
     args: &[u32],
@@ -60,6 +62,7 @@ fn run_code(
         err.function = Some(function.to_string());
         return Err(err);
     };
+    let deletes_before = deletes.len();
     env.runner
         .run(
             function,
@@ -74,7 +77,23 @@ fn run_code(
         .map_err(|mut err| {
             err.rule = Some(rule.to_string());
             err
-        })
+        })?;
+    // «Редактор», требование 23: a delete this call queued (`obj.delete()` in Lua) is attributed
+    // to the function and the rule that called it, distinct from the rule's own direct effects.
+    if let Some(r) = report.as_mut() {
+        for &id in &deletes[deletes_before..] {
+            let name = world.text(id, property::NAME).map(str::to_string);
+            r.deletes.push((
+                id,
+                name,
+                DeleteCause::Code {
+                    function: function.to_string(),
+                    rule: rule.to_string(),
+                },
+            ));
+        }
+    }
+    Ok(())
 }
 
 pub fn selector_matches(selector: &Selector, world: &World, id: u32) -> bool {
@@ -191,7 +210,10 @@ fn apply_move_rule(
     for_: &Selector,
     grid_hop_ready: &mut [bool],
     moved: &mut [bool],
+    report: &mut Option<StepReportBuilder>,
+    rule_index: usize,
 ) {
+    let mut moved_objects: Vec<u32> = Vec::new();
     for id in world.ids().collect::<Vec<_>>() {
         if !selector_matches(for_, world, id) {
             continue;
@@ -220,7 +242,18 @@ fn apply_move_rule(
         if new_pos != pos {
             world.set_vec2(id, property::POSITION, new_pos);
             moved[id as usize] = true;
+            if report.is_some() {
+                moved_objects.push(id);
+            }
         }
+    }
+    if let Some(r) = report.as_mut()
+        && !moved_objects.is_empty()
+    {
+        r.fired.push(RuleFired::Move {
+            rule: format!("rules[{rule_index}]"),
+            objects: moved_objects,
+        });
     }
 }
 
@@ -360,6 +393,7 @@ fn execute_shift(
     grid: &mut SpatialGrid,
     outcome: &mut Option<Outcome>,
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     code_deletes: &mut Vec<u32>,
     code: &mut Option<CodeEnv<'_>>,
     rng: &mut Rng,
@@ -392,6 +426,7 @@ fn execute_shift(
             &spec.if_blocked,
             outcome,
             marks,
+            report,
             code_deletes,
             moved,
             code,
@@ -418,6 +453,7 @@ fn execute_turn(
     grid: &mut SpatialGrid,
     outcome: &mut Option<Outcome>,
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     code_deletes: &mut Vec<u32>,
     code: &mut Option<CodeEnv<'_>>,
     rng: &mut Rng,
@@ -487,6 +523,7 @@ fn execute_turn(
             &spec.if_blocked,
             outcome,
             marks,
+            report,
             code_deletes,
             moved,
             code,
@@ -519,6 +556,7 @@ fn apply_check_rule(
     moved: &mut [bool],
     grid: &mut SpatialGrid,
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     code: &mut Option<CodeEnv<'_>>,
     rng: &mut Rng,
     outcome: &mut Option<Outcome>,
@@ -528,6 +566,7 @@ fn apply_check_rule(
         .filter(|id| !deleted.contains(id))
         .filter(|&id| selector_matches(for_, world, id))
         .collect();
+    let mut ran_for: Vec<u32> = Vec::new();
     for id in candidates {
         if deleted.contains(&id) || !selector_matches(for_, world, id) {
             continue;
@@ -542,6 +581,9 @@ fn apply_check_rule(
         if !holds {
             continue;
         }
+        if report.is_some() {
+            ran_for.push(id);
+        }
         let mut code_deletes = Vec::new();
         let deleted_snapshot = deleted.clone();
         execute_common_actions(
@@ -549,6 +591,7 @@ fn apply_check_rule(
             do_,
             outcome,
             marks,
+            report,
             &mut code_deletes,
             moved,
             code,
@@ -559,6 +602,14 @@ fn apply_check_rule(
             grid,
         )?;
         deleted.extend(code_deletes);
+    }
+    if let Some(r) = report.as_mut()
+        && !ran_for.is_empty()
+    {
+        r.fired.push(RuleFired::Check {
+            rule: rule_label.to_string(),
+            objects: ran_for,
+        });
     }
     Ok(())
 }
@@ -578,13 +629,16 @@ pub fn apply_stage4(
     deleted: &mut Vec<u32>,
     grid: &mut SpatialGrid,
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     code: &mut Option<CodeEnv<'_>>,
     rng: &mut Rng,
     outcome: &mut Option<Outcome>,
 ) -> Result<(), CodeError> {
     for (index, rule) in rules.iter().enumerate() {
         match rule {
-            Rule::Move { for_ } => apply_move_rule(world, for_, grid_hop_ready, moved),
+            Rule::Move { for_ } => {
+                apply_move_rule(world, for_, grid_hop_ready, moved, report, index)
+            }
             Rule::Check { for_, when, do_ } => {
                 let rule_label = format!("rules[{index}]");
                 apply_check_rule(
@@ -598,6 +652,7 @@ pub fn apply_stage4(
                     moved,
                     grid,
                     marks,
+                    report,
                     code,
                     rng,
                     outcome,
@@ -702,6 +757,7 @@ fn apply_collide_effect(
     deletes: &mut Vec<u32>,
     moved: &mut [bool],
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     code: &mut Option<CodeEnv<'_>>,
     rng: &mut Rng,
     rule: &str,
@@ -713,7 +769,14 @@ fn apply_collide_effect(
                 bounced[id as usize] = true;
             }
         }
-        CollideEffect::Delete => deletes.push(id),
+        CollideEffect::Delete => {
+            deletes.push(id);
+            if let Some(r) = report.as_mut() {
+                let name = world.text(id, property::NAME).map(str::to_string);
+                r.deletes
+                    .push((id, name, DeleteCause::Rule(rule.to_string())));
+            }
+        }
         CollideEffect::Add { prop, expr } => {
             if let Some(delta) = resolve_number_expr(expr, world, id) {
                 world.add_number_like(id, *prop, delta);
@@ -730,6 +793,7 @@ fn apply_collide_effect(
                 deletes,
                 moved,
                 marks,
+                report,
                 rule,
                 function,
                 &[id, other],
@@ -751,6 +815,7 @@ fn execute_common_actions(
     actions: &[CommonAction],
     outcome: &mut Option<Outcome>,
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     deletes: &mut Vec<u32>,
     moved: &mut [bool],
     code: &mut Option<CodeEnv<'_>>,
@@ -806,18 +871,18 @@ fn execute_common_actions(
             CommonAction::PlaySound(id) => marks.raise(*id),
             CommonAction::Run(function) => {
                 run_code(
-                    code, world, rng, deletes, moved, marks, rule, function, run_args,
+                    code, world, rng, deletes, moved, marks, report, rule, function, run_args,
                 )?;
             }
             CommonAction::Shift(spec) => {
                 execute_shift(
-                    spec, world, deleted, moved, grid, outcome, marks, deletes, code, rng,
+                    spec, world, deleted, moved, grid, outcome, marks, report, deletes, code, rng,
                     run_args, rule,
                 )?;
             }
             CommonAction::Turn(spec) => {
                 execute_turn(
-                    spec, world, deleted, moved, grid, outcome, marks, deletes, code, rng,
+                    spec, world, deleted, moved, grid, outcome, marks, report, deletes, code, rng,
                     run_args, rule,
                 )?;
             }
@@ -841,6 +906,7 @@ pub fn apply_collide_rules(
     moved: &mut [bool],
     outcome: &mut Option<Outcome>,
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     code: &mut Option<CodeEnv<'_>>,
     rng: &mut Rng,
     already_deleted: &[u32],
@@ -858,6 +924,7 @@ pub fn apply_collide_rules(
             continue;
         };
         let rule_label = format!("rules[{index}]");
+        let mut fired_pairs: Vec<(u32, u32)> = Vec::new();
         for &(lo, hi) in pairs {
             let (obj_a, obj_b) = if selector_matches(a, world, lo) && selector_matches(b, world, hi)
             {
@@ -867,6 +934,9 @@ pub fn apply_collide_rules(
             } else {
                 continue;
             };
+            if report.is_some() {
+                fired_pairs.push((obj_a, obj_b));
+            }
             for effect in effects_a {
                 apply_collide_effect(
                     world,
@@ -877,6 +947,7 @@ pub fn apply_collide_rules(
                     deletes,
                     moved,
                     marks,
+                    report,
                     code,
                     rng,
                     &rule_label,
@@ -892,6 +963,7 @@ pub fn apply_collide_rules(
                     deletes,
                     moved,
                     marks,
+                    report,
                     code,
                     rng,
                     &rule_label,
@@ -902,6 +974,7 @@ pub fn apply_collide_rules(
                 do_,
                 outcome,
                 marks,
+                report,
                 deletes,
                 moved,
                 code,
@@ -912,6 +985,14 @@ pub fn apply_collide_rules(
                 grid,
             )?;
         }
+        if let Some(r) = report.as_mut()
+            && !fired_pairs.is_empty()
+        {
+            r.fired.push(RuleFired::Collide {
+                rule: rule_label,
+                pairs: fired_pairs,
+            });
+        }
     }
     Ok(())
 }
@@ -919,6 +1000,9 @@ pub fn apply_collide_rules(
 pub struct PendingCreate {
     pub position: Vec2,
     pub props: Vec<(PropertyId, Value)>,
+    /// «Редактор», требование 44: which `spawn` rule (`rules[N]`) queued this create — filled in
+    /// by `queue_create_and_delete_rules`'s own caller loop, empty when no report is being built.
+    pub rule: String,
 }
 
 struct PendingState {
@@ -1064,7 +1148,11 @@ impl PendingState {
                 h,
             });
         }
-        self.creates.push(PendingCreate { position, props });
+        self.creates.push(PendingCreate {
+            position,
+            props,
+            rule: String::new(),
+        });
         true
     }
 
@@ -1145,6 +1233,27 @@ fn absorb_code_deletes(pending: &mut PendingState, code_deletes: &mut Vec<u32>) 
     }
 }
 
+/// A `Rule::Delete`'s own direct effect (as opposed to a `run` function it called, tagged
+/// separately inside `run_code`) — queues the deletion and, while reporting, tags it with this
+/// rule's label and this step's `deleted_by_rule` list, reading the object's `name` now, before
+/// stage 8 actually removes it.
+fn queue_delete_reporting(
+    pending: &mut PendingState,
+    world: &World,
+    report: &mut Option<StepReportBuilder>,
+    deleted_by_rule: &mut Vec<u32>,
+    rule_label: &str,
+    id: u32,
+) {
+    pending.queue_delete(id);
+    if let Some(r) = report.as_mut() {
+        let name = world.text(id, property::NAME).map(str::to_string);
+        r.deletes
+            .push((id, name, DeleteCause::Rule(rule_label.to_string())));
+        deleted_by_rule.push(id);
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 /// Stage 7: "create" and "delete" rules, in file order, accumulating requests only; `do_`
 /// actions (`end_game`, `add`, `run`, `shift`, `turn`) still run immediately, same as for
@@ -1161,6 +1270,7 @@ pub fn queue_create_and_delete_rules(
     outcome: &mut Option<Outcome>,
     random_cell_exhausted: &mut bool,
     marks: &mut SoundMarks<'_>,
+    report: &mut Option<StepReportBuilder>,
     code: &mut Option<CodeEnv<'_>>,
     grid: &mut SpatialGrid,
 ) -> Result<(Vec<u32>, Vec<PendingCreate>), CodeError> {
@@ -1185,11 +1295,19 @@ pub fn queue_create_and_delete_rules(
                     .filter(|id| !pending.deleted.contains(id))
                     .filter(|&id| selector_matches(for_, world, id))
                     .collect();
+                let mut deleted_by_rule: Vec<u32> = Vec::new();
                 match when {
                     Condition::FewerThan { count, of } => {
                         if pending.count_selector(of, world) < *count {
                             for id in candidates {
-                                pending.queue_delete(id);
+                                queue_delete_reporting(
+                                    &mut pending,
+                                    world,
+                                    report,
+                                    &mut deleted_by_rule,
+                                    &rule_label,
+                                    id,
+                                );
                                 let mut code_deletes = Vec::new();
                                 let deleted_snapshot: Vec<u32> =
                                     pending.deleted.iter().copied().collect();
@@ -1198,6 +1316,7 @@ pub fn queue_create_and_delete_rules(
                                     do_,
                                     outcome,
                                     marks,
+                                    report,
                                     &mut code_deletes,
                                     moved,
                                     code,
@@ -1220,7 +1339,14 @@ pub fn queue_create_and_delete_rules(
                             .any(|id| moved[id as usize] && selector_matches(of, world, id));
                         if any_moved {
                             for id in candidates {
-                                pending.queue_delete(id);
+                                queue_delete_reporting(
+                                    &mut pending,
+                                    world,
+                                    report,
+                                    &mut deleted_by_rule,
+                                    &rule_label,
+                                    id,
+                                );
                                 let mut code_deletes = Vec::new();
                                 let deleted_snapshot: Vec<u32> =
                                     pending.deleted.iter().copied().collect();
@@ -1229,6 +1355,7 @@ pub fn queue_create_and_delete_rules(
                                     do_,
                                     outcome,
                                     marks,
+                                    report,
                                     &mut code_deletes,
                                     moved,
                                     code,
@@ -1248,13 +1375,21 @@ pub fn queue_create_and_delete_rules(
                                 pending.deleted.iter().copied().collect();
                             let count_fn = |of: &Selector| pending.count_selector(of, world);
                             if condition_holds(when, world, Some(id), scene, moved, &count_fn) {
-                                pending.queue_delete(id);
+                                queue_delete_reporting(
+                                    &mut pending,
+                                    world,
+                                    report,
+                                    &mut deleted_by_rule,
+                                    &rule_label,
+                                    id,
+                                );
                                 let mut code_deletes = Vec::new();
                                 execute_common_actions(
                                     world,
                                     do_,
                                     outcome,
                                     marks,
+                                    report,
                                     &mut code_deletes,
                                     moved,
                                     code,
@@ -1268,6 +1403,14 @@ pub fn queue_create_and_delete_rules(
                             }
                         }
                     }
+                }
+                if let Some(r) = report.as_mut()
+                    && !deleted_by_rule.is_empty()
+                {
+                    r.fired.push(RuleFired::Delete {
+                        rule: rule_label.clone(),
+                        objects: deleted_by_rule,
+                    });
                 }
             }
             Rule::Spawn {
@@ -1288,6 +1431,7 @@ pub fn queue_create_and_delete_rules(
                     None => {
                         let fires =
                             condition_holds(&when.condition, world, None, scene, moved, &count_fn);
+                        let before = pending.creates.len();
                         if fires
                             && pending.queue_create(
                                 *place,
@@ -1299,6 +1443,9 @@ pub fn queue_create_and_delete_rules(
                                 random_cell_exhausted,
                             )
                         {
+                            for c in &mut pending.creates[before..] {
+                                c.rule.clone_from(&rule_label);
+                            }
                             let mut code_deletes = Vec::new();
                             let deleted_snapshot: Vec<u32> =
                                 pending.deleted.iter().copied().collect();
@@ -1307,6 +1454,7 @@ pub fn queue_create_and_delete_rules(
                                 do_,
                                 outcome,
                                 marks,
+                                report,
                                 &mut code_deletes,
                                 moved,
                                 code,
@@ -1334,18 +1482,22 @@ pub fn queue_create_and_delete_rules(
                         let created: Vec<(u32, bool)> = parents
                             .into_iter()
                             .map(|parent| {
-                                (
-                                    parent,
-                                    pending.queue_create(
-                                        *place,
-                                        Some(parent),
-                                        template,
-                                        pick_one,
-                                        &ctx,
-                                        rng,
-                                        random_cell_exhausted,
-                                    ),
-                                )
+                                let before = pending.creates.len();
+                                let ok = pending.queue_create(
+                                    *place,
+                                    Some(parent),
+                                    template,
+                                    pick_one,
+                                    &ctx,
+                                    rng,
+                                    random_cell_exhausted,
+                                );
+                                if ok {
+                                    for c in &mut pending.creates[before..] {
+                                        c.rule.clone_from(&rule_label);
+                                    }
+                                }
+                                (parent, ok)
                             })
                             .collect();
                         for (parent, ok) in created {
@@ -1358,6 +1510,7 @@ pub fn queue_create_and_delete_rules(
                                     do_,
                                     outcome,
                                     marks,
+                                    report,
                                     &mut code_deletes,
                                     moved,
                                     code,

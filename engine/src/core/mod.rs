@@ -4,6 +4,7 @@ pub mod grid;
 pub mod input;
 pub mod keys;
 pub mod property;
+pub mod report;
 pub mod rng;
 pub mod rules;
 pub mod runner;

@@ -16,10 +16,12 @@ type PropertiesPanelProps = {
   declaredProperties: Readonly<Record<string, PropertyKind>>;
   onSetValue: (key: string, value: unknown) => void;
   onRemove: (key: string) => void;
-  onAdd: (key: string, value: unknown) => void;
+  onAdd: (key: string, value: unknown) => void | string;
   onDeclare: (key: string, kind: PropertyKind, value: unknown) => void;
   onCopy: () => void;
   onDelete: () => void;
+  /** Партия в редакторе — «Редактор», требование 19: «+ свойство» не предлагает объявить новое. */
+  disallowDeclare?: boolean;
 };
 
 const WIDE_VALUE_LENGTH = 28;
@@ -187,12 +189,18 @@ function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNam
 type AddPropertyRowProps = {
   existingKeys: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
-  onAdd: (key: string, value: unknown) => void;
+  onAdd: (key: string, value: unknown) => void | string;
   onDeclare: (key: string, kind: PropertyKind, value: unknown) => void;
+  /**
+   * Партия в редакторе не объявляет новые свойства автора («Редактор», требование 19) — незнакомое
+   * имя идёт через `onAdd`, как и известное, а движок сам отвечает «Новое свойство объявляется вне
+   * партии»; в правке сцены (`false`, по умолчанию) незнакомое имя по-прежнему просит выбрать вид.
+   */
+  disallowDeclare?: boolean;
 };
 
-/** Строка «+ свойство» — «Редактор», требования 15–16. */
-function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare }: AddPropertyRowProps): React.JSX.Element {
+/** Строка «+ свойство» — «Редактор», требования 15–16, 19. */
+function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare, disallowDeclare = false }: AddPropertyRowProps): React.JSX.Element {
   const [name, setName] = useState("");
   const [valueText, setValueText] = useState("");
   const [kind, setKind] = useState<PropertyKind | "">("");
@@ -200,7 +208,7 @@ function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare }: 
 
   const trimmedName = name.trim();
   const isKnown = trimmedName !== "" && ((ENGINE_PROPERTY_NAMES as readonly string[]).includes(trimmedName) || declaredProperties[trimmedName] !== undefined);
-  const needsKind = trimmedName !== "" && !isKnown && !existingKeys.includes(trimmedName);
+  const needsKind = !disallowDeclare && trimmedName !== "" && !isKnown && !existingKeys.includes(trimmedName);
   const suggestions = suggestPropertyNames(existingKeys, declaredProperties);
 
   function reset(): void {
@@ -219,8 +227,12 @@ function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare }: 
       setError("Свойство уже есть у объекта");
       return;
     }
-    if (isKnown) {
-      onAdd(trimmedName, parsePropertyValueInput(valueText));
+    if (isKnown || disallowDeclare) {
+      const addError = onAdd(trimmedName, parsePropertyValueInput(valueText));
+      if (typeof addError === "string") {
+        setError(addError);
+        return;
+      }
       reset();
       return;
     }
@@ -306,6 +318,7 @@ export function PropertiesPanel({
   onDeclare,
   onCopy,
   onDelete,
+  disallowDeclare = false,
 }: PropertiesPanelProps): React.JSX.Element {
   if (view.status === "none" || selectedObject === null) {
     return (
@@ -376,6 +389,7 @@ export function PropertiesPanel({
                 declaredProperties={declaredProperties}
                 onAdd={onAdd}
                 onDeclare={onDeclare}
+                disallowDeclare={disallowDeclare}
               />
             )}
           </>

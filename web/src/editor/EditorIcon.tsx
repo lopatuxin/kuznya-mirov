@@ -17,6 +17,15 @@ const ICON_PATHS = {
   trash: ["M3 6h18", "M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6", "M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2", "M10 11v6", "M14 11v6"],
   undo: ["M9 14 4 9l5-5", "M4 9h10.5a5.5 5.5 0 0 1 5.5 5.5v0a5.5 5.5 0 0 1-5.5 5.5H11"],
   plus: ["M12 5v14", "M5 12h14"],
+  play: ["M6 3v18l15-9Z"],
+  pause: ["M7 4h3v16H7z", "M14 4h3v16h-3z"],
+  stop: ["M5 5h14v14H5z"],
+  "step-forward": ["M5 4l10 8-10 8V4Z", "M19 5v14"],
+  "step-back": ["M19 4 9 12l10 8V4Z", "M5 5v14"],
+  "volume-on": ["M11 5 6 9H2v6h4l5 4V5Z", "M15.5 8.5a5 5 0 0 1 0 7", "M19 5a10 10 0 0 1 0 14"],
+  "volume-off": ["M11 5 6 9H2v6h4l5 4V5Z", "M22 9l-6 6", "M16 9l6 6"],
+  replay: ["M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8", "M3 3v5h5"],
+  download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"],
 } as const;
 
 export type EditorIconName = keyof typeof ICON_PATHS;

@@ -2,6 +2,7 @@ use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
 use super::property::{self, PropertyId, PropertyTable};
+use super::report::{DeleteCause, StepReport, StepReportBuilder};
 use super::rng::Rng;
 use super::rules::{Outcome, RuleSet};
 use super::scene::{ObjectSpec, SceneConfig};
@@ -62,6 +63,26 @@ pub struct Game {
     /// The position the most recent step actually took — compared against `cursor_current` at
     /// `take_input_snapshot` time to decide whether *this* step gets a cursor at all.
     cursor_last_step: Option<Vec2>,
+
+    /// «Редактор»: whether a play/replay session is open — `Game::begin_session` sets it,
+    /// `Game::end_session` clears it. Gates the report/message-log bookkeeping below so the plain
+    /// page (which never opens a session) pays for none of it.
+    session_active: bool,
+    /// «Редактор», требование 6: steps done since `begin_session`, across every `new_game` in this
+    /// session — unlike `step_count`, `new_game_with_values` never resets this.
+    session_step: u64,
+    /// «Редактор», требование 26, 45: every `print`/warning message that appeared during this
+    /// session, each tagged with the session step it appeared on.
+    session_messages: Vec<(u64, String)>,
+    /// «Редактор», требование 23, 44: the last step's report — `None` outside a session, or before
+    /// the session's first step.
+    last_report: Option<StepReport>,
+    /// «Редактор», требования 8, 13: whether a world currently exists — explicit rather than
+    /// `world.alive_count() > 0`, so a live world every rule has emptied out (score run away and
+    /// deleted everything) doesn't read as "Мира нет" alongside a genuinely unstarted one. Set by
+    /// `reset_for_play`, `new_game_with_values`, `show_scene` and `quit`, the only places that
+    /// rebuild or empty `world`.
+    world_exists: bool,
 }
 
 /// «Экраны и состояние» / «Редактор», требование 16: builds a fresh world from `scene_objects` —
@@ -133,6 +154,11 @@ impl Game {
             bounced: Vec::new(),
             cursor_current: None,
             cursor_last_step: None,
+            session_active: false,
+            session_step: 0,
+            session_messages: Vec::new(),
+            last_report: None,
+            world_exists: start_is_live,
         };
         // «Код игры» → «Экраны и состояние»: код грузится ровно один раз на партию. Партия
         // начинается либо прямо здесь (стартовый экран без меню — `world_runs` поднят сразу), и
@@ -199,7 +225,7 @@ impl Game {
     /// (nor `release_key`) has applied a matching `Release` since. Deliberately not a question
     /// about `InputQueue`'s own bookkeeping: what the page has queued can disagree with what the
     /// world has seen, and this answers about the world. See `release_key`.
-    fn is_key_held(&self, code: &str) -> bool {
+    pub(crate) fn is_key_held(&self, code: &str) -> bool {
         self.world_held_keys.contains(code)
     }
 
@@ -228,14 +254,17 @@ impl Game {
     /// down (browser auto-repeat, or a press still sitting unconsumed in the queue) when the
     /// world never actually saw its press, and manufacturing a release for that key would fire a
     /// `release` binding with no matching `press` ever having run.
-    pub fn release_held_keys(&mut self) {
+    /// Returns the codes actually released (sorted), so a caller that records input — «Пауза»,
+    /// требование 40 — can put each release into the recording the same way a screen-absorbed one
+    /// already does; a caller that doesn't (a live screen switch) simply ignores it.
+    pub fn release_held_keys(&mut self) -> Vec<String> {
         // «Исполнение игры» → «Повторяемость»: the same input must give the same run on any
         // machine — a `HashSet`'s own iteration order isn't that, so the codes are sorted before
         // two releases that write the same property differently can disagree on which wins.
-        let mut codes: Vec<&String> = self.world_held_keys.iter().collect();
+        let mut codes: Vec<String> = self.world_held_keys.iter().cloned().collect();
         codes.sort();
         let events: Vec<KeyEvent> = codes
-            .into_iter()
+            .iter()
             .map(|code| KeyEvent {
                 code: code.clone(),
                 action: KeyAction::Release,
@@ -243,6 +272,7 @@ impl Game {
             .collect();
         self.apply_to_world(&events);
         self.input_queue.clear();
+        codes
     }
 
     /// «Экраны и состояние» → «Клавиши экрана»: releases one key immediately, applying its world
@@ -280,6 +310,21 @@ impl Game {
         self.input_queue.forget(code);
     }
 
+    /// Symmetric with `release_key`, for «Повтор»: a replay applies its own recorded press/release
+    /// events one at a time, in the order they were recorded, interleaved with edits and commands
+    /// that touch the world synchronously — going through `key_down`'s own queue would apply this
+    /// step's presses only once `step` runs, after every edit/command of the same step already has,
+    /// regardless of where the press actually fell among them when it was recorded.
+    pub fn press_key(&mut self, code: &str) {
+        if !self.is_key_held(code) {
+            self.apply_to_world(std::slice::from_ref(&KeyEvent {
+                code: code.to_string(),
+                action: KeyAction::Press,
+            }));
+        }
+        self.input_queue.forget(code);
+    }
+
     /// «Экраны и состояние» → «Жизнь партии»: same as `new_game_with_values`, with no initial
     /// values — the common case, and the one every native test still calls directly.
     pub fn new_game(&mut self) {
@@ -294,6 +339,7 @@ impl Game {
     /// `name` with the smallest id — over the freshly built world, before the first step.
     pub fn new_game_with_values(&mut self, initial_values: &[(String, PropertyId, Value)]) {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
+        self.world_exists = true;
         for (name, prop, value) in initial_values {
             if let Some(id) = self
                 .world
@@ -324,6 +370,7 @@ impl Game {
     /// editor calls it once after every successful `load()`.
     pub fn show_scene(&mut self) {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
+        self.world_exists = true;
     }
 
     /// «Экраны и состояние»: `quit` throws the run away entirely — the world empties and there
@@ -338,6 +385,7 @@ impl Game {
     /// held key's repeat swallowed by a page-level `held` that quit never touched.
     pub fn quit(&mut self) {
         self.world = World::new(&self.properties);
+        self.world_exists = false;
         self.input_queue = InputQueue::new();
         self.world_held_keys.clear();
         self.outcome = None;
@@ -347,8 +395,46 @@ impl Game {
         self.code_error = None;
     }
 
+    /// «Редактор», требование 39: rebuilds the world exactly the way `data::load::load_rest`
+    /// built it for a fresh `load()` — live if `start_is_live` (the caller's own start screen),
+    /// empty otherwise — and resets everything a brand-new engine load would start with: step
+    /// count, rng, input, the sticky outcome, the once-only warnings, and the code runner. Unlike
+    /// `new_game_with_values`, which always assumes a live target screen (checked at load time),
+    /// this is the one place that also handles a non-live start screen, for «Запуск» itself.
+    pub fn reset_for_play(&mut self, start_is_live: bool) {
+        self.world = if start_is_live {
+            world_from_scene(&self.properties, &self.scene_objects)
+        } else {
+            World::new(&self.properties)
+        };
+        self.world_exists = start_is_live;
+        self.step_count = 0;
+        self.rng = Rng::new(self.random_seed);
+        self.input_queue = InputQueue::new();
+        self.world_held_keys.clear();
+        self.outcome = None;
+        // «Курсор в мире»: в отличие от `new_game_with_values` (партия продолжается, мышь не
+        // «телепортировалась»), здесь начинается новая партия/повтор/переход по шкале — курсор от
+        // прошлой партии не должен попасть в первый шаг новой записи, которая его не видела.
+        self.cursor_current = None;
+        self.cursor_last_step = None;
+        self.max_objects_warned = false;
+        self.random_cell_warned = false;
+        self.code = None;
+        self.code_error = None;
+        if start_is_live {
+            self.load_code();
+        }
+    }
+
     pub fn is_running(&self) -> bool {
         self.outcome.is_none() && self.code_error.is_none()
+    }
+
+    /// «Редактор», требования 8, 13: whether a world exists right now — see `world_exists`'s own
+    /// doc comment for exactly which calls flip it.
+    pub fn has_world(&self) -> bool {
+        self.world_exists
     }
 
     pub fn outcome(&self) -> Option<(Outcome, u64)> {
@@ -373,6 +459,51 @@ impl Game {
 
     pub fn messages(&self) -> &[String] {
         &self.messages
+    }
+
+    /// «Редактор», требование 39: opens a session — `step` starts counting `session_step` from
+    /// zero and building a report; `session_messages` starts empty. Does not touch the world or
+    /// the partiya itself; the caller (`play()`/`replay()`) does that separately.
+    pub fn begin_session(&mut self) {
+        self.session_active = true;
+        self.session_step = 0;
+        self.session_messages.clear();
+        self.last_report = None;
+    }
+
+    /// «Редактор», требование 40: closes the session — `step` stops counting and reporting.
+    pub fn end_session(&mut self) {
+        self.session_active = false;
+        self.last_report = None;
+    }
+
+    pub fn session_active(&self) -> bool {
+        self.session_active
+    }
+
+    /// «Редактор», требование 6: steps done since `begin_session`, unaffected by `new_game`.
+    pub fn session_step_count(&self) -> u64 {
+        self.session_step
+    }
+
+    /// «Редактор», требования 26, 45: every message so far this session, each with the session
+    /// step it appeared on — a replay `seek(N)` naturally holds only messages up to `N`, since it
+    /// recomputes the whole session from scratch.
+    pub fn session_messages(&self) -> &[(u64, String)] {
+        &self.session_messages
+    }
+
+    /// «Редактор», требование 23, 44: the last step's rule report — `None` outside a session.
+    pub fn last_report(&self) -> Option<&StepReport> {
+        self.last_report.as_ref()
+    }
+
+    /// «Редактор», требование 23: only the caller (which owns `ScreensConfig`/`ScreenState`) knows
+    /// screen names, so it annotates the just-built report with the transition it saw, if any.
+    pub fn annotate_screen_change(&mut self, from: &str, to: &str) {
+        if let Some(report) = self.last_report.as_mut() {
+            report.screen_change = Some((from.to_string(), to.to_string()));
+        }
     }
 
     /// «Звук»: read side, for the circle (clearing/writing the header) and for
@@ -400,6 +531,12 @@ impl Game {
         self.cursor_current = Some(cell);
     }
 
+    /// «Редактор», требование 27: the world cursor's current scene-cell position, for the session
+    /// layer's own recording — `None` before the cursor has ever moved.
+    pub fn cursor_current(&self) -> Option<Vec2> {
+        self.cursor_current
+    }
+
     pub fn take_input_snapshot(&mut self) -> StepInput {
         let mut snapshot = self.input_queue.take_snapshot();
         if self.cursor_current.is_some() && self.cursor_current != self.cursor_last_step {
@@ -418,12 +555,30 @@ impl Game {
 
     /// Runs the nine stages of "Исполнение игры" for one fixed step. `input` is the picture
     /// of key presses/releases for this step (stage 1 happened in `take_input_snapshot`).
+    ///
+    /// «Редактор»: outside `begin_session` this is exactly the step the page always ran; a session
+    /// additionally counts `session_step`, tags any new `messages` with it, and builds the rule
+    /// report `step_body` collects — all in `step_body`, so an early return there (a code error)
+    /// still leaves whatever partial report/messages that step produced in place.
     pub fn step(&mut self, input: StepInput) {
         if self.outcome.is_some() {
             return;
         }
         self.ensure_code_loaded();
         self.step_count += 1;
+        if self.session_active {
+            self.session_step += 1;
+        }
+        let messages_before = self.messages.len();
+        self.step_body(input);
+        if self.session_active {
+            for m in &self.messages[messages_before..] {
+                self.session_messages.push((self.session_step, m.clone()));
+            }
+        }
+    }
+
+    fn step_body(&mut self, input: StepInput) {
         self.ensure_scratch_capacity();
 
         self.apply_to_world(&input.events);
@@ -441,6 +596,14 @@ impl Game {
         }
         let mut outcome_flag = None;
         let mut stage4_deleted: Vec<u32> = expired.clone();
+        let mut report: Option<StepReportBuilder> =
+            self.session_active.then(StepReportBuilder::new);
+        if let Some(r) = report.as_mut() {
+            for &id in &expired {
+                let name = self.world.text(id, property::NAME).map(str::to_string);
+                r.deletes.push((id, name, DeleteCause::LifetimeExpired));
+            }
+        }
         // «Звук»: этому и только этому обёртка `SoundMarks` даётся — поднять
         // отметку и никогда её не прочитать; окно целиком (`self.sound_window`) шаг не видит.
         let mut marks = self.sound_window.marks();
@@ -465,6 +628,7 @@ impl Game {
             &mut stage4_deleted,
             &mut self.grid,
             &mut marks,
+            &mut report,
             &mut code_env,
             &mut self.rng,
             &mut outcome_flag,
@@ -472,6 +636,7 @@ impl Game {
             let mut err = err;
             err.step = Some(self.step_count);
             self.code_error = Some(err);
+            self.last_report = report.map(|b| b.finish(self.session_step));
             return;
         }
 
@@ -490,6 +655,7 @@ impl Game {
             &mut self.moved,
             &mut outcome_flag,
             &mut marks,
+            &mut report,
             &mut code_env,
             &mut self.rng,
             &stage4_deleted,
@@ -501,6 +667,7 @@ impl Game {
             let mut err = err;
             err.step = Some(self.step_count);
             self.code_error = Some(err);
+            self.last_report = report.map(|b| b.finish(self.session_step));
             return;
         }
 
@@ -521,6 +688,7 @@ impl Game {
             &mut outcome_flag,
             &mut random_cell_exhausted,
             &mut marks,
+            &mut report,
             &mut code_env,
             &mut self.grid,
         ) {
@@ -529,6 +697,7 @@ impl Game {
                 let mut err = err;
                 err.step = Some(self.step_count);
                 self.code_error = Some(err);
+                self.last_report = report.map(|b| b.finish(self.session_step));
                 return;
             }
         };
@@ -537,6 +706,10 @@ impl Game {
             self.messages.push(
                 "random_cell: свободной клетки нет, заявка на создание отброшена".to_string(),
             );
+        }
+
+        if let Some(r) = report.as_mut() {
+            r.outcome = outcome_flag;
         }
 
         all_deleted.sort_unstable();
@@ -563,10 +736,22 @@ impl Game {
             if let Some(spec) = self.world.grid(id, property::GRID) {
                 self.world.set_grid_counter(id, spec.interval_steps);
             }
+            if let Some(r) = report.as_mut() {
+                let name = create.props.iter().find_map(|(p, v)| match (*p, v) {
+                    (prop, Value::Text(s)) if prop == property::NAME => Some(s.clone()),
+                    _ => None,
+                });
+                r.created.push(super::report::CreatedObject {
+                    id,
+                    name,
+                    rule: create.rule.clone(),
+                });
+            }
         }
 
         if let Some(outcome) = outcome_flag {
             self.outcome = Some((outcome, self.step_count));
         }
+        self.last_report = report.map(|b| b.finish(self.session_step));
     }
 }

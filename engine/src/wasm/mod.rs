@@ -4,13 +4,16 @@ use web_sys::HtmlCanvasElement;
 
 use crate::core::game::Game;
 use crate::core::input::{MouseState, UiQueue};
-use crate::core::property::PropertyTable;
+use crate::core::property::{self, PropertyTable};
+use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
+use crate::data::edit;
 use crate::data::error::GameError;
 use crate::data::load::{self, GameConfig, ImageDecl, ImageVerdict, MusicVerdict, NeededMedia};
+use crate::data::session::{self, PlaySession};
 use crate::render::atlas::{self, AtlasRect};
 use crate::render::{DrawRect, Renderer, TextDraw};
 
@@ -206,16 +209,184 @@ fn js_code_error(code_path: &str, rules_path: &str, err: &crate::core::code::Cod
     obj.into()
 }
 
+fn outcome_str(outcome: Outcome) -> &'static str {
+    match outcome {
+        Outcome::Win => "win",
+        Outcome::Loss => "loss",
+    }
+}
+
 fn js_ended(outcome: Outcome, step: u64) -> JsValue {
     let obj = Object::new();
     set(&obj, "running", &JsValue::FALSE);
-    let outcome_str = match outcome {
-        Outcome::Win => "win",
-        Outcome::Loss => "loss",
-    };
-    set(&obj, "outcome", &JsValue::from_str(outcome_str));
+    set(&obj, "outcome", &JsValue::from_str(outcome_str(outcome)));
     set(&obj, "step", &JsValue::from_f64(step as f64));
     obj.into()
+}
+
+/// «Редактор», требования 9, 33: `step()` reports the same running/ended/error shape `tick()`
+/// does — a code error or the game's own outcome is exactly as visible on a single manual step as
+/// on any other, instead of the page having no way to see it.
+fn game_tick_result(game: &Game, code_path: &str, rules_path: &str) -> JsValue {
+    if let Some(err) = game.code_error() {
+        return js_code_error(code_path, rules_path, err);
+    }
+    match game.outcome() {
+        Some((outcome, step)) => js_ended(outcome, step),
+        None => js_running(),
+    }
+}
+
+/// «Редактор»: a JSON value the wasm boundary itself never inspects (a live edit's own value, or
+/// `object_properties`'s own answer) round-trips through the browser's `JSON` object — the same
+/// text `serde_json` already produces/parses, just handed across the boundary as a real JS value
+/// instead of a string the caller would have to `JSON.parse` itself.
+fn json_to_js(value: &serde_json::Value) -> JsValue {
+    js_sys::JSON::parse(&value.to_string()).unwrap_or(JsValue::NULL)
+}
+
+fn js_to_json(value: &JsValue) -> serde_json::Value {
+    js_sys::JSON::stringify(value)
+        .ok()
+        .and_then(|s| s.as_string())
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .unwrap_or(serde_json::Value::Null)
+}
+
+/// «Редактор», требование 43: the shared `{ok:true}`/`{ok:false, error}` shape every live-edit
+/// call answers with — `set_property`/`remove_property`/`delete_object` on success carry nothing
+/// else; `add_object` adds its own `id` on top.
+fn js_edit_ok() -> JsValue {
+    let obj = Object::new();
+    set(&obj, "ok", &JsValue::TRUE);
+    obj.into()
+}
+
+fn js_edit_err(message: &str) -> JsValue {
+    let obj = Object::new();
+    set(&obj, "ok", &JsValue::FALSE);
+    set(&obj, "error", &JsValue::from_str(message));
+    obj.into()
+}
+
+fn js_edit_result(result: Result<(), String>) -> JsValue {
+    match result {
+        Ok(()) => js_edit_ok(),
+        Err(message) => js_edit_err(&message),
+    }
+}
+
+/// «Редактор», требование 23, 44: `Game::last_report()`'s JS shape — `rules` in file order,
+/// `created`/`deleted` with names, `screen_change`/`outcome` when either happened this step.
+fn js_step_report(report: &StepReport) -> JsValue {
+    let obj = Object::new();
+    set(&obj, "step", &JsValue::from_f64(report.step as f64));
+
+    let rules = Array::new();
+    for fired in &report.fired {
+        let item = Object::new();
+        match fired {
+            RuleFired::Move { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("move"));
+                set(&item, "objects", &js_id_array(objects));
+            }
+            RuleFired::Check { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("check"));
+                set(&item, "objects", &js_id_array(objects));
+            }
+            RuleFired::Collide { rule, pairs } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("collide"));
+                let arr = Array::new();
+                for (a, b) in pairs {
+                    let pair = Array::new();
+                    pair.push(&JsValue::from_f64(*a as f64));
+                    pair.push(&JsValue::from_f64(*b as f64));
+                    arr.push(&pair);
+                }
+                set(&item, "pairs", &arr);
+            }
+            RuleFired::Delete { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("delete"));
+                set(&item, "objects", &js_id_array(objects));
+            }
+            RuleFired::Spawn { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("spawn"));
+                set(&item, "objects", &js_id_array(objects));
+            }
+        }
+        rules.push(&item);
+    }
+    set(&obj, "rules", &rules);
+
+    let created = Array::new();
+    for c in &report.created {
+        let item = Object::new();
+        set(&item, "id", &JsValue::from_f64(c.id as f64));
+        set(&item, "name", &js_optional_string(c.name.as_deref()));
+        set(&item, "rule", &JsValue::from_str(&c.rule));
+        created.push(&item);
+    }
+    set(&obj, "created", &created);
+
+    let deleted = Array::new();
+    for d in &report.deleted {
+        let item = Object::new();
+        set(&item, "id", &JsValue::from_f64(d.id as f64));
+        set(&item, "name", &js_optional_string(d.name.as_deref()));
+        let cause = Object::new();
+        match &d.cause {
+            DeleteCause::Rule(rule) => {
+                set(&cause, "kind", &JsValue::from_str("rule"));
+                set(&cause, "rule", &JsValue::from_str(rule));
+            }
+            DeleteCause::Code { function, rule } => {
+                set(&cause, "kind", &JsValue::from_str("code"));
+                set(&cause, "function", &JsValue::from_str(function));
+                set(&cause, "rule", &JsValue::from_str(rule));
+            }
+            DeleteCause::LifetimeExpired => {
+                set(&cause, "kind", &JsValue::from_str("lifetime"));
+            }
+        }
+        set(&item, "cause", &cause);
+        deleted.push(&item);
+    }
+    set(&obj, "deleted", &deleted);
+
+    match &report.screen_change {
+        Some((from, to)) => {
+            let change = Object::new();
+            set(&change, "from", &JsValue::from_str(from));
+            set(&change, "to", &JsValue::from_str(to));
+            set(&obj, "screenChange", &change);
+        }
+        None => set(&obj, "screenChange", &JsValue::NULL),
+    }
+    match report.outcome {
+        Some(outcome) => set(&obj, "outcome", &JsValue::from_str(outcome_str(outcome))),
+        None => set(&obj, "outcome", &JsValue::NULL),
+    }
+    obj.into()
+}
+
+fn js_id_array(ids: &[u32]) -> Array {
+    let arr = Array::new();
+    for &id in ids {
+        arr.push(&JsValue::from_f64(id as f64));
+    }
+    arr
+}
+
+fn js_optional_string(s: Option<&str>) -> JsValue {
+    match s {
+        Some(s) => JsValue::from_str(s),
+        None => JsValue::NULL,
+    }
 }
 
 /// Reads `fonts` — the page's `[{name, bytes: Uint8Array|null}, ...]` — into the shape
@@ -500,6 +671,12 @@ pub struct Engine {
     /// world's own step counter, this never freezes: it keeps advancing on a paused or menu
     /// screen, which is exactly why the interface's own images keep animating there.
     ui_clock: UiClock,
+    /// The last `ui_clock` reading `tick` took — `draw()`'s own interface frame (paused, or a
+    /// replay step shown without a `tick`) reuses it rather than a fresh, unavailable timestamp.
+    last_ui_elapsed_steps: f64,
+    /// «Редактор»: the open play/replay session, if any — `None` on the plain game page and
+    /// outside a partiya in the editor. See `data::session::PlaySession`.
+    session: Option<session::PlaySession>,
 }
 
 #[wasm_bindgen]
@@ -526,6 +703,8 @@ impl Engine {
             atlas_rects: Vec::new(),
             rules_path: String::new(),
             ui_clock: UiClock::new(),
+            last_ui_elapsed_steps: 0.0,
+            session: None,
         })
     }
 
@@ -710,6 +889,10 @@ impl Engine {
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
                 self.ui_queue = UiQueue::new();
+                // «Редактор», требование 27: запись живёт до «Запуска», открытия другой записи или
+                // закрытия проекта — а `load()` тут же перезагружает те же файлы (после «Стопа» или
+                // правки сцены/свойств вне партии), а не открывает новый проект, так что запись
+                // остаётся: `play()`/`replay()` — единственные, кто её заменяет.
                 js_load_ok(&warnings)
             }
             Err(failure) => {
@@ -730,6 +913,7 @@ impl Engine {
         self.atlas_rects = Vec::new();
         self.rules_path = String::new();
         self.renderer.reset_fonts();
+        self.session = None;
     }
 
     /// «Редактор», требование 16: rebuilds the world from the loaded scene, ready for `draw` —
@@ -740,15 +924,47 @@ impl Engine {
         }
     }
 
-    /// «Редактор», требование 17: draws one frame of the world alone — no interface, no text; an
-    /// image's own frame is the world's frozen step, same as `tick`'s own `compose_instances`. An
-    /// empty frame without a loaded game.
+    /// «Редактор», требования 17, 40: outside a partiya/повтор, the world alone — no interface, no
+    /// text, an image's own frame frozen at the world's own step, same as `tick`'s own
+    /// `compose_instances`. During one, also the active screen's interface, same as `tick` draws
+    /// it, reusing `tick`'s last `ui_clock` reading (there is no fresh timestamp here — a paused
+    /// screen's interface simply stays exactly as `tick` last left it, which is what "paused"
+    /// means for its own animated fills). An empty frame without a loaded game.
     pub fn draw(&mut self) {
-        let world_instances = match self.game.as_ref() {
-            Some(game) => compose_instances(game, &self.images, &self.atlas_rects),
-            None => Vec::new(),
+        let Some(game) = self.game.as_ref() else {
+            let _ = self.renderer.render_frame(&[], &[], &[]);
+            return;
         };
-        if let Err(e) = self.renderer.render_frame(&world_instances, &[], &[]) {
+        let world_instances = compose_instances(game, &self.images, &self.atlas_rects);
+        let show_ui = self
+            .session
+            .as_ref()
+            .is_some_and(|session| session.is_live() || session.is_replay());
+        let (ui_instances, texts) = match (
+            show_ui,
+            self.screens_config.as_ref(),
+            self.screen_state.as_ref(),
+        ) {
+            (true, Some(config), Some(state)) => {
+                let viewport = self.renderer.window_size_css();
+                let screen = &config.screens[state.active()];
+                compose_ui(
+                    screen,
+                    &game.world,
+                    &game.properties,
+                    &self.mouse,
+                    viewport,
+                    &self.images,
+                    &self.atlas_rects,
+                    self.last_ui_elapsed_steps,
+                )
+            }
+            _ => (Vec::new(), Vec::new()),
+        };
+        if let Err(e) = self
+            .renderer
+            .render_frame(&world_instances, &ui_instances, &texts)
+        {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
     }
@@ -816,10 +1032,20 @@ impl Engine {
     /// «Мышь»); the world cursor («Курсор в мире», требование 25–27) is updated right here
     /// instead, whenever a game is already loaded — regardless of whether the active screen is
     /// live, so a move made during a pause is still known once the world starts stepping again.
+    /// «Редактор», требование 46: in a replay the host's own mouse never reaches the game at all —
+    /// `update_cursor` writes straight to `game.cursor_current`, bypassing `ui_queue` entirely
+    /// (which `tick`/`step`/`seek` already clear before a replay ever reads it), so this is the one
+    /// place that has to check `is_replay` itself instead of relying on the queue being emptied.
     pub fn mouse_move(&mut self, x: f32, y: f32) {
         self.ui_queue.push_mouse_move(x, y);
+        if self.session.as_ref().is_some_and(PlaySession::is_replay) {
+            return;
+        }
         if let Some(game) = self.game.as_mut() {
             game.update_cursor([x, y], self.renderer.window_size_css());
+            if let (Some(session), Some(cell)) = (self.session.as_mut(), game.cursor_current()) {
+                session.record_cursor(game, cell);
+            }
         }
     }
 
@@ -856,16 +1082,50 @@ impl Engine {
         };
 
         let viewport = self.renderer.window_size_css();
-        screens::engine_call(
-            &mut self.ui_queue,
-            &mut self.mouse,
-            &mut self.runner,
-            game,
-            config,
-            state,
-            viewport,
-            dt_seconds,
-        );
+        // «Редактор», требование 40: во время партии этот же вызов ведёт запись и считает
+        // `session_step` — страница (без сессии) идёт прежним путём, один в один. В повторе,
+        // требование 6, 28: тот же накопитель реального времени, что у партии, гонит `step_once`
+        // по записи, а не сам `Game::step` — клавиши и мышь хозяина туда не доходят: очередь
+        // сбрасывается перед вызовом, а не читается. После «Стопа» (сессия заморожена) шаг
+        // невозможен: `tick_replay` сама убеждается в этом и ничего не делает.
+        match self.session.as_mut() {
+            Some(session) if session.is_live() => session.tick_live(
+                &mut self.ui_queue,
+                &mut self.mouse,
+                &mut self.runner,
+                game,
+                config,
+                state,
+                viewport,
+                dt_seconds,
+                &self.images,
+            ),
+            Some(session) => {
+                self.ui_queue = UiQueue::new();
+                session.tick_replay(
+                    &mut self.ui_queue,
+                    &mut self.mouse,
+                    &mut self.runner,
+                    game,
+                    config,
+                    state,
+                    viewport,
+                    dt_seconds,
+                    &self.images,
+                );
+            }
+            None => screens::engine_call(
+                &mut self.ui_queue,
+                &mut self.mouse,
+                &mut self.runner,
+                game,
+                config,
+                state,
+                viewport,
+                dt_seconds,
+            ),
+        }
+        self.last_ui_elapsed_steps = ui_clock_steps;
 
         // «Код игры»: ошибка кода останавливает игру на месте — страница показывает её вместо
         // игры, тем же форматом, что ошибку загрузки; кадр в таком виде мира не рисуется.
@@ -892,10 +1152,7 @@ impl Engine {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
 
-        match game.outcome() {
-            Some((outcome, step)) => js_ended(outcome, step),
-            None => js_running(),
-        }
+        game_tick_result(game, game.code_path(), &self.rules_path)
     }
 
     /// Reconfigures the GPU surface for a new device-pixel canvas size. Call on canvas/container
@@ -946,5 +1203,341 @@ impl Engine {
             .as_ref()
             .map(|g| g.sound_window().cell_count())
             .unwrap_or(0)
+    }
+
+    /// «Запуск», требование 39: starts a partiya at the loaded game's own start screen and opens a
+    /// new recording — nothing without a successfully loaded game.
+    pub fn play(&mut self) {
+        let (Some(game), Some(config), Some(state)) = (
+            self.game.as_mut(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_mut(),
+        ) else {
+            return;
+        };
+        self.session = Some(PlaySession::begin_live(game, config, state));
+        self.runner = Runner::new();
+        self.mouse = MouseState::default();
+        self.ui_queue = UiQueue::new();
+        self.ui_clock.reset();
+    }
+
+    /// «Пауза», требование 40: releases held keys, the same release a live screen switch already
+    /// triggers — the caller is the one that actually stops calling `tick()`. The release goes into
+    /// the recording, so a replay finds the same keys let go at the same step. In a replay this
+    /// would instead *diverge* it from its own recording — the replayed world holds only what its
+    /// own recorded events put there, and `pause()` has none of its own to add — so a replay's
+    /// `pause()` only resets the runner, same as `tick_replay` expects `tab_hidden` to.
+    pub fn pause(&mut self) {
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        let is_replay = self.session.as_ref().is_some_and(PlaySession::is_replay);
+        if !is_replay {
+            let released = game.release_held_keys();
+            if let Some(session) = self.session.as_mut() {
+                session.record_key_releases(game, &released);
+            }
+        }
+        // «Редактор», требование 10: время паузы не догоняется, same as `tab_hidden`.
+        self.runner.reset();
+        self.runner.forget_last_tick();
+    }
+
+    /// «Шаг», требования 9, 33, 40, 47: exactly one step, live or replay, paused or not — returns
+    /// the same running/ended/error shape `tick()` does, so a code error raised on a manual step is
+    /// visible too, not silent. `{running:true}` without an open session (nothing to step). In a
+    /// replay the queue is reset first, same as `tick()` — требование 46: the host's own queued
+    /// mouse/keyboard must not reach the replayed game.
+    pub fn step(&mut self) -> JsValue {
+        let (Some(session), Some(game), Some(config), Some(state)) = (
+            self.session.as_mut(),
+            self.game.as_mut(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_mut(),
+        ) else {
+            return js_running();
+        };
+        if session.is_replay() {
+            self.ui_queue = UiQueue::new();
+        }
+        game.sound_window_mut().clear_marks();
+        let viewport = self.renderer.window_size_css();
+        session.step_once(
+            &mut self.ui_queue,
+            &mut self.mouse,
+            game,
+            config,
+            state,
+            viewport,
+            &self.images,
+        );
+        game_tick_result(game, game.code_path(), &self.rules_path)
+    }
+
+    /// «Редактор», требование 8: why the "Шаг" button would do nothing right now, in Russian, for
+    /// its tooltip — `undefined` when a step would actually happen. Outside a session (or without a
+    /// loaded game) this is always «Нет партии»: there is no partiya to advance in the first place.
+    pub fn step_blocked(&self) -> JsValue {
+        let (Some(session), Some(game), Some(config), Some(state)) = (
+            self.session.as_ref(),
+            self.game.as_ref(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_ref(),
+        ) else {
+            return JsValue::from_str("Нет партии");
+        };
+        match session.step_blocked_reason(game, config, state) {
+            Some(reason) => JsValue::from_str(reason),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», требование 8, 13: whether a world exists right now — `false` before `new_game`
+    /// on a non-live start screen and after `quit`, for the object list's «Мира нет» caption. An
+    /// explicit flag on `Game` (its own doc comment names exactly which calls flip it), not
+    /// `world.alive_count() > 0`: a live world every rule has emptied out is still a world, not
+    /// "Мира нет".
+    pub fn has_world(&self) -> bool {
+        self.game.as_ref().is_some_and(Game::has_world)
+    }
+
+    /// «Стоп», требование 40: ends the session and rebuilds the world from the scene, same as
+    /// `show_scene`. Does nothing without an open session.
+    pub fn stop(&mut self) {
+        // «Редактор», требование 27: the recording itself outlives the partiya — `session` stays
+        // (so `recording()` still answers) and only freezes; `play()`/`replay()` are what actually
+        // replace it, and `clear_game()`/a successful `load()` are what drop it for good.
+        let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_mut()) else {
+            return;
+        };
+        session.end(game);
+        game.show_scene();
+        self.runner = Runner::new();
+        self.mouse = MouseState::default();
+        self.ui_queue = UiQueue::new();
+    }
+
+    /// Whether the open session is a replay rather than a live partiya — `false` outside a
+    /// session too.
+    pub fn is_replay(&self) -> bool {
+        self.session.as_ref().is_some_and(PlaySession::is_replay)
+    }
+
+    /// «Редактор», требование 41: live objects by ascending number — `[{id, generation, name}]`.
+    /// Empty without a game or a world.
+    pub fn world_objects(&self) -> Array {
+        let arr = Array::new();
+        let Some(game) = self.game.as_ref() else {
+            return arr;
+        };
+        for id in game.world.ids() {
+            let item = Object::new();
+            set(&item, "id", &JsValue::from_f64(id as f64));
+            set(
+                &item,
+                "generation",
+                &JsValue::from_f64(game.world.generation(id) as f64),
+            );
+            set(
+                &item,
+                "name",
+                &js_optional_string(game.world.text(id, property::NAME)),
+            );
+            arr.push(&item);
+        }
+        arr
+    }
+
+    /// «Редактор», требование 42: object `id`'s properties in file form — `undefined` when it
+    /// isn't alive or there is no game.
+    pub fn object_properties(&self, id: u32) -> JsValue {
+        let Some(game) = self.game.as_ref() else {
+            return JsValue::UNDEFINED;
+        };
+        match edit::object_properties_json(&game.world, &game.properties, &self.images, id) {
+            Some(map) => json_to_js(&serde_json::Value::Object(map)),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», требование 43. `value` is a JS value (already parsed, not a JSON string).
+    pub fn set_property(&mut self, id: u32, name: &str, value: JsValue) -> JsValue {
+        let json = js_to_json(&value);
+        let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_mut()) else {
+            return js_edit_err("нет партии");
+        };
+        js_edit_result(session.set_property(game, &self.images, id, name, &json))
+    }
+
+    /// «Редактор», требование 43.
+    pub fn remove_property(&mut self, id: u32, name: &str) -> JsValue {
+        let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_mut()) else {
+            return js_edit_err("нет партии");
+        };
+        js_edit_result(session.remove_property(game, id, name))
+    }
+
+    /// «Редактор», требования 18, 43: a new object under the first free number. `props` is a JS
+    /// value (already parsed), in the same shape `object_properties` returns. `{ok:true, id}` on
+    /// success.
+    pub fn add_object(&mut self, props: JsValue) -> JsValue {
+        let json = js_to_json(&props);
+        let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_mut()) else {
+            return js_edit_err("нет партии");
+        };
+        match session.add_object(game, &self.images, &json) {
+            Ok(id) => {
+                let obj = Object::new();
+                set(&obj, "ok", &JsValue::TRUE);
+                set(&obj, "id", &JsValue::from_f64(id as f64));
+                obj.into()
+            }
+            Err(message) => js_edit_err(&message),
+        }
+    }
+
+    /// «Редактор», требование 43.
+    pub fn delete_object(&mut self, id: u32) -> JsValue {
+        let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_mut()) else {
+            return js_edit_err("нет партии");
+        };
+        js_edit_result(session.delete_object(game, id))
+    }
+
+    /// «Редактор», требования 23, 44: the last step's report — `undefined` before the session's
+    /// first step, or without one open (a closed session's own last report never leaks past
+    /// `stop()`, since nothing reads it there).
+    pub fn step_report(&self) -> JsValue {
+        if self.session.is_none() {
+            return JsValue::UNDEFINED;
+        }
+        match self.game.as_ref().and_then(Game::last_report) {
+            Some(report) => js_step_report(report),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», требования 26, 45: every message so far this session, each `{step, text}` —
+    /// `messages()` (the page's own call) is unaffected. Empty outside a session.
+    pub fn session_messages(&self) -> Array {
+        let arr = Array::new();
+        let (Some(_), Some(game)) = (self.session.as_ref(), self.game.as_ref()) else {
+            return arr;
+        };
+        for (step, text) in game.session_messages() {
+            let item = Object::new();
+            set(&item, "step", &JsValue::from_f64(*step as f64));
+            set(&item, "text", &JsValue::from_str(text));
+            arr.push(&item);
+        }
+        arr
+    }
+
+    /// «Редактор», требование 47: the step the session is currently on — live, or where a replay
+    /// is paused. 0 outside a session.
+    pub fn current_step(&self) -> f64 {
+        match (self.session.as_ref(), self.game.as_ref()) {
+            (Some(_), Some(game)) => game.session_step_count() as f64,
+            _ => 0.0,
+        }
+    }
+
+    /// «Редактор», требование 47: the recording's own length — steps simulated so far while live,
+    /// the fixed total of a loaded replay. 0 outside a session.
+    pub fn recording_length(&self) -> f64 {
+        match (self.session.as_ref(), self.game.as_ref()) {
+            (Some(session), Some(game)) => session.length(game) as f64,
+            _ => 0.0,
+        }
+    }
+
+    /// «Сохранить запись», требование 46: the current recording as replay-file text. `undefined`
+    /// outside a session.
+    pub fn recording(&self) -> JsValue {
+        match (self.session.as_ref(), self.game.as_ref()) {
+            (Some(session), Some(game)) => JsValue::from_str(&session.recording_text(game)),
+            _ => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Открыть запись»/«Повтор», требования 35, 39, 46: parses `text` and, on success, starts a
+    /// replay of it, paused on step 0. `{ok:false, error}` — already prefixed "Это не запись
+    /// партии: <причина>" — leaves the current session untouched; `{ok:false, error:"нет
+    /// загруженной игры"}` without a loaded game.
+    pub fn replay(&mut self, text: &str) -> JsValue {
+        let (Some(game), Some(config), Some(state)) = (
+            self.game.as_mut(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_mut(),
+        ) else {
+            return js_edit_err("нет загруженной игры");
+        };
+        match PlaySession::begin_replay(text, game, config, state) {
+            Ok(session) => {
+                self.session = Some(session);
+                self.runner = Runner::new();
+                self.mouse = MouseState::default();
+                self.ui_queue = UiQueue::new();
+                self.ui_clock.reset();
+                js_edit_ok()
+            }
+            Err(message) => js_edit_err(&message),
+        }
+    }
+
+    /// «Повтор», требования 6, 9, 29, 33, 47: recomputes the replay from scratch up to `step`, no
+    /// drawing or sound. Does nothing without an open replay. Returns the same running/ended/error
+    /// shape `tick()`/`step()` do — требование 33: seeking onto a step whose code raised an error
+    /// has to be visible the same way stepping onto it live would be, so the page knows to keep
+    /// showing that error instead of clearing it. The queue is reset first, same as `tick()`/
+    /// `step()` — требование 46.
+    pub fn seek(&mut self, step: u32) -> JsValue {
+        let (Some(session), Some(game), Some(config), Some(state)) = (
+            self.session.as_mut(),
+            self.game.as_mut(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_mut(),
+        ) else {
+            return js_running();
+        };
+        self.ui_queue = UiQueue::new();
+        let viewport = self.renderer.window_size_css();
+        session.seek(
+            step as u64,
+            &mut self.ui_queue,
+            &mut self.mouse,
+            game,
+            config,
+            state,
+            viewport,
+            &self.images,
+        );
+        game_tick_result(game, game.code_path(), &self.rules_path)
+    }
+
+    /// `seek(current - 1)` — требование 47; a no-op on step 0 or without an open replay. See
+    /// `seek` for its return value and queue reset.
+    pub fn step_back(&mut self) -> JsValue {
+        let (Some(session), Some(game), Some(config), Some(state)) = (
+            self.session.as_mut(),
+            self.game.as_mut(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_mut(),
+        ) else {
+            return js_running();
+        };
+        self.ui_queue = UiQueue::new();
+        let viewport = self.renderer.window_size_css();
+        session.step_back(
+            &mut self.ui_queue,
+            &mut self.mouse,
+            game,
+            config,
+            state,
+            viewport,
+            &self.images,
+        );
+        game_tick_result(game, game.code_path(), &self.rules_path)
     }
 }
