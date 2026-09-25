@@ -163,7 +163,9 @@ body.is-resizing-panel {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  flex: none;
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
   height: 22px;
   padding: 0 8px;
   border: 1px solid var(--editor-border);
@@ -172,6 +174,7 @@ body.is-resizing-panel {
   color: var(--editor-text-muted);
   font: 11.5px var(--editor-font-mono);
   white-space: nowrap;
+  text-overflow: ellipsis;
 }
 
 .editor-count {
@@ -480,6 +483,10 @@ body.is-resizing-panel {
 
 .project-topbar__title {
   overflow: hidden;
+  flex-shrink: 1;
+  /* Кнопки партии и повтора («Редактор», фаза 10) делят полосу с названием — не даём ему сжаться
+     до полного исчезновения раньше остальных элементов, у которых по умолчанию тот же приоритет. */
+  min-width: 64px;
   margin: 0 2px 0 4px;
   font: 600 14px var(--editor-font-display);
   text-overflow: ellipsis;
@@ -1273,4 +1280,164 @@ body.is-resizing-panel {
   .project-topbar__live--flash {
     animation: none;
   }
+}
+
+/* ——— Партия и повтор («Редактор», фаза 10) ——— */
+
+/* Полоса и рамка окна подкрашены во время партии и повтора — требование 5: видно, что правки не пишутся в файлы. */
+.project-topbar--battle {
+  background: var(--editor-accent-soft);
+  border-bottom-color: var(--editor-accent-ring);
+}
+
+.project-topbar--replay {
+  background: rgba(201, 166, 255, 0.13);
+  border-bottom-color: rgba(201, 166, 255, 0.5);
+}
+
+.project-window--battle {
+  box-shadow: inset 0 0 0 2px var(--editor-accent-ring);
+}
+
+.project-window--replay {
+  box-shadow: inset 0 0 0 2px rgba(201, 166, 255, 0.5);
+}
+
+.battle-transport {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+
+.battle-transport__step-label {
+  padding: 0 4px;
+  color: var(--editor-text);
+  font: 600 12px var(--editor-font-mono);
+  white-space: nowrap;
+}
+
+.battle-transport__scrubber {
+  width: 160px;
+  accent-color: var(--editor-accent);
+}
+
+.project-topbar__notice--error {
+  background: var(--editor-error-soft);
+  color: var(--editor-error-text);
+}
+
+.project-topbar__notice--error svg {
+  color: var(--editor-error);
+}
+
+/* ——— Нижняя панель: вкладки «Ошибки», «Шаг», «Сообщения» ——— */
+
+.problems-tabs {
+  display: flex;
+  flex-direction: column;
+  max-height: 34vh;
+}
+
+.problems-tabs__header {
+  display: flex;
+  flex: none;
+  gap: 2px;
+  padding: 6px 10px 0;
+  border-bottom: 1px solid var(--editor-border);
+}
+
+.problems-tabs__tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 12px;
+  border: 0;
+  border-radius: 7px 7px 0 0;
+  background: transparent;
+  color: var(--editor-text-muted);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.problems-tabs__tab:hover {
+  color: var(--editor-text);
+}
+
+.problems-tabs__tab--active {
+  background: var(--editor-surface-raised);
+  color: var(--editor-text);
+}
+
+.problems-tabs__body {
+  min-height: 0;
+  overflow: auto;
+}
+
+.step-report {
+  padding: 10px 14px 14px;
+  font-size: 12.5px;
+}
+
+.step-report__heading {
+  margin-bottom: 6px;
+  color: var(--editor-text-muted);
+  font: 600 11px var(--editor-font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.step-report__empty {
+  color: var(--editor-text-faint);
+}
+
+.step-report__list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.step-report__rule {
+  color: var(--editor-json-key);
+  font-family: var(--editor-font-mono);
+}
+
+.step-report__pair {
+  white-space: nowrap;
+}
+
+.step-report__object-ref {
+  border: 0;
+  background: transparent;
+  padding: 0 2px;
+  color: var(--editor-accent);
+  font: inherit;
+  font-family: var(--editor-font-mono);
+  cursor: pointer;
+}
+
+.step-report__object-ref:hover {
+  text-decoration: underline;
+}
+
+.messages-panel__list {
+  margin: 0;
+  padding: 6px 0;
+  list-style: none;
+}
+
+.messages-panel__line {
+  padding: 4px 14px;
+  color: var(--editor-text);
+  font-size: 12.5px;
+}
+
+.messages-panel__step {
+  margin-right: 8px;
+  color: var(--editor-text-faint);
+  font-family: var(--editor-font-mono);
 }

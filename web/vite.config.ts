@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
-import { extname, join, resolve, sep } from "node:path";
+import { dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage } from "node:http";
 import react from "@vitejs/plugin-react";
@@ -80,13 +80,21 @@ export function buildGamesFileResponse(filePath: string, method: string): GamesF
   return { headers, body };
 }
 
-export type PutTargetResult = { status: "forbidden" } | { status: "not-allowed" } | { status: "ok"; filePath: string };
+export type PutTargetResult =
+  | { status: "forbidden" }
+  | { status: "not-allowed" }
+  | { status: "ok"; filePath: string; createDirectory: boolean };
 
 /**
- * Проверка пути записи — «Редактор», требование 28: пишутся только `.json` внутри `games/<имя>/`.
+ * Проверка пути записи — «Редактор», требования 28 (фаза 09) и 34 (фаза 10): пишутся только
+ * `.json` внутри `games/<имя>/`, на любой глубине — файлы из `files.scene`/`files.properties`
+ * могут лежать в подпапке проекта (фаза 09), а `replays/` вдобавок разрешена самим этим кодом.
  * `..`, абсолютный путь и битая процентная кодировка сводятся к тому же выходу за `directoryPath`,
- * что и у чтения (`isPathWithinDirectory`), — 403; путь внутри каталога, но не `.json` или не в
- * подпапке проекта (`games/<путь>.json` без имени проекта, сам каталог) — 405.
+ * что и у чтения (`isPathWithinDirectory`), — 403; путь внутри каталога, но не `.json` или без
+ * имени проекта — 405. Ни одна папка, кроме `replays/` проекта, сама не создаётся (фаза 09: «без
+ * папки запись не делается») — `createDirectory` говорит `writeGamesFileAtomically`, можно ли
+ * создать недостающую папку для этого пути; `replays/` несуществующего проекта — 403, а не тихое
+ * создание заодно и его самого.
  */
 export function resolvePutTarget(requestUrl: string, directoryPath: string): PutTargetResult {
   let requestPath: string;
@@ -104,11 +112,16 @@ export function resolvePutTarget(requestUrl: string, directoryPath: string): Put
   }
 
   const relativeSegments = filePath.slice(directoryPath.length + 1).split(sep);
-  const isInsideProjectFolder = relativeSegments.length >= 2 && relativeSegments.every((segment) => segment !== "");
-  if (!isInsideProjectFolder || extname(filePath) !== ".json") {
+  const isProjectFile = relativeSegments.length >= 2 && relativeSegments.every((segment) => segment !== "");
+  if (!isProjectFile || extname(filePath) !== ".json") {
     return { status: "not-allowed" };
   }
-  return { status: "ok", filePath };
+
+  const isReplayFile = relativeSegments.length === 3 && relativeSegments[1] === "replays";
+  if (isReplayFile && !existsSync(join(directoryPath, relativeSegments[0] as string))) {
+    return { status: "forbidden" };
+  }
+  return { status: "ok", filePath, createDirectory: isReplayFile };
 }
 
 /** Тело запроса целиком — раздача `games/` не подключает парсер тела, читает поток сама. */
@@ -124,9 +137,12 @@ function readRequestBody(req: IncomingMessage): Promise<Buffer> {
 /**
  * Пишет файл проекта во временный рядом и переименовывает — «Редактор», требование 29: наполовину
  * записанный файл не виден ни опросу редактора (своё имя, не `.json`), ни `rename`, который в POSIX
- * и NTFS атомарно подменяет старое содержимое новым.
+ * и NTFS атомарно подменяет старое содержимое новым. `createDirectory` — самая первая запись партии
+ * («Редактор», требование 34): единственный случай, где недостающая папка (`replays/`) создаётся
+ * сама, а не остаётся отказом, как у любого другого пути без папки (фаза 09).
  */
-export async function writeGamesFileAtomically(filePath: string, body: Buffer): Promise<void> {
+export async function writeGamesFileAtomically(filePath: string, body: Buffer, createDirectory: boolean): Promise<void> {
+  if (createDirectory) mkdirSync(dirname(filePath), { recursive: true });
   const tempPath = `${filePath}.tmp-${randomBytes(6).toString("hex")}`;
   await writeFile(tempPath, body);
   await rename(tempPath, filePath);
@@ -164,7 +180,7 @@ function serveGamesFolder(): Plugin {
             return;
           }
           readRequestBody(req)
-            .then((body) => writeGamesFileAtomically(target.filePath, body))
+            .then((body) => writeGamesFileAtomically(target.filePath, body, target.createDirectory))
             .then(() => {
               res.statusCode = 204;
               res.end();

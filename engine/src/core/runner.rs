@@ -66,6 +66,26 @@ impl Runner {
         self.accumulator = 0.0;
     }
 
+    /// Adds real time to the bucket without stepping — «Редактор», требование 6:
+    /// `PlaySession::tick_replay` drives its own stepping function (`step_once`, not `Game::step`
+    /// directly) between the accumulator and the world, so it runs its own bounded loop instead of
+    /// calling `advance`.
+    pub fn accumulate(&mut self, dt_seconds: f64) {
+        self.accumulator += dt_seconds.max(0.0);
+    }
+
+    /// Takes one fixed step's worth of time from the bucket if there is enough — the same "is a
+    /// step owed" condition `advance`'s own loop uses, exposed for a caller that has to run its own
+    /// stepping function in between.
+    pub fn take_step(&mut self) -> bool {
+        if self.accumulator >= STEP_SECONDS {
+            self.accumulator -= STEP_SECONDS;
+            true
+        } else {
+            false
+        }
+    }
+
     /// «Экраны и состояние» → «Жизнь партии»: on the screen the active screen
     /// has `world_runs`, steps as `advance` always did; otherwise the step is skipped
     /// entirely and the accumulator is dropped every call, so a minute spent paused does not

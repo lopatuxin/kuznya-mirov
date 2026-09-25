@@ -25,10 +25,13 @@ import { useProjectEngine } from "./useProjectEngine";
 
 export type SceneEditingState = {
   engine: Engine | null;
+  memory: WebAssembly.Memory | null;
   result: ProjectLoadResult | null;
   loadedAt: Date | null;
   headerNotice: string | null;
   engineError: string | null;
+  hasQueuedReload: boolean;
+  setReloadGateOpen: (isOpen: boolean) => void;
   /** Текст `scene.json`/`properties.json`, показанный сейчас — может быть несохранённым (требование 2). `null` — правка недоступна. */
   sceneText: string | null;
   propertiesText: string | null;
@@ -276,10 +279,13 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
 
   return {
     engine: engineState.engine,
+    memory: engineState.memory,
     result: engineState.result,
     loadedAt: engineState.loadedAt,
     headerNotice: engineState.headerNotice,
     engineError: engineState.engineError,
+    hasQueuedReload: engineState.hasQueuedReload,
+    setReloadGateOpen: engineState.setReloadGateOpen,
     sceneText: session?.displayed.sceneText ?? null,
     propertiesText: session?.displayed.propertiesText ?? null,
     saveState: session?.saveState ?? { status: "saved" },

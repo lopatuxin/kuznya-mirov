@@ -208,7 +208,7 @@ fn format_property(world: &World, id: u32, prop: PropertyId, properties: &Proper
 /// button or a screen key declares.
 pub type InitialValuesId = usize;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ButtonCommand {
     ShowScreen(ScreenId),
     NewGame(ScreenId, Option<InitialValuesId>),
@@ -358,6 +358,21 @@ pub fn apply_command(
     }
 }
 
+/// «Редактор», требование 27–28: same transition as `apply_command`'s own `NewGame` branch, for a
+/// replay's resolved values — a `(имя объекта, свойство, значение)` list, rather than a
+/// pre-registered `InitialValuesId`, since a replay's own values were never registered at load
+/// time the way a button's or a screen key's own `new_game` third element is.
+pub fn apply_replay_new_game(
+    target: ScreenId,
+    values: &[(String, PropertyId, Value)],
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+) {
+    game.new_game_with_values(values);
+    switch_to(state, config, game, target, false);
+}
+
 /// Stage-9 equivalent: switches to the win/loss screen the first time `game.outcome()` reports
 /// one, and does nothing once already there. «Формат игры» / «Исполнение игры»: `end_game`
 /// finishes the step, the screen switch happens here, on the step's boundary.
@@ -406,18 +421,32 @@ pub fn write_sound_frame(game: &mut Game, config: &ScreensConfig, state: &Screen
 /// never reaches the world, on press or release — judged here against whichever screen is
 /// active *right now*, at drain time, not when the raw event first arrived, so a key queued
 /// before a click that switches screens still sees the screen the click lands on. Dropped
-/// outright on a screen without `world_runs`, except a key the active screen names.
-fn handle_screen_key_down(
+/// outright on a screen without `world_runs`, except a key the active screen names. `apply_now`
+/// picks `Game::press_key` (a play/replay session, «Редактор», требование 1: applied to the world
+/// the instant this call drains the queue, not deferred to the next `Game::step`'s own stage 1 —
+/// a frame that ends up doing zero world steps still leaves the press visible, for `pause()`'s
+/// own `release_held_keys` to find and record) over `Game::key_down` (the plain page: queued,
+/// unchanged).
+pub fn handle_screen_key_down(
     game: &mut Game,
     config: &ScreensConfig,
     state: &ScreenState,
     code: &str,
+    events: Option<&mut Vec<RecordedEvent>>,
+    apply_now: bool,
 ) {
     if config.screens[state.active()].keys.contains_key(code) {
         return;
     }
     if state.is_live(config) {
-        game.key_down(code);
+        if apply_now {
+            game.press_key(code);
+        } else {
+            game.key_down(code);
+        }
+        if let Some(events) = events {
+            events.push(RecordedEvent::WorldKeyDown(code.to_string()));
+        }
     }
 }
 
@@ -428,21 +457,42 @@ fn handle_screen_key_down(
 /// whatever the page still has queued for it — see its own doc comment for exactly which case
 /// that first part covers. A release the world never held on a screen that never absorbs it (its
 /// press was itself absorbed, by this screen or an earlier one) is silently dropped by
-/// `Game::key_up` itself in the non-absorbed branch below, so this function does not need to
-/// track that case separately.
-fn handle_screen_key_up(
+/// `Game::key_up`/`Game::release_key` themselves in the non-absorbed branch below, so this
+/// function does not need to track that case separately. `apply_now` — see `handle_screen_key_down`.
+/// «Редактор», требование 2: when the world actually held `code` (checked *before* releasing it),
+/// records a `WorldKeyUp` ahead of the `Command` — a replay applies both, in that order, so it
+/// releases the key too, not just the screen's own command; `Game::release_held_keys` already
+/// records this same release the other way a live screen can drop a still-held key (leaving a
+/// live screen for good), so this is the matching case for one that stays live.
+pub fn handle_screen_key_up(
     game: &mut Game,
     config: &ScreensConfig,
     state: &mut ScreenState,
     code: &str,
+    mut events: Option<&mut Vec<RecordedEvent>>,
+    apply_now: bool,
 ) {
     if let Some(cmd) = config.screens[state.active()].keys.get(code).copied() {
+        let was_held = game.is_key_held(code);
         game.release_key(code);
+        if was_held && let Some(events) = events.as_deref_mut() {
+            events.push(RecordedEvent::WorldKeyUp(code.to_string()));
+        }
         apply_command(cmd, game, config, state);
+        if let Some(events) = events {
+            events.push(RecordedEvent::Command(cmd));
+        }
         return;
     }
     if state.is_live(config) {
-        game.key_up(code);
+        if apply_now {
+            game.release_key(code);
+        } else {
+            game.key_up(code);
+        }
+        if let Some(events) = events {
+            events.push(RecordedEvent::WorldKeyUp(code.to_string()));
+        }
     }
 }
 
@@ -501,6 +551,19 @@ fn handle_mouse_event(
     }
 }
 
+/// «Редактор», требования 27, 39: one thing a play/replay session's own recording keeps —
+/// world-bound key presses/releases (screen-absorbed ones never reach the world, so never appear
+/// here) and a screen command once it actually fires (from a button click or a screen key alike),
+/// already resolved rather than the raw click that caused it. `process_ui_queue`/`engine_call`
+/// (the plain page's own paths) pass `None` for it — «Редактор», нефункциональное требование:
+/// recording costs the page nothing, not even a throwaway `Vec` copied into on every key.
+#[derive(Debug, Clone, PartialEq)]
+pub enum RecordedEvent {
+    WorldKeyDown(String),
+    WorldKeyUp(String),
+    Command(ButtonCommand),
+}
+
 /// Drains the shared mouse/screen-key queue, judging every event — mouse or keyboard — against
 /// whichever screen is active at the moment it is *this* event's turn, not when it arrived. A
 /// click that switches the screen mid-drain leaves later events in the same batch, key or mouse,
@@ -514,16 +577,41 @@ pub fn process_ui_queue(
     state: &mut ScreenState,
     viewport: [f32; 2],
 ) {
+    process_ui_queue_recording(queue, mouse, game, config, state, viewport, None, false);
+}
+
+/// Same as `process_ui_queue`, additionally appending every world key and fired command to
+/// `events` (when given one), in drain order — «Редактор», требование 27. `apply_now` — see
+/// `handle_screen_key_down`: `true` for a play/replay session's own paths, `false` (unchanged)
+/// for the plain page's `process_ui_queue`.
+#[allow(clippy::too_many_arguments)]
+pub fn process_ui_queue_recording(
+    queue: &mut UiQueue,
+    mouse: &mut MouseState,
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+    viewport: [f32; 2],
+    mut events: Option<&mut Vec<RecordedEvent>>,
+    apply_now: bool,
+) {
     for event in queue.drain() {
         match event {
             UiEvent::Mouse(mouse_event) => {
                 let screen = &config.screens[state.active()];
                 if let Some(cmd) = handle_mouse_event(mouse, screen, viewport, mouse_event) {
                     apply_command(cmd, game, config, state);
+                    if let Some(events) = events.as_deref_mut() {
+                        events.push(RecordedEvent::Command(cmd));
+                    }
                 }
             }
-            UiEvent::KeyDown(code) => handle_screen_key_down(game, config, state, &code),
-            UiEvent::KeyUp(code) => handle_screen_key_up(game, config, state, &code),
+            UiEvent::KeyDown(code) => {
+                handle_screen_key_down(game, config, state, &code, events.as_deref_mut(), apply_now)
+            }
+            UiEvent::KeyUp(code) => {
+                handle_screen_key_up(game, config, state, &code, events.as_deref_mut(), apply_now)
+            }
         }
     }
 }
@@ -547,9 +635,67 @@ pub fn engine_call(
     viewport: [f32; 2],
     dt_seconds: f64,
 ) {
-    process_ui_queue(queue, mouse, game, config, state, viewport);
+    engine_call_recording(
+        queue, mouse, runner, game, config, state, viewport, dt_seconds, None, false,
+    );
+}
+
+/// Same as `engine_call`, for a play session that also records — «Редактор», требование 27, 39:
+/// the page never calls this, so the recording machinery costs it nothing beyond `engine_call`'s
+/// own `None`. `apply_now` — see `process_ui_queue_recording`.
+#[allow(clippy::too_many_arguments)]
+pub fn engine_call_recording(
+    queue: &mut UiQueue,
+    mouse: &mut MouseState,
+    runner: &mut super::runner::Runner,
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+    viewport: [f32; 2],
+    dt_seconds: f64,
+    events: Option<&mut Vec<RecordedEvent>>,
+    apply_now: bool,
+) {
+    process_ui_queue_recording(
+        queue, mouse, game, config, state, viewport, events, apply_now,
+    );
     tick(runner, game, config, state, dt_seconds);
     write_sound_frame(game, config, state);
+}
+
+/// «Редактор», требования 40, 47: exactly one world step, bypassing `Runner`'s real-time
+/// accumulator entirely — the editor's own "Шаг", and a replay's seek/step-forward, both drive the
+/// world at their own pace, not the browser's frame clock. Drains the shared queue first, same as
+/// `engine_call`, so a button click or a screen key queued right before still lands on whichever
+/// screen is active when this call runs. Does nothing to the world on a screen without
+/// `world_runs`, or once the partiya already ended — «Экраны и состояние» → «Жизнь партии».
+/// Returns whether a step actually ran. Does not clear the sound window's marks itself — «Редактор»,
+/// требование 6: a replay's own real-time burst (`PlaySession::tick_replay`) calls this several
+/// times per animation frame and has to let marks accumulate across all of them, the way the page's
+/// own `Runner::advance_or_reset` already clears once before its own multi-step burst rather than
+/// per step; each caller of this function clears marks itself, once, at the granularity it needs.
+#[allow(clippy::too_many_arguments)]
+pub fn advance_one_step(
+    queue: &mut UiQueue,
+    mouse: &mut MouseState,
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+    viewport: [f32; 2],
+    events: Option<&mut Vec<RecordedEvent>>,
+    apply_now: bool,
+) -> bool {
+    process_ui_queue_recording(
+        queue, mouse, game, config, state, viewport, events, apply_now,
+    );
+    let stepped = state.is_live(config) && game.is_running();
+    if stepped {
+        let input = game.take_input_snapshot();
+        game.step(input);
+    }
+    handle_outcome(game, config, state);
+    write_sound_frame(game, config, state);
+    stepped
 }
 
 /// Which of the three fills a button currently shows — pressed wins over hover, and no button

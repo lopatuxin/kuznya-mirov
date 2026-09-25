@@ -7,6 +7,8 @@ type ObjectListProps = {
   objects: SceneObjectSummary[];
   selectedIndex: number | null;
   onSelect: (index: number | null) => void;
+  /** «Объектов нет» вне партии; партия и повтор без мира показывают «Мира нет» — требование 13. */
+  emptyLabel?: string;
 };
 
 function matchesObjectQuery(object: SceneObjectSummary, query: string): boolean {
@@ -56,7 +58,7 @@ function ObjectRow({ object, isSelected, rowRef, onSelect }: ObjectRowProps): Re
  * сцене объект подсвечен и прокручен в видимую часть. Поиск по имени или номеру сужает список;
  * стрелки вверх и вниз двигают выбор по видимым строкам, Escape очищает поиск, а потом снимает выбор.
  */
-export function ObjectList({ objects, selectedIndex, onSelect }: ObjectListProps): React.JSX.Element {
+export function ObjectList({ objects, selectedIndex, onSelect, emptyLabel = "Объектов нет" }: ObjectListProps): React.JSX.Element {
   const [query, setQuery] = useState("");
   const selectedRowRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
@@ -117,7 +119,7 @@ export function ObjectList({ objects, selectedIndex, onSelect }: ObjectListProps
         </div>
       )}
 
-      {objects.length === 0 && <div className="object-list__empty">Объектов нет</div>}
+      {objects.length === 0 && <div className="object-list__empty">{emptyLabel}</div>}
       {objects.length > 0 && visibleObjects.length === 0 && <div className="object-list__empty">Ничего не найдено</div>}
       {visibleObjects.length > 0 && (
         <div

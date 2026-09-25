@@ -2,10 +2,19 @@ const NO_OBSERVER_NOTICE = "Браузер не сообщает об измен
 const OBSERVER_ERRORED_NOTICE = "Папка больше не отслеживается — откройте её заново.";
 
 /**
+ * `replays/` — запись партий («Редактор», требование 34), не часть файлов, которые редактор
+ * загружает: правка в ней (в том числе появление самой папки на первой записи) не должна выглядеть
+ * как правка проекта и вызывать перезагрузку («Редактор», требование 36).
+ */
+export function hasProjectFileChange(relativePaths: readonly (readonly string[])[]): boolean {
+  return relativePaths.some((components) => components[0] !== "replays");
+}
+
+/**
  * Слежение за папкой с диска через `FileSystemObserver`, рекурсивно — «Редактор», требование 33.
- * Любая запись об изменении, включая `unknown`, даёт одну перезагрузку на пачку записей; запись
- * `errored` останавливает слежение вместо неё. Браузер без `FileSystemObserver` — папка всё равно
- * открывается, просто без слежения.
+ * Любая запись об изменении вне `replays/`, включая `unknown`, даёт одну перезагрузку на пачку
+ * записей; запись `errored` останавливает слежение вместо неё. Браузер без `FileSystemObserver` —
+ * папка всё равно открывается, просто без слежения.
  */
 export function watchFolderProject(
   handle: FileSystemDirectoryHandle,
@@ -23,7 +32,7 @@ export function watchFolderProject(
       observer.disconnect();
       return;
     }
-    onChanged();
+    if (hasProjectFileChange(records.map((record) => record.relativePathComponents))) onChanged();
   });
 
   observer.observe(handle, { recursive: true }).catch(() => {
