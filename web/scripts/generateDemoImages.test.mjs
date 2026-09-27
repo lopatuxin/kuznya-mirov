@@ -93,3 +93,92 @@ describe("IMAGES — договор с данными игр", () => {
     expect(readPixel(canvas, width, 0, 0)[3]).toBe(0);
   });
 });
+
+// Фаза 01 «Герой ходит по локации», пункты 12–13: 12 кадров по 32×48 в ленте 384×48, сторона
+// `Math.floor(frame / 3)`, фаза `frame % 3`; критерии готовности генератора этой фазы.
+describe("rpg/images/hero.png — договор с данными игры", () => {
+  const FRAME_WIDTH = 32;
+  const FRAME_HEIGHT = 48;
+  const FRAMES = 12;
+  const { width, height, canvas } = IMAGES["rpg/images/hero.png"]();
+
+  function frameBuffer(index) {
+    const out = Buffer.alloc(FRAME_WIDTH * FRAME_HEIGHT * 4);
+    for (let y = 0; y < FRAME_HEIGHT; y++) {
+      const srcStart = (y * width + index * FRAME_WIDTH) * 4;
+      canvas.copy(out, y * FRAME_WIDTH * 4, srcStart, srcStart + FRAME_WIDTH * 4);
+    }
+    return out;
+  }
+
+  it("384×48 — 12 кадров по 32×48", () => {
+    expect([width, height]).toEqual([FRAME_WIDTH * FRAMES, FRAME_HEIGHT]);
+  });
+
+  it("углы каждого кадра прозрачны", () => {
+    const corners = [
+      [0, 0],
+      [FRAME_WIDTH - 1, 0],
+      [0, FRAME_HEIGHT - 1],
+      [FRAME_WIDTH - 1, FRAME_HEIGHT - 1],
+    ];
+    for (let index = 0; index < FRAMES; index++) {
+      const frame = frameBuffer(index);
+      for (const [x, y] of corners) expect(readPixel(frame, FRAME_WIDTH, x, y)[3]).toBe(0);
+    }
+  });
+
+  it("стоящие кадры четырёх сторон различаются между собой", () => {
+    const standingFrames = [0, 3, 6, 9].map(frameBuffer);
+    for (let i = 0; i < standingFrames.length; i++) {
+      for (let j = i + 1; j < standingFrames.length; j++) {
+        expect(standingFrames[i].equals(standingFrames[j])).toBe(false);
+      }
+    }
+  });
+
+  it("кадры шага отличаются от стоящего кадра той же стороны", () => {
+    for (const side of [0, 1, 2, 3]) {
+      const standing = frameBuffer(side * 3);
+      for (const phase of [1, 2]) expect(frameBuffer(side * 3 + phase).equals(standing)).toBe(false);
+    }
+  });
+
+  it("кадры «вправо» — зеркало кадров «влево» той же фазы", () => {
+    for (const phase of [0, 1, 2]) {
+      const left = frameBuffer(1 * 3 + phase);
+      const right = frameBuffer(2 * 3 + phase);
+      for (let y = 0; y < FRAME_HEIGHT; y++) {
+        for (let x = 0; x < FRAME_WIDTH; x++) {
+          expect(readPixel(right, FRAME_WIDTH, x, y)).toEqual(readPixel(left, FRAME_WIDTH, FRAME_WIDTH - 1 - x, y));
+        }
+      }
+    }
+  });
+
+  it("повторный запуск даёт те же байты", () => {
+    expect(IMAGES["rpg/images/hero.png"]().canvas.equals(canvas)).toBe(true);
+  });
+});
+
+// Фаза 01, пункт 17: кольцо отметки щелчка, толщина 3–4 пикселя, внутри и снаружи прозрачно.
+describe("rpg/images/marker.png — договор с данными игры", () => {
+  const { width, height, canvas } = IMAGES["rpg/images/marker.png"]();
+
+  it("32×32", () => {
+    expect([width, height]).toEqual([32, 32]);
+  });
+
+  it("середина и углы прозрачны, кольцо непрозрачно", () => {
+    expect(readPixel(canvas, width, 16, 16)[3]).toBe(0);
+    for (const [x, y] of [
+      [0, 0],
+      [31, 0],
+      [0, 31],
+      [31, 31],
+    ]) {
+      expect(readPixel(canvas, width, x, y)[3]).toBe(0);
+    }
+    expect(readPixel(canvas, width, 16, 3)[3]).toBe(255); // верхняя точка кольца
+  });
+});
