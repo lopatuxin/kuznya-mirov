@@ -1,7 +1,7 @@
 use serde_json::Value as Json;
 
 use crate::core::game::{self, Game};
-use crate::core::keys::{KeyBinding, KeyEdit, KeyTable};
+use crate::core::keys::{EditValue, KeyBinding, KeyEdit, KeyTable};
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::rules::{
     CollideEffect, CommonAction, CompareOp, Condition, NumberExpr, Outcome, Rule, RuleSet,
@@ -345,7 +345,7 @@ pub(crate) fn parse_scalar_value(
             let name = expect_string(value, file, path, errors)?;
             resolve_image(&name, images, file, path, errors).map(Value::Image)
         }
-        PropKind::Grid | PropKind::Keys => {
+        PropKind::Grid | PropKind::Keys | PropKind::OnClick => {
             errors.push(
                 file,
                 path,
@@ -421,7 +421,7 @@ fn parse_key_edits(
         let Some(prop) = resolve_property(&name, properties, file, &entry_path, errors) else {
             continue;
         };
-        if let Some(v) = parse_scalar_value(
+        if let Some(value) = parse_edit_value(
             &pair[1],
             prop,
             properties,
@@ -432,11 +432,38 @@ fn parse_key_edits(
         ) {
             edits.push(KeyEdit {
                 property: prop,
-                value: v,
+                value,
             });
         }
     }
     edits
+}
+
+/// «Мышь в мире», требования 17, 35–36: one record's value — `"cursor"` only when `prop` is a
+/// `Vec2` (иначе — ошибка требования 36: «cursor в записи к свойству, которое не пара»), an
+/// ordinary constant otherwise, parsed exactly like a scene object's own field.
+fn parse_edit_value(
+    value: &Json,
+    prop: PropertyId,
+    properties: &PropertyTable,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<EditValue> {
+    if value.as_str() == Some("cursor") {
+        return if properties.kind(prop) == PropKind::Vec2 {
+            Some(EditValue::Cursor)
+        } else {
+            errors.push(
+                file,
+                path,
+                "\"cursor\" можно только у свойства-пары".to_string(),
+            );
+            None
+        };
+    }
+    parse_scalar_value(value, prop, properties, images, file, path, errors).map(EditValue::Const)
 }
 
 fn parse_keys(
@@ -620,6 +647,7 @@ pub struct ParsedObject {
     pub values: Vec<(PropertyId, Value)>,
     pub grid: Option<GridSpec>,
     pub keys: Option<KeyTable>,
+    pub on_click: Option<Vec<KeyEdit>>,
     pub shape: std::collections::HashSet<PropertyId>,
     /// Properties whose own field value failed to parse (wrong JSON kind, a broken `grid`/`keys`
     /// sub-object, …). Such a property's presence is known-incomplete for a reason already
@@ -685,9 +713,10 @@ fn validate_image_fill(
     }
 }
 
-/// «Свойства», требование 3: `follow_mouse` разрешён только объекту с `position` и `size`.
-/// `check_position` is `false` for a spawn template, whose object always gets `position` from
-/// `where` even though the template itself never spells it out.
+/// «Свойства», требование 3; «Камера»/«Мышь в мире», требование 36: `follow_mouse`,
+/// `camera_follows` и `on_click` разрешены только объекту с `position` и `size`. `check_position`
+/// is `false` for a spawn template, whose object always gets `position` from `where` even though
+/// the template itself never spells it out.
 fn validate_follow_mouse_shape(
     shape: &std::collections::HashSet<PropertyId>,
     check_position: bool,
@@ -695,17 +724,23 @@ fn validate_follow_mouse_shape(
     path: &str,
     errors: &mut ErrorSink,
 ) {
-    if !shape.contains(&property::FOLLOW_MOUSE) {
-        return;
-    }
     let missing_size = !shape.contains(&property::SIZE);
     let missing_position = check_position && !shape.contains(&property::POSITION);
-    if missing_size || missing_position {
-        errors.push(
-            file,
-            path,
-            "follow_mouse разрешён только объекту с position и size",
-        );
+    if !missing_size && !missing_position {
+        return;
+    }
+    for (prop, name) in [
+        (property::FOLLOW_MOUSE, "follow_mouse"),
+        (property::CAMERA_FOLLOWS, "camera_follows"),
+        (property::ON_CLICK, "on_click"),
+    ] {
+        if shape.contains(&prop) {
+            errors.push(
+                file,
+                path,
+                format!("{name} разрешён только объекту с position и size"),
+            );
+        }
     }
 }
 
@@ -732,6 +767,7 @@ fn parse_scene_object(
     let mut values = Vec::new();
     let mut grid = None;
     let mut keys = None;
+    let mut on_click = None;
     let mut shape = std::collections::HashSet::new();
     let mut broken_properties = std::collections::HashSet::new();
 
@@ -758,6 +794,12 @@ fn parse_scene_object(
                 } else {
                     broken_properties.insert(prop);
                 }
+            }
+            PropKind::OnClick => {
+                let edits =
+                    parse_key_edits(field_value, properties, images, file, &field_path, errors);
+                on_click = Some(edits);
+                shape.insert(prop);
             }
             _ => {
                 if let Some(v) = parse_scalar_value(
@@ -793,6 +835,7 @@ fn parse_scene_object(
         values,
         grid,
         keys,
+        on_click,
         shape,
         broken_properties,
     })
@@ -880,13 +923,15 @@ struct SceneJsonConfig {
     width: u32,
     height: u32,
     background: [f32; 4],
+    view_height: Option<f64>,
+    y_sort: bool,
 }
 
 fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonConfig> {
     let obj = expect_object(value, "game.json", "scene", errors)?;
     reject_unknown_keys(
         obj,
-        &["width", "height", "background"],
+        &["width", "height", "background", "view_height", "y_sort"],
         "game.json",
         "scene",
         errors,
@@ -907,10 +952,43 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
                 None
             })
         });
+    // «Камера», требование 1: необязательный, число больше нуля.
+    let view_height = match obj.get("view_height") {
+        None => Some(None),
+        Some(v) => match expect_number(v, "game.json", "scene → view_height", errors) {
+            Some(n) if n > 0.0 => Some(Some(n)),
+            Some(n) => {
+                errors.push(
+                    "game.json",
+                    "scene → view_height",
+                    format!("view_height должен быть больше нуля, получено {n}"),
+                );
+                None
+            }
+            None => None,
+        },
+    };
+    // «Порядок рисования», требование 9: необязательный, true/false.
+    let y_sort = match obj.get("y_sort") {
+        None => Some(false),
+        Some(v) => match v.as_bool() {
+            Some(b) => Some(b),
+            None => {
+                errors.push(
+                    "game.json",
+                    "scene → y_sort",
+                    format!("ожидался признак (true/false), получено {}", kind_name(v)),
+                );
+                None
+            }
+        },
+    };
     Some(SceneJsonConfig {
         width: width?,
         height: height?,
         background: background?,
+        view_height: view_height?,
+        y_sort: y_sort?,
     })
 }
 
@@ -1248,6 +1326,8 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             width: scene.width,
             height: scene.height,
             background: scene.background,
+            view_height: scene.view_height,
+            y_sort: scene.y_sort,
         },
         random_seed,
         max_objects: max_objects as usize,
@@ -2686,7 +2766,7 @@ fn parse_pick_one(
 /// Known keys across every rule kind — used to still catch a typo in a rule whose own `kind` is
 /// missing or unrecognized, rather than let it hide behind the `kind` error until a later pass.
 const ALL_RULE_KEYS: &[&str] = &[
-    "kind", "for", "a", "b", "effects", "do", "when", "where", "template", "pick_one",
+    "kind", "for", "a", "b", "effects", "do", "when", "where", "template", "pick_one", "avoid",
 ];
 
 #[allow(clippy::too_many_arguments)]
@@ -2719,6 +2799,27 @@ fn parse_rule(
             let for_obj = expect_object(for_json, file, &join(&path, "for"), errors)?;
             let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
             Some((Rule::Move { for_ }, std::collections::HashSet::new()))
+        }
+        // «Ходьба», требование 22: `avoid` необязателен.
+        Some("walk") => {
+            reject_unknown_keys(obj, &["kind", "for", "avoid"], file, &path, errors);
+            let for_json = require_field(obj, "for", file, &path, errors)?;
+            let for_obj = expect_object(for_json, file, &join(&path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
+            let avoid = match obj.get("avoid") {
+                Some(v) => {
+                    let avoid_obj = expect_object(v, file, &join(&path, "avoid"), errors)?;
+                    Some(resolve_selector(
+                        avoid_obj,
+                        properties,
+                        file,
+                        &join(&path, "avoid"),
+                        errors,
+                    ))
+                }
+                None => None,
+            };
+            Some((Rule::Walk { for_, avoid }, std::collections::HashSet::new()))
         }
         Some("collide") => {
             reject_unknown_keys(
@@ -3156,15 +3257,25 @@ fn keys_edited_properties(
 ) {
     let mut maybe = std::collections::HashSet::new();
     let mut removable = std::collections::HashSet::new();
+    let mut mark = |edit: &KeyEdit| {
+        if matches!(edit.value, EditValue::Const(Value::Flag(false))) {
+            removable.insert(edit.property);
+        } else {
+            maybe.insert(edit.property);
+        }
+    };
     if let Some(table) = &obj.keys {
         for binding in table.values() {
             for edit in binding.press.iter().chain(binding.release.iter()) {
-                if matches!(edit.value, Value::Flag(false)) {
-                    removable.insert(edit.property);
-                } else {
-                    maybe.insert(edit.property);
-                }
+                mark(edit);
             }
+        }
+    }
+    // «Мышь в мире», требование 19: `on_click` пишет так же, как `press` клавиши — та же
+    // widening-логика.
+    if let Some(edits) = &obj.on_click {
+        for edit in edits {
+            mark(edit);
         }
     }
     (maybe, removable)
@@ -3283,7 +3394,7 @@ fn widen_shapes_by_rule_actions(shapes: &mut [PossibleShape], rules: &RuleSet) {
                 | Rule::Delete { do_, .. }
                 | Rule::Spawn { do_, .. }
                 | Rule::Collide { do_, .. } => do_,
-                Rule::Move { .. } => continue,
+                Rule::Move { .. } | Rule::Walk { .. } => continue,
             };
             let mut given = Vec::new();
             let mut taken = Vec::new();
@@ -3434,6 +3545,29 @@ fn validate_opacity_reachable_image(
     }
 }
 
+/// «Камера», требование 37: `camera_follows` в игре без `view_height` ни на что не влияет —
+/// предупреждение, не ошибка.
+fn validate_camera_follows_needs_view_height(
+    shapes: &[PossibleShape],
+    view_height: Option<f64>,
+    errors: &mut ErrorSink,
+) {
+    if view_height.is_some() {
+        return;
+    }
+    for ps in shapes {
+        if ps.shape.certain.contains(&property::CAMERA_FOLLOWS)
+            || ps.shape.maybe.contains(&property::CAMERA_FOLLOWS)
+        {
+            errors.push_warning(
+                &ps.file,
+                &ps.path,
+                "camera_follows в игре без view_height: на отрисовку он не влияет",
+            );
+        }
+    }
+}
+
 /// «Код игры» → «Проверка перед запуском»: whether `word` appears in `code`'s text as its own
 /// identifier, not merely as a substring of a longer one — such a mention counts as "used" for
 /// the «объявлено и не используется» warnings, and a mention of `image` specifically excuses
@@ -3545,19 +3679,19 @@ fn validate_run_actions(
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => {
                 check_common_actions_run(do_, &join(&label, "do"), &check, errors);
             }
-            Rule::Move { .. } => {}
+            Rule::Move { .. } | Rule::Walk { .. } => {}
         }
     }
 }
 
-/// `do_` from any rule kind that has one — `Move` has none.
+/// `do_` from any rule kind that has one — `Move`/`Walk` have none.
 fn common_actions(rule: &Rule) -> &[CommonAction] {
     match rule {
         Rule::Collide { do_, .. }
         | Rule::Check { do_, .. }
         | Rule::Delete { do_, .. }
         | Rule::Spawn { do_, .. } => do_,
-        Rule::Move { .. } => &[],
+        Rule::Move { .. } | Rule::Walk { .. } => &[],
     }
 }
 
@@ -3786,6 +3920,23 @@ fn validate_property_sufficiency(
                     }
                 }
             }
+            // «Ходьба», требование 36: объекту под `walk` не хватает `position`, `size` или
+            // `walk_speed` — `avoid`'s own candidates need neither: an obstacle without them is
+            // simply not an obstacle (`step::apply_walk_rule`'s own `rect_of` already skips it).
+            Rule::Walk { for_, .. } => {
+                for prop in [property::POSITION, property::SIZE, property::WALK_SPEED] {
+                    require(
+                        &candidates,
+                        file,
+                        for_,
+                        prop,
+                        properties,
+                        &label,
+                        &mut seen,
+                        errors,
+                    );
+                }
+            }
         }
         // `do`'s add: declared, and present on at least one object anywhere.
         let do_actions = common_actions(rule);
@@ -3931,10 +4082,19 @@ fn collect_used_properties(
                 used.extend(binding.release.iter().map(|e| e.property));
             }
         }
+        if let Some(edits) = &obj.on_click {
+            used.extend(edits.iter().map(|e| e.property));
+        }
     }
     for rule in &rules.rules {
         match rule {
             Rule::Move { for_ } => mark_selector_used(&mut used, for_),
+            Rule::Walk { for_, avoid } => {
+                mark_selector_used(&mut used, for_);
+                if let Some(avoid) = avoid {
+                    mark_selector_used(&mut used, avoid);
+                }
+            }
             Rule::Collide {
                 a,
                 b,
@@ -4172,6 +4332,12 @@ fn validate_selectors_not_empty(
             Rule::Spawn { when, do_, .. } => {
                 check_condition_selectors(&when.condition, &label, "when", &mut check);
                 check_do_selectors(do_, &label, "do", &mut check);
+            }
+            Rule::Walk { for_, avoid } => {
+                check(for_, &label, "for");
+                if let Some(avoid) = avoid {
+                    check(avoid, &label, "avoid");
+                }
             }
         }
     }
@@ -4791,6 +4957,16 @@ fn parse_screen_keys(
     };
     obj.iter()
         .filter_map(|(code, cmd_json)| {
+            // «Мышь в мире», требование 36: `MouseLeft` — не клавиша экрана: она достаётся миру
+            // или интерфейсу по тому, куда пришёл щелчок, а не по имени, как клавиатурная клавиша.
+            if code == "MouseLeft" {
+                errors.push(
+                    file,
+                    &join(path, code),
+                    "MouseLeft не может быть клавишей экрана".to_string(),
+                );
+                return None;
+            }
             let cmd = parse_button_command(cmd_json, file, &join(path, code), "клавиши", errors)?;
             Some((code.clone(), cmd))
         })
@@ -5763,7 +5939,7 @@ fn mark_fill_used(used: &mut std::collections::HashSet<ImageId>, fill: &Fill) {
 fn mark_key_table_used(used: &mut std::collections::HashSet<ImageId>, table: &KeyTable) {
     for binding in table.values() {
         for edit in binding.press.iter().chain(&binding.release) {
-            if let Value::Image(id) = &edit.value {
+            if let EditValue::Const(Value::Image(id)) = &edit.value {
                 used.insert(*id);
             }
         }
@@ -5788,6 +5964,13 @@ fn collect_used_images(
         }
         if let Some(table) = &obj.keys {
             mark_key_table_used(&mut used, table);
+        }
+        if let Some(edits) = &obj.on_click {
+            for edit in edits {
+                if let EditValue::Const(Value::Image(id)) = &edit.value {
+                    used.insert(*id);
+                }
+            }
         }
     }
     let mark_template = |used: &mut std::collections::HashSet<ImageId>,
@@ -5846,7 +6029,7 @@ fn collect_used_images(
                 mark_do(&mut used, do_);
             }
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } => mark_do(&mut used, do_),
-            Rule::Move { .. } => {}
+            Rule::Move { .. } | Rule::Walk { .. } => {}
         }
     }
     for screen in screens {
@@ -6223,6 +6406,7 @@ pub fn load_rest(
         &mut errors,
     );
     validate_opacity_reachable_image(&shapes, code_json, &mut errors);
+    validate_camera_follows_needs_view_height(&shapes, config.scene.view_height, &mut errors);
     // «Формат игры»: предупреждение не мешает игре запуститься — но раз игра уже не запустится
     // из-за ошибок собранных выше, считать эти три предупреждения незачем: правило, не
     // разобравшееся из-за ошибки, просто выпадает из `rules`, и предупреждение по неполному
@@ -6316,6 +6500,7 @@ pub fn load_rest(
             values: parsed.values.clone(),
             grid: parsed.grid,
             keys: parsed.keys.clone(),
+            on_click: parsed.on_click.clone(),
         })
         .collect();
 

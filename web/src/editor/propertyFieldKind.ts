@@ -10,10 +10,12 @@ const ROTATION_OPTIONS = [0, 90, 180, 270] as const;
 const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
 
 /**
- * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides` и объявленные
- * свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`), `rotation`
- * (0/90/180/270), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; остальное — текст. Значение,
- * которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), — текстовое поле.
+ * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `camera_follows`
+ * и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
+ * `rotation` (0/90/180/270), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; остальное — текст.
+ * Значение, которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), —
+ * текстовое поле. `walk_to` и `walk_speed` (Фаза 11, требование 45) — как другие пары и числа,
+ * `on_click` — как `keys`: всё это уже текст по умолчанию, отдельного вида не заводится.
  */
 export function propertyFieldKind(
   key: string,
@@ -21,7 +23,7 @@ export function propertyFieldKind(
   authorPropertyKinds: Readonly<Record<string, string>>,
   imageNames: readonly string[],
 ): PropertyFieldKind {
-  if (key === "collides" || authorPropertyKinds[key] === "flag") {
+  if (key === "collides" || key === "camera_follows" || authorPropertyKinds[key] === "flag") {
     return typeof value === "boolean" ? { kind: "checkbox" } : { kind: "text" };
   }
   if (key === "image") {

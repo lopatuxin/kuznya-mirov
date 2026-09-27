@@ -118,7 +118,7 @@ pub fn object_properties_json(
         }
         let json = match def.kind {
             PropKind::Grid => world.grid(id, prop).map(grid_to_json),
-            PropKind::Keys => None,
+            PropKind::Keys | PropKind::OnClick => None,
             kind => world
                 .get_value(id, prop, kind)
                 .map(|v| value_to_json(&v, images)),
@@ -147,8 +147,8 @@ pub fn set_property(
     let prop = properties
         .resolve(prop_name)
         .ok_or_else(|| "Новое свойство объявляется вне партии".to_string())?;
-    if prop_name == "keys" {
-        return Err("keys не редактируется на ходу".to_string());
+    if prop_name == "keys" || prop_name == "on_click" {
+        return Err(format!("{prop_name} не редактируется на ходу"));
     }
     if properties.kind(prop) == PropKind::Grid {
         let had_grid = world.has(id, prop);
@@ -204,8 +204,8 @@ pub fn add_object(
         let prop = properties
             .resolve(name)
             .ok_or_else(|| "Новое свойство объявляется вне партии".to_string())?;
-        if name == "keys" {
-            return Err("keys не редактируется на ходу".to_string());
+        if name == "keys" || name == "on_click" {
+            return Err(format!("{name} не редактируется на ходу"));
         }
         if properties.kind(prop) == PropKind::Grid {
             grid = Some(parse_edit_grid(value_json)?);

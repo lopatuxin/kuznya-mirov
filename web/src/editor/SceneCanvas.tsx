@@ -23,6 +23,11 @@ type SceneCanvasProps = {
   canEditScene: boolean;
   /** Мышь и клавиатура принадлежат игре, а не выбору/переносу — «Редактор», требование 4: партия идёт. */
   isGameInputActive: boolean;
+  /**
+   * В партии, на паузе и в повторе холст занимает всю часть окна под сцену, как страница игры —
+   * «Редактор», требование 42; вне партии сцена вписывается по своим пропорциям.
+   */
+  fillsStageArea: boolean;
   selectedIndex: number | null;
   /** Подпись над рамкой выбранного объекта — его имя или номер. */
   selectedLabel: string | null;
@@ -117,6 +122,7 @@ export function SceneCanvas({
   objectsVersion,
   canEditScene,
   isGameInputActive,
+  fillsStageArea,
   selectedIndex,
   selectedLabel,
   onSelect,
@@ -179,6 +185,28 @@ export function SceneCanvas({
     };
   }, [isGameInputActive, engine]);
 
+  /**
+   * Точка под курсором известна движку только через `mouse_move` — «Мышь в мире», требование 12.
+   * Слушатель на самом холсте («Редактор», требование 4) ловит её только пока курсор уже стоит над
+   * ним: «Запуск» сбрасывает точку в движке, и до первого движения курсора именно над холстом она
+   * неизвестна — щелчок по кнопке экрана сразу после «Запуска» никуда не попадает, а записи с
+   * `"cursor"` пропускаются. На `window`, как у страницы игры (`main.ts`),
+   * чтобы движение курсора где угодно над окном редактора — не только уже над холстом — обновляло
+   * точку раньше, чем придёт нажатие.
+   */
+  useEffect(() => {
+    if (!isGameInputActive || !engine) return;
+    const activeEngine = engine;
+    function handlePointerMove(event: PointerEvent): void {
+      const overlayCanvas = overlayCanvasRef.current;
+      if (!overlayCanvas) return;
+      const bounds = overlayCanvas.getBoundingClientRect();
+      activeEngine.mouse_move(event.clientX - bounds.left, event.clientY - bounds.top);
+    }
+    window.addEventListener("pointermove", handlePointerMove);
+    return () => window.removeEventListener("pointermove", handlePointerMove);
+  }, [isGameInputActive, engine]);
+
   useEffect(() => {
     const area = areaRef.current;
     const stage = stageRef.current;
@@ -186,7 +214,8 @@ export function SceneCanvas({
     const overlayCanvas = overlayCanvasRef.current;
     if (!engine || !area || !stage || !sceneCanvas || !overlayCanvas) return;
     const activeEngine = engine;
-    const knownSceneSize = sceneWidth !== null && sceneHeight !== null ? { width: sceneWidth, height: sceneHeight } : null;
+    const knownSceneSize =
+      fillsStageArea || sceneWidth === null || sceneHeight === null ? null : { width: sceneWidth, height: sceneHeight };
 
     function applyLayout(areaWidth: number, areaHeight: number): void {
       const stageSize = fitSceneStage(areaWidth, areaHeight, knownSceneSize, STAGE_PADDING);
@@ -214,7 +243,7 @@ export function SceneCanvas({
     observer.observe(area);
 
     return () => observer.disconnect();
-  }, [canvasRef, engine, sceneWidth, sceneHeight]);
+  }, [canvasRef, engine, sceneWidth, sceneHeight, fillsStageArea]);
 
   useEffect(() => {
     if (!engine) return;
@@ -254,8 +283,10 @@ export function SceneCanvas({
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
     if (!engine || event.button !== 0) return;
     // Партия идёт — щелчок по холсту даёт ему фокус и уходит игре, а не выбору («Редактор», требование 4).
+    // Захват указателя доносит отпускание до холста, даже если кнопку отпустили за ним (фаза 11, требование 15).
     if (isGameInputActiveRef.current) {
       event.currentTarget.focus();
+      event.currentTarget.setPointerCapture(event.pointerId);
       engine.mouse_down();
       return;
     }
@@ -285,16 +316,12 @@ export function SceneCanvas({
   }
 
   /**
-   * Пока партия идёт, указатель над холстом принадлежит игре целиком — «Редактор», требование 4:
-   * `mouse_move` идёт независимо от того, зажата ли кнопка.
+   * Партия идёт — указатель над холстом принадлежит игре целиком («Редактор», требование 4), а
+   * `mouse_move` шлёт `window`-слушатель выше, а не этот обработчик: он не увидел бы движение,
+   * начавшееся ещё до входа курсора в холст.
    */
   function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>): void {
-    if (!engine) return;
-    if (isGameInputActiveRef.current) {
-      const bounds = event.currentTarget.getBoundingClientRect();
-      engine.mouse_move(event.clientX - bounds.left, event.clientY - bounds.top);
-      return;
-    }
+    if (!engine || isGameInputActiveRef.current) return;
     const drag = dragRef.current;
     if (drag === null || drag.pointerId !== event.pointerId) return;
     const deltaX = event.clientX - drag.startClientX;
@@ -312,7 +339,9 @@ export function SceneCanvas({
 
   function endDrag(event: React.PointerEvent<HTMLCanvasElement>): void {
     if (isGameInputActiveRef.current) {
-      engine?.mouse_up();
+      // Только левая кнопка доходит до игры (требование 44) — нажатие правой/средней уже не дошло
+      // до `mouse_down`, поэтому и её отпускание не должно звонить `mouse_up`.
+      if (event.button === 0) engine?.mouse_up();
       return;
     }
     const drag = dragRef.current;

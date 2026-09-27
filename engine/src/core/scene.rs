@@ -6,6 +6,11 @@ pub struct SceneConfig {
     pub width: u32,
     pub height: u32,
     pub background: [f32; 4],
+    /// «Камера», требование 1, 3: клеток по высоте окна; `None` — прежнее вписывание сцены
+    /// целиком, камера ни на что не влияет.
+    pub view_height: Option<f64>,
+    /// «Порядок рисования», требование 9: при равных `layer` поверх тот, чей нижний край ниже.
+    pub y_sort: bool,
 }
 
 /// The scale and top-left offset (in the same unit `viewport` is given in) that letterboxes the
@@ -23,13 +28,27 @@ pub fn letterbox(viewport: [f32; 2], scene_cells: [f32; 2]) -> (f32, [f32; 2]) {
 impl SceneConfig {
     /// «Курсор в мире», требование 25: translates a window-pixel cursor position into scene
     /// coordinates, by the same letterboxed mapping the renderer draws the scene with, then
-    /// clamps to the scene's own edges.
+    /// clamps to the scene's own edges. Used outside a battle (editor without a session) and by
+    /// the plain wasm layer before any frame is known — see `window_to_scene_frame` for the
+    /// camera-aware mapping used everywhere else.
     pub fn window_to_scene(&self, window_pos: [f32; 2], viewport: [f32; 2]) -> super::value::Vec2 {
         let scene_cells = [self.width as f32, self.height as f32];
         if viewport[0] <= 0.0 || viewport[1] <= 0.0 {
             return [0.0, 0.0];
         }
         let (scale, offset) = letterbox(viewport, scene_cells);
+        self.window_to_scene_frame(window_pos, scale, offset)
+    }
+
+    /// «Курсор в мире», требование 11–12: same mapping, given an already-computed frame (camera's
+    /// scale/offset, or the plain letterbox's) — за краем видимой части сцены точка прижимается к
+    /// этому краю (уже гарантировано клампом к самой сцене, а видимая часть — это `viewport`).
+    pub fn window_to_scene_frame(
+        &self,
+        window_pos: [f32; 2],
+        scale: f32,
+        offset: [f32; 2],
+    ) -> super::value::Vec2 {
         let scale = scale.max(1e-6);
         let cell = [
             (window_pos[0] - offset[0]) / scale,
@@ -39,6 +58,37 @@ impl SceneConfig {
             (cell[0] as f64).clamp(0.0, self.width as f64),
             (cell[1] as f64).clamp(0.0, self.height as f64),
         ]
+    }
+}
+
+/// «Порядок рисования», требования 8–10: the comparator every draw-order decision shares —
+/// ascending `layer` first, then (with `y_sort`) the lower bottom edge (`position.y + size.y`),
+/// then the smaller object number. `true` means `a` draws *before* `b` (`b` ends up on top of
+/// `a`) — the same relation `[T]::sort_by`/`Iterator::max_by` expect from `Ordering`. An object
+/// missing `position`/`size` sorts as if its bottom edge were at negative infinity — it never
+/// affects a comparison against an object that does have them, and two such objects fall back to
+/// their object number.
+pub fn draw_order(world: &World, scene: &SceneConfig, a: u32, b: u32) -> std::cmp::Ordering {
+    let layer_a = world.layer(a, property::LAYER).unwrap_or(0);
+    let layer_b = world.layer(b, property::LAYER).unwrap_or(0);
+    layer_a
+        .cmp(&layer_b)
+        .then_with(|| {
+            if !scene.y_sort {
+                return std::cmp::Ordering::Equal;
+            }
+            bottom_edge(world, a).total_cmp(&bottom_edge(world, b))
+        })
+        .then_with(|| a.cmp(&b))
+}
+
+fn bottom_edge(world: &World, id: u32) -> f64 {
+    match (
+        world.vec2(id, property::POSITION),
+        world.vec2(id, property::SIZE),
+    ) {
+        (Some(p), Some(s)) => p[1] + s[1],
+        _ => f64::NEG_INFINITY,
     }
 }
 
@@ -53,22 +103,35 @@ pub struct CanvasRect {
 }
 
 /// «Редактор», требование 19: object `id`'s canvas rectangle — `position`/`size` letterboxed the
-/// same way the renderer draws the world (`render::gpu::world_globals_data`). `None` when the
-/// object doesn't exist (id past the world's slot count) or lacks `position`/`size`. Rotation
-/// never changes this rectangle — a rotated image stretches to fill the same one.
+/// same way the renderer draws the world outside a battle (`render::gpu::world_globals_data`
+/// without a camera). `None` when the object doesn't exist (id past the world's slot count) or
+/// lacks `position`/`size`. Rotation never changes this rectangle — a rotated image stretches to
+/// fill the same one. See `object_rect_frame` for the camera-aware version used in a battle.
 pub fn object_rect(
     world: &World,
     scene: &SceneConfig,
     id: u32,
     viewport: [f32; 2],
 ) -> Option<CanvasRect> {
+    let scene_cells = [scene.width as f32, scene.height as f32];
+    let (scale, offset) = letterbox(viewport, scene_cells);
+    object_rect_frame(world, id, scale, offset)
+}
+
+/// Same as `object_rect`, given an already-computed frame — «Камера», требование 42: the wasm
+/// layer computes the camera's own scale/offset once per call and passes it here instead of
+/// letterboxing the whole scene.
+pub fn object_rect_frame(
+    world: &World,
+    id: u32,
+    scale: f32,
+    offset: [f32; 2],
+) -> Option<CanvasRect> {
     if id as usize >= world.slot_count() {
         return None;
     }
     let position = world.vec2(id, property::POSITION)?;
     let size = world.vec2(id, property::SIZE)?;
-    let scene_cells = [scene.width as f32, scene.height as f32];
-    let (scale, offset) = letterbox(viewport, scene_cells);
     Some(CanvasRect {
         x: offset[0] + position[0] as f32 * scale,
         y: offset[1] + position[1] as f32 * scale,
@@ -88,26 +151,39 @@ pub fn move_object(world: &mut World, id: u32, position: super::value::Vec2) {
     world.set_vec2(id, property::POSITION, position);
 }
 
-/// «Редактор», требование 18: the topmost object (largest `layer`, ties broken by the larger
-/// object number) whose canvas rectangle contains `point` (CSS pixels, canvas top-left origin) —
-/// left/top edges included, right/bottom excluded. A candidate needs `position`, `size` and a
-/// `color` or `image` fill — the same shape `render::atlas::compose_world_paints` draws; an
-/// object with neither is invisible and a click never picks it. `None` off every object, or in
-/// the margin around the letterboxed scene.
+/// «Редактор», требование 18: the topmost object (по порядку рисования — `draw_order`, требование
+/// 10) whose canvas rectangle contains `point` (CSS pixels, canvas top-left origin) — left/top
+/// edges included, right/bottom excluded. A candidate needs `position`, `size` and a `color` or
+/// `image` fill — the same shape `render::atlas::compose_world_paints` draws; an object with
+/// neither is invisible and a click never picks it. `None` off every object, or in the margin
+/// around the letterboxed scene. See `object_at_frame` for the camera-aware version.
 pub fn object_at(
     world: &World,
     scene: &SceneConfig,
     point: [f32; 2],
     viewport: [f32; 2],
 ) -> Option<u32> {
-    let mut best: Option<(i32, u32)> = None;
+    let scene_cells = [scene.width as f32, scene.height as f32];
+    let (scale, offset) = letterbox(viewport, scene_cells);
+    object_at_frame(world, scene, point, scale, offset)
+}
+
+/// Same as `object_at`, given an already-computed frame — see `object_rect_frame`.
+pub fn object_at_frame(
+    world: &World,
+    scene: &SceneConfig,
+    point: [f32; 2],
+    scale: f32,
+    offset: [f32; 2],
+) -> Option<u32> {
+    let mut best: Option<u32> = None;
     for id in world.ids() {
         let has_fill = world.color(id, property::COLOR).is_some()
             || world.image(id, property::IMAGE).is_some();
         if !has_fill {
             continue;
         }
-        let Some(rect) = object_rect(world, scene, id, viewport) else {
+        let Some(rect) = object_rect_frame(world, id, scale, offset) else {
             continue;
         };
         if point[0] < rect.x
@@ -117,16 +193,49 @@ pub fn object_at(
         {
             continue;
         }
-        let layer = world.layer(id, property::LAYER).unwrap_or(0);
         let replace = match best {
             None => true,
-            Some((best_layer, _)) => layer >= best_layer,
+            Some(best_id) => draw_order(world, scene, best_id, id) != std::cmp::Ordering::Greater,
         };
         if replace {
-            best = Some((layer, id));
+            best = Some(id);
         }
     }
-    best.map(|(_, id)| id)
+    best
+}
+
+/// «Мышь в мире», требование 19: the topmost live object with `on_click` whose rectangle
+/// (`position`/`size`, scene cells) contains `point` (scene cells) — left/top edges included,
+/// right/bottom excluded, топ по `draw_order`. `None` off every such object.
+pub fn on_click_target(
+    world: &World,
+    scene: &SceneConfig,
+    point: super::value::Vec2,
+) -> Option<u32> {
+    let mut best: Option<u32> = None;
+    for id in world.ids() {
+        if !world.has(id, property::ON_CLICK) {
+            continue;
+        }
+        let (Some(p), Some(s)) = (
+            world.vec2(id, property::POSITION),
+            world.vec2(id, property::SIZE),
+        ) else {
+            continue;
+        };
+        if point[0] < p[0] || point[1] < p[1] || point[0] >= p[0] + s[0] || point[1] >= p[1] + s[1]
+        {
+            continue;
+        }
+        let replace = match best {
+            None => true,
+            Some(best_id) => draw_order(world, scene, best_id, id) != std::cmp::Ordering::Greater,
+        };
+        if replace {
+            best = Some(id);
+        }
+    }
+    best
 }
 
 #[cfg(test)]
@@ -140,6 +249,8 @@ mod tests {
             width: 10,
             height: 20,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         // A 10x20 scene into an 800x600 window scales by 30 (600/20), letterboxed 100px on
         // each side horizontally (800 - 10*30 = 500, halved).
@@ -157,6 +268,8 @@ mod tests {
             width: 10,
             height: 20,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         let cell = scene.window_to_scene([-500.0, -500.0], [800.0, 600.0]);
         assert_eq!(cell, [0.0, 0.0]);
@@ -175,6 +288,8 @@ mod tests {
             width: 10,
             height: 20,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         let id = world.create();
         world.set_vec2(id, property::POSITION, [1.0, 2.0]);
@@ -195,6 +310,8 @@ mod tests {
             width: 10,
             height: 20,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         let bare = world.create();
         assert_eq!(object_rect(&world, &scene, bare, [800.0, 600.0]), None);
@@ -209,6 +326,8 @@ mod tests {
             width: 10,
             height: 10,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         let moved = world.create();
         world.set_vec2(moved, property::POSITION, [1.0, 2.0]);
@@ -254,6 +373,8 @@ mod tests {
             width: 10,
             height: 10,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         let viewport = [100.0, 100.0]; // scale 10, no letterbox margin
 
@@ -280,6 +401,8 @@ mod tests {
             width: 10,
             height: 20,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         let viewport = [800.0, 600.0]; // scale 30, offset [250, 0]
 
@@ -301,6 +424,8 @@ mod tests {
             width: 10,
             height: 10,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         let viewport = [100.0, 100.0]; // scale 10, no margin
 
@@ -336,4 +461,7 @@ pub struct ObjectSpec {
     pub values: Vec<(super::property::PropertyId, super::value::Value)>,
     pub grid: Option<super::value::GridSpec>,
     pub keys: Option<super::keys::KeyTable>,
+    /// «Мышь в мире», требование 19: `on_click` разобран отдельно от `values`, как `grid`/`keys` —
+    /// свой вид свойства, не входящий в generic `Value`.
+    pub on_click: Option<Vec<super::keys::KeyEdit>>,
 }

@@ -318,6 +318,11 @@ fn js_step_report(report: &StepReport) -> JsValue {
                 set(&item, "kind", &JsValue::from_str("spawn"));
                 set(&item, "objects", &js_id_array(objects));
             }
+            RuleFired::Walk { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("walk"));
+                set(&item, "objects", &js_id_array(objects));
+            }
         }
         rules.push(&item);
     }
@@ -541,24 +546,75 @@ fn draw_rect(
 /// игры»: rendering never changes the world, this just reads it. The layer ordering and fill
 /// choice are `atlas::compose_world_paints`'s job, natively testable; this just turns each result
 /// into the GPU's own `DrawRect`.
+/// «Камера»: this call's own scale/offset — the core camera in a battle, the plain
+/// wall-to-wall letterbox outside one (требование 41). A free function (not an `Engine` method)
+/// so `tick`/`step`/`seek`/`step_back` can call it while they already hold `game` mutably
+/// borrowed from `self.game` — a `&self`/`&mut self` method there would conflict with that borrow.
+fn frame_for(game: &Game, battle_view: bool, viewport: [f32; 2]) -> (f32, [f32; 2]) {
+    if battle_view {
+        game.camera_frame(viewport)
+    } else {
+        let scene_cells = [game.scene.width as f32, game.scene.height as f32];
+        crate::core::scene::letterbox(viewport, scene_cells)
+    }
+}
+
+/// «Камера», требование 12: recomputes the world cursor from the last known mouse position after
+/// a step may have moved the camera under it — a no-op in replay, where only the recording itself
+/// ever sets the cursor (требование 39), and while the mouse has not moved yet: an unknown point
+/// stays unknown («Крайние случаи»).
+fn recompute_cursor_after_step(
+    game: &mut Game,
+    battle_view: bool,
+    viewport: [f32; 2],
+    last_mouse_window_pos: Option<[f32; 2]>,
+    is_replay: bool,
+    session: Option<&mut PlaySession>,
+) {
+    if is_replay {
+        return;
+    }
+    let Some(last_mouse_window_pos) = last_mouse_window_pos else {
+        return;
+    };
+    let (scale, offset) = frame_for(game, battle_view, viewport);
+    let cell = game
+        .scene
+        .window_to_scene_frame(last_mouse_window_pos, scale, offset);
+    if game.cursor_current() == Some(cell) {
+        return;
+    }
+    game.set_cursor_cell(cell);
+    if let Some(session) = session {
+        session.record_cursor(game, cell);
+    }
+}
+
 fn compose_instances(
     game: &Game,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
 ) -> Vec<DrawRect> {
     let steps = game.step_count() as f64;
-    atlas::compose_world_paints(&game.world, game.world.ids(), steps, images, atlas_rects)
-        .into_iter()
-        .map(|paint| {
-            draw_rect(
-                paint.position,
-                paint.size,
-                paint.color,
-                paint.atlas_rect,
-                paint.rotation_quarters as f32,
-            )
-        })
-        .collect()
+    atlas::compose_world_paints(
+        &game.world,
+        &game.scene,
+        game.world.ids(),
+        steps,
+        images,
+        atlas_rects,
+    )
+    .into_iter()
+    .map(|paint| {
+        draw_rect(
+            paint.position,
+            paint.size,
+            paint.color,
+            paint.atlas_rect,
+            paint.rotation_quarters as f32,
+        )
+    })
+    .collect()
 }
 
 /// Panels and buttons become `DrawRect`s in window pixels; labels and button captions become
@@ -677,6 +733,17 @@ pub struct Engine {
     /// «Редактор»: the open play/replay session, if any — `None` on the plain game page and
     /// outside a partiya in the editor. See `data::session::PlaySession`.
     session: Option<session::PlaySession>,
+    /// «Камера», требования 41–42: whether the world is drawn/picked/pointed at by камера
+    /// (`true`) or by the plain wall-to-wall letterbox of the whole scene (`false`). Defaults to
+    /// `true` — the plain game page never calls `show_scene`/`play`/`stop` at all, and always
+    /// wants the camera when `view_height` is set; the editor's own `show_scene()` (its "outside
+    /// a battle" static preview) is the one call that ever turns it off, `play()`/`replay()` turn
+    /// it back on, and `stop()` turns it off again alongside its own `game.show_scene()`.
+    battle_view: bool,
+    /// The last window-pixel position `mouse_move` reported — «Камера», требование 12: needed to
+    /// recompute the world cursor after a step or a resize moves the camera under a mouse that
+    /// never itself moved. `None` until the first `mouse_move`, and again from each `play()`.
+    last_mouse_window_pos: Option<[f32; 2]>,
 }
 
 #[wasm_bindgen]
@@ -705,6 +772,8 @@ impl Engine {
             ui_clock: UiClock::new(),
             last_ui_elapsed_steps: 0.0,
             session: None,
+            battle_view: true,
+            last_mouse_window_pos: None,
         })
     }
 
@@ -918,10 +987,42 @@ impl Engine {
 
     /// «Редактор», требование 16: rebuilds the world from the loaded scene, ready for `draw` —
     /// no partiya, no code, no initial values. Does nothing without a successfully loaded game.
+    /// «Камера», требование 41: вне партии — вся сцена по её пропорциям, камера не действует.
     pub fn show_scene(&mut self) {
         if let Some(game) = self.game.as_mut() {
             game.show_scene();
         }
+        self.battle_view = false;
+    }
+
+    /// «Камера»: масштаб и сдвиг этого кадра — камера ядра в партии/повторе, letterbox сцены
+    /// целиком вне партии (требование 41). `None` без загруженной игры.
+    fn frame(&self) -> Option<(f32, [f32; 2])> {
+        let game = self.game.as_ref()?;
+        let viewport = self.renderer.window_size_css();
+        Some(frame_for(game, self.battle_view, viewport))
+    }
+
+    /// «Камера», требование 12: точка под курсором пересчитывается от последнего известного
+    /// положения мыши в пикселях всякий раз, как мог сдвинуться кадр (после `resize` — после
+    /// шагов см. `recompute_cursor_after_step`, вызванную прямо в `tick`/`step`/`seek`/
+    /// `step_back`, где `self.game` уже занят мутабельно).
+    fn recompute_cursor(&mut self) {
+        let is_replay = self.session.as_ref().is_some_and(PlaySession::is_replay);
+        let viewport = self.renderer.window_size_css();
+        let battle_view = self.battle_view;
+        let last_pos = self.last_mouse_window_pos;
+        let Some(game) = self.game.as_mut() else {
+            return;
+        };
+        recompute_cursor_after_step(
+            game,
+            battle_view,
+            viewport,
+            last_pos,
+            is_replay,
+            self.session.as_mut(),
+        );
     }
 
     /// «Редактор», требования 17, 40: outside a partiya/повтор, the world alone — no interface, no
@@ -931,10 +1032,14 @@ impl Engine {
     /// screen's interface simply stays exactly as `tick` last left it, which is what "paused"
     /// means for its own animated fills). An empty frame without a loaded game.
     pub fn draw(&mut self) {
-        let Some(game) = self.game.as_ref() else {
+        if self.game.is_none() {
             let _ = self.renderer.render_frame(&[], &[], &[]);
             return;
-        };
+        }
+        if let Some((scale, offset)) = self.frame() {
+            self.renderer.set_world_frame(scale, offset);
+        }
+        let game = self.game.as_ref().expect("checked above");
         let world_instances = compose_instances(game, &self.images, &self.atlas_rects);
         let show_ui = self
             .session
@@ -976,8 +1081,10 @@ impl Engine {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
-        let viewport = self.renderer.window_size_css();
-        match crate::core::scene::object_at(&game.world, &game.scene, [x, y], viewport) {
+        let Some((scale, offset)) = self.frame() else {
+            return JsValue::UNDEFINED;
+        };
+        match crate::core::scene::object_at_frame(&game.world, &game.scene, [x, y], scale, offset) {
             Some(id) => JsValue::from_f64(id as f64),
             None => JsValue::UNDEFINED,
         }
@@ -990,8 +1097,10 @@ impl Engine {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
-        let viewport = self.renderer.window_size_css();
-        match crate::core::scene::object_rect(&game.world, &game.scene, id, viewport) {
+        let Some((scale, offset)) = self.frame() else {
+            return JsValue::UNDEFINED;
+        };
+        match crate::core::scene::object_rect_frame(&game.world, id, scale, offset) {
             Some(rect) => {
                 let obj = Object::new();
                 set(&obj, "x", &JsValue::from_f64(rect.x as f64));
@@ -1012,6 +1121,9 @@ impl Engine {
     pub fn move_object(&mut self, id: u32, x: f32, y: f32) {
         if let Some(game) = self.game.as_mut() {
             crate::core::scene::move_object(&mut game.world, id, [x as f64, y as f64]);
+            // «Камера», требование 6: перенос мышью в редакторе двигает камеру без отставания,
+            // не только на следующем шаге.
+            game.update_camera();
         }
     }
 
@@ -1038,12 +1150,17 @@ impl Engine {
     /// place that has to check `is_replay` itself instead of relying on the queue being emptied.
     pub fn mouse_move(&mut self, x: f32, y: f32) {
         self.ui_queue.push_mouse_move(x, y);
+        self.last_mouse_window_pos = Some([x, y]);
         if self.session.as_ref().is_some_and(PlaySession::is_replay) {
             return;
         }
+        let Some((scale, offset)) = self.frame() else {
+            return;
+        };
         if let Some(game) = self.game.as_mut() {
-            game.update_cursor([x, y], self.renderer.window_size_css());
-            if let (Some(session), Some(cell)) = (self.session.as_mut(), game.cursor_current()) {
+            let cell = game.scene.window_to_scene_frame([x, y], scale, offset);
+            game.set_cursor_cell(cell);
+            if let Some(session) = self.session.as_mut() {
                 session.record_cursor(game, cell);
             }
         }
@@ -1126,12 +1243,25 @@ impl Engine {
             ),
         }
         self.last_ui_elapsed_steps = ui_clock_steps;
+        recompute_cursor_after_step(
+            game,
+            self.battle_view,
+            viewport,
+            self.last_mouse_window_pos,
+            self.session.as_ref().is_some_and(PlaySession::is_replay),
+            self.session.as_mut(),
+        );
 
         // «Код игры»: ошибка кода останавливает игру на месте — страница показывает её вместо
         // игры, тем же форматом, что ошибку загрузки; кадр в таком виде мира не рисуется.
         if let Some(err) = game.code_error() {
             return js_code_error(game.code_path(), &self.rules_path, err);
         }
+
+        // «Камера», требования 41–42: на игровой странице ничего кроме `tick` кадр не задаёт —
+        // без этого мир рисовался бы заглушкой, которую поставил последний `set_scene`/`resize`.
+        let (scale, offset) = frame_for(game, self.battle_view, viewport);
+        self.renderer.set_world_frame(scale, offset);
 
         let world_instances = compose_instances(game, &self.images, &self.atlas_rects);
         let screen = &config.screens[state.active()];
@@ -1159,6 +1289,7 @@ impl Engine {
     /// resize; does not touch the game.
     pub fn resize(&mut self, width_px: u32, height_px: u32) {
         self.renderer.resize(width_px, height_px);
+        self.recompute_cursor();
     }
 
     /// The page's `window.devicePixelRatio` — the interface's own pixel values (declared in CSS
@@ -1220,6 +1351,8 @@ impl Engine {
         self.mouse = MouseState::default();
         self.ui_queue = UiQueue::new();
         self.ui_clock.reset();
+        self.battle_view = true;
+        self.last_mouse_window_pos = None;
     }
 
     /// «Пауза», требование 40: releases held keys, the same release a live screen switch already
@@ -1272,6 +1405,14 @@ impl Engine {
             viewport,
             &self.images,
         );
+        recompute_cursor_after_step(
+            game,
+            self.battle_view,
+            viewport,
+            self.last_mouse_window_pos,
+            session.is_replay(),
+            Some(session),
+        );
         game_tick_result(game, game.code_path(), &self.rules_path)
     }
 
@@ -1316,6 +1457,7 @@ impl Engine {
         self.runner = Runner::new();
         self.mouse = MouseState::default();
         self.ui_queue = UiQueue::new();
+        self.battle_view = false;
     }
 
     /// Whether the open session is a replay rather than a live partiya — `false` outside a
@@ -1480,6 +1622,7 @@ impl Engine {
                 self.mouse = MouseState::default();
                 self.ui_queue = UiQueue::new();
                 self.ui_clock.reset();
+                self.battle_view = true;
                 js_edit_ok()
             }
             Err(message) => js_edit_err(&message),

@@ -221,6 +221,12 @@ pub enum Rule {
         pick_one: Option<Vec<SpawnVariant>>,
         do_: Vec<CommonAction>,
     },
+    /// «Ходьба», требование 22: `avoid` необязателен — без него объект идёт по прямой,
+    /// прижатой к краю сцены.
+    Walk {
+        for_: Selector,
+        avoid: Option<Selector>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]

@@ -8,6 +8,7 @@
 //! built from its result (see `super::gpu`, wasm32-only).
 
 use crate::core::property;
+use crate::core::scene::{self, SceneConfig};
 use crate::core::screens::Fill;
 use crate::core::time::frame_index;
 use crate::core::value::ImageId;
@@ -248,30 +249,31 @@ pub struct RectPaint {
 /// «Картинки» → «Кадры»: the world's own frame is picked by steps taken (`elapsed_steps`, frozen
 /// exactly when the world stops stepping — paused, or on the outcome screen); «Исполнение игры»:
 /// rendering never changes the world, this just reads it. Every object with `position`, `size`
-/// and a `color` or `image` sorts into one list by `layer`, a color fill and an image fill mixed
-/// in the same order — «Картинки» → «Атлас и отрисовка»: a color fill is the atlas's white pixel,
-/// an image fill samples its current frame, so the two interleave exactly as if both were images.
+/// and a `color` or `image` sorts into one list by «Порядок рисования» (`scene::draw_order`) — a
+/// color fill and an image fill mixed in the same order — «Картинки» → «Атлас и отрисовка»: a
+/// color fill is the atlas's white pixel, an image fill samples its current frame, so the two
+/// interleave exactly as if both were images.
 pub fn compose_world_paints(
     world: &World,
+    scene: &SceneConfig,
     ids: impl Iterator<Item = u32>,
     elapsed_steps: f64,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
 ) -> Vec<RectPaint> {
-    let mut ordered: Vec<(i32, u32)> = ids
+    let mut ordered: Vec<u32> = ids
         .filter(|&id| {
             world.vec2(id, property::POSITION).is_some()
                 && world.vec2(id, property::SIZE).is_some()
                 && (world.color(id, property::COLOR).is_some()
                     || world.image(id, property::IMAGE).is_some())
         })
-        .map(|id| (world.layer(id, property::LAYER).unwrap_or(0), id))
         .collect();
-    ordered.sort_unstable();
+    ordered.sort_by(|&a, &b| scene::draw_order(world, scene, a, b));
 
     ordered
         .into_iter()
-        .map(|(_, id)| {
+        .map(|id| {
             let p = world.vec2(id, property::POSITION).expect("filtered above");
             let s = world.vec2(id, property::SIZE).expect("filtered above");
             let fill = match world.image(id, property::IMAGE) {
@@ -318,6 +320,16 @@ pub fn compose_world_paints(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn test_scene() -> SceneConfig {
+        SceneConfig {
+            width: 100,
+            height: 100,
+            background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
+        }
+    }
 
     fn img(w: u32, h: u32) -> AtlasImage {
         AtlasImage {
@@ -484,7 +496,8 @@ mod tests {
             h: 40,
         }];
 
-        let paints = compose_world_paints(&world, world.ids(), 0.0, &images, &atlas_rects);
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
         assert_eq!(paints.len(), 2, "{paints:?}");
         assert_eq!(paints[0].color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(paints[0].atlas_rect, WHITE_PIXEL);
@@ -522,7 +535,8 @@ mod tests {
         object(Some(5.0));
         object(Some(-1.0));
 
-        let paints = compose_world_paints(&world, world.ids(), 0.0, &images, &atlas_rects);
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
         let alpha: Vec<f32> = paints.iter().map(|p| p.color[3]).collect();
         assert_eq!(alpha, vec![0.5, 1.0, 1.0, 1.0, 0.0], "{alpha:?}");
     }
@@ -633,7 +647,9 @@ mod tests {
         world.set_number(past_end, hits, 50.0);
 
         // `elapsed_steps` is nonzero on purpose: frame_by must ignore it entirely.
-        let paints = compose_world_paints(&world, world.ids(), 999.0, &images, &atlas_rects);
+        let scene = test_scene();
+        let paints =
+            compose_world_paints(&world, &scene, world.ids(), 999.0, &images, &atlas_rects);
         assert_eq!(
             paints[0].atlas_rect,
             AtlasRect {

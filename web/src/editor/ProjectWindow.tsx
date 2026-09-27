@@ -285,6 +285,7 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
           objectsVersion={isLive ? battle.liveObjectSummaries : objects}
           canEditScene={displayedCanEdit}
           isGameInputActive={battle.mode === "battle" && battle.isRunning}
+          fillsStageArea={isLive}
           selectedIndex={displayedSelectedIndex}
           selectedLabel={displayedSelectedObject === null ? null : (displayedSelectedObject.name ?? `№ ${displayedSelectedObject.index}`)}
           onSelect={displayedOnSelect}

@@ -3,6 +3,8 @@ use std::collections::HashSet;
 use super::code::{CodeError, Runner as CodeRunner};
 use super::grid::{Rect, SpatialGrid, largest_dimension};
 use super::input::{KeyAction, KeyEvent};
+use super::keys::EditValue;
+use super::pathfind::{self, WalkCaches};
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, RuleFired, StepReportBuilder};
 use super::rng::Rng;
@@ -10,7 +12,7 @@ use super::rules::{
     CollideEffect, CommonAction, Condition, NumberExpr, Outcome, Rule, Selector, SetValue,
     ShiftSpec, SpawnPlace, SpawnVariant, TemplateValue, TurnDir, TurnSpec,
 };
-use super::scene::SceneConfig;
+use super::scene::{self, SceneConfig};
 use super::sound::SoundMarks;
 use super::value::{Rotation, Value, Vec2};
 use super::world::World;
@@ -111,12 +113,78 @@ fn rect_of(world: &World, id: u32) -> Option<Rect> {
     })
 }
 
+/// «Формат игры» / «Мышь в мире», требование 18: an object's own midpoint clamped so it never
+/// leaves the scene, centered under a point — shared by `apply_follow_mouse` and by a `"cursor"`
+/// record onto `position`.
+fn fit_center_in_scene(point: f64, len: f64, scene_len: u32) -> f64 {
+    (point - len / 2.0).clamp(0.0, (scene_len as f64 - len).max(0.0))
+}
+
+/// «Мышь в мире», требования 17–18: resolves one record's value — a plain constant, or `"cursor"`
+/// (`EditValue::Cursor`), the point under the cursor when this press/release/click arrived.
+/// `None` — either the point isn't known yet (требование, «Крайние случаи»: мышь ещё не
+/// двигалась) — this one record is skipped, the rest of the same key/`on_click` still apply. A
+/// `Cursor` record only ever names a `Vec2` property — checked at load time — so `prop`'s kind is
+/// assumed `Vec2` here without checking again.
+fn resolve_edit_value(
+    value: &EditValue,
+    cursor: Option<Vec2>,
+    prop: PropertyId,
+    world: &World,
+    id: u32,
+    scene: &SceneConfig,
+) -> Option<Value> {
+    match value {
+        EditValue::Const(v) => Some(v.clone()),
+        EditValue::Cursor => {
+            let point = cursor?;
+            if prop == property::POSITION {
+                let size = world.vec2(id, property::SIZE)?;
+                Some(Value::Vec2([
+                    fit_center_in_scene(point[0], size[0], scene.width),
+                    fit_center_in_scene(point[1], size[1], scene.height),
+                ]))
+            } else {
+                Some(Value::Vec2(point))
+            }
+        }
+    }
+}
+
+/// «Мышь в мире», требование 19: the topmost live object with `on_click` whose rectangle
+/// contains `point` gets its own records applied — «keys, потом on_click» (требование 20) is
+/// already the caller's own ordering, this only runs once, after every key edit of the same
+/// batch.
+fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec2) {
+    let Some(id) = scene::on_click_target(world, scene, point) else {
+        return;
+    };
+    let Some(edits) = world.on_click(id, property::ON_CLICK).map(<[_]>::to_vec) else {
+        return;
+    };
+    for edit in edits {
+        if let Some(value) =
+            resolve_edit_value(&edit.value, Some(point), edit.property, world, id, scene)
+        {
+            world.set_value(id, edit.property, &value);
+        }
+    }
+}
+
 /// Stage 2: press/release events turn into property writes named by each object's `keys` table —
 /// applied in `events`' own order, not grouped by press-then-release, so a release and a press of
 /// the same key landing in the same real-time gap leave the object in the state the later of the
-/// two actually calls for.
-pub fn apply_input(world: &mut World, events: &[KeyEvent]) {
-    let mut edits: Vec<(u32, PropertyId, Value)> = Vec::new();
+/// two actually calls for. «Мышь в мире», требования 17, 19–20: `cursor` resolves any `"cursor"`
+/// record in that same batch (a single point for the whole call, same simplification
+/// `apply_follow_mouse` already makes); a `MouseLeft` press in `events` fires `on_click` right
+/// after every key edit has applied.
+pub fn apply_input(
+    world: &mut World,
+    events: &[KeyEvent],
+    cursor: Option<Vec2>,
+    scene: &SceneConfig,
+) {
+    let mut edits: Vec<(u32, PropertyId, EditValue)> = Vec::new();
     for event in events {
         for id in world.ids() {
             let Some(table) = world.keys(id, property::KEYS) else {
@@ -132,8 +200,17 @@ pub fn apply_input(world: &mut World, events: &[KeyEvent]) {
             edits.extend(side.iter().map(|e| (id, e.property, e.value.clone())));
         }
     }
-    for (id, prop, value) in edits {
-        world.set_value(id, prop, &value);
+    for (id, prop, edit_value) in edits {
+        if let Some(value) = resolve_edit_value(&edit_value, cursor, prop, world, id, scene) {
+            world.set_value(id, prop, &value);
+        }
+    }
+    if let Some(point) = cursor {
+        for event in events {
+            if event.code == "MouseLeft" && event.action == KeyAction::Press {
+                apply_on_click(world, scene, point);
+            }
+        }
     }
 }
 
@@ -145,10 +222,6 @@ pub fn apply_input(world: &mut World, events: &[KeyEvent]) {
 /// own `position` write.
 pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec2>, scene: &SceneConfig) {
     let Some(cursor) = cursor else { return };
-    // «Формат игры»: объект с follow_mouse не выходит за край сцены — середина под курсором,
-    // пока объект помещается целиком, дальше прижат к краю.
-    let fit =
-        |start: f64, len: f64, scene_len: u32| start.clamp(0.0, (scene_len as f64 - len).max(0.0));
     for id in world.ids().collect::<Vec<_>>() {
         let Some(axis) = world.follow_mouse(id, property::FOLLOW_MOUSE) else {
             continue;
@@ -161,10 +234,10 @@ pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec2>, scene: &Scene
         };
         let mut new_pos = pos;
         if axis.affects_x() {
-            new_pos[0] = fit(cursor[0] - size[0] / 2.0, size[0], scene.width);
+            new_pos[0] = fit_center_in_scene(cursor[0], size[0], scene.width);
         }
         if axis.affects_y() {
-            new_pos[1] = fit(cursor[1] - size[1] / 2.0, size[1], scene.height);
+            new_pos[1] = fit_center_in_scene(cursor[1], size[1], scene.height);
         }
         world.set_vec2(id, property::POSITION, new_pos);
     }
@@ -614,7 +687,91 @@ fn apply_check_rule(
     Ok(())
 }
 
-/// Stage 4: "move" and "check" rules, in file order — «Исполнение игры»: перемешаны, а не
+/// «Ходьба», требования 22–32: one `walk` rule — every object `for_` picks out that carries
+/// `walk_to` walks toward it at `walk_speed` cells/second, in obход of every live `avoid` object
+/// (a scene-edge-clamped straight line without `avoid`) — see `core::pathfind`. `walk_speed` 0 or
+/// less leaves the object standing, `walk_to` unchanged (требование 30). Marks `moved` and
+/// reports `RuleFired::Walk`, same as `apply_move_rule`.
+#[allow(clippy::too_many_arguments)]
+fn apply_walk_rule(
+    world: &mut World,
+    for_: &Selector,
+    avoid: &Option<Selector>,
+    scene: &SceneConfig,
+    moved: &mut [bool],
+    report: &mut Option<StepReportBuilder>,
+    rule_index: usize,
+    walk_paths: &mut WalkCaches,
+) {
+    let walkers: Vec<u32> = world
+        .ids()
+        .filter(|&id| selector_matches(for_, world, id))
+        .filter(|&id| world.has(id, property::WALK_TO))
+        .collect();
+    let keep: HashSet<u32> = walkers.iter().copied().collect();
+    pathfind::prune(walk_paths, &keep);
+
+    let mut moved_objects: Vec<u32> = Vec::new();
+    for id in walkers {
+        let (Some(center_from), Some(size), Some(target), speed) = (
+            world.vec2(id, property::POSITION).and_then(|p| {
+                world
+                    .vec2(id, property::SIZE)
+                    .map(|s| [p[0] + s[0] / 2.0, p[1] + s[1] / 2.0])
+            }),
+            world.vec2(id, property::SIZE),
+            world.vec2(id, property::WALK_TO),
+            world.number_like(id, property::WALK_SPEED).unwrap_or(0.0),
+        ) else {
+            continue;
+        };
+        if speed <= 0.0 {
+            continue;
+        }
+        let obstacles: Vec<(u32, Rect)> = match avoid {
+            None => Vec::new(),
+            Some(sel) => world
+                .ids()
+                .filter(|&oid| oid != id)
+                .filter(|&oid| selector_matches(sel, world, oid))
+                .filter_map(|oid| rect_of(world, oid).map(|r| (oid, r)))
+                .collect(),
+        };
+        let budget = speed / 60.0;
+        let (new_center, arrived) = pathfind::advance(
+            id,
+            center_from,
+            size,
+            target,
+            obstacles,
+            (scene.width as f64, scene.height as f64),
+            budget,
+            walk_paths,
+        );
+        if new_center != center_from {
+            world.set_vec2(
+                id,
+                property::POSITION,
+                [new_center[0] - size[0] / 2.0, new_center[1] - size[1] / 2.0],
+            );
+            moved[id as usize] = true;
+            moved_objects.push(id);
+        }
+        if arrived {
+            world.clear_property(id, property::WALK_TO);
+        }
+    }
+    if let Some(r) = report.as_mut()
+        && !moved_objects.is_empty()
+    {
+        r.fired.push(RuleFired::Walk {
+            rule: format!("rules[{rule_index}]"),
+            objects: moved_objects,
+        });
+    }
+}
+
+/// Stage 4: "move", "check" and "walk" rules, in file order — «Исполнение игры»: перемешаны, а не
 /// «сначала все move, потом все check», так что `after_move_of` внутри `check` видит движения,
 /// сделанные более ранними правилами того же шага. `deleted` starts out seeded with stage 3's
 /// `expired` and grows with every object a `check` rule's code deletes, so a later `check`'s own
@@ -633,6 +790,7 @@ pub fn apply_stage4(
     code: &mut Option<CodeEnv<'_>>,
     rng: &mut Rng,
     outcome: &mut Option<Outcome>,
+    walk_paths: &mut WalkCaches,
 ) -> Result<(), CodeError> {
     for (index, rule) in rules.iter().enumerate() {
         match rule {
@@ -657,6 +815,9 @@ pub fn apply_stage4(
                     rng,
                     outcome,
                 )?;
+            }
+            Rule::Walk { for_, avoid } => {
+                apply_walk_rule(world, for_, avoid, scene, moved, report, index, walk_paths)
             }
             _ => {}
         }

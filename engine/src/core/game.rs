@@ -1,6 +1,8 @@
+use super::camera;
 use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
+use super::pathfind::WalkCaches;
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, StepReport, StepReportBuilder};
 use super::rng::Rng;
@@ -83,6 +85,14 @@ pub struct Game {
     /// `reset_for_play`, `new_game_with_values`, `show_scene` and `quit`, the only places that
     /// rebuild or empty `world`.
     world_exists: bool,
+
+    /// «Камера», требования 5–6: последняя известная середина объекта камеры — держит её, пока
+    /// такого объекта нет; сбрасывается при сборке мира (`new_game_with_values`, `show_scene`,
+    /// `reset_for_play`), а не при каждом шаге.
+    camera_last: Option<Vec2>,
+    /// «Ходьба», требование 28: запомненные пути идущих объектов — вне мира, сброшены там же, где
+    /// `camera_last`.
+    walk_paths: WalkCaches,
 }
 
 /// «Экраны и состояние» / «Редактор», требование 16: builds a fresh world from `scene_objects` —
@@ -103,6 +113,9 @@ pub(crate) fn world_from_scene(properties: &PropertyTable, scene_objects: &[Obje
         }
         if let Some(keys) = &spec.keys {
             world.set_keys(id, property::KEYS, keys.clone());
+        }
+        if let Some(on_click) = &spec.on_click {
+            world.set_on_click(id, property::ON_CLICK, on_click.clone());
         }
     }
     world
@@ -159,6 +172,8 @@ impl Game {
             session_messages: Vec::new(),
             last_report: None,
             world_exists: start_is_live,
+            camera_last: None,
+            walk_paths: WalkCaches::new(),
         };
         // «Код игры» → «Экраны и состояние»: код грузится ровно один раз на партию. Партия
         // начинается либо прямо здесь (стартовый экран без меню — `world_runs` поднят сразу), и
@@ -168,6 +183,7 @@ impl Game {
         if start_is_live {
             game.load_code();
         }
+        game.update_camera();
         game
     }
 
@@ -233,7 +249,7 @@ impl Game {
     /// either happens, so the two can never drift apart. `step`, `release_held_keys` and
     /// `release_key` all go through this rather than calling `step::apply_input` on their own.
     fn apply_to_world(&mut self, events: &[KeyEvent]) {
-        step::apply_input(&mut self.world, events);
+        step::apply_input(&mut self.world, events, self.cursor_current, &self.scene);
         for event in events {
             match event.action {
                 KeyAction::Press => {
@@ -359,6 +375,7 @@ impl Game {
         // «доставлена ли она уже шагу» — первый шаг новой партии видит текущее положение курсора,
         // как если бы оно только что сдвинулось.
         self.cursor_last_step = None;
+        self.reset_camera_and_walk();
         // «Код игры»: свежий исполнитель на каждую партию — счётчик случайности уже сброшен
         // строкой выше, так что вторая партия идёт как первая.
         self.load_code();
@@ -371,6 +388,7 @@ impl Game {
     pub fn show_scene(&mut self) {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
         self.world_exists = true;
+        self.reset_camera_and_walk();
     }
 
     /// «Экраны и состояние»: `quit` throws the run away entirely — the world empties and there
@@ -418,6 +436,7 @@ impl Game {
         // прошлой партии не должен попасть в первый шаг новой записи, которая его не видела.
         self.cursor_current = None;
         self.cursor_last_step = None;
+        self.reset_camera_and_walk();
         self.max_objects_warned = false;
         self.random_cell_warned = false;
         self.code = None;
@@ -425,6 +444,33 @@ impl Game {
         if start_is_live {
             self.load_code();
         }
+    }
+
+    /// «Камера», требование 5; «Ходьба», требование 28: shared by every place that rebuilds
+    /// `world` from the scene — the camera forgets the point it was following and every
+    /// remembered walk path goes with it, since both describe a world that no longer exists.
+    fn reset_camera_and_walk(&mut self) {
+        self.camera_last = None;
+        self.walk_paths.clear();
+    }
+
+    /// «Камера», требования 5–7: recomputes the camera's own followed point from the world right
+    /// now — sticky when no `camera_follows` object exists. Called after every step and after the
+    /// editor's own live-world edits, «без отставания».
+    pub fn update_camera(&mut self) {
+        if let Some(center) = camera::followed_center(&self.world) {
+            self.camera_last = Some(center);
+        }
+    }
+
+    /// «Камера», требование 4: the scale/offset «Мир на экране» draws and picks the world by
+    /// right now — the followed point if one was ever known, the scene's own middle otherwise.
+    pub fn camera_frame(&self, viewport: [f32; 2]) -> (f32, [f32; 2]) {
+        let center = self.camera_last.unwrap_or([
+            self.scene.width as f64 / 2.0,
+            self.scene.height as f64 / 2.0,
+        ]);
+        camera::frame(&self.scene, center, viewport)
     }
 
     pub fn is_running(&self) -> bool {
@@ -516,15 +562,7 @@ impl Game {
         &mut self.sound_window
     }
 
-    /// «Курсор в мире»: translates a window-pixel cursor position through `self.scene`'s own
-    /// letterbox (`SceneConfig::window_to_scene`) and remembers it — called on every mouse move,
-    /// whether or not the active screen is live, so a move made during a pause is still known once
-    /// the world starts stepping again (требование 26).
-    pub fn update_cursor(&mut self, window_pos: [f32; 2], viewport: [f32; 2]) {
-        self.set_cursor_cell(self.scene.window_to_scene(window_pos, viewport));
-    }
-
-    /// The same remembering `update_cursor` does, already in scene coordinates — «Тесты по
+    /// The same remembering a window-pixel cursor move does, already in scene coordinates — «Тесты по
     /// записанному вводу», требование 31: a replay's own `cursor` is given in scene cells
     /// directly, bypassing the window-pixel translation that has its own, separate tests.
     pub fn set_cursor_cell(&mut self, cell: Vec2) {
@@ -632,6 +670,7 @@ impl Game {
             &mut code_env,
             &mut self.rng,
             &mut outcome_flag,
+            &mut self.walk_paths,
         ) {
             let mut err = err;
             err.step = Some(self.step_count);
@@ -752,6 +791,9 @@ impl Game {
         if let Some(outcome) = outcome_flag {
             self.outcome = Some((outcome, self.step_count));
         }
+        // «Камера», требование 6: без отставания — сразу после последнего шага, здесь, а не при
+        // следующей отрисовке.
+        self.update_camera();
         self.last_report = report.map(|b| b.finish(self.session_step));
     }
 }

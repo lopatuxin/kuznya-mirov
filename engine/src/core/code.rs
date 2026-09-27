@@ -477,10 +477,9 @@ fn read_property(
             })
         }
         // «Код игры» → пункт 28: `follow_mouse` недоступен коду, как `keys` и `grid`.
-        PropKind::Grid | PropKind::Keys | PropKind::FollowMouse => Err(format!(
-            "свойство \"{}\" недоступно коду",
-            properties.name(prop)
-        )),
+        PropKind::Grid | PropKind::Keys | PropKind::FollowMouse | PropKind::OnClick => Err(
+            format!("свойство \"{}\" недоступно коду", properties.name(prop)),
+        ),
     }
 }
 
@@ -496,7 +495,7 @@ fn write_property(
     let kind = properties.kind(prop);
     if matches!(
         kind,
-        PropKind::Grid | PropKind::Keys | PropKind::FollowMouse
+        PropKind::Grid | PropKind::Keys | PropKind::FollowMouse | PropKind::OnClick
     ) {
         return Err(format!(
             "свойство \"{}\" недоступно коду",
@@ -595,7 +594,7 @@ fn write_property(
             Ok(())
         }
         (PropKind::Vec2, _) => Err("ожидалась пара {x=.., y=..}".to_string()),
-        (PropKind::Grid | PropKind::Keys | PropKind::FollowMouse, _) => {
+        (PropKind::Grid | PropKind::Keys | PropKind::FollowMouse | PropKind::OnClick, _) => {
             unreachable!("checked above")
         }
     }
