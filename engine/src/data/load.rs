@@ -10,11 +10,14 @@ use crate::core::rules::{
 };
 use crate::core::scene::{ObjectSpec, SceneConfig};
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, Element, Fill, FontId, MusicId, Placement, Screen, ScreenId,
-    ScreenKeyTable, ScreensConfig, TextPart,
+    Align, Anchor, ButtonCommand, Element, Fill, FontId, MaxSpec, MusicId, Placement, Screen,
+    ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement, WorldElementKind,
+    WorldTextPart,
 };
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
-use crate::core::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2};
+use crate::core::value::{
+    FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2, parse_color,
+};
 use crate::core::world::World;
 
 use super::error::ErrorSink;
@@ -196,15 +199,9 @@ fn expect_positive_u32(
     Some(n as u32)
 }
 
+/// Scene, rules and `game.json` colors: `#rrggbb` only, without the opacity pair.
 fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
-    let s = s.strip_prefix('#')?;
-    if s.len() != 6 {
-        return None;
-    }
-    let r = u8::from_str_radix(&s[0..2], 16).ok()?;
-    let g = u8::from_str_radix(&s[2..4], 16).ok()?;
-    let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-    Some([r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0, 1.0])
+    parse_color(s).filter(|_| s.len() == 7)
 }
 
 fn parse_vec2(value: &Json, file: &str, path: &str, errors: &mut ErrorSink) -> Option<Vec2> {
@@ -900,12 +897,13 @@ fn parse_properties_json(text: &str, file: &str, errors: &mut ErrorSink) -> Prop
             "number" => PropKind::Number,
             "time" => PropKind::Time,
             "timer" => PropKind::Timer,
+            "text" => PropKind::Text,
             other => {
                 errors.push(
                     file,
                     &path,
                     format!(
-                        "неизвестный вид свойства \"{other}\": ожидался flag, number, time или timer"
+                        "неизвестный вид свойства \"{other}\": ожидался flag, number, time, timer или text"
                     ),
                 );
                 continue;
@@ -1015,6 +1013,10 @@ pub struct FilePaths {
     /// `files.code` — «Код игры»: необязательный путь к файлу кода на Lua. `None`, когда ключ не
     /// объявлен — в игре нет кода, она грузится и идёт ровно как раньше.
     pub code: Option<String>,
+    /// `(имя, путь)`, в порядке `files.tables` — «Таблицы данных»: только имя и путь, содержимое
+    /// разбирается позже, вместе с остальными текстами второго захода (`parse_and_validate_tables`).
+    /// Пусто, если `files.tables` не объявлена.
+    pub tables: Vec<(String, String)>,
 }
 
 /// One `files.images` entry — «Картинки» → «Таблица картинок»: `frames`/`frame_time` default to
@@ -1150,7 +1152,9 @@ pub fn read_texts(
         None => PropertyTable::new(),
     };
     let parsed_screens = match screens_json {
-        Some(text) => parse_screens_json(text, &config.files.screens, &properties, &mut scratch),
+        Some(text) => {
+            parse_screens_json(text, &config.files.screens, &properties, &mut scratch).screens
+        }
         None => Vec::new(),
     };
     let referenced: std::collections::HashSet<&str> = parsed_screens
@@ -1259,6 +1263,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "sounds",
                 "music",
                 "code",
+                "tables",
             ],
             "game.json",
             "files",
@@ -1299,8 +1304,16 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         let code = f
             .get("code")
             .and_then(|v| expect_string(v, "game.json", "files → code", errors));
+        // «Таблицы данных»: необязательна — нет ключа, нет и таблиц; та же форма «имя → путь»,
+        // что у `files.fonts`, но с непустым именем — требование 22.
+        let tables = match f.get("tables") {
+            Some(v) => {
+                parse_tables_paths(v, "game.json", "files → tables", errors).unwrap_or_default()
+            }
+            None => Vec::new(),
+        };
         (
-            properties, scene_path, rules, screens, fonts, sounds, music, images, code,
+            properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables,
         )
     });
 
@@ -1316,7 +1329,8 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let scene = scene?;
     let max_objects = max_objects?;
     let random_seed = random_seed?;
-    let (properties, scene_path, rules, screens, fonts, sounds, music, images, code) = files?;
+    let (properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables) =
+        files?;
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
@@ -1341,11 +1355,40 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             music,
             images,
             code,
+            tables,
         },
         start_screen,
         win_screen,
         loss_screen,
     })
+}
+
+/// `files.tables`: the same shape as `files.fonts` — an object mapping a data table's name (used
+/// by the game code as `tables.<name>`) to its JSON file's path inside the game's folder — but,
+/// unlike a font's name, requirement 22 makes the table's name any non-empty string, so an empty
+/// key is its own error rather than a silently accepted `read_entry` name.
+fn parse_tables_paths(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<(String, String)>> {
+    let obj = expect_object(value, file, path, errors)?;
+    let mut tables = Vec::with_capacity(obj.len());
+    for (name, path_json) in obj {
+        if name.is_empty() {
+            errors.push(
+                file,
+                path,
+                "files → tables → пустое имя: имя таблицы — любая непустая строка",
+            );
+            continue;
+        }
+        if let Some(table_path) = expect_string(path_json, file, &join(path, name), errors) {
+            tables.push((name.clone(), table_path));
+        }
+    }
+    Some(tables)
 }
 
 /// `files.fonts`: an object mapping a font's name (used by `screens.json`'s `font` field) to its
@@ -1739,6 +1782,16 @@ fn parse_condition(
         }
         let name = expect_string(&arr[0], file, &join(path, "[0]"), errors)?;
         let prop = resolve_property(&name, properties, file, &join(path, "[0]"), errors)?;
+        // «Свойство вида text», требование 20: строки не сравниваются — раньше такое условие
+        // молча всегда было ложным, теперь это ошибка проверки.
+        if properties.kind(prop) == PropKind::Text {
+            errors.push(
+                file,
+                &join(path, "[0]"),
+                format!("свойство \"{name}\" вида text (строка): условия строки не сравнивают"),
+            );
+            return None;
+        }
         let op_str = expect_string(&arr[1], file, &join(path, "[1]"), errors)?;
         let op = parse_compare_op(&op_str).or_else(|| {
             errors.push(
@@ -4069,11 +4122,62 @@ fn spawn_from_parent_fields<'a>(
 /// set by a `keys` edit), or by a rule's selector, condition, action or spawn template. Whether
 /// the reference is itself valid is `validate_property_sufficiency`'s job, not this one — a
 /// property named only inside a broken rule still counts as "used" here.
+/// «Формат игры», требование 35: a screen element's own `{имя.свойство}` substitution counts as
+/// used, too — before this, a property visible only on a screen got a false "not used" warning.
+fn mark_screen_elements_used(used: &mut std::collections::HashSet<PropertyId>, screens: &[Screen]) {
+    for screen in screens {
+        for element in &screen.elements {
+            let text = match element {
+                Element::Label { text, .. } | Element::Button { text, .. } => text,
+                Element::Panel { .. } => continue,
+            };
+            for part in text {
+                if let TextPart::Value { prop, .. } = part {
+                    used.insert(*prop);
+                }
+            }
+        }
+    }
+}
+
+/// «Надписи и полоски в мире», требование 35: `for`, the color-by-list's `by`, and a bar's
+/// `value`/`max` or a label's own substitutions all count as used.
+fn mark_world_elements_used(
+    used: &mut std::collections::HashSet<PropertyId>,
+    elements: &[WorldElement],
+) {
+    for element in elements {
+        mark_selector_used(used, &element.for_);
+        if let WorldColor::Table { by, .. } = &element.color {
+            used.insert(*by);
+        }
+        match &element.kind {
+            WorldElementKind::Label { text, .. } => {
+                for part in text {
+                    if let WorldTextPart::Value(prop) = part {
+                        used.insert(*prop);
+                    }
+                }
+            }
+            WorldElementKind::Bar { value, max, .. } => {
+                used.insert(*value);
+                if let MaxSpec::Property(p) = max {
+                    used.insert(*p);
+                }
+            }
+        }
+    }
+}
+
 fn collect_used_properties(
     scene: &[ParsedObject],
     rules: &RuleSet,
+    screens: &[Screen],
+    world_elements: &[WorldElement],
 ) -> std::collections::HashSet<PropertyId> {
     let mut used = std::collections::HashSet::new();
+    mark_screen_elements_used(&mut used, screens);
+    mark_world_elements_used(&mut used, world_elements);
     for obj in scene {
         used.extend(obj.shape.iter().copied());
         if let Some(table) = &obj.keys {
@@ -4172,15 +4276,18 @@ fn collect_used_properties(
 
 /// «Формат игры»: предупреждение (игра идёт), если объявленное в `properties.json` свойство не
 /// встречается нигде — ни на одном объекте сцены, ни в одном правиле.
+#[allow(clippy::too_many_arguments)]
 fn validate_unused_properties(
     properties: &PropertyTable,
     properties_file: &str,
     scene: &[ParsedObject],
     rules: &RuleSet,
+    screens: &[Screen],
+    world_elements: &[WorldElement],
     code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
-    let used = collect_used_properties(scene, rules);
+    let used = collect_used_properties(scene, rules, screens, world_elements);
     for (id, def) in properties.iter() {
         // «Код игры»: имя свойства отдельным словом в тексте кода — тоже использование.
         if def.builtin
@@ -4271,6 +4378,32 @@ fn describe_selector(selector: &Selector, properties: &PropertyTable) -> String 
 /// по виду отбора: пустой `fewer_than.of` делает условие «меньше N» всегда истинным и «создать»
 /// сыплет объекты до `max_objects`, ровно то же по сути, что и пустой `for`. Пустой отбор (`has`
 /// и `without` оба пусты) подходит всем и предупреждения не даёт.
+/// The shared boolean `validate_selectors_not_empty`'s own `check` and
+/// `validate_world_element_selectors_not_empty` both need — factored out so the two error-pushing
+/// call sites (different files, different labels) don't duplicate the actual "can this ever match
+/// anything" logic.
+fn selector_is_satisfiable(
+    selector: &Selector,
+    shapes: &[PossibleShape],
+    properties: &PropertyTable,
+    code: Option<&str>,
+) -> bool {
+    if selector.has.is_empty() && selector.without.is_empty() {
+        return true;
+    }
+    if shapes.iter().any(|ps| matches_shape(selector, &ps.shape)) {
+        return true;
+    }
+    // «Код игры»: свойство, которым явно распоряжается код (не только сцена/правила), код и
+    // решает, каким объектам его давать — статическому разбору форм это не видно, так что
+    // предупреждение о заведомо пустом отборе тут скорее шумит, чем помогает.
+    selector
+        .has
+        .iter()
+        .chain(&selector.without)
+        .any(|&p| code.is_some_and(|c| code_mentions_word(c, properties.name(p))))
+}
+
 fn validate_selectors_not_empty(
     shapes: &[PossibleShape],
     rules: &RuleSet,
@@ -4281,21 +4414,7 @@ fn validate_selectors_not_empty(
     errors: &mut ErrorSink,
 ) {
     let mut check = |selector: &Selector, label: &str, field: &str| {
-        if selector.has.is_empty() && selector.without.is_empty() {
-            return;
-        }
-        if shapes.iter().any(|ps| matches_shape(selector, &ps.shape)) {
-            return;
-        }
-        // «Код игры»: свойство, которым явно распоряжается код (не только сцена/правила),
-        // код и решает, каким объектам его давать — статическому разбору форм это не видно,
-        // так что предупреждение о заведомо пустом отборе тут скорее шумит, чем помогает.
-        let code_managed = selector
-            .has
-            .iter()
-            .chain(&selector.without)
-            .any(|&p| code.is_some_and(|c| code_mentions_word(c, properties.name(p))));
-        if code_managed {
+        if selector_is_satisfiable(selector, shapes, properties, code) {
             return;
         }
         errors.push_warning(
@@ -4340,6 +4459,32 @@ fn validate_selectors_not_empty(
                 }
             }
         }
+    }
+}
+
+/// «Надписи и полоски в мире», требование 34: `for` заведомо не подходит ни одному объекту — та
+/// же проверка `validate_selectors_not_empty` использует для правил (`selector_is_satisfiable`),
+/// со своим файлом (`screens.json`) и своими метками.
+fn validate_world_element_selectors_not_empty(
+    world_elements: &[WorldElement],
+    shapes: &[PossibleShape],
+    screens_file: &str,
+    properties: &PropertyTable,
+    code: Option<&str>,
+    errors: &mut ErrorSink,
+) {
+    for (i, element) in world_elements.iter().enumerate() {
+        if selector_is_satisfiable(&element.for_, shapes, properties, code) {
+            continue;
+        }
+        errors.push_warning(
+            screens_file,
+            &format!("world_elements[{i}] → for"),
+            format!(
+                "отбор {} заведомо не подходит ни одному объекту, какой может существовать в игре; ожидалось, что отбору будет соответствовать хотя бы один объект",
+                describe_selector(&element.for_, properties)
+            ),
+        );
     }
 }
 
@@ -4393,26 +4538,6 @@ fn check_do_selectors(
 // screens.json — «Экраны и состояние» / «Интерфейс игры»
 // ---------------------------------------------------------------------------------------------
 
-fn parse_ui_color(s: &str) -> Option<[f32; 4]> {
-    let hex = s.strip_prefix('#')?;
-    let component = |i: usize| u8::from_str_radix(&hex[i..i + 2], 16).ok();
-    match hex.len() {
-        6 => Some([
-            component(0)? as f32 / 255.0,
-            component(2)? as f32 / 255.0,
-            component(4)? as f32 / 255.0,
-            1.0,
-        ]),
-        8 => Some([
-            component(0)? as f32 / 255.0,
-            component(2)? as f32 / 255.0,
-            component(4)? as f32 / 255.0,
-            component(6)? as f32 / 255.0,
-        ]),
-        _ => None,
-    }
-}
-
 fn expect_ui_color(
     value: &Json,
     file: &str,
@@ -4420,7 +4545,7 @@ fn expect_ui_color(
     errors: &mut ErrorSink,
 ) -> Option<[f32; 4]> {
     let s = expect_string(value, file, path, errors)?;
-    parse_ui_color(&s).or_else(|| {
+    parse_color(&s).or_else(|| {
         errors.push(
             file,
             path,
@@ -5058,30 +5183,63 @@ fn parse_screen(
     })
 }
 
+/// `screens.json`'s two root lists — «Надписи и полоски в мире», требование 1: `world_elements`
+/// is optional, and its absence changes nothing (`Default` gives an empty list, same as before it
+/// existed).
+#[derive(Default)]
+struct ParsedScreensFile {
+    screens: Vec<ParsedScreen>,
+    world_elements: Vec<ParsedWorldElement>,
+}
+
 fn parse_screens_json(
     text: &str,
     file: &str,
     properties: &PropertyTable,
     errors: &mut ErrorSink,
-) -> Vec<ParsedScreen> {
+) -> ParsedScreensFile {
     let Some(root) = parse_json_or_error(file, text, errors) else {
-        return Vec::new();
+        return ParsedScreensFile::default();
     };
     let Some(obj) = expect_object(&root, file, "", errors) else {
-        return Vec::new();
+        return ParsedScreensFile::default();
     };
-    reject_unknown_keys(obj, &["screens"], file, "", errors);
+    reject_unknown_keys(obj, &["screens", "world_elements"], file, "", errors);
     let Some(screens_json) = obj.get("screens") else {
         errors.push(file, "", "отсутствует список экранов");
-        return Vec::new();
+        return ParsedScreensFile::default();
     };
     let Some(arr) = expect_array(screens_json, file, "screens", errors) else {
-        return Vec::new();
+        return ParsedScreensFile::default();
     };
-    arr.iter()
+    let screens = arr
+        .iter()
         .enumerate()
         .filter_map(|(i, v)| parse_screen(v, i, file, properties, errors))
-        .collect()
+        .collect();
+    let world_elements = match obj.get("world_elements") {
+        None => Vec::new(),
+        Some(v) => match expect_array(v, file, "world_elements", errors) {
+            Some(arr) => arr
+                .iter()
+                .enumerate()
+                .filter_map(|(i, v)| {
+                    parse_world_element(
+                        v,
+                        &format!("world_elements[{i}]"),
+                        file,
+                        properties,
+                        errors,
+                    )
+                })
+                .collect(),
+            None => Vec::new(),
+        },
+    };
+    ParsedScreensFile {
+        screens,
+        world_elements,
+    }
 }
 
 fn resolve_font(
@@ -5462,6 +5620,465 @@ fn resolve_element(
     }
 }
 
+// ---------------------------------------------------------------------------------------------
+// world_elements — «Надписи и полоски в мире»
+// ---------------------------------------------------------------------------------------------
+
+const WORLD_LABEL_KEYS: &[&str] = &[
+    "kind",
+    "for",
+    "anchor",
+    "offset",
+    "size",
+    "color",
+    "text",
+    "font",
+    "font_size",
+    "align",
+];
+const WORLD_BAR_KEYS: &[&str] = &[
+    "kind",
+    "for",
+    "anchor",
+    "offset",
+    "size",
+    "color",
+    "value",
+    "max",
+    "back_color",
+];
+
+/// «Надписи и полоски в мире», требование 6: one `text` field after parsing — `{свойство}`
+/// becomes a resolved `WorldTextPart::Value`, everything else stays literal. Unlike a screen's own
+/// `{имя объекта.свойство}` (`parse_rich_text`), a dot here is an error: a world element only ever
+/// substitutes its own object's property.
+fn parse_world_text(
+    s: &str,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<WorldTextPart>> {
+    let mut parts = Vec::new();
+    let mut literal = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == '}' {
+            errors.push(file, path, format!("непарная закрывающая скобка в \"{s}\""));
+            return None;
+        }
+        if ch != '{' {
+            literal.push(ch);
+            continue;
+        }
+        let mut inner = String::new();
+        let mut closed = false;
+        for c in chars.by_ref() {
+            if c == '}' {
+                closed = true;
+                break;
+            }
+            inner.push(c);
+        }
+        if !closed {
+            errors.push(
+                file,
+                path,
+                format!("подстановка не закрыта скобкой в \"{s}\""),
+            );
+            return None;
+        }
+        if inner.is_empty() {
+            errors.push(
+                file,
+                path,
+                format!("подстановка \"{{}}\" в \"{s}\" должна называть свойство"),
+            );
+            return None;
+        }
+        if inner.contains('.') {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "подстановка \"{{{inner}}}\" над объектом в мире называет только его собственное свойство, без точки"
+                ),
+            );
+            return None;
+        }
+        let prop = resolve_property(&inner, properties, file, path, errors)?;
+        if !literal.is_empty() {
+            parts.push(WorldTextPart::Literal(std::mem::take(&mut literal)));
+        }
+        parts.push(WorldTextPart::Value(prop));
+    }
+    if !literal.is_empty() {
+        parts.push(WorldTextPart::Literal(literal));
+    }
+    Some(parts)
+}
+
+/// «Надписи и полоски в мире», требование 5: `color`/`back_color`'s non-list form — a plain
+/// string is `expect_ui_color`'s own `#rrggbb`/`#rrggbbaa`; `{"table": [...], "by": "<свойство>"}`
+/// picks from a list by a `number`-kind property, mirroring `parse_number_expr`'s own `Table`
+/// variant for rules.
+fn parse_world_color(
+    value: &Json,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<WorldColor> {
+    if let Some(s) = value.as_str() {
+        return parse_color(s).map(WorldColor::Solid).or_else(|| {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "цвет должен быть вида \"#rrggbb\", \"#rrggbbaa\" или {{table, by}}, получено \"{s}\""
+                ),
+            );
+            None
+        });
+    }
+    let obj = expect_object(value, file, path, errors)?;
+    reject_unknown_keys(obj, &["table", "by"], file, path, errors);
+    let table_json = require_field(obj, "table", file, path, errors)?;
+    let table_arr = expect_array(table_json, file, &join(path, "table"), errors)?;
+    if table_arr.is_empty() {
+        errors.push(file, &join(path, "table"), "список цветов пуст");
+        return None;
+    }
+    let table_path = join(path, "table");
+    let mut ok = true;
+    let mut colors = Vec::with_capacity(table_arr.len());
+    for (i, c) in table_arr.iter().enumerate() {
+        match expect_ui_color(c, file, &join(&table_path, &format!("[{i}]")), errors) {
+            Some(color) => colors.push(color),
+            None => ok = false,
+        }
+    }
+    let by_json = require_field(obj, "by", file, path, errors)?;
+    let by = resolve_number_source(by_json, "by", properties, file, path, errors)?;
+    ok.then_some(WorldColor::Table { colors, by })
+}
+
+/// «Надписи и полоски в мире», требование 51: `max` — a positive constant, or a `number`-kind
+/// property named by a string, exactly like `value` (`resolve_number_source`) but also accepting a
+/// plain literal.
+fn parse_world_max(
+    value: &Json,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<MaxSpec> {
+    if let Some(n) = value.as_f64() {
+        if n <= 0.0 {
+            errors.push(
+                file,
+                path,
+                format!("max должен быть больше нуля, получено {n}"),
+            );
+            return None;
+        }
+        return Some(MaxSpec::Const(n as f32));
+    }
+    let name = expect_string(value, file, path, errors)?;
+    let prop = resolve_property(&name, properties, file, path, errors)?;
+    if properties.kind(prop) != PropKind::Number {
+        errors.push(
+            file,
+            path,
+            format!(
+                "max должен быть числом или называть свойство вида number, у \"{name}\" вид {}",
+                properties.kind(prop).label()
+            ),
+        );
+        return None;
+    }
+    Some(MaxSpec::Property(prop))
+}
+
+/// Parsed, but with a `label`'s font still a name (`ParsedScreen`/`ParsedElementData`'s own
+/// pattern) — `files.fonts` isn't known yet at parse time.
+#[derive(Debug, Clone)]
+enum ParsedWorldElementKind {
+    Label {
+        text: Vec<WorldTextPart>,
+        font_name: String,
+        font_size: Option<f32>,
+        align: Align,
+    },
+    Bar {
+        value: PropertyId,
+        max: MaxSpec,
+        back_color: Option<[f32; 4]>,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct ParsedWorldElement {
+    for_: Selector,
+    placement: Placement,
+    color: WorldColor,
+    kind: ParsedWorldElementKind,
+}
+
+fn parse_world_element(
+    value: &Json,
+    path: &str,
+    file: &str,
+    properties: &PropertyTable,
+    errors: &mut ErrorSink,
+) -> Option<ParsedWorldElement> {
+    let obj = expect_object(value, file, path, errors)?;
+    let kind_json = require_field(obj, "kind", file, path, errors)?;
+    let kind = expect_string(kind_json, file, &join(path, "kind"), errors)?;
+    match kind.as_str() {
+        "label" => {
+            reject_unknown_keys(obj, WORLD_LABEL_KEYS, file, path, errors);
+            let for_obj_json = require_field(obj, "for", file, path, errors)?;
+            let for_obj = expect_object(for_obj_json, file, &join(path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(path, "for"), errors);
+            let placement = parse_placement(obj, file, path, errors)?;
+            let color_json = require_field(obj, "color", file, path, errors)?;
+            let color =
+                parse_world_color(color_json, properties, file, &join(path, "color"), errors)?;
+            let text_json = require_field(obj, "text", file, path, errors)?;
+            let text_str = expect_string(text_json, file, &join(path, "text"), errors)?;
+            let text = parse_world_text(&text_str, properties, file, &join(path, "text"), errors)?;
+            let font_json = require_field(obj, "font", file, path, errors)?;
+            let font_name = expect_string(font_json, file, &join(path, "font"), errors)?;
+            let font_size = match obj.get("font_size") {
+                Some(v) => {
+                    let n = expect_number(v, file, &join(path, "font_size"), errors)?;
+                    if n <= 0.0 {
+                        errors.push(
+                            file,
+                            &join(path, "font_size"),
+                            format!("font_size должен быть больше нуля, получено {n}"),
+                        );
+                        return None;
+                    }
+                    Some(n as f32)
+                }
+                None => None,
+            };
+            let align = match obj.get("align") {
+                Some(v) => {
+                    let s = expect_string(v, file, &join(path, "align"), errors)?;
+                    Align::parse(&s).or_else(|| {
+                        errors.push(
+                            file,
+                            &join(path, "align"),
+                            format!("неизвестное выравнивание \"{s}\""),
+                        );
+                        None
+                    })?
+                }
+                None => Align::Left,
+            };
+            Some(ParsedWorldElement {
+                for_,
+                placement,
+                color,
+                kind: ParsedWorldElementKind::Label {
+                    text,
+                    font_name,
+                    font_size,
+                    align,
+                },
+            })
+        }
+        "bar" => {
+            reject_unknown_keys(obj, WORLD_BAR_KEYS, file, path, errors);
+            let for_obj_json = require_field(obj, "for", file, path, errors)?;
+            let for_obj = expect_object(for_obj_json, file, &join(path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(path, "for"), errors);
+            let placement = parse_placement(obj, file, path, errors)?;
+            let color_json = require_field(obj, "color", file, path, errors)?;
+            let color =
+                parse_world_color(color_json, properties, file, &join(path, "color"), errors)?;
+            let value_json = require_field(obj, "value", file, path, errors)?;
+            let value = resolve_number_source(value_json, "value", properties, file, path, errors)?;
+            let max_json = require_field(obj, "max", file, path, errors)?;
+            let max = parse_world_max(max_json, properties, file, &join(path, "max"), errors)?;
+            let back_color = match obj.get("back_color") {
+                Some(v) => Some(expect_ui_color(v, file, &join(path, "back_color"), errors)?),
+                None => None,
+            };
+            Some(ParsedWorldElement {
+                for_,
+                placement,
+                color,
+                kind: ParsedWorldElementKind::Bar {
+                    value,
+                    max,
+                    back_color,
+                },
+            })
+        }
+        other => {
+            errors.push(
+                file,
+                &join(path, "kind"),
+                format!("неизвестный вид элемента в мире \"{other}\": ожидался label или bar"),
+            );
+            None
+        }
+    }
+}
+
+/// Resolves one parsed world element's font name (the one thing font-independent parsing can't
+/// finish) — mirrors `resolve_element`. «Надписи и полоски в мире», требование 3: `font_size`
+/// defaults to the element's own height once `placement.size` is known.
+fn resolve_world_element(
+    parsed: &ParsedWorldElement,
+    fonts: &[(String, String)],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<WorldElement> {
+    match &parsed.kind {
+        ParsedWorldElementKind::Bar {
+            value,
+            max,
+            back_color,
+        } => Some(WorldElement {
+            for_: parsed.for_.clone(),
+            placement: parsed.placement,
+            color: parsed.color.clone(),
+            kind: WorldElementKind::Bar {
+                value: *value,
+                max: *max,
+                back_color: *back_color,
+            },
+        }),
+        ParsedWorldElementKind::Label {
+            text,
+            font_name,
+            font_size,
+            align,
+        } => {
+            let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors)?;
+            Some(WorldElement {
+                for_: parsed.for_.clone(),
+                placement: parsed.placement,
+                color: parsed.color.clone(),
+                kind: WorldElementKind::Label {
+                    text: text.clone(),
+                    font,
+                    font_size: font_size.unwrap_or(parsed.placement.size[1]),
+                    align: *align,
+                },
+            })
+        }
+    }
+}
+
+fn resolve_world_elements(
+    parsed: &[ParsedWorldElement],
+    fonts: &[(String, String)],
+    file: &str,
+    errors: &mut ErrorSink,
+) -> Vec<WorldElement> {
+    parsed
+        .iter()
+        .enumerate()
+        .filter_map(|(i, p)| {
+            resolve_world_element(p, fonts, file, &format!("world_elements[{i}]"), errors)
+        })
+        .collect()
+}
+
+// ---------------------------------------------------------------------------------------------
+// files.tables — «Таблицы данных»
+// ---------------------------------------------------------------------------------------------
+
+/// Every place `null` sits inside `value`, as a `join()`-style path from the root (`""`) —
+/// «Таблицы данных», требование 23: `null` on any depth is an error naming the table's own file
+/// and place, same convention `locate::locate` already resolves for every other file.
+fn collect_json_nulls(value: &Json, path: &str, out: &mut Vec<String>) {
+    match value {
+        Json::Null => out.push(path.to_string()),
+        Json::Array(arr) => {
+            for (i, v) in arr.iter().enumerate() {
+                collect_json_nulls(v, &join(path, &format!("[{i}]")), out);
+            }
+        }
+        Json::Object(obj) => {
+            for (k, v) in obj {
+                collect_json_nulls(v, &join(path, k), out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// «Таблицы данных», требования 22–24: `declared` — `files.tables`' name→path pairs, in file
+/// order; `table_texts` — what the page (or `load_game_from_texts_with_tables`, for tests)
+/// actually fetched for each name, `None` meaning it could not. A missing file, JSON that doesn't
+/// parse, or `null` anywhere inside it are each prestart errors; a table that parses cleanly
+/// becomes one `(имя, разобранный JSON)` entry, in declared order — «Код игры»: this same order is
+/// what makes `tables`' own key order (and so `pairs` in Lua) the same on every load.
+fn parse_and_validate_tables(
+    declared: &[(String, String)],
+    table_texts: &[(String, Option<String>)],
+    errors: &mut ErrorSink,
+) -> Vec<(String, Json)> {
+    let mut out = Vec::with_capacity(declared.len());
+    for (name, path) in declared {
+        let text = table_texts
+            .iter()
+            .find(|(n, _)| n == name)
+            .and_then(|(_, t)| t.as_deref());
+        let Some(text) = text else {
+            errors.push(
+                path,
+                "",
+                format!(
+                    "файл не найден; ожидался JSON-файл таблицы данных, названный в game.json → files → tables → {name}"
+                ),
+            );
+            continue;
+        };
+        let Some(value) = parse_json_or_error(path, text, errors) else {
+            continue;
+        };
+        let mut nulls = Vec::new();
+        collect_json_nulls(&value, "", &mut nulls);
+        if !nulls.is_empty() {
+            for null_path in &nulls {
+                errors.push(path, null_path, "null не допускается в таблице данных");
+            }
+            errors.fill_locations(path, text);
+            continue;
+        }
+        errors.fill_locations(path, text);
+        out.push((name.clone(), value));
+    }
+    out
+}
+
+/// «Таблицы данных», требование 24: имя таблицы не встречается в тексте кода игры, поиском по
+/// границам слова — та же проверка, что у неиспользуемого свойства (`code_mentions_word`); в игре
+/// без `files.code` предупреждение выходит по каждой объявленной таблице, раз читать их некому.
+fn validate_unused_tables(tables: &[(String, String)], code: Option<&str>, errors: &mut ErrorSink) {
+    for (name, _path) in tables {
+        if code.is_some_and(|c| code_mentions_word(c, name)) {
+            continue;
+        }
+        errors.push_warning(
+            "game.json",
+            &format!("files → tables → {name}"),
+            format!(
+                "таблица \"{name}\" объявлена, но не встречается в тексте кода; ожидалось, что объявленная таблица где-то используется"
+            ),
+        );
+    }
+}
+
 /// Whether any rule's `do` contains `["end_game","win"]` / `["end_game","loss"]` — decides
 /// whether `win_screen`/`loss_screen` are required in `game.json`.
 fn rule_end_game_usage(rules: &RuleSet) -> (bool, bool) {
@@ -5700,6 +6317,10 @@ fn resolve_screens(
         win_screen,
         loss_screen,
         initial_values,
+        // Filled in by `load_rest_with_tables` once this resolves — «Надписи и полоски в мире»
+        // resolve separately (`resolve_world_elements`), since they need no scene/screen-name
+        // cross-checks `resolve_screens` itself runs.
+        world_elements: Vec::new(),
     })
 }
 
@@ -6225,6 +6846,42 @@ fn validate_screen_key_collisions(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest(
     game_json: &str,
+    config: GameConfig,
+    properties_json: Option<&str>,
+    scene_json: Option<&str>,
+    rules_json: Option<&str>,
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
+    skip_media_validation: bool,
+) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
+    load_rest_with_tables(
+        game_json,
+        config,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        font_bytes,
+        sound_bytes,
+        music_verdicts,
+        image_data,
+        code_json,
+        skip_media_validation,
+        &[],
+    )
+}
+
+/// Same as `load_rest`, additionally accepting `files.tables`' texts, by name, the same shape
+/// `read_texts` gives the other second-round files — «Таблицы данных», требование 25. The wasm
+/// layer's real `load()` calls this one; `load_rest` stays the plain five-file entry point every
+/// existing test already uses, unaffected by a game with no tables at all.
+#[allow(clippy::too_many_arguments)]
+pub fn load_rest_with_tables(
+    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -6236,6 +6893,7 @@ pub fn load_rest(
     image_data: &[(String, ImageVerdict)],
     code_json: Option<&str>,
     skip_media_validation: bool,
+    table_texts: &[(String, Option<String>)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -6290,6 +6948,14 @@ pub fn load_rest(
         }
     };
 
+    // «Таблицы данных», требования 22–24: разобраны и провалидированы раньше прогона кода —
+    // пункт 27 требует `tables` уже при первом выполнении файла, включая этот одноразовый прогон
+    // проверки.
+    let tables_json = parse_and_validate_tables(&config.files.tables, table_texts, &mut errors);
+    // A table with its own error drops out of `tables_json`; running the code check without it
+    // would add a second, misleading error («attempt to index a nil value») for the same fault.
+    let tables_broken = tables_json.len() != config.files.tables.len();
+
     // «Код игры» → «Проверка перед запуском»: файл кода выполняется один раз здесь, в свежем,
     // одноразовом исполнителе — мира ещё нет, а `rng`/`messages` одноразовые: `print` и
     // `math.random` этого прогона в игру не идут (пункт 3). Успешный прогон отдаёт только имена
@@ -6306,6 +6972,7 @@ pub fn load_rest(
             );
             None
         }
+        (Some(_), Some(_)) if tables_broken => None,
         (Some(path), Some(text)) => {
             // «Код игры» → «Проверка перед запуском»: на зерне игры, не на захардкоженном 0 —
             // иначе `if math.random(...) == ... then error(...) end` мог пройти проверку и упасть
@@ -6320,6 +6987,7 @@ pub fn load_rest(
                 &sound_names,
                 &mut check_rng,
                 &mut check_messages,
+                &tables_json,
             ) {
                 Ok(runner) => Some(runner.declared_functions().to_vec()),
                 Err(err) => {
@@ -6339,7 +7007,10 @@ pub fn load_rest(
         &mut errors,
     );
 
-    let parsed_screens = match screens_json {
+    let ParsedScreensFile {
+        screens: parsed_screens,
+        world_elements: parsed_world_elements,
+    } = match screens_json {
         Some(text) => parse_screens_json(text, &config.files.screens, &properties, &mut errors),
         None => {
             errors.push(
@@ -6347,9 +7018,15 @@ pub fn load_rest(
                 "",
                 "файл не найден; ожидался JSON-файл, названный в game.json → files → screens",
             );
-            Vec::new()
+            ParsedScreensFile::default()
         }
     };
+    let world_elements = resolve_world_elements(
+        &parsed_world_elements,
+        &config.files.fonts,
+        &config.files.screens,
+        &mut errors,
+    );
     // «Тесты по записанному вводу», требование 33: файлы картинок, шрифтов и звуков не читаются —
     // проверки, которым нужен сам файл, пропускаются; JSON и код игры проверяются как обычно.
     if !skip_media_validation {
@@ -6425,11 +7102,17 @@ pub fn load_rest(
             &config.files.scene,
             &mut errors,
         );
+        let screens_for_usage: &[Screen] = screens_config
+            .as_ref()
+            .map(|sc| sc.screens.as_slice())
+            .unwrap_or(&[]);
         validate_unused_properties(
             &properties,
             &config.files.properties,
             &scene_objects,
             &rules,
+            screens_for_usage,
+            &world_elements,
             code_json,
             &mut errors,
         );
@@ -6448,8 +7131,17 @@ pub fn load_rest(
             code_json,
             &mut errors,
         );
+        validate_world_element_selectors_not_empty(
+            &world_elements,
+            &shapes,
+            &config.files.screens,
+            &properties,
+            code_json,
+            &mut errors,
+        );
         validate_unused_sounds(&config.files.sounds, &rules, code_json, &mut errors);
         validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
+        validate_unused_tables(&config.files.tables, code_json, &mut errors);
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {
@@ -6492,7 +7184,8 @@ pub fn load_rest(
             warnings,
         });
     }
-    let screens_config = screens_config.expect("no errors means screens.json resolved");
+    let mut screens_config = screens_config.expect("no errors means screens.json resolved");
+    screens_config.world_elements = world_elements;
 
     let scene_specs: Vec<ObjectSpec> = scene_objects
         .iter()
@@ -6528,6 +7221,7 @@ pub fn load_rest(
         image_names,
         sound_names,
         start_is_live,
+        tables_json,
     );
     // «Картинки», требование 23: already resolved at the top of this function (`resolve_image_
     // frame_by`, against `config.files.images` in place) — handed back rather than making a
@@ -6605,8 +7299,31 @@ pub fn load_game_from_texts_with_code(
     screens_json: &str,
     code_json: Option<&str>,
 ) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
+    load_game_from_texts_with_tables(
+        game_json,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        code_json,
+        &[],
+    )
+}
+
+/// Same as `load_game_from_texts_with_code`, additionally passing `files.tables`' texts — for
+/// tests that exercise «Таблицы данных» without the wasm layer's three-round handshake. `tables`
+/// is `(имя, текст)`, the same shape `load_rest_with_tables` wants.
+pub fn load_game_from_texts_with_tables(
+    game_json: &str,
+    properties_json: &str,
+    scene_json: &str,
+    rules_json: &str,
+    screens_json: &str,
+    code_json: Option<&str>,
+    tables: &[(String, Option<String>)],
+) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let (config, entry_warnings) = read_entry(game_json)?;
-    match load_rest(
+    match load_rest_with_tables(
         game_json,
         config,
         Some(properties_json),
@@ -6619,6 +7336,7 @@ pub fn load_game_from_texts_with_code(
         &[],
         code_json,
         false,
+        tables,
     ) {
         Ok((game, screens, warnings, _images)) => {
             let mut all_warnings = entry_warnings;

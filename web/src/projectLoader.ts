@@ -7,6 +7,7 @@ import type { EngineError } from "./engineErrors";
 type FontEntry = { name: string; path: string };
 type SoundEntry = { index: number; name: string; path: string };
 type MusicEntry = { index: number; name: string; path: string };
+type TableEntry = { name: string; path: string };
 
 type ReadEntryFiles = {
   properties: string;
@@ -14,6 +15,7 @@ type ReadEntryFiles = {
   rules: string;
   screens: string;
   fonts: FontEntry[];
+  tables: TableEntry[];
   code?: string;
 };
 
@@ -28,6 +30,7 @@ type LoadResult =
   | { ok: false; errors: EngineError[]; warnings: EngineError[] };
 
 type LoadedFont = { name: string; bytes: Uint8Array | null };
+type LoadedTable = { name: string; text: string | null };
 export type LoadedSound = { index: number; path: string; bytes: Uint8Array | null };
 type LoadedMusic = { index: number; path: string; bytes: Uint8Array | null };
 /** Байты трека и приговор ему разом — «Звук» → «Два вида звука»: кто хочет проигрывать музыку
@@ -65,6 +68,12 @@ export type ProjectLoadResult =
 async function fetchFonts(reader: ProjectFileReader, fonts: FontEntry[]): Promise<LoadedFont[]> {
   const bytesList = await Promise.all(fonts.map((font) => reader.readBinary(font.path)));
   return fonts.map((font, index) => ({ name: font.name, bytes: bytesList[index] ?? null }));
+}
+
+/** Таблицы данных читаются текстом во втором заходе, вместе с остальными файлами игры («Таблицы данных», требование 25). */
+async function fetchTableTexts(reader: ProjectFileReader, tables: TableEntry[]): Promise<LoadedTable[]> {
+  const textsList = await Promise.all(tables.map((table) => reader.readText(table.path)));
+  return tables.map((table, index) => ({ name: table.name, text: textsList[index] ?? null }));
 }
 
 async function fetchSoundBytes(reader: ProjectFileReader, sounds: SoundEntry[]): Promise<LoadedSound[]> {
@@ -107,12 +116,13 @@ export async function loadProject(
     return { status: "rejected", errors: entryResult.errors, warnings: entryResult.warnings, gameJsonText, sceneText: null };
   }
 
-  const [propertiesText, sceneText, rulesText, screensText, codeText] = await Promise.all([
+  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts] = await Promise.all([
     reader.readText(entryResult.files.properties),
     reader.readText(entryResult.files.scene),
     reader.readText(entryResult.files.rules),
     reader.readText(entryResult.files.screens),
     entryResult.files.code !== undefined ? reader.readText(entryResult.files.code) : Promise.resolve(null),
+    fetchTableTexts(reader, entryResult.files.tables),
   ]);
 
   const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText) as ReadTextsResult;
@@ -141,6 +151,7 @@ export async function loadProject(
     musicPayload,
     imagesPayload,
     codeText,
+    tableTexts,
   ) as LoadResult;
   // read_entry первым, load вторым — тот же порядок, в котором предупреждения собирает сам движок
   // при объединённой загрузке («Редактор», требование 15).

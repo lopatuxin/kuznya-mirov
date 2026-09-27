@@ -17,6 +17,8 @@ use std::any::Any;
 use std::cell::Cell;
 use std::rc::Rc;
 
+use serde_json::Value as Json;
+
 use luars::{
     FromLua, IntoLua, Lua, LuaApi, LuaError, LuaFunction, LuaResult, LuaSandboxApi, LuaState,
     LuaTable, LuaUserdata, LuaValue, SafeOption, SandboxConfig, Stdlib, UserDataTrait,
@@ -26,7 +28,7 @@ use luars::{
 use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
 use super::sound::SoundMarks;
-use super::value::{PropKind, Rotation};
+use super::value::{PropKind, Rotation, parse_color};
 use super::world::World;
 
 /// «Код игры»: предел операций Lua — на прогон файла при загрузке (свой, отдельный бюджет) и на
@@ -74,6 +76,7 @@ const RESERVED_GLOBALS: &[&str] = &[
     "find",
     "delete",
     "play_sound",
+    "tables",
     "_G",
     "_ENV",
 ];
@@ -142,26 +145,6 @@ fn restore_ctx(cell: &CtxCell, prev: *mut ()) {
     cell.set(prev);
 }
 
-fn parse_hex_color(s: &str) -> Option<[f32; 4]> {
-    let s = s.strip_prefix('#')?;
-    let component = |i: usize| u8::from_str_radix(&s[i..i + 2], 16).ok();
-    match s.len() {
-        6 => Some([
-            component(0)? as f32 / 255.0,
-            component(2)? as f32 / 255.0,
-            component(4)? as f32 / 255.0,
-            1.0,
-        ]),
-        8 => Some([
-            component(0)? as f32 / 255.0,
-            component(2)? as f32 / 255.0,
-            component(4)? as f32 / 255.0,
-            component(6)? as f32 / 255.0,
-        ]),
-        _ => None,
-    }
-}
-
 fn format_hex_color(c: [f32; 4]) -> String {
     let to_u8 = |v: f32| (v.clamp(0.0, 1.0) * 255.0).round() as u8;
     if c[3] >= 1.0 {
@@ -179,6 +162,26 @@ fn format_hex_color(c: [f32; 4]) -> String {
 
 fn seconds_to_steps_delta(seconds: f64) -> i64 {
     (seconds * 60.0).round() as i64
+}
+
+/// «Таблицы данных», требование 27–30: builds the `tables` global from `tables_json`, in declared
+/// order — each entry's own content, whatever its JSON shape (object, array, or a bare number or
+/// string per «Крайние случаи»: «число или строка в корне файла»), through `luars`'s own
+/// JSON→Lua bridge (`GlobalState::deserialize_from_json`, gated by this crate's `serde` feature —
+/// see `Cargo.toml`). It converts a JSON number to a Lua float the same way a property's own
+/// number does (`PropValue::Number`'s `f64::into_lua`) — never a Lua integer — so a table's number
+/// is the same kind of value code already gets from `foo.some_number`.
+fn build_tables_global(lua: &mut Lua, tables_json: &[(String, Json)]) -> LuaResult<LuaTable> {
+    let tables = lua.create_table()?;
+    for (name, json) in tables_json {
+        let value = {
+            let gs = lua.global_state_mut();
+            gs.deserialize_from_json(json)
+                .map_err(|msg| gs.error(msg))?
+        };
+        tables.raw_set(name.as_str(), value)?;
+    }
+    Ok(tables)
 }
 
 fn require_integer(n: f64) -> Result<i32, String> {
@@ -558,7 +561,7 @@ fn write_property(
             Ok(())
         }
         (PropKind::Text, _) => Err("ожидалась строка".to_string()),
-        (PropKind::Color, AnyValue::Str(s)) => match parse_hex_color(&s) {
+        (PropKind::Color, AnyValue::Str(s)) => match parse_color(&s) {
             Some(c) => {
                 world.set_color(id, prop, c);
                 Ok(())
@@ -1068,6 +1071,9 @@ impl Runner {
     /// `play_sound`, недоступными за отсутствием мира (пункт 3 — «мира ещё нет»), и `print`/
     /// `math.random`, работающими через переданные `rng`/`messages`. Используется и проверкой при
     /// загрузке (одноразовые `rng`/`messages`), и `new_game` (настоящие, партии).
+    /// `tables_json` заполняет глобальную `tables` уже для этого первого выполнения файла, а не
+    /// только для последующих вызовов функций («Таблицы данных», требование 27); игра без таблиц
+    /// передаёт пустой срез.
     #[allow(clippy::too_many_arguments)]
     pub fn compile(
         source: &str,
@@ -1077,6 +1083,7 @@ impl Runner {
         sound_names: &[String],
         rng: &mut Rng,
         messages: &mut Vec<String>,
+        tables_json: &[(String, Json)],
     ) -> Result<Runner, CodeError> {
         let mut lua = Lua::new(SafeOption {
             max_memory_limit: MEMORY_LIMIT_BYTES,
@@ -1097,6 +1104,7 @@ impl Runner {
             sound_names,
             &base_cell,
             &world_cell,
+            tables_json,
         );
         restore_ctx(&base_cell, prev);
 
@@ -1133,6 +1141,7 @@ impl Runner {
         sound_names: &[String],
         base_cell: &CtxCell,
         world_cell: &CtxCell,
+        tables_json: &[(String, Json)],
     ) -> LuaResult<BuildOutput> {
         // «Код игры»: `Lua::new` не ставит стандартную библиотеку сама — `create_sandbox_env`
         // только копирует из настоящих глобальных то, что там уже есть, так что без этого
@@ -1204,6 +1213,7 @@ impl Runner {
         env.set("delete", delete_fn)?;
         env.set("play_sound", play_sound_fn)?;
         env.set("print", print_fn)?;
+        env.set("tables", build_tables_global(lua, tables_json)?)?;
         let math_table: LuaTable = env.get("math")?;
         math_table.set("random", random_fn)?;
         math_table.raw_set("randomseed", LuaValue::nil())?;
@@ -1473,6 +1483,7 @@ mod tests {
             &[],
             &mut rng,
             &mut messages,
+            &[],
         );
         assert!(result.is_ok(), "{:?}", result.err());
     }
@@ -1498,6 +1509,7 @@ mod tests {
             &[],
             &mut rng,
             &mut messages,
+            &[],
         )
         .expect("compile");
 
@@ -1549,6 +1561,7 @@ mod tests {
             &[],
             &mut rng,
             &mut messages,
+            &[],
         )
         .expect("compile");
 
@@ -1615,6 +1628,7 @@ mod tests {
             &[],
             &mut rng,
             &mut messages,
+            &[],
         )
         .expect("compile");
 
@@ -1665,6 +1679,7 @@ mod tests {
             &[],
             &mut rng,
             &mut messages,
+            &[],
         )
         .expect("compile");
         let mut world = World::new(&properties);
@@ -1701,6 +1716,7 @@ mod tests {
             &[],
             &mut rng,
             &mut messages,
+            &[],
         )
         .err()
     }

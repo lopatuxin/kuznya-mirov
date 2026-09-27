@@ -2,7 +2,12 @@ import { useEffect, useRef, useState } from "react";
 import { EditorIcon } from "./EditorIcon";
 import { splitJsonTokens } from "./jsonTokens";
 import { propertyFieldKind } from "./propertyFieldKind";
-import { ENGINE_PROPERTY_NAMES, suggestPropertyNames, type PropertyKind } from "./propertiesDeclarations";
+import {
+  defaultValueForPropertyKind,
+  ENGINE_PROPERTY_NAMES,
+  suggestPropertyNames,
+  type PropertyKind,
+} from "./propertiesDeclarations";
 import { parsePropertyValueInput } from "./propertyValueInput";
 import { SceneObjectGlyph } from "./SceneObjectGlyph";
 import { isSceneColor, type ObjectPropertiesView, type SceneObjectSummary } from "./sceneObjects";
@@ -25,7 +30,7 @@ type PropertiesPanelProps = {
 };
 
 const WIDE_VALUE_LENGTH = 28;
-const PROPERTY_KIND_LABELS: Record<PropertyKind, string> = { flag: "флаг", number: "число", time: "время", timer: "таймер" };
+const PROPERTY_KIND_LABELS: Record<PropertyKind, string> = { flag: "флаг", number: "число", time: "время", timer: "таймер", text: "строка" };
 
 /** `"#rrggbb"` в JSON-записи значения — цвет без кавычек, иначе `null`. */
 function colorOfJsonValue(jsonText: string): string | null {
@@ -183,6 +188,13 @@ function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNam
     );
   }
 
+  if (kind.kind === "raw-text") {
+    // Свойство вида `text` показывается и правится строкой как есть, без кавычек JSON — набранное
+    // не проходит через `JSON.parse` («Таблицы данных», требование 40).
+    const rawText = typeof value === "string" ? value : valueText;
+    return <EditableTextValue text={rawText} canEdit={canEdit} onCommit={(text) => onSetValue(parsePropertyValueInput(text, true))} />;
+  }
+
   return <EditableTextValue text={valueText} canEdit={canEdit} onCommit={(rawText) => onSetValue(parsePropertyValueInput(rawText))} />;
 }
 
@@ -228,7 +240,7 @@ function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare, di
       return;
     }
     if (isKnown || disallowDeclare) {
-      const addError = onAdd(trimmedName, parsePropertyValueInput(valueText));
+      const addError = onAdd(trimmedName, parsePropertyValueInput(valueText, declaredProperties[trimmedName] === "text"));
       if (typeof addError === "string") {
         setError(addError);
         return;
@@ -240,11 +252,15 @@ function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare, di
       setError("Выберите вид свойства");
       return;
     }
-    if (kind !== "flag" && valueText.trim() === "") {
+    // Требования 16 и 39: у `flag` и `text` есть значение по умолчанию, остальным видам нужен ввод.
+    const defaultValue = defaultValueForPropertyKind(kind);
+    if (defaultValue === undefined && valueText.trim() === "") {
       setError("Введите значение");
       return;
     }
-    onDeclare(trimmedName, kind, kind === "flag" ? true : parsePropertyValueInput(valueText));
+    const value =
+      kind === "flag" || valueText === "" ? defaultValue : parsePropertyValueInput(valueText, kind === "text");
+    onDeclare(trimmedName, kind, value);
     reset();
   }
 

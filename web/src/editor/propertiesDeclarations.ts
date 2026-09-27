@@ -1,7 +1,7 @@
-/** Виды свойств автора — «Формат игры»: `flag`, `number`, `time`, `timer`. */
-export type PropertyKind = "flag" | "number" | "time" | "timer";
+/** Виды свойств автора — «Формат игры»: `flag`, `number`, `time`, `timer`, `text`. */
+export type PropertyKind = "flag" | "number" | "time" | "timer" | "text";
 
-export const PROPERTY_KINDS: readonly PropertyKind[] = ["flag", "number", "time", "timer"];
+export const PROPERTY_KINDS: readonly PropertyKind[] = ["flag", "number", "time", "timer", "text"];
 
 /**
  * Свойства движка — закрытый список («Формат игры» → «Объекты и свойства»). `name` в список не
@@ -61,7 +61,13 @@ export function suggestPropertyNames(existingKeys: readonly string[], declaredPr
   return [...engineNames, ...authorNames];
 }
 
-/** Пустое значение по умолчанию для нового объявленного свойства — требование 16: флаг — `true`, остальное решает вызывающая сторона. */
+/**
+ * Пустое значение по умолчанию для нового объявленного свойства — требование 16: флаг — `true`,
+ * строка — пустая строка («Таблицы данных», требование 39: пустое значение для `text` допустимо),
+ * остальное решает вызывающая сторона.
+ */
 export function defaultValueForPropertyKind(kind: PropertyKind): unknown {
-  return kind === "flag" ? true : undefined;
+  if (kind === "flag") return true;
+  if (kind === "text") return "";
+  return undefined;
 }

@@ -4,7 +4,9 @@ export type PropertyFieldKind =
   | { kind: "checkbox" }
   | { kind: "select"; options: readonly (string | number)[] }
   | { kind: "color" }
-  | { kind: "text" };
+  | { kind: "text" }
+  /** Свойство автора вида `text` — набранное остаётся строкой как есть, не разбирается как JSON («Таблицы данных», требование 40). */
+  | { kind: "raw-text" };
 
 const ROTATION_OPTIONS = [0, 90, 180, 270] as const;
 const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
@@ -12,8 +14,9 @@ const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
 /**
  * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `camera_follows`
  * и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
- * `rotation` (0/90/180/270), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; остальное — текст.
- * Значение, которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), —
+ * `rotation` (0/90/180/270), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; объявленное свойство
+ * автора вида `text` — строковое поле без разбора JSON («Таблицы данных», требование 40); остальное —
+ * текст. Значение, которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), —
  * текстовое поле. `walk_to` и `walk_speed` (Фаза 11, требование 45) — как другие пары и числа,
  * `on_click` — как `keys`: всё это уже текст по умолчанию, отдельного вида не заводится.
  */
@@ -23,6 +26,7 @@ export function propertyFieldKind(
   authorPropertyKinds: Readonly<Record<string, string>>,
   imageNames: readonly string[],
 ): PropertyFieldKind {
+  if (authorPropertyKinds[key] === "text") return { kind: "raw-text" };
   if (key === "collides" || key === "camera_follows" || authorPropertyKinds[key] === "flag") {
     return typeof value === "boolean" ? { kind: "checkbox" } : { kind: "text" };
   }

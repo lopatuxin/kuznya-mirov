@@ -34,6 +34,20 @@ pub struct TextDraw {
     pub rect_px: [f32; 4],
 }
 
+/// One label in the world to hand to `glyphon` this frame — «Надписи и полоски в мире», требование
+/// 17: `rect_cells`/`font_size_cells` are in scene cells, the same unit `core::world_elements`
+/// computes in; the renderer converts them to device pixels itself, through the same
+/// `world_scale`/`world_offset` the world rectangle pass already uses (`set_world_frame`), so a
+/// world label always lands exactly where its object's own rectangle does.
+pub struct WorldTextDraw {
+    pub text: String,
+    pub font: FontId,
+    pub font_size_cells: f32,
+    pub color: [f32; 4],
+    pub align: Align,
+    pub rect_cells: [f32; 4],
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
@@ -76,9 +90,11 @@ fn glyphon_color(color: [f32; 4]) -> glyphon::Color {
     )
 }
 
-/// Draws one frame in three passes over the same canvas: the world's colored rectangles (scene
-/// cells, letterboxed into the window), the interface's panels and buttons (window pixels), and
-/// the interface's text (`glyphon`, on top of both) — «Интерфейс игры» → «Отрисовка».
+/// Draws one frame in five layers over the same canvas, back to front: the world's colored
+/// rectangles (scene cells, letterboxed into the window — a world element's own bar rectangles go
+/// out through this same pass), the world's own label text (`glyphon`, a separate pass — «Надписи
+/// и полоски в мире»), the interface's panels and buttons (window pixels), and the interface's text
+/// (`glyphon`, on top of everything) — «Интерфейс игры» → «Отрисовка».
 pub struct Renderer {
     _instance: wgpu::Instance,
     surface: wgpu::Surface<'static>,
@@ -109,6 +125,12 @@ pub struct Renderer {
     text_atlas: glyphon::TextAtlas,
     text_viewport: glyphon::Viewport,
     text_renderer: glyphon::TextRenderer,
+    /// «Надписи и полоски в мире», требование 14: a second `TextRenderer` sharing the same atlas/
+    /// cache/viewport as `text_renderer` — glyphon's own renderer holds one prepared batch at a
+    /// time, so a world-text pass drawn *between* the world and interface rectangle passes (this
+    /// module's own doc comment on `render_frame`) needs its own instance rather than a second
+    /// `prepare`/`render` on `text_renderer`, which would just overwrite the interface's batch.
+    world_text_renderer: glyphon::TextRenderer,
     /// `FontId` (index into this table) → the family name `cosmic-text` shaping needs, resolved
     /// from the font file itself when it was loaded — see `load_font`.
     fonts: Vec<String>,
@@ -429,6 +451,12 @@ impl Renderer {
             wgpu::MultisampleState::default(),
             None,
         );
+        let world_text_renderer = glyphon::TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
 
         Ok(Renderer {
             _instance: instance,
@@ -453,6 +481,7 @@ impl Renderer {
             text_atlas,
             text_viewport,
             text_renderer,
+            world_text_renderer,
             fonts: Vec::new(),
             background,
             backend,
@@ -646,47 +675,95 @@ impl Renderer {
         }
     }
 
-    /// One `cosmic-text` buffer per `TextDraw`, shaped to fit its element and clipped to it —
-    /// «Интерфейс игры» → «Текст»: single line, no wrapping, aligned inside the element.
+    /// One shaped, single-line `cosmic-text` buffer, clipped to `width_px` — «Интерфейс игры» →
+    /// «Текст»: no wrapping, aligned inside the element. Shared by `build_text_buffers` (interface,
+    /// window pixels) and `build_world_text_buffers` (world, scene cells) — everything past
+    /// resolving the actual pixel rectangle is identical between the two.
+    fn shape_text_buffer(
+        &mut self,
+        text: &str,
+        font: FontId,
+        font_size_px: f32,
+        align: Align,
+        width_px: f32,
+    ) -> glyphon::Buffer {
+        let metrics = glyphon::Metrics::new(font_size_px, font_size_px * 1.2);
+        let mut buffer = glyphon::Buffer::new(&mut self.font_system, metrics);
+        buffer.set_wrap(&mut self.font_system, glyphon::cosmic_text::Wrap::None);
+        buffer.set_size(&mut self.font_system, Some(width_px), None);
+        let family = self.fonts.get(font).map(String::as_str).unwrap_or("");
+        let attrs = glyphon::Attrs::new().family(glyphon::Family::Name(family));
+        buffer.set_text(
+            &mut self.font_system,
+            text,
+            &attrs,
+            glyphon::Shaping::Advanced,
+            Some(cosmic_align(align)),
+        );
+        buffer
+    }
+
+    /// One `cosmic-text` buffer per `TextDraw` — «Интерфейс игры»: `rect_px` is in window (CSS)
+    /// pixels, scaled up here by the device pixel ratio, same as `ui_rects`.
     fn build_text_buffers(
         &mut self,
         texts: &[TextDraw],
-    ) -> Vec<(glyphon::Buffer, usize, [f32; 4], [f32; 4])> {
+    ) -> Vec<(glyphon::Buffer, [f32; 4], [f32; 4])> {
         let dpr = self.device_pixel_ratio;
         texts
             .iter()
             .map(|t| {
                 let font_size_px = (t.font_size_px * dpr).max(1.0);
-                let metrics = glyphon::Metrics::new(font_size_px, font_size_px * 1.2);
-                let mut buffer = glyphon::Buffer::new(&mut self.font_system, metrics);
-                buffer.set_wrap(&mut self.font_system, glyphon::cosmic_text::Wrap::None);
                 let rect_px = [
                     t.rect_px[0] * dpr,
                     t.rect_px[1] * dpr,
                     t.rect_px[2] * dpr,
                     t.rect_px[3] * dpr,
                 ];
-                buffer.set_size(&mut self.font_system, Some(rect_px[2]), None);
-                let family = self.fonts.get(t.font).map(String::as_str).unwrap_or("");
-                let attrs = glyphon::Attrs::new().family(glyphon::Family::Name(family));
-                buffer.set_text(
-                    &mut self.font_system,
-                    &t.text,
-                    &attrs,
-                    glyphon::Shaping::Advanced,
-                    Some(cosmic_align(t.align)),
-                );
-                (buffer, t.font, rect_px, t.color)
+                let buffer =
+                    self.shape_text_buffer(&t.text, t.font, font_size_px, t.align, rect_px[2]);
+                (buffer, rect_px, t.color)
             })
             .collect()
     }
 
-    /// Draws one frame: `world_instances` (scene cells, letterboxed) and `ui_instances` (window
-    /// pixels) each go out as one instanced draw call, then `texts` uploads to the GPU as a
-    /// single `glyphon` command drawn on top of both — «Интерфейс игры» → «Отрисовка».
+    /// One `cosmic-text` buffer per `WorldTextDraw` — «Надписи и полоски в мире», требование 17:
+    /// `rect_cells` is in scene cells, converted to device pixels through the same `world_scale`/
+    /// `world_offset` the world rectangle pass uses (`set_world_frame`/`set_scene`), which already
+    /// carries the device pixel ratio — unlike `build_text_buffers`, no separate multiply here.
+    fn build_world_text_buffers(
+        &mut self,
+        texts: &[WorldTextDraw],
+    ) -> Vec<(glyphon::Buffer, [f32; 4], [f32; 4])> {
+        let scale = self.world_scale;
+        let offset = self.world_offset;
+        texts
+            .iter()
+            .map(|t| {
+                let font_size_px = (t.font_size_cells * scale).max(1.0);
+                let rect_px = [
+                    offset[0] + t.rect_cells[0] * scale,
+                    offset[1] + t.rect_cells[1] * scale,
+                    t.rect_cells[2] * scale,
+                    t.rect_cells[3] * scale,
+                ];
+                let buffer =
+                    self.shape_text_buffer(&t.text, t.font, font_size_px, t.align, rect_px[2]);
+                (buffer, rect_px, t.color)
+            })
+            .collect()
+    }
+
+    /// Draws one frame in five layers, back to front — «Интерфейс игры» → «Отрисовка»: the world's
+    /// colored rectangles (`world_instances`, scene cells, letterboxed — a world element's own bar
+    /// rectangles are appended to this same list by the caller, so they draw over the objects
+    /// beneath them for free), the world's own labels (`world_texts`, a separate `glyphon` pass so
+    /// a screen panel drawn after it can still cover it), the interface's panels and buttons
+    /// (`ui_instances`, window pixels), then the interface's text (`texts`) on top of everything.
     pub fn render_frame(
         &mut self,
         world_instances: &[DrawRect],
+        world_texts: &[WorldTextDraw],
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
     ) -> Result<(), String> {
@@ -707,27 +784,24 @@ impl Renderer {
             );
         }
 
+        let world_buffers = self.build_world_text_buffers(world_texts);
+        let world_text_areas = text_areas_from(&world_buffers);
+        if !world_text_areas.is_empty() {
+            self.world_text_renderer
+                .prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.text_viewport,
+                    world_text_areas,
+                    &mut self.swash_cache,
+                )
+                .map_err(|e| format!("не удалось подготовить текст в мире: {e:?}"))?;
+        }
+
         let buffers = self.build_text_buffers(texts);
-        let text_areas: Vec<glyphon::TextArea> = buffers
-            .iter()
-            .map(|(buffer, _font, rect_px, color)| {
-                let line_height = buffer.metrics().line_height;
-                glyphon::TextArea {
-                    buffer,
-                    left: rect_px[0],
-                    top: rect_px[1] + (rect_px[3] - line_height) / 2.0,
-                    scale: 1.0,
-                    bounds: glyphon::TextBounds {
-                        left: rect_px[0] as i32,
-                        top: rect_px[1] as i32,
-                        right: (rect_px[0] + rect_px[2]) as i32,
-                        bottom: (rect_px[1] + rect_px[3]) as i32,
-                    },
-                    default_color: glyphon_color(*color),
-                    custom_glyphs: &[],
-                }
-            })
-            .collect();
+        let text_areas = text_areas_from(&buffers);
         if !text_areas.is_empty() {
             self.text_renderer
                 .prepare(
@@ -782,6 +856,15 @@ impl Renderer {
                 pass.set_vertex_buffer(1, self.world_instance_buffer.slice(..));
                 pass.draw(0..6, 0..world_instances.len() as u32);
             }
+            if !world_texts.is_empty() {
+                self.world_text_renderer
+                    .render(&self.text_atlas, &self.text_viewport, &mut pass)
+                    .map_err(|e| format!("не удалось нарисовать текст в мире: {e:?}"))?;
+            }
+            // `world_text_renderer.render` above rebinds its own pipeline/vertex buffer on this
+            // same pass — restored here before the interface rectangles draw.
+            pass.set_pipeline(&self.rect_pipeline);
+            pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
             if !ui_instances.is_empty() {
                 pass.set_bind_group(0, &self.ui_bind_group, &[]);
                 pass.set_vertex_buffer(1, self.ui_instance_buffer.slice(..));
@@ -797,6 +880,33 @@ impl Renderer {
         surface_texture.present();
         Ok(())
     }
+}
+
+/// Shared by `render_frame`'s two `prepare` calls — one `TextArea` per shaped buffer, vertically
+/// centered in its own rectangle and clipped to it.
+fn text_areas_from(
+    buffers: &[(glyphon::Buffer, [f32; 4], [f32; 4])],
+) -> Vec<glyphon::TextArea<'_>> {
+    buffers
+        .iter()
+        .map(|(buffer, rect_px, color)| {
+            let line_height = buffer.metrics().line_height;
+            glyphon::TextArea {
+                buffer,
+                left: rect_px[0],
+                top: rect_px[1] + (rect_px[3] - line_height) / 2.0,
+                scale: 1.0,
+                bounds: glyphon::TextBounds {
+                    left: rect_px[0] as i32,
+                    top: rect_px[1] as i32,
+                    right: (rect_px[0] + rect_px[2]) as i32,
+                    bottom: (rect_px[1] + rect_px[3]) as i32,
+                },
+                default_color: glyphon_color(*color),
+                custom_glyphs: &[],
+            }
+        })
+        .collect()
 }
 
 fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {
