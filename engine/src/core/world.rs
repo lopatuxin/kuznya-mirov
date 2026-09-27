@@ -1,4 +1,4 @@
-use super::keys::KeyTable;
+use super::keys::{KeyEdit, KeyTable};
 use super::property::{PropertyId, PropertyTable};
 use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2};
 
@@ -17,6 +17,7 @@ enum Column {
     Image(Vec<Option<ImageId>>),
     Rotation(Vec<Option<Rotation>>),
     FollowMouse(Vec<Option<FollowAxis>>),
+    OnClick(Vec<Option<Vec<KeyEdit>>>),
 }
 
 impl Column {
@@ -35,6 +36,7 @@ impl Column {
             PropKind::Image => Column::Image(Vec::new()),
             PropKind::Rotation => Column::Rotation(Vec::new()),
             PropKind::FollowMouse => Column::FollowMouse(Vec::new()),
+            PropKind::OnClick => Column::OnClick(Vec::new()),
         }
     }
 
@@ -53,6 +55,7 @@ impl Column {
             Column::Image(v) => v.push(None),
             Column::Rotation(v) => v.push(None),
             Column::FollowMouse(v) => v.push(None),
+            Column::OnClick(v) => v.push(None),
         }
     }
 
@@ -71,6 +74,7 @@ impl Column {
             Column::Image(v) => v[id] = None,
             Column::Rotation(v) => v[id] = None,
             Column::FollowMouse(v) => v[id] = None,
+            Column::OnClick(v) => v[id] = None,
         }
     }
 
@@ -89,6 +93,7 @@ impl Column {
             Column::Image(v) => v[id].is_some(),
             Column::Rotation(v) => v[id].is_some(),
             Column::FollowMouse(v) => v[id].is_some(),
+            Column::OnClick(v) => v[id].is_some(),
         }
     }
 }
@@ -413,6 +418,19 @@ impl World {
         }
     }
 
+    pub fn on_click(&self, id: u32, prop: PropertyId) -> Option<&[KeyEdit]> {
+        match &self.columns[prop as usize] {
+            Column::OnClick(v) => v[id as usize].as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn set_on_click(&mut self, id: u32, prop: PropertyId, value: Vec<KeyEdit>) {
+        if let Column::OnClick(v) = &mut self.columns[prop as usize] {
+            v[id as usize] = Some(value);
+        }
+    }
+
     pub fn grid_counter(&self, id: u32) -> i64 {
         self.grid_counter[id as usize]
     }
@@ -452,7 +470,7 @@ impl World {
             PropKind::Image => self.image(id, prop).map(Value::Image),
             PropKind::Rotation => self.rotation(id, prop).map(Value::Rotation),
             PropKind::FollowMouse => self.follow_mouse(id, prop).map(Value::FollowMouse),
-            PropKind::Grid | PropKind::Keys => None,
+            PropKind::Grid | PropKind::Keys | PropKind::OnClick => None,
         }
     }
 }

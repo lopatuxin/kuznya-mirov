@@ -117,6 +117,12 @@ pub struct Renderer {
     backend: GpuBackend,
 
     canvas_size_px: [f32; 2],
+    /// «Камера»: масштаб и сдвиг мировой раскладки — считает не рендерер, а движковый слой
+    /// (`core::game::Game::camera_frame`, вне партии — прежнее вписывание сцены целиком),
+    /// `set_world_frame` их только принимает и пишет в буфер. `set_scene`/`resize` держат тут
+    /// временную заглушку (то же вписывание целиком) до первого настоящего кадра.
+    world_scale: f32,
+    world_offset: [f32; 2],
     scene_cells: [f32; 2],
     device_pixel_ratio: f32,
 }
@@ -265,7 +271,9 @@ impl Renderer {
 
         let canvas_size_px = [width_px.max(1) as f32, height_px.max(1) as f32];
         let scene_cells = [scene_width.max(1) as f32, scene_height.max(1) as f32];
-        let world_globals = world_globals_data(canvas_size_px, scene_cells);
+        let (world_scale, world_offset) =
+            crate::core::scene::letterbox(canvas_size_px, scene_cells);
+        let world_globals = world_globals_data(canvas_size_px, world_scale, world_offset);
         let world_globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("world_globals"),
             contents: bytemuck::bytes_of(&world_globals),
@@ -449,6 +457,8 @@ impl Renderer {
             background,
             backend,
             canvas_size_px,
+            world_scale,
+            world_offset,
             scene_cells,
             device_pixel_ratio: 1.0,
         })
@@ -537,20 +547,41 @@ impl Renderer {
     }
 
     /// The game's scene size and background become known only once it has loaded, well after
-    /// the GPU itself was set up — this rewrites both without touching anything else.
+    /// the GPU itself was set up — rewrites both, and stands in a plain wall-to-wall letterbox of
+    /// the new scene as `world_scale`/`world_offset`'s placeholder until the wasm layer's own
+    /// next `set_world_frame` (every `draw()`/`tick()`) replaces it with the real one — «Камера».
     pub fn set_scene(&mut self, scene_width: u32, scene_height: u32, background: [f32; 4]) {
         self.scene_cells = [scene_width.max(1) as f32, scene_height.max(1) as f32];
         self.background = background;
+        (self.world_scale, self.world_offset) =
+            crate::core::scene::letterbox(self.canvas_size_px, self.scene_cells);
+        self.write_world_globals();
+    }
+
+    /// «Камера»: масштаб и сдвиг мировой раскладки этого кадра, в оконных (CSS) пикселях — вне
+    /// партии (или без `view_height`) это по-прежнему letterbox сцены целиком, в партии —
+    /// камера ядра (`core::game::Game::camera_frame`); который из двух посчитать, решает
+    /// вызывающий (`wasm::mod`), сам рендерер камеры не знает вовсе. Переводит их в пиксели
+    /// устройства тем же `device_pixel_ratio`, что и интерфейсный проход, перед записью в
+    /// буфер — `canvas_size_px`, на который шейдер делит, сам в пикселях устройства.
+    pub fn set_world_frame(&mut self, scale: f32, offset: [f32; 2]) {
+        let dpr = self.device_pixel_ratio;
+        self.world_scale = scale * dpr;
+        self.world_offset = [offset[0] * dpr, offset[1] * dpr];
         self.write_world_globals();
     }
 
     /// Reconfigures the GPU surface for a new device-pixel canvas size. Call on resize; does
     /// not touch the game. `set_pixel_ratio` supplies the CSS/device-pixel split separately.
+    /// Recomputes the same placeholder letterbox `set_scene` does — «Камера»: it stands in for
+    /// the new canvas size until the wasm layer's own next `set_world_frame`.
     pub fn resize(&mut self, width_px: u32, height_px: u32) {
         self.config.width = width_px.max(1);
         self.config.height = height_px.max(1);
         self.surface.configure(&self.device, &self.config);
         self.canvas_size_px = [self.config.width as f32, self.config.height as f32];
+        (self.world_scale, self.world_offset) =
+            crate::core::scene::letterbox(self.canvas_size_px, self.scene_cells);
         self.write_world_globals();
         self.write_ui_globals();
         self.text_viewport.update(
@@ -571,7 +602,7 @@ impl Renderer {
     }
 
     fn write_world_globals(&mut self) {
-        let globals = world_globals_data(self.canvas_size_px, self.scene_cells);
+        let globals = world_globals_data(self.canvas_size_px, self.world_scale, self.world_offset);
         self.queue
             .write_buffer(&self.world_globals_buffer, 0, bytemuck::bytes_of(&globals));
     }
@@ -777,12 +808,10 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
     })
 }
 
-/// World pass: scene cells scale up to fill the largest letterboxed rectangle of `canvas_size_px`
-/// that keeps the scene's aspect ratio, centered — «Формат игры»: «сцена вписывается в окно
-/// целиком, с сохранением пропорций». Same formula «Курсор в мире» maps a window cursor back
-/// through — see `core::scene::letterbox`.
-fn world_globals_data(canvas_size_px: [f32; 2], scene_cells: [f32; 2]) -> Globals {
-    let (scale, offset) = crate::core::scene::letterbox(canvas_size_px, scene_cells);
+/// World pass: `scale`/`offset` place scene cells in the window — «Камера»: the wasm layer
+/// computes them (the camera's own frame in a battle, the plain letterbox outside one) and hands
+/// them here through `set_world_frame`/`set_scene`; this just assembles the uniform buffer.
+fn world_globals_data(canvas_size_px: [f32; 2], scale: f32, offset: [f32; 2]) -> Globals {
     Globals {
         scale: [scale, scale],
         offset,

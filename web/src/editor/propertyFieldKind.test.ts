@@ -13,6 +13,16 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("falling", true, { falling: "flag" }, IMAGES)).toEqual({ kind: "checkbox" });
   });
 
+  it("camera_follows — галочка (Фаза 11, требование 45)", () => {
+    expect(propertyFieldKind("camera_follows", true, NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "checkbox" });
+  });
+
+  it("walk_to, walk_speed и on_click — текстовое поле, как другие пары, числа и keys", () => {
+    expect(propertyFieldKind("walk_to", [3, 4], NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "text" });
+    expect(propertyFieldKind("walk_speed", 4, NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "text" });
+    expect(propertyFieldKind("on_click", [["picked", true]], NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "text" });
+  });
+
   it("collides не булев — текстовое поле", () => {
     expect(propertyFieldKind("collides", 1, NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "text" });
   });

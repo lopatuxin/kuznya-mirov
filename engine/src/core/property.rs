@@ -18,6 +18,12 @@ pub const IMAGE: PropertyId = 10;
 pub const OPACITY: PropertyId = 11;
 pub const ROTATION: PropertyId = 12;
 pub const FOLLOW_MOUSE: PropertyId = 13;
+/// «Камера и мышь в мире», требование 33: новые свойства движка добавлены в конец `BUILTINS` —
+/// номера прежних свойств не сдвигаются.
+pub const CAMERA_FOLLOWS: PropertyId = 14;
+pub const WALK_TO: PropertyId = 15;
+pub const WALK_SPEED: PropertyId = 16;
+pub const ON_CLICK: PropertyId = 17;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -34,6 +40,10 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("opacity", PropKind::Number),
     ("rotation", PropKind::Rotation),
     ("follow_mouse", PropKind::FollowMouse),
+    ("camera_follows", PropKind::Flag),
+    ("walk_to", PropKind::Vec2),
+    ("walk_speed", PropKind::Number),
+    ("on_click", PropKind::OnClick),
 ];
 
 #[derive(Debug, Clone)]

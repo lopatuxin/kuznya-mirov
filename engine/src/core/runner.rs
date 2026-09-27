@@ -150,6 +150,8 @@ mod tests {
             width: 10,
             height: 10,
             background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
         };
         Game::new(
             properties,

@@ -175,6 +175,10 @@ pub struct MouseState {
     pub position: [f32; 2],
     pub hover: Option<usize>,
     pub captured: Option<usize>,
+    /// «Мышь в мире», требования 13–15: whether the press currently held down went to the world
+    /// as `MouseLeft` (not over a button or a panel) — decides where the matching release goes,
+    /// wherever the cursor sits when it comes.
+    pub world_captured: bool,
 }
 
 #[cfg(test)]

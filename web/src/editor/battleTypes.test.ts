@@ -20,6 +20,7 @@ describe("describeRuleKind", () => {
     expect(describeRuleKind("move")).toBe("подвинуло");
     expect(describeRuleKind("collide")).toBe("столкнуло");
     expect(describeRuleKind("spawn")).toBe("создало");
+    expect(describeRuleKind("walk")).toBe("повело");
   });
 });
 

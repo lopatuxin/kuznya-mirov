@@ -199,7 +199,8 @@ fn format_property(world: &World, id: u32, prop: PropertyId, properties: &Proper
         | PropKind::Grid
         | PropKind::Keys
         | PropKind::Image
-        | PropKind::FollowMouse => String::new(),
+        | PropKind::FollowMouse
+        | PropKind::OnClick => String::new(),
     }
 }
 
@@ -496,57 +497,104 @@ pub fn handle_screen_key_up(
     }
 }
 
-/// «Интерфейс игры» → «Мышь»: only buttons participate, checked in
-/// reverse drawing order so the topmost one wins.
-fn topmost_button_at(screen: &Screen, viewport: [f32; 2], point: [f32; 2]) -> Option<usize> {
+/// «Мышь в мире», требование 13: what the topmost element under the point is — a button (its
+/// index, for capture/hover) or a plain panel (absorbs the press, никому его не отдаёт) — checked
+/// in reverse drawing order so the topmost one wins; a label is transparent to the mouse and never
+/// appears here.
+enum InterfaceHit {
+    Button(usize),
+    Panel,
+}
+
+fn topmost_interface_hit(
+    screen: &Screen,
+    viewport: [f32; 2],
+    point: [f32; 2],
+) -> Option<InterfaceHit> {
     screen
         .elements
         .iter()
         .enumerate()
         .rev()
-        .find_map(|(i, el)| {
-            if let Element::Button { placement, .. } = el {
-                placement.contains(viewport, point).then_some(i)
-            } else {
-                None
+        .find_map(|(i, el)| match el {
+            Element::Button { placement, .. } if placement.contains(viewport, point) => {
+                Some(InterfaceHit::Button(i))
             }
+            Element::Panel { placement, .. } if placement.contains(viewport, point) => {
+                Some(InterfaceHit::Panel)
+            }
+            _ => None,
         })
 }
 
-/// Applies one queued mouse event to `mouse`'s hover/capture state against `screen`'s buttons.
-/// Returns the command to run once a press releases inside the button that captured it —
-/// «Интерфейс игры» → «Мышь».
+/// What handling one queued mouse event resolved to — «Интерфейс игры» → «Мышь», «Мышь в мире»,
+/// требования 13–20: a button's own command, or a press/release that reached the world as
+/// `MouseLeft` (its own `"cursor"`/`on_click` handling lives in `core::step::apply_input`, this
+/// layer only decides whether the event reaches the world at all).
+enum MouseOutcome {
+    None,
+    Command(ButtonCommand),
+    WorldPress,
+    WorldRelease,
+}
+
+/// Applies one queued mouse event to `mouse`'s hover/capture state against `screen`'s elements —
+/// «Интерфейс игры» → «Мышь», «Мышь в мире», требования 13–16. A press over a button or panel
+/// never reaches the world; elsewhere, on a live screen, it does, as `MouseLeft` — and the
+/// matching release goes wherever that press went, regardless of where the cursor sits by then.
 fn handle_mouse_event(
     mouse: &mut MouseState,
     screen: &Screen,
     viewport: [f32; 2],
     event: MouseEvent,
-) -> Option<ButtonCommand> {
+) -> MouseOutcome {
     match event {
         MouseEvent::Move(pos) => {
             mouse.position = pos;
             if mouse.captured.is_none() {
-                mouse.hover = topmost_button_at(screen, viewport, pos);
+                mouse.hover = match topmost_interface_hit(screen, viewport, pos) {
+                    Some(InterfaceHit::Button(i)) => Some(i),
+                    _ => None,
+                };
             }
-            None
+            MouseOutcome::None
         }
-        MouseEvent::Down => {
-            mouse.captured = mouse.hover;
-            None
-        }
+        MouseEvent::Down => match topmost_interface_hit(screen, viewport, mouse.position) {
+            Some(InterfaceHit::Button(i)) => {
+                mouse.captured = Some(i);
+                MouseOutcome::None
+            }
+            Some(InterfaceHit::Panel) => MouseOutcome::None,
+            None => {
+                if screen.world_runs {
+                    mouse.world_captured = true;
+                    MouseOutcome::WorldPress
+                } else {
+                    MouseOutcome::None
+                }
+            }
+        },
         MouseEvent::Up => {
-            let captured = mouse.captured.take()?;
-            let Element::Button {
+            if mouse.world_captured {
+                mouse.world_captured = false;
+                return MouseOutcome::WorldRelease;
+            }
+            let Some(captured) = mouse.captured.take() else {
+                return MouseOutcome::None;
+            };
+            let Some(Element::Button {
                 placement,
                 on_click,
                 ..
-            } = screen.elements.get(captured)?
+            }) = screen.elements.get(captured)
             else {
-                return None;
+                return MouseOutcome::None;
             };
-            placement
-                .contains(viewport, mouse.position)
-                .then_some(*on_click)
+            if placement.contains(viewport, mouse.position) {
+                MouseOutcome::Command(*on_click)
+            } else {
+                MouseOutcome::None
+            }
         }
     }
 }
@@ -599,11 +647,37 @@ pub fn process_ui_queue_recording(
         match event {
             UiEvent::Mouse(mouse_event) => {
                 let screen = &config.screens[state.active()];
-                if let Some(cmd) = handle_mouse_event(mouse, screen, viewport, mouse_event) {
-                    apply_command(cmd, game, config, state);
-                    if let Some(events) = events.as_deref_mut() {
-                        events.push(RecordedEvent::Command(cmd));
+                match handle_mouse_event(mouse, screen, viewport, mouse_event) {
+                    MouseOutcome::Command(cmd) => {
+                        apply_command(cmd, game, config, state);
+                        if let Some(events) = events.as_deref_mut() {
+                            events.push(RecordedEvent::Command(cmd));
+                        }
                     }
+                    // «Мышь в мире», требование 21: тем же путём, что клавиша экрана без
+                    // команды — этап 2 шага (очередь) или сразу (`apply_now`, партия/повтор в
+                    // редакторе), а не своей отдельной очередью.
+                    MouseOutcome::WorldPress => {
+                        if apply_now {
+                            game.press_key("MouseLeft");
+                        } else {
+                            game.key_down("MouseLeft");
+                        }
+                        if let Some(events) = events.as_deref_mut() {
+                            events.push(RecordedEvent::WorldKeyDown("MouseLeft".to_string()));
+                        }
+                    }
+                    MouseOutcome::WorldRelease => {
+                        if apply_now {
+                            game.release_key("MouseLeft");
+                        } else {
+                            game.key_up("MouseLeft");
+                        }
+                        if let Some(events) = events.as_deref_mut() {
+                            events.push(RecordedEvent::WorldKeyUp("MouseLeft".to_string()));
+                        }
+                    }
+                    MouseOutcome::None => {}
                 }
             }
             UiEvent::KeyDown(code) => {

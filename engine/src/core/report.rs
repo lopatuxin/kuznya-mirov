@@ -29,6 +29,11 @@ pub enum RuleFired {
         rule: String,
         objects: Vec<u32>,
     },
+    /// «Ходьба», требование 31: как `Move` — объекты, которых правило `walk` сдвинуло этим шагом.
+    Walk {
+        rule: String,
+        objects: Vec<u32>,
+    },
 }
 
 impl RuleFired {
@@ -38,7 +43,8 @@ impl RuleFired {
             | RuleFired::Check { rule, .. }
             | RuleFired::Collide { rule, .. }
             | RuleFired::Delete { rule, .. }
-            | RuleFired::Spawn { rule, .. } => rule,
+            | RuleFired::Spawn { rule, .. }
+            | RuleFired::Walk { rule, .. } => rule,
         }
     }
 }

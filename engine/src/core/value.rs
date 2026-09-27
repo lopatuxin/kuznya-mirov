@@ -20,6 +20,10 @@ pub enum PropKind {
     Image,
     Rotation,
     FollowMouse,
+    /// «Мышь в мире», требование 19: `on_click` — список записей `[свойство, значение]`, как
+    /// `keys`' `press`, но без таблицы кодов и без `release`. Как `Grid`/`Keys`: не заводится
+    /// простым значением и не входит в generic `Value`.
+    OnClick,
 }
 
 impl PropKind {
@@ -38,6 +42,7 @@ impl PropKind {
             PropKind::Image => "картинка",
             PropKind::Rotation => "поворот",
             PropKind::FollowMouse => "слежение за мышью",
+            PropKind::OnClick => "on_click",
         }
     }
 }

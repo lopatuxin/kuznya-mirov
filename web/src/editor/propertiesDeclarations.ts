@@ -23,6 +23,10 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "follow_mouse",
   "lifetime",
   "name",
+  "camera_follows",
+  "walk_to",
+  "walk_speed",
+  "on_click",
 ];
 
 /**

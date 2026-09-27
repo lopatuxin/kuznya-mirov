@@ -164,12 +164,17 @@ function attachInput(engine: Engine): void {
 /**
  * `clientX`/`clientY` — те же оконные CSS-пиксели, что и `anchor`/`offset`/`size` в `screens.json`:
  * холст растянут на всё окно и стоит в его левом верхнем углу, поэтому координата курсора относительно
- * окна совпадает с координатой относительно холста.
+ * окна совпадает с координатой относительно холста. Доходит только левая кнопка (`button === 0`) —
+ * «Мир на экране», требование 16: правая и средняя не должны попасть ни в мир, ни в интерфейс.
  */
 function attachMouse(engine: Engine): void {
   window.addEventListener("mousemove", (event) => engine.mouse_move(event.clientX, event.clientY));
-  window.addEventListener("mousedown", () => engine.mouse_down());
-  window.addEventListener("mouseup", () => engine.mouse_up());
+  window.addEventListener("mousedown", (event) => {
+    if (event.button === 0) engine.mouse_down();
+  });
+  window.addEventListener("mouseup", (event) => {
+    if (event.button === 0) engine.mouse_up();
+  });
 }
 
 /**

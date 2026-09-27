@@ -523,6 +523,9 @@ impl PlaySession {
             return Err("правка мира недоступна вне партии".to_string());
         }
         edit::set_property(&mut game.world, &game.properties, images, id, name, value)?;
+        // «Камера», требование 6: правка живого мира двигает камеру без отставания, тем же
+        // путём, что и обычный шаг.
+        game.update_camera();
         self.recording.events.push(ReplayEvent {
             step: game.session_step_count(),
             kind: ReplayEventKind::Edit(ReplayEdit::Set(id, name.to_string(), value.clone())),
@@ -535,6 +538,7 @@ impl PlaySession {
             return Err("правка мира недоступна вне партии".to_string());
         }
         edit::remove_property(&mut game.world, &game.properties, id, name)?;
+        game.update_camera();
         self.recording.events.push(ReplayEvent {
             step: game.session_step_count(),
             kind: ReplayEventKind::Edit(ReplayEdit::Remove(id, name.to_string())),
@@ -558,6 +562,7 @@ impl PlaySession {
             game.max_objects,
             props,
         )?;
+        game.update_camera();
         self.recording.events.push(ReplayEvent {
             step: game.session_step_count(),
             kind: ReplayEventKind::Edit(ReplayEdit::Add(props.clone())),
@@ -570,6 +575,7 @@ impl PlaySession {
             return Err("правка мира недоступна вне партии".to_string());
         }
         edit::delete_object(&mut game.world, id);
+        game.update_camera();
         self.recording.events.push(ReplayEvent {
             step: game.session_step_count(),
             kind: ReplayEventKind::Edit(ReplayEdit::Delete(id)),
@@ -689,4 +695,7 @@ fn apply_replay_edit(edit_event: &ReplayEdit, game: &mut Game, images: &[ImageDe
             Ok(())
         }
     };
+    // «Камера», требование 6: как и живая правка, восстановленная из записи тоже не должна
+    // ждать следующего шага, чтобы камера её увидела.
+    game.update_camera();
 }

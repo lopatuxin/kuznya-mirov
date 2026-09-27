@@ -27,4 +27,12 @@ describe("suggestPropertyNames", () => {
     expect(suggestions).not.toContain("position");
     expect(suggestions).not.toContain("score");
   });
+
+  it("новые свойства движка Фазы 11 — среди подсказок, «+ свойство» не объявляет их автору", () => {
+    const suggestions = suggestPropertyNames([], {});
+    expect(suggestions).toContain("camera_follows");
+    expect(suggestions).toContain("walk_to");
+    expect(suggestions).toContain("walk_speed");
+    expect(suggestions).toContain("on_click");
+  });
 });

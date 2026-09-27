@@ -1,8 +1,10 @@
+pub mod camera;
 pub mod code;
 pub mod game;
 pub mod grid;
 pub mod input;
 pub mod keys;
+pub mod pathfind;
 pub mod property;
 pub mod report;
 pub mod rng;
