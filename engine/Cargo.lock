@@ -557,6 +557,8 @@ dependencies = [
  "itoa",
  "js-sys",
  "luars-derive",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

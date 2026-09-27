@@ -10,12 +10,13 @@ use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
+use crate::core::world_elements;
 use crate::data::edit;
 use crate::data::error::GameError;
 use crate::data::load::{self, GameConfig, ImageDecl, ImageVerdict, MusicVerdict, NeededMedia};
 use crate::data::session::{self, PlaySession};
 use crate::render::atlas::{self, AtlasRect};
-use crate::render::{DrawRect, Renderer, TextDraw};
+use crate::render::{DrawRect, Renderer, TextDraw, WorldTextDraw};
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
     let _ = Reflect::set(obj, &JsValue::from_str(key), value);
@@ -90,6 +91,9 @@ fn js_entry_ok(config: &GameConfig, warnings: &[GameError]) -> JsValue {
         fonts.push(&entry);
     }
     set(&files, "fonts", &fonts);
+    // «Таблицы данных», требование 25: пути таблиц, названные с их именами — страница читает их
+    // во втором заходе вместе с остальными текстами, тем же общим загрузчиком.
+    set(&files, "tables", &js_media_table(&config.files.tables));
     set(&obj, "files", &files);
     set(&obj, "warnings", &js_error_array(warnings));
     obj.into()
@@ -414,6 +418,27 @@ fn parse_font_bytes(fonts: &JsValue) -> Vec<(String, Option<Vec<u8>>)> {
     out
 }
 
+/// Reads `tables` — the page's `[{name, text: string|null}, ...]` — into the shape
+/// `load::load_rest_with_tables` wants. A `null`/`undefined` `text` means the page could not fetch
+/// that table's file, mirroring how a missing text file becomes `None` elsewhere — «Таблицы
+/// данных», требование 25.
+fn parse_table_texts(tables: &JsValue) -> Vec<(String, Option<String>)> {
+    let arr = Array::from(tables);
+    let mut out = Vec::with_capacity(arr.length() as usize);
+    for item in arr.iter() {
+        let name = Reflect::get(&item, &JsValue::from_str("name"))
+            .ok()
+            .and_then(|v| v.as_string())
+            .unwrap_or_default();
+        let text = Reflect::get(&item, &JsValue::from_str("text"))
+            .ok()
+            .filter(|v| !v.is_null() && !v.is_undefined())
+            .and_then(|v| v.as_string());
+        out.push((name, text));
+    }
+    out
+}
+
 /// Resolves one `{index, ...}` entry's `index` back to the name it was numbered from in
 /// `read_texts()`'s response — shared by `parse_sound_bytes` and `parse_music_verdicts`.
 fn resolve_indexed_name(item: &JsValue, table: &[(String, String)]) -> Option<String> {
@@ -699,6 +724,54 @@ fn compose_ui(
     (rects, texts)
 }
 
+/// «Надписи и полоски в мире», требования 13, 17, 37: bar backing/fill rectangles (scene cells —
+/// appended by the caller into the same `world_instances` list the world's own objects draw
+/// through, so they land on top of them for free) and label texts (a separate pass — требование
+/// 14: below the interface, above every world rectangle). Drawn whenever the world itself is
+/// drawn, battle or not — unlike `compose_ui`, never gated on a live/replay session.
+fn compose_world_elements(
+    game: &Game,
+    screens_config: &ScreensConfig,
+) -> (Vec<DrawRect>, Vec<WorldTextDraw>) {
+    let (bars, labels) = world_elements::compute_world_draws(
+        &game.world,
+        &game.scene,
+        &game.properties,
+        &screens_config.world_elements,
+    );
+    let mut rects = Vec::with_capacity(bars.len() * 2);
+    for bar in &bars {
+        if let Some(back) = bar.back {
+            rects.push(draw_rect(
+                back.position,
+                back.size,
+                back.color,
+                atlas::WHITE_PIXEL,
+                0.0,
+            ));
+        }
+        rects.push(draw_rect(
+            bar.fill.position,
+            bar.fill.size,
+            bar.fill.color,
+            atlas::WHITE_PIXEL,
+            0.0,
+        ));
+    }
+    let texts = labels
+        .into_iter()
+        .map(|l| WorldTextDraw {
+            text: l.text,
+            font: l.font,
+            font_size_cells: l.font_size,
+            color: l.color,
+            align: l.align,
+            rect_cells: [l.position[0], l.position[1], l.size[0], l.size[1]],
+        })
+        .collect();
+    (rects, texts)
+}
+
 /// The engine, one per canvas. See the crate's README / contract notes for the exact JS-side
 /// call sequence: `create` once, then loading in three passes — `read_entry`, `read_texts`,
 /// `load` — «Звук» → «Загрузка и проверка», then `key_down`/
@@ -824,12 +897,13 @@ impl Engine {
 
     /// Step three: hand over the four text files, `fonts` — `[{name, bytes: Uint8Array|null}]`,
     /// one per `files.fonts` — `sounds` — `[{index, bytes: Uint8Array|null}]`, one per
-    /// `read_texts()`'s `sounds` — and `music` — `[{index, verdict: "ok"|"missing"|"rejected"}]`,
-    /// one per `read_texts()`'s `music`, the executor's (browser's) answer to "can you decompress
-    /// this track". Runs the full prestart check and, on success, the game is ready to run
-    /// starting from the next `tick`. Returns `{ok:true, warnings:[...]}` on success or
-    /// `{ok:false, errors:[...], warnings:[...]}` on failure — warnings never stop the game from
-    /// starting, but the page still needs to see them either way.
+    /// `read_texts()`'s `sounds` — `music` — `[{index, verdict: "ok"|"missing"|"rejected"}]`, one
+    /// per `read_texts()`'s `music`, the executor's (browser's) answer to "can you decompress this
+    /// track" — and `tables` — `[{name, text: string|null}]`, one per `read_entry()`'s own
+    /// `files.tables` («Таблицы данных», требование 25). Runs the full prestart check and, on
+    /// success, the game is ready to run starting from the next `tick`. Returns `{ok:true,
+    /// warnings:[...]}` on success or `{ok:false, errors:[...], warnings:[...]}` on failure —
+    /// warnings never stop the game from starting, but the page still needs to see them either way.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -842,6 +916,7 @@ impl Engine {
         music: JsValue,
         images: JsValue,
         code_json: Option<String>,
+        tables: JsValue,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -853,8 +928,8 @@ impl Engine {
                 &[],
             );
         };
-        // `config` is about to move into `load_rest` — the font/sound/music/image name order it
-        // carries is what fixes each one's FontId/SoundId/MusicId/ImageId, so it has to be
+        // `config` is about to move into `load_rest_with_tables` — the font/sound/music/image name
+        // order it carries is what fixes each one's FontId/SoundId/MusicId/ImageId, so it has to be
         // captured before that happens.
         let font_order: Vec<String> = config.files.fonts.iter().map(|(n, _)| n.clone()).collect();
         let rules_path = config.files.rules.clone();
@@ -868,7 +943,8 @@ impl Engine {
         let sound_bytes = parse_sound_bytes(&sounds, &config.files.sounds);
         let music_verdicts = parse_music_verdicts(&music, &config.files.music);
         let image_verdicts = parse_image_verdicts(&images, &image_table);
-        match load::load_rest(
+        let table_texts = parse_table_texts(&tables);
+        match load::load_rest_with_tables(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -881,6 +957,7 @@ impl Engine {
             &image_verdicts,
             code_json.as_deref(),
             false,
+            &table_texts,
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -1033,14 +1110,24 @@ impl Engine {
     /// means for its own animated fills). An empty frame without a loaded game.
     pub fn draw(&mut self) {
         if self.game.is_none() {
-            let _ = self.renderer.render_frame(&[], &[], &[]);
+            let _ = self.renderer.render_frame(&[], &[], &[], &[]);
             return;
         }
         if let Some((scale, offset)) = self.frame() {
             self.renderer.set_world_frame(scale, offset);
         }
         let game = self.game.as_ref().expect("checked above");
-        let world_instances = compose_instances(game, &self.images, &self.atlas_rects);
+        let mut world_instances = compose_instances(game, &self.images, &self.atlas_rects);
+        // «Надписи и полоски в мире», требование 37: рисуются везде, где нарисован мир — в
+        // редакторе вне партии тоже, в отличие от `ui_instances`/`texts` ниже, которые видны
+        // только в партии или повторе.
+        let world_texts = if let Some(config) = self.screens_config.as_ref() {
+            let (bar_rects, world_texts) = compose_world_elements(game, config);
+            world_instances.extend(bar_rects);
+            world_texts
+        } else {
+            Vec::new()
+        };
         let show_ui = self
             .session
             .as_ref()
@@ -1066,9 +1153,9 @@ impl Engine {
             }
             _ => (Vec::new(), Vec::new()),
         };
-        if let Err(e) = self
-            .renderer
-            .render_frame(&world_instances, &ui_instances, &texts)
+        if let Err(e) =
+            self.renderer
+                .render_frame(&world_instances, &world_texts, &ui_instances, &texts)
         {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
@@ -1194,7 +1281,7 @@ impl Engine {
             // path, so `key_down`/`key_up`/`mouse_*` piling onto a page stuck here would grow it
             // without bound.
             self.ui_queue = UiQueue::new();
-            let _ = self.renderer.render_frame(&[], &[], &[]);
+            let _ = self.renderer.render_frame(&[], &[], &[], &[]);
             return js_running();
         };
 
@@ -1263,7 +1350,9 @@ impl Engine {
         let (scale, offset) = frame_for(game, self.battle_view, viewport);
         self.renderer.set_world_frame(scale, offset);
 
-        let world_instances = compose_instances(game, &self.images, &self.atlas_rects);
+        let mut world_instances = compose_instances(game, &self.images, &self.atlas_rects);
+        let (bar_rects, world_texts) = compose_world_elements(game, config);
+        world_instances.extend(bar_rects);
         let screen = &config.screens[state.active()];
         let (ui_instances, texts) = compose_ui(
             screen,
@@ -1275,9 +1364,9 @@ impl Engine {
             &self.atlas_rects,
             ui_clock_steps,
         );
-        if let Err(e) = self
-            .renderer
-            .render_frame(&world_instances, &ui_instances, &texts)
+        if let Err(e) =
+            self.renderer
+                .render_frame(&world_instances, &world_texts, &ui_instances, &texts)
         {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }

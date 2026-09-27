@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parsePropertyDeclarations, suggestPropertyNames } from "./propertiesDeclarations";
+import { defaultValueForPropertyKind, parsePropertyDeclarations, suggestPropertyNames } from "./propertiesDeclarations";
 
 describe("parsePropertyDeclarations", () => {
   it("разбирает виды свойств автора", () => {
@@ -7,6 +7,10 @@ describe("parsePropertyDeclarations", () => {
       score: "number",
       falling: "flag",
     });
+  });
+
+  it("разбирает вид text", () => {
+    expect(parsePropertyDeclarations('{"properties":{"catalogRow":"text"}}')).toEqual({ catalogRow: "text" });
   });
 
   it("отбрасывает неизвестный вид", () => {
@@ -34,5 +38,15 @@ describe("suggestPropertyNames", () => {
     expect(suggestions).toContain("walk_to");
     expect(suggestions).toContain("walk_speed");
     expect(suggestions).toContain("on_click");
+  });
+});
+
+describe("defaultValueForPropertyKind", () => {
+  it("text — пустая строка (Таблицы данных, требование 39)", () => {
+    expect(defaultValueForPropertyKind("text")).toBe("");
+  });
+
+  it("flag — true", () => {
+    expect(defaultValueForPropertyKind("flag")).toBe(true);
   });
 });

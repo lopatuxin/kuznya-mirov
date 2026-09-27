@@ -59,6 +59,14 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("score", 3, { score: "number" }, IMAGES)).toEqual({ kind: "text" });
   });
 
+  it("объявленное свойство автора вида text — строковое поле без разбора JSON (требование 40)", () => {
+    expect(propertyFieldKind("catalogRow", "goblin", { catalogRow: "text" }, IMAGES)).toEqual({ kind: "raw-text" });
+  });
+
+  it("вид text перекрывает распознавание по имени и значению ключа", () => {
+    expect(propertyFieldKind("color", "#e04040", { color: "text" }, IMAGES)).toEqual({ kind: "raw-text" });
+  });
+
   it("свойство не из известных — текстовое поле", () => {
     expect(propertyFieldKind("layer", 1, NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "text" });
   });

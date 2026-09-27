@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use super::game::Game;
 use super::input::{MouseEvent, MouseState, UiEvent, UiQueue};
 use super::property::{self, PropertyId, PropertyTable};
-use super::rules::Outcome;
+use super::rules::{Outcome, Selector};
 use super::value::{ImageId, PropKind, Value};
 use super::world::World;
 
@@ -43,8 +43,10 @@ pub enum Anchor {
 
 impl Anchor {
     /// `(fx, fy)`: the fractional point on the window this anchor names — 0 for an edge on the
-    /// near side, 1 for the far side, 0.5 for the midline. «Интерфейс игры» → «Раскладка».
-    fn fractions(self) -> (f32, f32) {
+    /// near side, 1 for the far side, 0.5 for the midline. «Интерфейс игры» → «Раскладка». Also
+    /// used by `core::world_elements` for the same nine points on an *object's* rectangle instead
+    /// of the window's.
+    pub(crate) fn fractions(self) -> (f32, f32) {
         match self {
             Anchor::TopLeft => (0.0, 0.0),
             Anchor::Top => (0.5, 0.0),
@@ -164,8 +166,15 @@ fn find_named_object(world: &World, name: &str) -> Option<u32> {
 }
 
 /// «Числа печатаются как есть» — целые без дробной части, дробные со своей. `{}` на `f64`
-/// already omits a trailing `.0`, so no special-casing is needed here.
-fn format_property(world: &World, id: u32, prop: PropertyId, properties: &PropertyTable) -> String {
+/// already omits a trailing `.0`, so no special-casing is needed here. `pub(crate)` — «Надписи и
+/// полоски в мире», требование 9: `core::world_elements` formats a label's own substitution with
+/// this exact function, not a second copy of it.
+pub(crate) fn format_property(
+    world: &World,
+    id: u32,
+    prop: PropertyId,
+    properties: &PropertyTable,
+) -> String {
     match properties.kind(prop) {
         PropKind::Number => world
             .number_like(id, prop)
@@ -271,6 +280,66 @@ pub struct ScreensConfig {
     /// «Начальные значения у new_game», требование 29: every distinct value list a `new_game`
     /// command declares, indexed by `InitialValuesId`.
     pub initial_values: Vec<Vec<(String, PropertyId, Value)>>,
+    /// «Надписи и полоски в мире», требование 1: the optional `world_elements` list, in file
+    /// order — empty when `screens.json` names none.
+    pub world_elements: Vec<WorldElement>,
+}
+
+/// «Надписи и полоски в мире», требование 6: one `{property}` substitution over a world element's
+/// *own* object — unlike a screen's `TextPart`, this never names an object, only a property of
+/// whichever object the element is drawn over.
+#[derive(Debug, Clone)]
+pub enum WorldTextPart {
+    Literal(String),
+    Value(PropertyId),
+}
+
+/// «Надписи и полоски в мире», требование 51: a `bar`'s `max` — a positive constant or a
+/// `number`-kind property, resolved once at load time the same way `value` already is.
+#[derive(Debug, Clone, Copy)]
+pub enum MaxSpec {
+    Const(f32),
+    Property(PropertyId),
+}
+
+/// «Надписи и полоски в мире», требование 5: `color`/`back_color` — a plain color, or a color
+/// picked from a list by a `number`-kind property, exactly the way a rule's `add`/`set` picks a
+/// number from `{table, by}» → [[Правила игры]].
+#[derive(Debug, Clone)]
+pub enum WorldColor {
+    Solid([f32; 4]),
+    Table {
+        colors: Vec<[f32; 4]>,
+        by: PropertyId,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub enum WorldElementKind {
+    Label {
+        text: Vec<WorldTextPart>,
+        font: FontId,
+        font_size: f32,
+        align: Align,
+    },
+    Bar {
+        value: PropertyId,
+        max: MaxSpec,
+        back_color: Option<[f32; 4]>,
+    },
+}
+
+/// «Надписи и полоски в мире», требования 1–17: one entry of `screens.json`'s `world_elements`
+/// list, fully resolved — drawn over every live object `for_` selects. `placement` is the same
+/// `anchor`/`offset`/`size` a screen element carries, but read differently: `core::world_elements`
+/// centers the element on the anchor point of the *object's own rectangle*, offset by `offset`,
+/// rather than hugging a corner of the window.
+#[derive(Debug, Clone)]
+pub struct WorldElement {
+    pub for_: Selector,
+    pub placement: Placement,
+    pub color: WorldColor,
+    pub kind: WorldElementKind,
 }
 
 /// The active screen and the one remembered screen `resume` returns to — «Экраны и состояние» → «Команды»: at most one level deep, no further history.

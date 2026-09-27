@@ -164,3 +164,47 @@ impl Value {
 pub struct GridSpec {
     pub interval_steps: i64,
 }
+
+/// `#rrggbb` or `#rrggbbaa` → RGBA in `0..=1`. Only ASCII hex digits count: a non-Latin
+/// character or a sign (`"#+f+f+f"`) after `#` is `None`, not a panic or a valid color.
+pub fn parse_color(s: &str) -> Option<[f32; 4]> {
+    let hex = s.strip_prefix('#')?;
+    if !matches!(hex.len(), 6 | 8) || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
+    let component = |i: usize| {
+        u8::from_str_radix(&hex[i..i + 2], 16)
+            .ok()
+            .map(|v| v as f32 / 255.0)
+    };
+    let alpha = if hex.len() == 8 { component(6)? } else { 1.0 };
+    Some([component(0)?, component(2)?, component(4)?, alpha])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_color_reads_both_forms() {
+        assert_eq!(parse_color("#ff0000"), Some([1.0, 0.0, 0.0, 1.0]));
+        assert_eq!(parse_color("#00ff0000"), Some([0.0, 1.0, 0.0, 0.0]));
+        assert_eq!(parse_color("#FFFFFF"), Some([1.0, 1.0, 1.0, 1.0]));
+    }
+
+    #[test]
+    fn parse_color_rejects_signs_non_latin_and_wrong_lengths() {
+        for bad in [
+            "#+f+f+f",
+            "#-f-f-f",
+            "#aжжжb",
+            "#жжж",
+            "ff0000",
+            "#ff00",
+            "#ff00000",
+            "#gg0000",
+        ] {
+            assert_eq!(parse_color(bad), None, "{bad}");
+        }
+    }
+}

@@ -35,6 +35,11 @@ pub struct Game {
     /// а не по номеру, так что рантайму нужна обратная таблица, которой правилам не требовалось.
     image_names: Vec<String>,
     sound_names: Vec<String>,
+    /// «Таблицы данных», требования 27, 29: разобранный JSON `files.tables`, в порядке объявления
+    /// — хранится тут, а не только внутри `code`, чтобы каждая партия (`load_code`) строила
+    /// глобальную `tables` заново из исходных данных, а не из того, что успел переписать код
+    /// прошлой партии.
+    tables: Vec<(String, serde_json::Value)>,
     code: Option<code::Runner>,
     /// «Код игры»: ошибка кода во время партии — раз поднятая, остаётся до `new_game`/`quit`;
     /// `is_running` смотрит и сюда, и на `outcome`.
@@ -137,6 +142,7 @@ impl Game {
         image_names: Vec<String>,
         sound_names: Vec<String>,
         start_is_live: bool,
+        tables: Vec<(String, serde_json::Value)>,
     ) -> Self {
         let mut game = Game {
             properties,
@@ -153,6 +159,7 @@ impl Game {
             code_path,
             image_names,
             sound_names,
+            tables,
             code: None,
             code_error: None,
             world_held_keys: std::collections::HashSet::new(),
@@ -223,6 +230,7 @@ impl Game {
             &self.sound_names,
             &mut self.rng,
             &mut self.messages,
+            &self.tables,
         ) {
             Ok(runner) => self.code = Some(runner),
             Err(err) => self.code_error = Some(err),

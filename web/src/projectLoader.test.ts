@@ -64,6 +64,7 @@ describe("loadProject", () => {
       "sounds/beep.wav": soundBytes,
       "music/theme.mp3": musicBytes,
       "images/head.png": imageBytes,
+      "tables/enemies.json": '{"goblin":{"health":30}}',
     };
     const readEntry = vi.fn(() => ({
       ok: true,
@@ -73,6 +74,7 @@ describe("loadProject", () => {
         rules: "rules.json",
         screens: "screens.json",
         fonts: [{ name: "Rubik", path: "fonts/Rubik.ttf" }],
+        tables: [{ name: "enemies", path: "tables/enemies.json" }],
         code: "code.lua",
       },
       warnings: [{ file: "a", path: "", message: "предупреждение входа", line: null, column: null }] as EngineError[],
@@ -111,12 +113,56 @@ describe("loadProject", () => {
       [{ index: 7, verdict: "rejected" }],
       [expect.objectContaining({ index: 9 })],
       files["code.lua"],
+      [{ name: "enemies", text: files["tables/enemies.json"] }],
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
     expect(result.sceneText).toBe(files["scene.json"]);
     // read_entry первым, load вторым — тот же порядок, что собирает сам движок.
     expect(result.warnings.map((warning) => warning.message)).toEqual(["предупреждение входа", "предупреждение загрузки"]);
+  });
+
+  it("таблица, файл которой не читается, идёт в load текстом null", async () => {
+    const files: Record<string, string | Uint8Array> = {
+      "game.json": "{}",
+      "properties.json": "{}",
+      "scene.json": '{"objects":[]}',
+      "rules.json": "{}",
+      "screens.json": "{}",
+    };
+    const load = vi.fn(() => ({ ok: true, warnings: NO_WARNINGS }));
+    const engine: ProjectLoadEngine = {
+      read_entry: vi.fn(() => ({
+        ok: true,
+        files: {
+          properties: "properties.json",
+          scene: "scene.json",
+          rules: "rules.json",
+          screens: "screens.json",
+          fonts: [],
+          tables: [{ name: "enemies", path: "tables/enemies.json" }],
+        },
+        warnings: NO_WARNINGS,
+      })),
+      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [] })),
+      load,
+    };
+    const reader = createReader(files);
+
+    await loadProject(engine, reader, files["game.json"] as string, stubAudioContext);
+
+    expect(load).toHaveBeenCalledWith(
+      files["properties.json"],
+      files["scene.json"],
+      files["rules.json"],
+      files["screens.json"],
+      [],
+      [],
+      [],
+      [],
+      null,
+      [{ name: "enemies", text: null }],
+    );
   });
 
   it("отдаёт rejected с текстом сцены, когда read_entry прошёл, а load отказал", async () => {
@@ -131,7 +177,7 @@ describe("loadProject", () => {
     const engine: ProjectLoadEngine = {
       read_entry: vi.fn(() => ({
         ok: true,
-        files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [] },
+        files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [] },
         warnings: NO_WARNINGS,
       })),
       read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [] })),
