@@ -1,0 +1,11 @@
+{
+  "rules": [
+    { "kind": "walk", "for": { "has": ["hero"] }, "avoid": { "has": ["obstacle"] } },
+
+    { "kind": "check", "for": { "has": ["hero"] },
+      "do": [["run", "animate_hero"]] },
+
+    { "kind": "check", "for": { "has": ["marker"] }, "when": ["opacity", ">", 0],
+      "do": [["add", "opacity", -0.05]] }
+  ]
+}

@@ -1,0 +1,12 @@
+{
+  "start": "location",
+  "input": [
+    { "step": 1, "cursor": [10, 25] },
+    { "step": 1, "press": "MouseLeft" }
+  ],
+  "steps": 140,
+  "checks": [
+    { "step": 140, "object": "hero", "property": "position", "equals": [9.5, 24.25] },
+    { "step": 140, "count": { "has": ["hero"], "without": ["walk_to"] }, "equals": 1 }
+  ]
+}

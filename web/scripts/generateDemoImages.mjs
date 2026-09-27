@@ -278,6 +278,190 @@ export function crackedBrickFrame(width, height, colorHex, frame) {
   return { width, height, canvas };
 }
 
+// Кольцо отметки щелчка («Отметка щелчка», пункт 17): толщина 3–4 пикселя, внутри и снаружи
+// прозрачно — только сама окружность непрозрачна.
+function ringImage(size, colorHex, thickness) {
+  const [r, g, b] = hexToRgb(colorHex);
+  const canvas = makeCanvas(size, size);
+  const center = (size - 1) / 2;
+  const outerRadius = size * 0.42;
+  const innerRadius = outerRadius - thickness;
+  for (let y = 0; y < size; y++) {
+    for (let x = 0; x < size; x++) {
+      const dx = x - center;
+      const dy = y - center;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      if (distance <= outerRadius && distance >= innerRadius) setPixel(canvas, size, x, y, r, g, b, 255);
+    }
+  }
+  return { width: size, height: size, canvas };
+}
+
+const HERO_FRAME_WIDTH = 32;
+const HERO_FRAME_HEIGHT = 48;
+const HERO_SIDE_DOWN = 0;
+const HERO_SIDE_LEFT = 1;
+const HERO_SIDE_RIGHT = 2;
+const HERO_SIDE_UP = 3;
+const HERO_STEP_OFFSET = 4;
+
+const HERO_SKIN = hexToRgb("#dfae82");
+const HERO_HAIR = hexToRgb("#3b2a1e");
+const HERO_JACKET = hexToRgb("#b23b3b");
+const HERO_SLEEVE = lighten(HERO_JACKET, 0.15);
+const HERO_PANTS = hexToRgb("#2e2e38");
+const HERO_BOOTS = hexToRgb("#1a1512");
+
+function fillRect(canvas, width, height, x0, y0, w, h, rgb, alpha) {
+  const xStart = Math.max(0, Math.round(x0));
+  const xEnd = Math.min(width, Math.round(x0 + w));
+  const yStart = Math.max(0, Math.round(y0));
+  const yEnd = Math.min(height, Math.round(y0 + h));
+  for (let y = yStart; y < yEnd; y++) {
+    for (let x = xStart; x < xEnd; x++) setPixel(canvas, width, x, y, rgb[0], rgb[1], rgb[2], alpha);
+  }
+}
+
+function fillEllipse(canvas, width, height, cx, cy, rx, ry, rgb, alpha) {
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const dx = (x + 0.5 - cx) / rx;
+      const dy = (y + 0.5 - cy) / ry;
+      if (dx * dx + dy * dy <= 1) setPixel(canvas, width, x, y, rgb[0], rgb[1], rgb[2], alpha);
+    }
+  }
+}
+
+function mirrorFrame({ width, height, canvas }) {
+  const mirrored = makeCanvas(width, height);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const srcOffset = (y * width + (width - 1 - x)) * 4;
+      const destOffset = (y * width + x) * 4;
+      canvas.copy(mirrored, destOffset, srcOffset, srcOffset + 4);
+    }
+  }
+  return { width, height, canvas: mirrored };
+}
+
+// Тень под ногами — «Герой», пункт 13: полупрозрачный тёмный овал, общий для всех кадров.
+function drawHeroShadow(canvas) {
+  fillEllipse(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 16, 45, 8, 2, [0, 0, 0], 90);
+}
+
+// Ноги и сапоги; в шаге одна нога уходит вперёд, другая назад — вдоль хода для профиля (влево),
+// вверх-вниз для вида спереди и сзади, раз шаг там не виден сбоку.
+function drawHeroLegs(canvas, side, phase) {
+  const legWidth = 4;
+  const legHeight = 10;
+  const y0 = 30;
+  const legAx = 11;
+  const legBx = 17;
+  let legAOffsetX = 0;
+  let legAOffsetY = 0;
+  let legBOffsetX = 0;
+  let legBOffsetY = 0;
+  if (phase !== 0) {
+    const forward = phase === 1 ? -1 : 1;
+    if (side === HERO_SIDE_LEFT) {
+      legAOffsetX = forward * HERO_STEP_OFFSET;
+      legBOffsetX = -forward * HERO_STEP_OFFSET;
+    } else {
+      legAOffsetY = forward * HERO_STEP_OFFSET * 0.5;
+      legBOffsetY = -forward * HERO_STEP_OFFSET * 0.5;
+    }
+  }
+  fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, legAx + legAOffsetX, y0 + legAOffsetY, legWidth, legHeight, HERO_PANTS, 255);
+  fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, legBx + legBOffsetX, y0 + legBOffsetY, legWidth, legHeight, HERO_PANTS, 255);
+  fillRect(
+    canvas,
+    HERO_FRAME_WIDTH,
+    HERO_FRAME_HEIGHT,
+    legAx + legAOffsetX - 1,
+    y0 + legAOffsetY + legHeight,
+    legWidth + 2,
+    4,
+    HERO_BOOTS,
+    255,
+  );
+  fillRect(
+    canvas,
+    HERO_FRAME_WIDTH,
+    HERO_FRAME_HEIGHT,
+    legBx + legBOffsetX - 1,
+    y0 + legBOffsetY + legHeight,
+    legWidth + 2,
+    4,
+    HERO_BOOTS,
+    255,
+  );
+}
+
+// Туловище в куртке — одинаково для всех сторон, различие сторон несёт голова.
+function drawHeroTorso(canvas) {
+  fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 9, 16, 14, 14, HERO_JACKET, 255);
+}
+
+// Руки идут навстречу ногам («Герой», пункт 13): рука с той же стороны, что отставшая нога,
+// уходит вперёд — знак смещения противоположен одноимённой ноге в `drawHeroLegs`. Цвет рукава
+// чуть светлее куртки, иначе рука, сдвинувшись в профиле на туловище, слилась бы с ним.
+function drawHeroArms(canvas, side, phase) {
+  const armWidth = 4;
+  const armHeight = 12;
+  const y0 = 16;
+  const armAx = 5;
+  const armBx = 23;
+  let armAOffsetX = 0;
+  let armAOffsetY = 0;
+  let armBOffsetX = 0;
+  let armBOffsetY = 0;
+  if (phase !== 0) {
+    const forward = phase === 1 ? -1 : 1;
+    if (side === HERO_SIDE_LEFT) {
+      armAOffsetX = (-forward * HERO_STEP_OFFSET) / 2;
+      armBOffsetX = (forward * HERO_STEP_OFFSET) / 2;
+    } else {
+      armAOffsetY = -forward * HERO_STEP_OFFSET * 0.5;
+      armBOffsetY = forward * HERO_STEP_OFFSET * 0.5;
+    }
+  }
+  fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, armAx + armAOffsetX, y0 + armAOffsetY, armWidth, armHeight, HERO_SLEEVE, 255);
+  fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, armBx + armBOffsetX, y0 + armBOffsetY, armWidth, armHeight, HERO_SLEEVE, 255);
+}
+
+// Голова: вниз — лицо (глаза видны), вверх — затылок (сплошные волосы), влево — профиль
+// (один глаз у переднего края); вправо получается зеркалом кадра «влево» (пункт 13).
+function drawHeroHead(canvas, side) {
+  fillEllipse(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 16, 9, 6, 6, HERO_SKIN, 255);
+  if (side === HERO_SIDE_UP) {
+    fillEllipse(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 16, 9, 6, 6, HERO_HAIR, 255);
+    return;
+  }
+  fillEllipse(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 16, 5, 6, 3, HERO_HAIR, 255);
+  if (side === HERO_SIDE_DOWN) {
+    fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 13, 9, 1, 1, [0, 0, 0], 255);
+    fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 18, 9, 1, 1, [0, 0, 0], 255);
+  } else if (side === HERO_SIDE_LEFT) {
+    fillRect(canvas, HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 11, 9, 1, 1, [0, 0, 0], 255);
+  }
+}
+
+// Кадр ленты героя — «Герой», пункты 12–13: сторона `Math.floor(frame / 3)`, фаза `frame % 3`;
+// сторона «вправо» не рисуется отдельно, а зеркалит сторону «влево» той же фазы.
+function heroFrameImage(frame) {
+  const side = Math.floor(frame / 3);
+  const phase = frame % 3;
+  if (side === HERO_SIDE_RIGHT) return mirrorFrame(heroFrameImage(3 * HERO_SIDE_LEFT + phase));
+
+  const canvas = makeCanvas(HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT);
+  drawHeroShadow(canvas);
+  drawHeroLegs(canvas, side, phase);
+  drawHeroTorso(canvas);
+  drawHeroArms(canvas, side, phase);
+  drawHeroHead(canvas, side);
+  return { width: HERO_FRAME_WIDTH, height: HERO_FRAME_HEIGHT, canvas };
+}
+
 // Цвет по фигуре — «Картинки» → пункт 34: у каждой фигуры тетриса свой цвет (палитра
 // Tetris Guideline: I голубой, O жёлтый, T фиолетовый, S зелёный, Z красный, J синий, L оранжевый).
 const TETRIS_CUBE_COLORS = {
@@ -312,6 +496,9 @@ export const IMAGES = {
   "tetris/images/flash.png": () =>
     framesStrip(CELL, CELL, 2, (frame) => solidImage(CELL, CELL, "#ffffff", frame === 0 ? 0xff : 0x00)),
   "tetris/images/blank.png": () => solidImage(CELL, CELL, "#000000", 0x00),
+
+  "rpg/images/hero.png": () => framesStrip(HERO_FRAME_WIDTH, HERO_FRAME_HEIGHT, 12, heroFrameImage),
+  "rpg/images/marker.png": () => ringImage(CELL, "#f2f2c8", 4),
 };
 
 for (const [name, colorHex] of Object.entries(TETRIS_CUBE_COLORS)) {

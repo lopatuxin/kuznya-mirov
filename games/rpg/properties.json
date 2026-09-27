@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "obstacle": "flag",
+    "hero": "flag",
+    "marker": "flag",
+    "hero_frame": "number"
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "name": "Ролевая игра",
+  "scene": { "width": 64, "height": 40, "background": "#4a7a3c", "view_height": 12, "y_sort": true },
+  "random_seed": 20260927,
+  "max_objects": 4096,
+  "start_screen": "location",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {},
+    "images": {
+      "hero": { "path": "images/hero.png", "frames": 12, "frame_by": "hero_frame" },
+      "marker": { "path": "images/marker.png" }
+    }
+  }
+}
