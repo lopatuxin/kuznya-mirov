@@ -159,6 +159,7 @@ mod tests {
             RuleSet::default(),
             scene,
             100,
+            Vec::new(),
             1,
             Vec::new(),
             0,

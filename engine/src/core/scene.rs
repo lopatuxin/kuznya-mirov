@@ -1,5 +1,17 @@
 use super::property;
+use super::value::ImageId;
 use super::world::World;
+
+/// «Мир на экране» → «Земля», требования 14–17: one `ground` layer — `image` is a declared image
+/// with no `frame_time`/`frame_by`/`size` (checked at load time, `data::load::parse_ground_layer`),
+/// its frames read as tiles; `cells[y][x]` is the tile number for that scene cell, `-1` for none.
+/// One row per scene cell of height, one number per row per scene cell of width — also checked at
+/// load time, so drawing never has to re-check bounds beyond a plain index.
+#[derive(Debug, Clone)]
+pub struct GroundLayer {
+    pub image: ImageId,
+    pub cells: Vec<Vec<i32>>,
+}
 
 #[derive(Debug, Clone, Copy)]
 pub struct SceneConfig {
@@ -59,6 +71,48 @@ impl SceneConfig {
             (cell[1] as f64).clamp(0.0, self.height as f64),
         ]
     }
+
+    /// «Мир на экране» → «Земля», требование 20: whole scene cells `[x0, x1) × [y0, y1)` at least
+    /// partly inside the visible part of the scene right now — given the same `scale`/`offset`
+    /// the world itself just drew with (camera's, or the plain letterbox's), clamped to the
+    /// scene's own bounds. A non-positive `scale` (no loaded game ever draws with one) answers the
+    /// whole scene rather than an empty or inverted range.
+    pub fn visible_cell_range(
+        &self,
+        scale: f32,
+        offset: [f32; 2],
+        viewport: [f32; 2],
+    ) -> CellRange {
+        if scale <= 0.0 {
+            return CellRange {
+                x0: 0,
+                y0: 0,
+                x1: self.width,
+                y1: self.height,
+            };
+        }
+        let visible_min = [-offset[0] / scale, -offset[1] / scale];
+        let visible_max = [
+            (viewport[0] - offset[0]) / scale,
+            (viewport[1] - offset[1]) / scale,
+        ];
+        let x0 = (visible_min[0].floor().max(0.0) as u32).min(self.width);
+        let y0 = (visible_min[1].floor().max(0.0) as u32).min(self.height);
+        let x1 = (visible_max[0].ceil().max(0.0) as u32).clamp(x0, self.width);
+        let y1 = (visible_max[1].ceil().max(0.0) as u32).clamp(y0, self.height);
+        CellRange { x0, y0, x1, y1 }
+    }
+}
+
+/// `[x0, x1) × [y0, y1)` scene cells, `x1`/`y1` exclusive — «Мир на экране» → «Земля»:
+/// `SceneConfig::visible_cell_range`'s own result, and `render::atlas::compose_ground_paints`'s
+/// own input.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CellRange {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
 }
 
 /// «Порядок рисования», требования 8–10: the comparator every draw-order decision shares —
@@ -451,6 +505,74 @@ mod tests {
             None,
             "bottom excluded"
         );
+    }
+
+    // -------------------------------------------------------------------------------------------
+    // Фаза 13 — «Мир на экране» → «Земля», требование 20: видимые клетки под текущей камерой
+    // -------------------------------------------------------------------------------------------
+
+    fn ground_scene(width: u32, height: u32) -> SceneConfig {
+        SceneConfig {
+            width,
+            height,
+            background: [0.0; 4],
+            view_height: Some(10.0),
+            y_sort: false,
+        }
+    }
+
+    #[test]
+    fn without_view_height_the_whole_scene_is_visible() {
+        let scene = SceneConfig {
+            width: 20,
+            height: 15,
+            background: [0.0; 4],
+            view_height: None,
+            y_sort: false,
+        };
+        let (scale, offset) = letterbox([800.0, 600.0], [20.0, 15.0]);
+        let visible = scene.visible_cell_range(scale, offset, [800.0, 600.0]);
+        assert_eq!(
+            visible,
+            CellRange {
+                x0: 0,
+                y0: 0,
+                x1: 20,
+                y1: 15
+            }
+        );
+    }
+
+    /// Camera centered on a 40×40 scene, `view_height: 10`, 800×800 window — scale 80, showing a
+    /// 10×10 window of cells centered on (20, 20): cells [15, 25) both axes.
+    #[test]
+    fn camera_shows_only_the_window_of_cells_under_it() {
+        let scene = ground_scene(40, 40);
+        let viewport = [800.0, 800.0];
+        let (scale, offset) = crate::core::camera::frame(&scene, [20.0, 20.0], viewport);
+        let visible = scene.visible_cell_range(scale, offset, viewport);
+        assert_eq!(
+            visible,
+            CellRange {
+                x0: 15,
+                y0: 15,
+                x1: 25,
+                y1: 25
+            }
+        );
+    }
+
+    /// The camera pinned to the scene's own left edge — visible range starts at cell 0, not
+    /// negative, and never exceeds the scene's own width.
+    #[test]
+    fn visible_range_clamps_to_the_scenes_own_edges() {
+        let scene = ground_scene(40, 40);
+        let viewport = [800.0, 800.0];
+        let (scale, offset) = crate::core::camera::frame(&scene, [0.0, 0.0], viewport);
+        let visible = scene.visible_cell_range(scale, offset, viewport);
+        assert_eq!(visible.x0, 0, "{visible:?}");
+        assert_eq!(visible.y0, 0, "{visible:?}");
+        assert!(visible.x1 <= 40 && visible.y1 <= 40, "{visible:?}");
     }
 }
 

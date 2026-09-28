@@ -39,7 +39,9 @@ struct InstanceInput {
 struct VertexOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) color: vec4<f32>,
-    @location(1) uv: vec2<f32>,
+    @location(1) uv_px: vec2<f32>,
+    @location(2) @interpolate(flat) uv_min: vec2<f32>,
+    @location(3) @interpolate(flat) uv_max: vec2<f32>,
 };
 
 @vertex
@@ -64,14 +66,23 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
         sample_unit = vec2<f32>(1.0 - vertex.unit.y, vertex.unit.x);
     }
 
+    // «Картинки», требование 23: the fragment shader clamps the sampled point to this rect's
+    // outermost texel centers, so floating-point error from the transform above never crosses
+    // into a neighboring frame, grid cell or ground tile; the mapping itself stays linear, so
+    // every texel keeps its full on-screen size.
+    let sample_px = instance.atlas_pos + sample_unit * instance.atlas_size;
+
     var out: VertexOutput;
     out.clip_position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
     out.color = instance.color;
-    out.uv = (instance.atlas_pos + sample_unit * instance.atlas_size) / ATLAS_SIZE;
+    out.uv_px = sample_px;
+    out.uv_min = instance.atlas_pos + vec2<f32>(0.5, 0.5);
+    out.uv_max = max(instance.atlas_pos + instance.atlas_size - vec2<f32>(0.5, 0.5), out.uv_min);
     return out;
 }
 
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
-    return in.color * textureSample(atlas_texture, atlas_sampler, in.uv);
+    let uv = clamp(in.uv_px, in.uv_min, in.uv_max) / ATLAS_SIZE;
+    return in.color * textureSample(atlas_texture, atlas_sampler, uv);
 }

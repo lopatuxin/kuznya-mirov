@@ -8,6 +8,7 @@ use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
+use crate::core::scene::{CellRange, GroundLayer};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
 use crate::core::world_elements;
@@ -615,31 +616,52 @@ fn recompute_cursor_after_step(
     }
 }
 
+fn to_draw_rects(paints: Vec<atlas::RectPaint>) -> Vec<DrawRect> {
+    paints
+        .into_iter()
+        .map(|paint| {
+            draw_rect(
+                paint.position,
+                paint.size,
+                paint.color,
+                paint.atlas_rect,
+                paint.rotation_quarters as f32,
+            )
+        })
+        .collect()
+}
+
 fn compose_instances(
     game: &Game,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
 ) -> Vec<DrawRect> {
     let steps = game.step_count() as f64;
-    atlas::compose_world_paints(
+    to_draw_rects(atlas::compose_world_paints(
         &game.world,
         &game.scene,
         game.world.ids(),
         steps,
         images,
         atlas_rects,
-    )
-    .into_iter()
-    .map(|paint| {
-        draw_rect(
-            paint.position,
-            paint.size,
-            paint.color,
-            paint.atlas_rect,
-            paint.rotation_quarters as f32,
-        )
-    })
-    .collect()
+    ))
+}
+
+/// «Мир на экране» → «Земля», требования 18, 20–21: the visible tiles under the world's current
+/// camera frame — drawn everywhere the world itself is drawn (`draw`/`tick`, battle or not),
+/// always first in the caller's own instance list so every object draws on top of them.
+fn compose_ground_instances(
+    ground: &[GroundLayer],
+    visible: CellRange,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+) -> Vec<DrawRect> {
+    to_draw_rects(atlas::compose_ground_paints(
+        ground,
+        visible,
+        images,
+        atlas_rects,
+    ))
 }
 
 /// Panels and buttons become `DrawRect`s in window pixels; labels and button captions become
@@ -1113,11 +1135,14 @@ impl Engine {
             let _ = self.renderer.render_frame(&[], &[], &[], &[]);
             return;
         }
-        if let Some((scale, offset)) = self.frame() {
-            self.renderer.set_world_frame(scale, offset);
-        }
+        let (scale, offset) = self.frame().expect("checked above");
+        self.renderer.set_world_frame(scale, offset);
         let game = self.game.as_ref().expect("checked above");
-        let mut world_instances = compose_instances(game, &self.images, &self.atlas_rects);
+        let viewport = self.renderer.window_size_css();
+        let visible = game.scene.visible_cell_range(scale, offset, viewport);
+        let mut world_instances =
+            compose_ground_instances(&game.ground, visible, &self.images, &self.atlas_rects);
+        world_instances.extend(compose_instances(game, &self.images, &self.atlas_rects));
         // «Надписи и полоски в мире», требование 37: рисуются везде, где нарисован мир — в
         // редакторе вне партии тоже, в отличие от `ui_instances`/`texts` ниже, которые видны
         // только в партии или повторе.
@@ -1350,7 +1375,10 @@ impl Engine {
         let (scale, offset) = frame_for(game, self.battle_view, viewport);
         self.renderer.set_world_frame(scale, offset);
 
-        let mut world_instances = compose_instances(game, &self.images, &self.atlas_rects);
+        let visible = game.scene.visible_cell_range(scale, offset, viewport);
+        let mut world_instances =
+            compose_ground_instances(&game.ground, visible, &self.images, &self.atlas_rects);
+        world_instances.extend(compose_instances(game, &self.images, &self.atlas_rects));
         let (bar_rects, world_texts) = compose_world_elements(game, config);
         world_instances.extend(bar_rects);
         let screen = &config.screens[state.active()];

@@ -8,7 +8,7 @@ use crate::core::rules::{
     Selector, SetValue, ShiftSpec, SoundId, SpawnCell, SpawnCondition, SpawnPlace, SpawnVariant,
     TemplateValue, TurnDir, TurnSpec,
 };
-use crate::core::scene::{ObjectSpec, SceneConfig};
+use crate::core::scene::{GroundLayer, ObjectSpec, SceneConfig};
 use crate::core::screens::{
     Align, Anchor, ButtonCommand, Element, Fill, FontId, MaxSpec, MusicId, Placement, Screen,
     ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement, WorldElementKind,
@@ -838,34 +838,164 @@ fn parse_scene_object(
     })
 }
 
+/// «Мир на экране» → «Земля», требования 13–14: `scene.json`'s root — `objects` (required) and
+/// `ground` (optional, empty without the key — «без ground всё как сейчас»).
+#[derive(Default)]
+struct ParsedSceneFile {
+    objects: Vec<ParsedObject>,
+    ground: Vec<GroundLayer>,
+}
+
 fn parse_scene_json(
     text: &str,
     file: &str,
     properties: &PropertyTable,
     images: &[ImageDecl],
+    scene: &SceneConfig,
     errors: &mut ErrorSink,
-) -> Vec<ParsedObject> {
+) -> ParsedSceneFile {
     let Some(root) = parse_json_or_error(file, text, errors) else {
-        return Vec::new();
+        return ParsedSceneFile::default();
     };
     let Some(obj) = expect_object(&root, file, "", errors) else {
-        return Vec::new();
+        return ParsedSceneFile::default();
     };
-    reject_unknown_keys(obj, &["objects"], file, "", errors);
+    reject_unknown_keys(obj, &["objects", "ground"], file, "", errors);
     let Some(objects_json) = obj.get("objects") else {
         // Same convention `require_field` uses: the path names the parent object (here the
         // root, `""`), not the missing key itself — a path pointing at a key that by definition
         // isn't in the text can never resolve to a location.
         errors.push(file, "", "отсутствует список объектов");
-        return Vec::new();
+        return ParsedSceneFile::default();
     };
-    let Some(arr) = expect_array(objects_json, file, "objects", errors) else {
+    let objects = match expect_array(objects_json, file, "objects", errors) {
+        Some(arr) => arr
+            .iter()
+            .enumerate()
+            .filter_map(|(i, v)| parse_scene_object(v, i, file, properties, images, errors))
+            .collect(),
+        None => Vec::new(),
+    };
+    let ground = match obj.get("ground") {
+        Some(v) => parse_ground(v, file, images, scene, errors),
+        None => Vec::new(),
+    };
+    ParsedSceneFile { objects, ground }
+}
+
+/// «Мир на экране» → «Земля», требования 13, 24: `ground` — a list of layers; anything else is
+/// the same error `expect_array` already gives for other misshapen lists.
+fn parse_ground(
+    value: &Json,
+    file: &str,
+    images: &[ImageDecl],
+    scene: &SceneConfig,
+    errors: &mut ErrorSink,
+) -> Vec<GroundLayer> {
+    let Some(arr) = expect_array(value, file, "ground", errors) else {
         return Vec::new();
     };
     arr.iter()
         .enumerate()
-        .filter_map(|(i, v)| parse_scene_object(v, i, file, properties, images, errors))
+        .filter_map(|(i, v)| parse_ground_layer(v, i, file, images, scene, errors))
         .collect()
+}
+
+/// «Мир на экране» → «Земля», требования 14–17, 24: one `ground` layer — `image` (a declared tile
+/// set: no `frame_time`/`frame_by`/`size`) and `cells` (one row per scene cell of height, one
+/// number per row per scene cell of width, each `-1` or a tile number of `image`'s own set).
+fn parse_ground_layer(
+    value: &Json,
+    index: usize,
+    file: &str,
+    images: &[ImageDecl],
+    scene: &SceneConfig,
+    errors: &mut ErrorSink,
+) -> Option<GroundLayer> {
+    let path = format!("ground[{index}]");
+    let obj = expect_object(value, file, &path, errors)?;
+    reject_unknown_keys(obj, &["image", "cells"], file, &path, errors);
+
+    let image_path = join(&path, "image");
+    let image_name = require_field(obj, "image", file, &path, errors)
+        .and_then(|v| expect_string(v, file, &image_path, errors))?;
+    let image = resolve_image(&image_name, images, file, &image_path, errors)?;
+    let decl = &images[image];
+    if decl.frame_by.is_some() || decl.animated || decl.size.is_some() {
+        errors.push(
+            file,
+            &image_path,
+            format!(
+                "\"{image_name}\" объявлена с frame_time, frame_by или size: земля берёт только набор плиток"
+            ),
+        );
+        return None;
+    }
+
+    let cells_json = require_field(obj, "cells", file, &path, errors)?;
+    let cells_path = join(&path, "cells");
+    let rows_json = expect_array(cells_json, file, &cells_path, errors)?;
+    if rows_json.len() != scene.height as usize {
+        errors.push(
+            file,
+            &cells_path,
+            format!(
+                "cells: {} строк, а высота сцены {} клеток",
+                rows_json.len(),
+                scene.height
+            ),
+        );
+        return None;
+    }
+    let mut cells = Vec::with_capacity(rows_json.len());
+    let mut ok = true;
+    for (r, row_json) in rows_json.iter().enumerate() {
+        let row_path = format!("{cells_path}[{r}]");
+        let Some(row_arr) = expect_array(row_json, file, &row_path, errors) else {
+            ok = false;
+            continue;
+        };
+        if row_arr.len() != scene.width as usize {
+            errors.push(
+                file,
+                &row_path,
+                format!(
+                    "cells[{r}]: {} чисел, а ширина сцены {} клеток",
+                    row_arr.len(),
+                    scene.width
+                ),
+            );
+            ok = false;
+            continue;
+        }
+        let mut row = Vec::with_capacity(row_arr.len());
+        for (c, cell_json) in row_arr.iter().enumerate() {
+            let cell_path = format!("{row_path}[{c}]");
+            match expect_number(cell_json, file, &cell_path, errors) {
+                Some(n) if n.fract() == 0.0 && n >= -1.0 && n < decl.frames as f64 => {
+                    row.push(n as i32);
+                }
+                Some(n) => {
+                    errors.push(
+                        file,
+                        &cell_path,
+                        format!(
+                            "номер плитки должен быть целым от -1 до {} (кадров в наборе {}), получено {n}",
+                            decl.frames as i64 - 1,
+                            decl.frames
+                        ),
+                    );
+                    ok = false;
+                }
+                None => ok = false,
+            }
+        }
+        cells.push(row);
+    }
+    if !ok {
+        return None;
+    }
+    Some(GroundLayer { image, cells })
 }
 
 fn parse_properties_json(text: &str, file: &str, errors: &mut ErrorSink) -> PropertyTable {
@@ -1029,6 +1159,22 @@ pub struct ImageDecl {
     pub path: String,
     pub frames: u32,
     pub frame_steps: i64,
+    /// «Картинки» → «Кадры», требование 5: whether `frame_time` was declared — `false` for a
+    /// plain frame set (`frames` alone, or with `frame_by`) always shows frame 0 to
+    /// `render::atlas::frame_atlas_rect`, rather than cycling by elapsed time.
+    pub animated: bool,
+    /// «Картинки» → «Кадры», требования 1–3: frames per grid row; `None` — one row, as before.
+    pub columns: Option<u32>,
+    /// «Картинки» → «Картинка своего размера», требование 6: own size in cells; `None` — the
+    /// image stretches onto the object's own rectangle, as before.
+    pub size: Option<Vec2>,
+    /// требование 6: the point of the own-size rectangle that coincides with the same point of
+    /// the object's rectangle (shifted by `offset`). Meaningless without `size`, always `Center`
+    /// then — `size` alone gates whether it's ever read.
+    pub anchor: Anchor,
+    /// требование 6: shift from `anchor`'s point, in cells. Meaningless without `size`, always
+    /// `[0, 0]` then.
+    pub offset: Vec2,
     /// «Картинки», требование 23: the frame is picked by this `number`-kind property on the
     /// object itself, instead of by elapsed time — `None` for a normal, time-driven strip (or a
     /// single-frame image). Resolved from `frame_by_name` once `properties.json` is parsed (see
@@ -1580,7 +1726,16 @@ fn parse_images_table(
         };
         reject_unknown_keys(
             decl_obj,
-            &["path", "frames", "frame_time", "frame_by"],
+            &[
+                "path",
+                "frames",
+                "columns",
+                "frame_time",
+                "frame_by",
+                "size",
+                "anchor",
+                "offset",
+            ],
             file,
             &entry_path,
             errors,
@@ -1624,29 +1779,25 @@ fn parse_images_table(
             Some(v) => expect_string(v, file, &join(&entry_path, "frame_by"), errors),
             None => None,
         };
-        let (frames, frame_steps) = match (decl_obj.get("frames"), decl_obj.get("frame_time")) {
-            (None, None) => (1, 1),
-            (Some(_), None) if frame_by_json.is_none() => {
-                errors.push(
-                    file,
-                    &entry_path,
-                    "frames задан без frame_time (или frame_by): полю нужна пара",
-                );
-                continue;
-            }
-            (None, Some(_)) => {
-                errors.push(
+        // «Картинки», требование 5: `frames` alone (or with `frame_by`) is no longer an error —
+        // a bare frame/tile set, first frame shown until something else picks one.
+        let (frames, frame_steps, animated) =
+            match (decl_obj.get("frames"), decl_obj.get("frame_time")) {
+                (None, None) => (1, 1, false),
+                (None, Some(_)) => {
+                    errors.push(
                     file,
                     &entry_path,
                     "frame_time задан без frames: оба поля нужны вместе, иначе не нужно ни одного",
                 );
-                continue;
-            }
-            (Some(frames_json), frame_time_json) => {
-                let frames = expect_number(frames_json, file, &join(&entry_path, "frames"), errors)
-                    .filter(|n| {
-                        if *n < 1.0 || n.fract() != 0.0 || *n > f64::from(u32::MAX) {
-                            errors.push(
+                    continue;
+                }
+                (Some(frames_json), frame_time_json) => {
+                    let frames =
+                        expect_number(frames_json, file, &join(&entry_path, "frames"), errors)
+                            .filter(|n| {
+                                if *n < 1.0 || n.fract() != 0.0 || *n > f64::from(u32::MAX) {
+                                    errors.push(
                                 file,
                                 &join(&entry_path, "frames"),
                                 format!(
@@ -1654,41 +1805,127 @@ fn parse_images_table(
                                     u32::MAX
                                 ),
                             );
-                            false
-                        } else {
-                            true
+                                    false
+                                } else {
+                                    true
+                                }
+                            })
+                            .map(|n| n as u32);
+                    // Без `frame_time`: сам номер кадра шаг не считает, единица годится как
+                    // заглушка — `animated: false` ниже говорит `atlas::frame_atlas_rect` не
+                    // читать эту величину вовсе.
+                    let frame_steps = match frame_time_json {
+                        Some(frame_time_json) => expect_number(
+                            frame_time_json,
+                            file,
+                            &join(&entry_path, "frame_time"),
+                            errors,
+                        )
+                        .filter(|n| {
+                            if *n <= 0.0 {
+                                errors.push(
+                                    file,
+                                    &join(&entry_path, "frame_time"),
+                                    format!("frame_time должен быть больше нуля, получено {n}"),
+                                );
+                                false
+                            } else {
+                                true
+                            }
+                        })
+                        .map(seconds_to_steps),
+                        None => Some(1),
+                    };
+                    match (frames, frame_steps) {
+                        (Some(frames), Some(frame_steps)) => {
+                            (frames, frame_steps, frame_time_json.is_some())
                         }
-                    })
-                    .map(|n| n as u32);
-                // `frame_by` без `frame_time`: сам номер кадра шаг не считает, единица годится
-                // как заглушка — `atlas::frame_atlas_rect` эту величину не читает в этом случае.
-                let frame_steps = match frame_time_json {
-                    Some(frame_time_json) => expect_number(
-                        frame_time_json,
+                        _ => continue,
+                    }
+                }
+            };
+        // «Картинки», требование 1: `columns` — целое от 1, не больше `frames`, только вместе с
+        // `frames`.
+        let columns = match decl_obj.get("columns") {
+            None => None,
+            Some(v) => {
+                if decl_obj.get("frames").is_none() {
+                    errors.push(
                         file,
-                        &join(&entry_path, "frame_time"),
-                        errors,
-                    )
-                    .filter(|n| {
-                        if *n <= 0.0 {
-                            errors.push(
-                                file,
-                                &join(&entry_path, "frame_time"),
-                                format!("frame_time должен быть больше нуля, получено {n}"),
-                            );
-                            false
-                        } else {
-                            true
-                        }
-                    })
-                    .map(seconds_to_steps),
-                    None => Some(1),
-                };
-                match (frames, frame_steps) {
-                    (Some(frames), Some(frame_steps)) => (frames, frame_steps),
-                    _ => continue,
+                        &entry_path,
+                        "columns задан без frames: сетке нужно общее число кадров",
+                    );
+                    continue;
+                }
+                match expect_number(v, file, &join(&entry_path, "columns"), errors) {
+                    Some(n) if n >= 1.0 && n.fract() == 0.0 && n <= frames as f64 => Some(n as u32),
+                    Some(n) => {
+                        errors.push(
+                            file,
+                            &join(&entry_path, "columns"),
+                            format!(
+                                "columns должен быть целым от 1 до frames ({frames}), получено {n}"
+                            ),
+                        );
+                        continue;
+                    }
+                    None => continue,
                 }
             }
+        };
+        // «Картинки», требование 6: `anchor`/`offset` требуют `size`; `size` — пара чисел
+        // больше нуля.
+        if decl_obj.get("size").is_none()
+            && (decl_obj.get("anchor").is_some() || decl_obj.get("offset").is_some())
+        {
+            errors.push(
+                file,
+                &entry_path,
+                "anchor или offset заданы без size: сдвигать от чего?",
+            );
+            continue;
+        }
+        let size = match decl_obj.get("size") {
+            None => None,
+            Some(v) => match parse_vec2(v, file, &join(&entry_path, "size"), errors) {
+                Some(s) if s[0] > 0.0 && s[1] > 0.0 => Some(s),
+                Some(s) => {
+                    errors.push(
+                        file,
+                        &join(&entry_path, "size"),
+                        format!(
+                            "size должен быть парой чисел больше нуля, получено [{}, {}]",
+                            s[0], s[1]
+                        ),
+                    );
+                    continue;
+                }
+                None => continue,
+            },
+        };
+        let anchor = match decl_obj.get("anchor") {
+            None => Anchor::Center,
+            Some(v) => {
+                let Some(s) = expect_string(v, file, &join(&entry_path, "anchor"), errors) else {
+                    continue;
+                };
+                let Some(a) = Anchor::parse(&s) else {
+                    errors.push(
+                        file,
+                        &join(&entry_path, "anchor"),
+                        format!("неизвестный якорь \"{s}\""),
+                    );
+                    continue;
+                };
+                a
+            }
+        };
+        let offset = match decl_obj.get("offset") {
+            None => [0.0, 0.0],
+            Some(v) => match parse_vec2(v, file, &join(&entry_path, "offset"), errors) {
+                Some(o) => o,
+                None => continue,
+            },
         };
         out.push(ImageDecl {
             frame_by: None,
@@ -1697,6 +1934,11 @@ fn parse_images_table(
             path: image_path,
             frames,
             frame_steps,
+            animated,
+            columns,
+            size,
+            anchor,
+            offset,
         });
     }
     Some(out)
@@ -5454,6 +5696,15 @@ fn resolve_fill(
                 );
                 return None;
             }
+            // «Картинки», требование 12: `size` — та же ошибка, что и `frame_by`.
+            if images[image].size.is_some() {
+                errors.push(
+                    file,
+                    image_path,
+                    format!("\"{name}\" объявлена с size: панель и кнопка её не берут"),
+                );
+                return None;
+            }
             Some(Fill::Image {
                 image,
                 opacity: opacity.unwrap_or(1.0),
@@ -6518,17 +6769,48 @@ fn validate_image_files(
                     );
                     continue;
                 }
-                if width % decl.frames != 0 {
-                    errors.push(
-                        "game.json",
-                        &field_path,
-                        format!(
-                            "{} — ширина {width} не делится на frames ({}) нацело, остаток {}",
-                            decl.path,
-                            decl.frames,
-                            width % decl.frames
-                        ),
-                    );
+                // «Картинки», требование 3: с `columns` — ширина делится на столбцы, высота на
+                // число строк сетки; без него — ширина делится на `frames`, как раньше.
+                match decl.columns {
+                    Some(columns) => {
+                        if width % columns != 0 {
+                            errors.push(
+                                "game.json",
+                                &field_path,
+                                format!(
+                                    "{} — ширина {width} не делится на columns ({columns}) нацело, остаток {}",
+                                    decl.path,
+                                    width % columns
+                                ),
+                            );
+                        }
+                        let rows = decl.frames.div_ceil(columns);
+                        if height % rows != 0 {
+                            errors.push(
+                                "game.json",
+                                &field_path,
+                                format!(
+                                    "{} — высота {height} не делится на число строк сетки ({rows}) нацело, остаток {}",
+                                    decl.path,
+                                    height % rows
+                                ),
+                            );
+                        }
+                    }
+                    None => {
+                        if width % decl.frames != 0 {
+                            errors.push(
+                                "game.json",
+                                &field_path,
+                                format!(
+                                    "{} — ширина {width} не делится на frames ({}) нацело, остаток {}",
+                                    decl.path,
+                                    decl.frames,
+                                    width % decl.frames
+                                ),
+                            );
+                        }
+                    }
                 }
             }
             Some(ImageVerdict::Rejected) => errors.push(
@@ -6569,14 +6851,18 @@ fn mark_key_table_used(used: &mut std::collections::HashSet<ImageId>, table: &Ke
 
 /// «Картинки»: an image the scene/rules/screens never name — collected across an object's own
 /// `image` property, its key bindings' `press`/`release` edits, a spawn template's `image` field
-/// (a collide effect's `set` counts too, the only other place a `Value::Image` can come from) and
-/// every panel/button fill.
+/// (a collide effect's `set` counts too, the only other place a `Value::Image` can come from),
+/// every panel/button fill, and (требование 22) every `ground` layer's own tile set.
 fn collect_used_images(
     scene: &[ParsedObject],
     rules: &RuleSet,
     screens: &[Screen],
+    ground: &[GroundLayer],
 ) -> std::collections::HashSet<ImageId> {
     let mut used = std::collections::HashSet::new();
+    for layer in ground {
+        used.insert(layer.image);
+    }
     for obj in scene {
         for (_, v) in &obj.values {
             if let Value::Image(id) = v {
@@ -6681,10 +6967,11 @@ fn validate_unused_images(
     scene: &[ParsedObject],
     rules: &RuleSet,
     screens: &[Screen],
+    ground: &[GroundLayer],
     code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
-    let used = collect_used_images(scene, rules, screens);
+    let used = collect_used_images(scene, rules, screens, ground);
     for (i, decl) in images.iter().enumerate() {
         if !used.contains(&i) && !code.is_some_and(|c| code_mentions_word(c, &decl.name)) {
             errors.push_warning(
@@ -6910,12 +7197,16 @@ pub fn load_rest_with_tables(
     };
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
 
-    let scene_objects = match scene_json {
+    let ParsedSceneFile {
+        objects: scene_objects,
+        ground,
+    } = match scene_json {
         Some(text) => parse_scene_json(
             text,
             &config.files.scene,
             &properties,
             &config.files.images,
+            &config.scene,
             &mut errors,
         ),
         None => {
@@ -6924,7 +7215,7 @@ pub fn load_rest_with_tables(
                 "",
                 "файл не найден; ожидался JSON-файл, названный в game.json → files → scene",
             );
-            Vec::new()
+            ParsedSceneFile::default()
         }
     };
 
@@ -7151,6 +7442,7 @@ pub fn load_rest_with_tables(
                 &scene_objects,
                 &rules,
                 &sc.screens,
+                &ground,
                 code_json,
                 &mut errors,
             );
@@ -7213,6 +7505,7 @@ pub fn load_rest_with_tables(
         rules,
         config.scene,
         config.max_objects,
+        ground,
         config.random_seed,
         scene_specs,
         sound_count,

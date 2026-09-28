@@ -7,7 +7,7 @@ use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, StepReport, StepReportBuilder};
 use super::rng::Rng;
 use super::rules::{Outcome, RuleSet};
-use super::scene::{ObjectSpec, SceneConfig};
+use super::scene::{GroundLayer, ObjectSpec, SceneConfig};
 use super::sound::SoundWindow;
 use super::step;
 use super::value::{Value, Vec2};
@@ -20,6 +20,10 @@ pub struct Game {
     pub rules: RuleSet,
     pub scene: SceneConfig,
     pub max_objects: usize,
+    /// «Мир на экране» → «Земля»: `scene.json → ground`, in list order — set once at load and
+    /// never touched again (требование 19: земля не объект, правила и код её не видят, по ходу
+    /// партии она не меняется).
+    pub ground: Vec<GroundLayer>,
 
     scene_objects: Vec<ObjectSpec>,
     random_seed: u64,
@@ -134,6 +138,7 @@ impl Game {
         rules: RuleSet,
         scene: SceneConfig,
         max_objects: usize,
+        ground: Vec<GroundLayer>,
         random_seed: u64,
         scene_objects: Vec<ObjectSpec>,
         sound_count: usize,
@@ -150,6 +155,7 @@ impl Game {
             rules,
             scene,
             max_objects,
+            ground,
             scene_objects,
             random_seed,
             rng: Rng::new(random_seed),
