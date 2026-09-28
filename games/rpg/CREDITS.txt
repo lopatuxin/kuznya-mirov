@@ -1,0 +1,125 @@
+Авторы графики ролевой игры (LPC)
+
+Герой — тело (человек, мужское, светлая кожа)
+  Источник: spritesheets/body/bodies/male/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, JaidynReiman, Benjamin K. Smith (BenCreating), Evert, Eliza Wyatt (ElizaWy), TheraHedwig, MuffinElZangano, Durrani, Johannes Sjölund (wulax), Stephen Challener (Redshrike)
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/liberated-pixel-cup-lpc-base-assets-sprites-map-tiles, https://opengameart.org/content/lpc-medieval-fantasy-character-sprites, https://opengameart.org/content/lpc-character-bases
+
+Гоблин — тело (подросток)
+  Источник: spritesheets/body/bodies/teen/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, Evert, TheraHedwig, Benjamin K. Smith (BenCreating), MuffinElZangano, Durrani, Pierre Vigier (pvigier), Eliza Wyatt (ElizaWy), Matthew Krohn (makrohn), Johannes Sjölund (wulax), Stephen Challener (Redshrike)
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/liberated-pixel-cup-lpc-base-assets-sprites-map-tiles, https://opengameart.org/content/lpc-teen-unisex-base-clothes, https://opengameart.org/content/lpc-character-bases
+
+Орк — тело (мускулистое)
+  Источник: spritesheets/body/bodies/muscular/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, JaidynReiman, Evert, TheraHedwig, MuffinElZangano, Durrani, Sander Frenken (castelonia), Benjamin K. Smith (BenCreating), Eliza Wyatt (ElizaWy), dalonedrau, Stephen Challener (Redshrike)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/liberated-pixel-cup-lpc-base-assets-sprites-map-tiles, https://opengameart.org/content/lpc-barbarian-sprite-base, https://opengameart.org/content/lpc-character-bases
+
+Герой — голова (человек, мужская)
+  Источник: spritesheets/head/heads/human/male/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, Benjamin K. Smith (BenCreating), Stephen Challener (Redshrike)
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/liberated-pixel-cup-lpc-base-assets-sprites-map-tiles, https://opengameart.org/content/lpc-character-bases
+
+Гоблин — голова
+  Источник: spritesheets/head/heads/goblin/adult/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, Stephen Challener (Redshrike), William.Thomsponj
+  Лицензии: OGA-BY 3.0, CC-BY 4.0, GPL 2.0, GPL 3.0
+  Страницы: https://opengameart.org/content/lpc-goblin, https://opengameart.org/content/lpc-folk
+
+Орк — голова
+  Источник: spritesheets/head/heads/orc/male/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, Matthew Krohn (makrohn), Stephen Challener (Redshrike), Zi Ye
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/four-characters-my-lpc-entries, https://opengameart.org/content/sinbad-the-ogre, https://opengameart.org/content/lpc-character-bases
+
+Герой — волосы
+  Источник: spritesheets/hair/plain/adult/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: JaidynReiman, Manuel Riecke (MrBeast), Joe White
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/liberated-pixel-cup-lpc-base-assets-sprites-map-tiles, https://opengameart.org/content/ponytail-and-plain-hairstyles, https://opengameart.org/content/lpc-expanded-hair
+
+Герой и орк — кожаный доспех
+  Источник: spritesheets/torso/armour/leather/male/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: Johannes Sjölund (wulax), bluecarrot16, JaidynReiman
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/lpc-medieval-fantasy-character-sprites, https://opengameart.org/content/lpc-clothing-updates, https://opengameart.org/content/lpc-expanded-armor
+
+Герой — штаны
+  Источник: spritesheets/legs/pants/male/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, JaidynReiman, ElizaWy, Matthew Krohn (makrohn), Johannes Sjölund (wulax), Stephen Challener (Redshrike)
+  Лицензии: OGA-BY 3.0, GPL 3.0, CC-BY-SA 3.0
+  Страницы: https://opengameart.org/content/liberated-pixel-cup-lpc-base-assets-sprites-map-tiles, https://opengameart.org/content/lpc-medieval-fantasy-character-sprites, https://opengameart.org/content/lpc-expanded-pants
+
+Гоблин — набедренная повязка (замена: короткие рваные шорты — в хранилище нет отдельной повязки)
+  Источник: spritesheets/legs/shorts/short_shorts/male/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: JaidynReiman, ElizaWy, Bluecarrot16, Johannes Sjölund (wulax), Stephen Challener (Redshrike)
+  Лицензии: OGA-BY 3.0, GPL 3.0
+  Страницы: https://github.com/ElizaWy/LPC/tree/main/Characters/Clothing, https://opengameart.org/content/lpc-expanded-pants
+
+Герой — сапоги
+  Источник: spritesheets/feet/boots/basic/male/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: JaidynReiman, bluecarrot16, Nila122
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 2.0, GPL 3.0
+  Страницы: https://opengameart.org/content/lpc-clothes-and-hair, https://opengameart.org/content/lpc-expanded-socks-shoes
+
+Герой — одноручный меч (arming sword): лист ходьбы/падения (universal/fg, universal/bg) и отдельный лист удара 128×128 (attack_slash/fg, attack_slash/bg, вариант «steel») — единственный меч хранилища с готовым взмахом в кадре не крупнее 128
+  Источник: spritesheets/weapon/sword/arming/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: ElizaWy; walk and down by JaidynReiman
+  Лицензии: OGA-BY 3.0
+  Страницы: https://github.com/ElizaWy/LPC/tree/main/Characters/Props/Sword%2001%20-%20Arming%20Sword, https://opengameart.org/content/lpc-expanded-sit-run-jump-more
+
+Гоблин — кинжал (взмах уже в кадре 64×64, простая часть)
+  Источник: spritesheets/weapon/sword/dagger/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16, Johannes Sjölund (wulax), Matthew Krohn (makrohn)
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0, GPL 3.0
+  Страницы: https://opengameart.org/content/lpc-medieval-fantasy-character-sprites, https://opengameart.org/content/lpc-extended-weapon-animations
+
+Орк — булава одной рукой: лист ходьбы/падения (walk, universal_behind) и отдельный лист удара 192×192 (attack_slash, attack_slash/behind) — боевой топор (waraxe) того же хранилища взмаха в кадре ≤128 не имеет (тоже только 192), булава выбрана как равноценная по требованию 4 замена
+  Источник: spritesheets/weapon/blunt/mace/ (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: Johannes Sjölund (wulax), bluecarrot16
+  Лицензии: OGA-BY 3.0, CC-BY-SA 3.0
+  Страницы: https://opengameart.org/content/lpc-medieval-fantasy-character-sprites, https://opengameart.org/content/lpc-extended-weapon-animations
+
+Таблица цветов тела — перекраска кожи гоблина и орка в зелёный («green»), PALETTE_RECOLOR_GUIDE.md, допуск ±1 на канал
+  Источник: tools/palettes/ulpc-body-palettes.json (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16
+  Лицензии: GPL 3.0
+
+Таблица цветов волос — перекраска волос героя из рыжих («orange») в тёмно-каштановые («dark_brown»)
+  Источник: tools/palettes/ulpc-hair-palettes.json (коммит 4963a69795255fb15a934c47f478a8bdcf3668f5, https://github.com/LiberatedPixelCup/Universal-LPC-Spritesheet-Character-Generator)
+  Авторы: bluecarrot16
+  Лицензии: GPL 3.0
+
+Трава — базовый слой земли
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Lanea Zimmerman (Sharm)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+
+Тропинка и берег пруда — плитки коридоров (земля, «dirt»)
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Lanea Zimmerman (Sharm)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+
+Вода пруда
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Lanea Zimmerman (Sharm)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+
+Стены построек (кирпичная кладка)
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Daniel Armstrong (HughSpectrum)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+
+Дерево
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Lanea Zimmerman (Sharm)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+
+Камень
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Lanea Zimmerman (Sharm)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0

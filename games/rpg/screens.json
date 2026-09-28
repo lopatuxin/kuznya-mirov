@@ -1,5 +1,18 @@
 {
   "screens": [
     { "name": "location", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "bar", "for": { "has": ["hero"] }, "anchor": "top", "offset": [0, -1.24125],
+      "size": [1, 0.12], "value": "health", "max": "max_health",
+      "color": "#22c55e", "back_color": "#00000080" },
+
+    { "kind": "bar", "for": { "has": ["enemy_unit"] }, "anchor": "top", "offset": [0, -0.21],
+      "size": [1, 0.12], "value": "health", "max": "max_health",
+      "color": "#dc2626", "back_color": "#00000080" },
+
+    { "kind": "label", "for": { "has": ["enemy_unit"] }, "anchor": "top", "offset": [0, -0.465],
+      "size": [1.2, 0.35], "text": "{title}", "font": "ui", "align": "center",
+      "color": "#ffffff" }
   ]
 }

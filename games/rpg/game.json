@@ -1,6 +1,12 @@
 {
   "name": "Ролевая игра",
-  "scene": { "width": 64, "height": 40, "background": "#4a7a3c", "view_height": 12, "y_sort": true },
+  "scene": {
+    "width": 32,
+    "height": 24,
+    "background": "#2f8534",
+    "view_height": 12,
+    "y_sort": true
+  },
   "random_seed": 20260927,
   "max_objects": 4096,
   "start_screen": "location",
@@ -10,10 +16,263 @@
     "rules": "rules.json",
     "screens": "screens.json",
     "code": "code.lua",
-    "fonts": {},
+    "fonts": {
+      "ui": "fonts/Rubik.ttf"
+    },
+    "tables": {
+      "enemies": "enemies.json"
+    },
     "images": {
-      "hero": { "path": "images/hero.png", "frames": 12, "frame_by": "hero_frame" },
-      "marker": { "path": "images/marker.png" }
+      "hero": {
+        "path": "images/hero.png",
+        "frames": 45,
+        "columns": 9,
+        "frame_by": "frame",
+        "size": [
+          2,
+          2
+        ],
+        "anchor": "bottom",
+        "offset": [
+          0,
+          0.0625
+        ]
+      },
+      "goblin": {
+        "path": "images/goblin.png",
+        "frames": 45,
+        "columns": 9,
+        "frame_by": "frame",
+        "size": [
+          2,
+          2
+        ],
+        "anchor": "bottom",
+        "offset": [
+          0,
+          0.0625
+        ]
+      },
+      "orc": {
+        "path": "images/orc.png",
+        "frames": 45,
+        "columns": 9,
+        "frame_by": "frame",
+        "size": [
+          2,
+          2
+        ],
+        "anchor": "bottom",
+        "offset": [
+          0,
+          0.0625
+        ]
+      },
+      "hero_attack": {
+        "path": "images/hero_attack.png",
+        "frames": 24,
+        "columns": 6,
+        "frame_by": "frame",
+        "size": [
+          4,
+          4
+        ],
+        "anchor": "bottom",
+        "offset": [
+          0,
+          1.0625
+        ]
+      },
+      "goblin_attack": {
+        "path": "images/goblin_attack.png",
+        "frames": 24,
+        "columns": 6,
+        "frame_by": "frame",
+        "size": [
+          2,
+          2
+        ],
+        "anchor": "bottom",
+        "offset": [
+          0,
+          0.0625
+        ]
+      },
+      "orc_attack": {
+        "path": "images/orc_attack.png",
+        "frames": 24,
+        "columns": 6,
+        "frame_by": "frame",
+        "size": [
+          6,
+          6
+        ],
+        "anchor": "bottom",
+        "offset": [
+          0,
+          2.0625
+        ]
+      },
+      "terrain": {
+        "path": "images/terrain.png",
+        "frames": 35,
+        "columns": 8
+      },
+      "tree": {
+        "path": "images/tree.png",
+        "size": [
+          2.96875,
+          3.65625
+        ],
+        "anchor": "bottom"
+      },
+      "rock": {
+        "path": "images/rock.png",
+        "size": [
+          1.8125,
+          1.28125
+        ],
+        "anchor": "bottom"
+      },
+      "marker": {
+        "path": "images/marker.png"
+      },
+      "wall_1x3": {
+        "path": "images/wall_1x3.png",
+        "size": [
+          1,
+          3.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_1x4": {
+        "path": "images/wall_1x4.png",
+        "size": [
+          1,
+          4.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_1x5": {
+        "path": "images/wall_1x5.png",
+        "size": [
+          1,
+          5.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_1x6": {
+        "path": "images/wall_1x6.png",
+        "size": [
+          1,
+          6.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_1x7": {
+        "path": "images/wall_1x7.png",
+        "size": [
+          1,
+          7.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_1x10": {
+        "path": "images/wall_1x10.png",
+        "size": [
+          1,
+          10.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_1x22": {
+        "path": "images/wall_1x22.png",
+        "size": [
+          1,
+          22.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_2x1": {
+        "path": "images/wall_2x1.png",
+        "size": [
+          2,
+          1.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_2x22": {
+        "path": "images/wall_2x22.png",
+        "size": [
+          2,
+          22.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_3x1": {
+        "path": "images/wall_3x1.png",
+        "size": [
+          3,
+          1.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_4x1": {
+        "path": "images/wall_4x1.png",
+        "size": [
+          4,
+          1.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_5x1": {
+        "path": "images/wall_5x1.png",
+        "size": [
+          5,
+          1.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_5x2": {
+        "path": "images/wall_5x2.png",
+        "size": [
+          5,
+          2.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_6x1": {
+        "path": "images/wall_6x1.png",
+        "size": [
+          6,
+          1.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_11x2": {
+        "path": "images/wall_11x2.png",
+        "size": [
+          11,
+          2.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_13x1": {
+        "path": "images/wall_13x1.png",
+        "size": [
+          13,
+          1.5
+        ],
+        "anchor": "bottom"
+      },
+      "wall_32x2": {
+        "path": "images/wall_32x2.png",
+        "size": [
+          32,
+          2.5
+        ],
+        "anchor": "bottom"
+      }
     }
   }
 }

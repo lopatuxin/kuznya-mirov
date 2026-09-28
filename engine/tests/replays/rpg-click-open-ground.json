@@ -1,12 +1,14 @@
 {
   "start": "location",
   "input": [
-    { "step": 1, "cursor": [10, 25] },
+    { "step": 1, "cursor": [6.9, 3.5] },
     { "step": 1, "press": "MouseLeft" }
   ],
-  "steps": 140,
+  "steps": 158,
   "checks": [
-    { "step": 140, "object": "hero", "property": "position", "equals": [9.5, 24.25] },
-    { "step": 140, "count": { "has": ["hero"], "without": ["walk_to"] }, "equals": 1 }
+    { "step": 150, "object": "hero", "property": "frame", "equals": 33 },
+    { "step": 157, "object": "hero", "property": "position", "equals": [6.525, 3.25] },
+    { "step": 158, "object": "hero", "property": "frame", "equals": 27 },
+    { "step": 158, "count": { "has": ["hero"], "without": ["walk_to"] }, "equals": 1 }
   ]
 }
