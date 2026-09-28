@@ -71,11 +71,10 @@ fn element_top_left(
     position: Vec2,
     obj_size: Vec2,
 ) -> [f32; 2] {
-    let (fx, fy) = anchor.fractions();
-    let anchor_point = [
-        position[0] as f32 + fx * obj_size[0] as f32,
-        position[1] as f32 + fy * obj_size[1] as f32,
-    ];
+    let anchor_point = anchor.point_on(
+        [position[0] as f32, position[1] as f32],
+        [obj_size[0] as f32, obj_size[1] as f32],
+    );
     let center = [anchor_point[0] + offset[0], anchor_point[1] + offset[1]];
     [center[0] - size[0] / 2.0, center[1] - size[1] / 2.0]
 }

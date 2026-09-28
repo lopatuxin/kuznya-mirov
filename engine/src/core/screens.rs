@@ -60,6 +60,16 @@ impl Anchor {
         }
     }
 
+    /// This anchor's own point on a rectangle at `position`/`size` — shared by
+    /// `world_elements::element_top_left` (the point on an *object's* rectangle a world element
+    /// centers on) and `render::atlas` (both the object's own anchor point and, at `position:
+    /// [0, 0]`, the same fractional point on an own-size image's rectangle — «Картинки»,
+    /// требования 8–9).
+    pub(crate) fn point_on(self, position: [f32; 2], size: [f32; 2]) -> [f32; 2] {
+        let (fx, fy) = self.fractions();
+        [position[0] + fx * size[0], position[1] + fy * size[1]]
+    }
+
     pub fn parse(s: &str) -> Option<Anchor> {
         Some(match s {
             "top_left" => Anchor::TopLeft,

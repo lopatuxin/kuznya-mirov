@@ -8,10 +8,10 @@
 //! built from its result (see `super::gpu`, wasm32-only).
 
 use crate::core::property;
-use crate::core::scene::{self, SceneConfig};
+use crate::core::scene::{self, CellRange, GroundLayer, SceneConfig};
 use crate::core::screens::Fill;
 use crate::core::time::frame_index;
-use crate::core::value::ImageId;
+use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
@@ -175,13 +175,23 @@ pub fn frame_atlas_rect(
     atlas_rects: &[AtlasRect],
 ) -> AtlasRect {
     let decl = &images[image];
-    let frame = frame_index(elapsed_steps, decl.frame_steps, decl.frames);
+    // «Картинки» → «Кадры», требование 5: a frame/tile set with neither `frame_time` nor
+    // `frame_by` always shows frame 0 — never cycled by elapsed time.
+    let frame = if decl.animated {
+        frame_index(elapsed_steps, decl.frame_steps, decl.frames)
+    } else {
+        0
+    };
     frame_atlas_rect_at(image, frame, images, atlas_rects)
 }
 
-/// «Картинки», требование 23: the atlas rectangle a *given* frame number occupies — used both by
-/// `frame_atlas_rect` (time-driven) and `frame_by` (object-property-driven, see
-/// `compose_world_paints`), which only differ in how they arrive at `frame`.
+/// «Картинки», требование 23; требования 1–3 (сетка): the atlas rectangle a *given* frame number
+/// occupies — used by `frame_atlas_rect` (time-driven), `frame_by` (object-property-driven, see
+/// `compose_world_paints`) and ground tiles (`compose_ground_paints`), which only differ in how
+/// they arrive at `frame`. Without `columns` every frame lies in one row, left to right, as
+/// before; with it, frame `n` lies at row `n / columns`, column `n % columns` — both slice an
+/// exact whole-number fraction of the strip's own rect, checked at load time
+/// (`data::load::validate_image_files`), so this never rounds.
 fn frame_atlas_rect_at(
     image: ImageId,
     frame: u32,
@@ -190,13 +200,29 @@ fn frame_atlas_rect_at(
 ) -> AtlasRect {
     let decl = &images[image];
     let whole = atlas_rects[image];
-    let frame_w = whole.w / decl.frames.max(1);
     let frame = frame.min(decl.frames.saturating_sub(1));
-    AtlasRect {
-        x: whole.x + frame * frame_w,
-        y: whole.y,
-        w: frame_w,
-        h: whole.h,
+    match decl.columns {
+        None => {
+            let frame_w = whole.w / decl.frames.max(1);
+            AtlasRect {
+                x: whole.x + frame * frame_w,
+                y: whole.y,
+                w: frame_w,
+                h: whole.h,
+            }
+        }
+        Some(columns) => {
+            let columns = columns.max(1);
+            let rows = decl.frames.div_ceil(columns);
+            let frame_w = whole.w / columns;
+            let frame_h = whole.h / rows.max(1);
+            AtlasRect {
+                x: whole.x + (frame % columns) * frame_w,
+                y: whole.y + (frame / columns) * frame_h,
+                w: frame_w,
+                h: frame_h,
+            }
+        }
     }
 }
 
@@ -306,15 +332,128 @@ pub fn compose_world_paints(
             } else {
                 0
             };
+            // «Картинки» → «Картинка своего размера», требования 8–10: own-size placement (and,
+            // with a nonzero rotation, требование 9's rigid rotation around the object's own
+            // middle) replaces the object's own rectangle only for drawing — every filter/sort
+            // above already ran against `p`/`s` unchanged.
+            let (position, size) = match fill {
+                Fill::Image { image, .. } => own_size_rect(&images[image], p, s, rotation_quarters)
+                    .unwrap_or(([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32])),
+                Fill::Color(_) => ([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32]),
+            };
             RectPaint {
-                position: [p[0] as f32, p[1] as f32],
-                size: [s[0] as f32, s[1] as f32],
+                position,
+                size,
                 color,
                 atlas_rect,
                 rotation_quarters,
             }
         })
         .collect()
+}
+
+/// «Картинки» → «Картинка своего размера», требование 9: rotates `v` by `quarters` (0–3)
+/// clockwise, in scene cells (`y` down) — the same direction «Картинки», требование 24 rotates a
+/// frame's sampled corners in.
+fn rotate_quarter(v: [f32; 2], quarters: u8) -> [f32; 2] {
+    match quarters % 4 {
+        0 => v,
+        1 => [-v[1], v[0]],
+        2 => [-v[0], -v[1]],
+        _ => [v[1], -v[0]],
+    }
+}
+
+/// «Картинки» → «Картинка своего размера», требования 6, 8–9: `decl.size`'s own drawn rectangle —
+/// `None` without one (требование 7: the object's own rectangle draws unchanged). `anchor`'s own
+/// point on the image's rectangle coincides with the same point on the object's rectangle,
+/// shifted by `offset` (требование 8); a nonzero `rotation_quarters` then rotates that whole
+/// rectangle, as a rigid body, around the object's own middle (требование 9) — width/height swap
+/// on an odd quarter turn, since only a swap keeps an axis-aligned rectangle axis-aligned after a
+/// quarter turn around a point other than its own center.
+fn own_size_rect(
+    decl: &ImageDecl,
+    obj_position: Vec2,
+    obj_size: Vec2,
+    rotation_quarters: u8,
+) -> Option<([f32; 2], [f32; 2])> {
+    let size = decl.size?;
+    let obj_pos = [obj_position[0] as f32, obj_position[1] as f32];
+    let obj_size = [obj_size[0] as f32, obj_size[1] as f32];
+    let img_size = [size[0] as f32, size[1] as f32];
+    let offset = [decl.offset[0] as f32, decl.offset[1] as f32];
+
+    let anchor_point = decl.anchor.point_on(obj_pos, obj_size);
+    let target = [anchor_point[0] + offset[0], anchor_point[1] + offset[1]];
+    let own_anchor = decl.anchor.point_on([0.0, 0.0], img_size);
+    let top_left = [target[0] - own_anchor[0], target[1] - own_anchor[1]];
+
+    if rotation_quarters == 0 {
+        return Some((top_left, img_size));
+    }
+    let pivot = [
+        obj_pos[0] + obj_size[0] / 2.0,
+        obj_pos[1] + obj_size[1] / 2.0,
+    ];
+    let center = [
+        top_left[0] + img_size[0] / 2.0,
+        top_left[1] + img_size[1] / 2.0,
+    ];
+    let rotated = rotate_quarter(
+        [center[0] - pivot[0], center[1] - pivot[1]],
+        rotation_quarters,
+    );
+    let new_center = [pivot[0] + rotated[0], pivot[1] + rotated[1]];
+    let new_size = if rotation_quarters % 2 == 1 {
+        [img_size[1], img_size[0]]
+    } else {
+        img_size
+    };
+    let new_top_left = [
+        new_center[0] - new_size[0] / 2.0,
+        new_center[1] - new_size[1] / 2.0,
+    ];
+    Some((new_top_left, new_size))
+}
+
+/// «Мир на экране» → «Земля», требования 17–22: one rect per scene cell at least partly inside
+/// `visible` (`SceneConfig::visible_cell_range` — требование 20), layer by layer in `ground`'s own
+/// list order (требование 18: every one of these ends up first in the caller's own draw list, so
+/// every object — even one with a negative `layer` — always draws on top). `-1` (требование 16)
+/// and any row/column `cells` doesn't reach (never happens once loaded — checked at load time)
+/// both just draw nothing.
+pub fn compose_ground_paints(
+    ground: &[GroundLayer],
+    visible: CellRange,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+) -> Vec<RectPaint> {
+    let cols = (visible.x1 - visible.x0) as usize;
+    let rows = (visible.y1 - visible.y0) as usize;
+    let mut out = Vec::with_capacity(cols * rows * ground.len());
+    for layer in ground {
+        for y in visible.y0..visible.y1 {
+            let Some(row) = layer.cells.get(y as usize) else {
+                continue;
+            };
+            for x in visible.x0..visible.x1 {
+                let Some(&n) = row.get(x as usize) else {
+                    continue;
+                };
+                if n < 0 {
+                    continue;
+                }
+                out.push(RectPaint {
+                    position: [x as f32, y as f32],
+                    size: [1.0, 1.0],
+                    color: [1.0, 1.0, 1.0, 1.0],
+                    atlas_rect: frame_atlas_rect_at(layer.image, n as u32, images, atlas_rects),
+                    rotation_quarters: 0,
+                });
+            }
+        }
+    }
+    out
 }
 
 #[cfg(test)]
@@ -456,7 +595,7 @@ mod tests {
 
     use crate::core::input::MouseState;
     use crate::core::property::PropertyTable;
-    use crate::core::screens::button_fill;
+    use crate::core::screens::{Anchor, button_fill};
 
     fn one_frame_image() -> ImageDecl {
         ImageDecl {
@@ -464,6 +603,11 @@ mod tests {
             path: "x.png".to_string(),
             frames: 1,
             frame_steps: 1,
+            animated: false,
+            columns: None,
+            size: None,
+            anchor: Anchor::Center,
+            offset: [0.0, 0.0],
             frame_by: None,
             frame_by_name: None,
         }
@@ -619,6 +763,11 @@ mod tests {
             path: "strip.png".to_string(),
             frames: 3,
             frame_steps: 1,
+            animated: false,
+            columns: None,
+            size: None,
+            anchor: Anchor::Center,
+            offset: [0.0, 0.0],
             frame_by: Some(hits),
             frame_by_name: None,
         }];
@@ -680,5 +829,465 @@ mod tests {
             },
             "за концом — последний кадр"
         );
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Фаза 13 — кадры сеткой
+    // -----------------------------------------------------------------------------------------
+
+    fn grid_image(frames: u32, columns: Option<u32>) -> ImageDecl {
+        ImageDecl {
+            name: "grid".to_string(),
+            path: "grid.png".to_string(),
+            frames,
+            frame_steps: 1,
+            animated: false,
+            columns,
+            size: None,
+            anchor: Anchor::Center,
+            offset: [0.0, 0.0],
+            frame_by: None,
+            frame_by_name: None,
+        }
+    }
+
+    /// «Картинки», требования 1–2: `frames: 7, columns: 3` — три строки по три кадра, последняя
+    /// неполная; кадр `n` лежит в строке `n / 3`, столбце `n % 3` — прямоугольник кадров 0, 2, 3,
+    /// 6 (300×140 whole rect: 3 столбца по 100, три строки по ceil(7/3)=3, каждая 140/3 — но чтобы
+    /// делить нацело, целое полотно 300×140 не подходит; берём 300×90, три строки по 30).
+    #[test]
+    fn grid_frame_rects_at_frames_0_2_3_6_for_seven_frames_three_columns() {
+        let images = vec![grid_image(7, Some(3))];
+        let whole = AtlasRect {
+            x: 10,
+            y: 20,
+            w: 300,
+            h: 90,
+        };
+        let atlas_rects = vec![whole];
+        let rect_of = |frame: u32| frame_atlas_rect_at(0, frame, &images, &atlas_rects);
+        assert_eq!(
+            rect_of(0),
+            AtlasRect {
+                x: 10,
+                y: 20,
+                w: 100,
+                h: 30
+            }
+        );
+        assert_eq!(
+            rect_of(2),
+            AtlasRect {
+                x: 210,
+                y: 20,
+                w: 100,
+                h: 30
+            },
+            "строка 0, столбец 2"
+        );
+        assert_eq!(
+            rect_of(3),
+            AtlasRect {
+                x: 10,
+                y: 50,
+                w: 100,
+                h: 30
+            },
+            "строка 1, столбец 0"
+        );
+        assert_eq!(
+            rect_of(6),
+            AtlasRect {
+                x: 10,
+                y: 80,
+                w: 100,
+                h: 30
+            },
+            "последняя, неполная строка — столбец 0"
+        );
+    }
+
+    /// «Картинки», требование 2: `columns` равно `frames` — одна строка, то же, что лента.
+    #[test]
+    fn columns_equal_to_frames_behaves_like_a_single_row() {
+        let with_columns = vec![grid_image(4, Some(4))];
+        let without_columns = vec![grid_image(4, None)];
+        let whole = AtlasRect {
+            x: 0,
+            y: 0,
+            w: 400,
+            h: 50,
+        };
+        let atlas_rects = vec![whole];
+        for frame in 0..4 {
+            assert_eq!(
+                frame_atlas_rect_at(0, frame, &with_columns, &atlas_rects),
+                frame_atlas_rect_at(0, frame, &without_columns, &atlas_rects),
+                "кадр {frame}"
+            );
+        }
+    }
+
+    /// «Картинки», требование 4: `frame_time`/`frame_by` выбирают номер кадра как обычно; сетка
+    /// меняет только то, где этот кадр лежит в файле.
+    #[test]
+    fn frame_time_picks_the_same_frame_number_whether_gridded_or_not() {
+        let mut decl = grid_image(6, Some(3));
+        decl.animated = true;
+        decl.frame_steps = 10;
+        let images = vec![decl];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 300,
+            h: 20,
+        }];
+        // 25 шагов / 10 на кадр = кадр 2 (строка 0, столбец 2).
+        let rect = frame_atlas_rect(0, 25.0, &images, &atlas_rects);
+        assert_eq!(
+            rect,
+            AtlasRect {
+                x: 200,
+                y: 0,
+                w: 100,
+                h: 10
+            }
+        );
+    }
+
+    /// «Картинки», требование 5: `frames` без `frame_time` и без `frame_by` — набор кадров:
+    /// объект показывает кадр 0 всегда, сколько бы шагов ни прошло.
+    #[test]
+    fn a_frame_set_without_frame_time_or_frame_by_always_shows_frame_zero() {
+        let images = vec![grid_image(5, None)];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 50,
+            h: 10,
+        }];
+        for elapsed in [0.0, 1.0, 500.0] {
+            assert_eq!(
+                frame_atlas_rect(0, elapsed, &images, &atlas_rects),
+                AtlasRect {
+                    x: 0,
+                    y: 0,
+                    w: 10,
+                    h: 10
+                },
+                "elapsed_steps = {elapsed}"
+            );
+        }
+    }
+
+    /// «Картинки», требование 23: at every `columns`/`frames` combination this test tries, no two
+    /// frames' atlas rects overlap and each stays fully inside the whole strip's own rect — the
+    /// slicing math never bleeds a neighboring frame's points into this one's.
+    #[test]
+    fn grid_frames_tile_the_whole_rect_exactly_with_no_overlap() {
+        let whole = AtlasRect {
+            x: 5,
+            y: 7,
+            w: 360,
+            h: 240,
+        };
+        for (frames, columns) in [(7, Some(3)), (12, Some(4)), (5, Some(1)), (9, None)] {
+            let images = vec![grid_image(frames, columns)];
+            let atlas_rects = vec![whole];
+            let rects: Vec<AtlasRect> = (0..frames)
+                .map(|f| frame_atlas_rect_at(0, f, &images, &atlas_rects))
+                .collect();
+            for &r in &rects {
+                assert!(
+                    r.x >= whole.x
+                        && r.y >= whole.y
+                        && r.x + r.w <= whole.x + whole.w
+                        && r.y + r.h <= whole.y + whole.h,
+                    "{r:?} выходит за {whole:?} ({frames}, {columns:?})"
+                );
+            }
+            for i in 0..rects.len() {
+                for j in (i + 1)..rects.len() {
+                    assert!(
+                        !overlap(rects[i], rects[j]),
+                        "{:?} и {:?} пересекаются ({frames}, {columns:?})",
+                        rects[i],
+                        rects[j]
+                    );
+                }
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Фаза 13 — картинка своего размера
+    // -----------------------------------------------------------------------------------------
+
+    fn sized_image(size: [f64; 2], anchor: Anchor, offset: [f64; 2]) -> ImageDecl {
+        ImageDecl {
+            name: "sized".to_string(),
+            path: "sized.png".to_string(),
+            frames: 1,
+            frame_steps: 1,
+            animated: false,
+            columns: None,
+            size: Some(size),
+            anchor,
+            offset,
+            frame_by: None,
+            frame_by_name: None,
+        }
+    }
+
+    fn one_sized_object(
+        world: &mut World,
+        position: [f64; 2],
+        size: [f64; 2],
+        rotation: Option<u16>,
+    ) -> u32 {
+        let id = world.create();
+        world.set_vec2(id, property::POSITION, position);
+        world.set_vec2(id, property::SIZE, size);
+        world.set_image(id, property::IMAGE, 0);
+        if let Some(degrees) = rotation {
+            world.set_rotation(
+                id,
+                property::ROTATION,
+                crate::core::value::Rotation::from_degrees_exact(degrees as f64).unwrap(),
+            );
+        }
+        id
+    }
+
+    /// «Картинки», требование 8 — числовой пример плана: объект `position [10, 5], size [1,
+    /// 1.5]`; картинка `size [2, 2], anchor bottom, offset [0, 0.1]` — прямоугольник рисования от
+    /// `(9.5, 4.6)` до `(11.5, 6.6)`.
+    #[test]
+    fn own_size_placement_matches_the_plans_own_worked_example() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        let id = one_sized_object(&mut world, [10.0, 5.0], [1.0, 1.5], None);
+
+        let images = vec![sized_image([2.0, 2.0], Anchor::Bottom, [0.0, 0.1])];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        }];
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        assert_eq!(paints.len(), 1);
+        assert!((paints[0].position[0] - 9.5).abs() < 1e-5, "{paints:?}");
+        assert!((paints[0].position[1] - 4.6).abs() < 1e-5, "{paints:?}");
+        assert!((paints[0].size[0] - 2.0).abs() < 1e-5, "{paints:?}");
+        assert!((paints[0].size[1] - 2.0).abs() < 1e-5, "{paints:?}");
+        let _ = id;
+    }
+
+    /// «Картинки», требование 6: all nine anchors place the same 2×2 image around a 1×1 object at
+    /// `[0, 0]`, no `offset` — the anchor's own point of the image coincides with the same point
+    /// of the object.
+    #[test]
+    fn every_anchor_places_the_own_size_image_at_the_matching_point() {
+        let properties = PropertyTable::new();
+        let cases: [(Anchor, [f32; 2]); 9] = [
+            (Anchor::TopLeft, [0.0, 0.0]),
+            (Anchor::Top, [-0.5, 0.0]),
+            (Anchor::TopRight, [-1.0, 0.0]),
+            (Anchor::Left, [0.0, -0.5]),
+            (Anchor::Center, [-0.5, -0.5]),
+            (Anchor::Right, [-1.0, -0.5]),
+            (Anchor::BottomLeft, [0.0, -1.0]),
+            (Anchor::Bottom, [-0.5, -1.0]),
+            (Anchor::BottomRight, [-1.0, -1.0]),
+        ];
+        for (anchor, expected_top_left) in cases {
+            let mut world = World::new(&properties);
+            one_sized_object(&mut world, [0.0, 0.0], [1.0, 1.0], None);
+            let images = vec![sized_image([2.0, 2.0], anchor, [0.0, 0.0])];
+            let atlas_rects = vec![AtlasRect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+            }];
+            let scene = test_scene();
+            let paints =
+                compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+            assert!(
+                (paints[0].position[0] - expected_top_left[0]).abs() < 1e-5
+                    && (paints[0].position[1] - expected_top_left[1]).abs() < 1e-5,
+                "{anchor:?}: {:?} != {expected_top_left:?}",
+                paints[0].position
+            );
+        }
+    }
+
+    /// «Картинки», требование 7: без `size` картинка растягивается на прямоугольник объекта, как
+    /// раньше — `own_size_rect` не подменяет ни позицию, ни размер.
+    #[test]
+    fn without_size_the_image_still_draws_over_the_objects_own_rectangle() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        one_sized_object(&mut world, [3.0, 4.0], [2.0, 5.0], None);
+        let images = vec![one_frame_image()];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        }];
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        assert_eq!(paints[0].position, [3.0, 4.0]);
+        assert_eq!(paints[0].size, [2.0, 5.0]);
+    }
+
+    /// «Картинки», требование 9: `rotation` 90/180/270 rotates the own-size rectangle as a rigid
+    /// body around the *object's* own middle — width/height swap on the odd quarter turns.
+    #[test]
+    fn rotation_rotates_the_own_size_rectangle_around_the_objects_middle() {
+        let properties = PropertyTable::new();
+        let images = vec![sized_image([1.0, 3.0], Anchor::TopLeft, [0.0, 0.0])];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        }];
+        let scene = test_scene();
+        // Object [0,0]..[4,2], middle (2,1). Unrotated image rect at the object's top-left,
+        // 1×3: [0,0]..[1,3].
+        let expectations = [
+            (0u16, [0.0f32, 0.0], [1.0f32, 3.0]),
+            (90, [0.0, -1.0], [3.0, 1.0]),
+            (180, [3.0, -1.0], [1.0, 3.0]),
+            (270, [1.0, 2.0], [3.0, 1.0]),
+        ];
+        for (degrees, expected_pos, expected_size) in expectations {
+            let mut world = World::new(&properties);
+            one_sized_object(&mut world, [0.0, 0.0], [4.0, 2.0], Some(degrees));
+            let paints =
+                compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+            assert!(
+                (paints[0].position[0] - expected_pos[0]).abs() < 1e-4
+                    && (paints[0].position[1] - expected_pos[1]).abs() < 1e-4,
+                "{degrees}°: позиция {:?} != {expected_pos:?}",
+                paints[0].position
+            );
+            assert!(
+                (paints[0].size[0] - expected_size[0]).abs() < 1e-4
+                    && (paints[0].size[1] - expected_size[1]).abs() < 1e-4,
+                "{degrees}°: размер {:?} != {expected_size:?}",
+                paints[0].size
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Фаза 13 — земля из плиток
+    // -----------------------------------------------------------------------------------------
+
+    fn tileset(frames: u32, columns: Option<u32>) -> ImageDecl {
+        grid_image(frames, columns)
+    }
+
+    /// «Мир на экране» → «Земля», требования 16–18: плитки в своих клетках с кадрами набора по
+    /// сетке; `-1` пусто; слои рисуются в порядке списка.
+    #[test]
+    fn ground_tiles_land_in_their_own_cells_in_layer_order() {
+        let images = vec![tileset(4, Some(2))];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 20,
+            h: 20,
+        }];
+        let ground = vec![
+            GroundLayer {
+                image: 0,
+                cells: vec![vec![0, -1], vec![-1, 2]],
+            },
+            GroundLayer {
+                image: 0,
+                cells: vec![vec![-1, -1], vec![3, -1]],
+            },
+        ];
+        let visible = CellRange {
+            x0: 0,
+            y0: 0,
+            x1: 2,
+            y1: 2,
+        };
+        let paints = compose_ground_paints(&ground, visible, &images, &atlas_rects);
+        // Layer 0: (0,0)=tile 0, (1,1)=tile 2. Layer 1: (0,1)=tile 3. Layer 0 entries come first.
+        assert_eq!(paints.len(), 3);
+        assert_eq!(paints[0].position, [0.0, 0.0]);
+        assert_eq!(
+            paints[0].atlas_rect,
+            frame_atlas_rect_at(0, 0, &images, &atlas_rects)
+        );
+        assert_eq!(paints[1].position, [1.0, 1.0]);
+        assert_eq!(
+            paints[1].atlas_rect,
+            frame_atlas_rect_at(0, 2, &images, &atlas_rects)
+        );
+        assert_eq!(paints[2].position, [0.0, 1.0]);
+        assert_eq!(
+            paints[2].atlas_rect,
+            frame_atlas_rect_at(0, 3, &images, &atlas_rects)
+        );
+        for p in &paints {
+            assert_eq!(p.size, [1.0, 1.0]);
+        }
+    }
+
+    /// «Мир на экране» → «Земля», требование 20: only cells inside `visible` are drawn.
+    #[test]
+    fn ground_tiles_outside_the_visible_range_are_skipped() {
+        let images = vec![tileset(1, None)];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        }];
+        let ground = vec![GroundLayer {
+            image: 0,
+            cells: vec![vec![0, 0, 0], vec![0, 0, 0], vec![0, 0, 0]],
+        }];
+        let visible = CellRange {
+            x0: 1,
+            y0: 1,
+            x1: 2,
+            y1: 2,
+        };
+        let paints = compose_ground_paints(&ground, visible, &images, &atlas_rects);
+        assert_eq!(paints.len(), 1);
+        assert_eq!(paints[0].position, [1.0, 1.0]);
+    }
+
+    /// A layer whose cells are all `-1` draws nothing.
+    #[test]
+    fn a_layer_of_all_minus_one_draws_nothing() {
+        let images = vec![tileset(1, None)];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+        }];
+        let ground = vec![GroundLayer {
+            image: 0,
+            cells: vec![vec![-1, -1], vec![-1, -1]],
+        }];
+        let visible = CellRange {
+            x0: 0,
+            y0: 0,
+            x1: 2,
+            y1: 2,
+        };
+        assert!(compose_ground_paints(&ground, visible, &images, &atlas_rects).is_empty());
     }
 }

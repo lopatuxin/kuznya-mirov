@@ -225,13 +225,13 @@ fn frame_time_not_positive_is_reported() {
 }
 
 #[test]
-fn frames_without_frame_time_is_reported() {
+fn frames_alone_is_a_frame_set_not_an_error() {
+    // «Картинки», требование 5: `frames` без `frame_time` и без `frame_by` — набор кадров, не
+    // ошибка.
     let game = game_json(r#","images":{"food":{"path":"images/food.png","frames":4}}"#);
-    let LoadFailure { errors, .. } = read_entry(&game).expect_err("frames без frame_time — ошибка");
-    assert!(
-        errors.iter().any(|e| e.message.contains("frame_time")),
-        "{errors:?}"
-    );
+    let (config, _warnings) = read_entry(&game).expect("frames один — набор кадров, не ошибка");
+    assert_eq!(config.files.images[0].frames, 4);
+    assert!(!config.files.images[0].animated);
 }
 
 #[test]
