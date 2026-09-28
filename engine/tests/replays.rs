@@ -38,8 +38,8 @@ fn read_optional(path: &Path) -> Option<String> {
     fs::read_to_string(path).ok()
 }
 
-/// Loads `games/<game>` end to end, JSON and Lua code read for real, no image/font/sound bytes at
-/// all — «Тесты по записанному вводу», требование 33.
+/// Loads `games/<game>` end to end, JSON, Lua code and declared table files read for real, no
+/// image/font/sound bytes at all — «Тесты по записанному вводу», требование 33.
 fn load_game(game: &str) -> (Game, ScreensConfig) {
     let dir = games_dir().join(game);
     let game_json = fs::read_to_string(dir.join("game.json"))
@@ -55,7 +55,13 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
         .code
         .as_ref()
         .and_then(|p| read_optional(&dir.join(p)));
-    let (game_obj, screens_config, _warnings, _images) = load::load_rest(
+    let table_texts: Vec<(String, Option<String>)> = config
+        .files
+        .tables
+        .iter()
+        .map(|(name, path)| (name.clone(), read_optional(&dir.join(path))))
+        .collect();
+    let (game_obj, screens_config, _warnings, _images) = load::load_rest_with_tables(
         &game_json,
         config,
         properties_json.as_deref(),
@@ -68,6 +74,7 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
         &[],
         code_json.as_deref(),
         true,
+        &table_texts,
     )
     .unwrap_or_else(|e| panic!("{game}: не прошла предстартовая проверка: {e:?}"));
     (game_obj, screens_config)

@@ -1,13 +1,13 @@
 {
   "start": "location",
   "input": [
-    { "step": 1, "cursor": [10, 25] },
+    { "step": 1, "cursor": [3.5, 11.5] },
     { "step": 1, "press": "MouseLeft" }
   ],
-  "steps": 20,
+  "steps": 30,
   "checks": [
-    { "step": 1, "object": "marker", "property": "position", "equals": [9.6, 24.6] },
-    { "step": 1, "object": "marker", "property": "opacity", "equals": 0.95 },
-    { "step": 20, "object": "marker", "property": "opacity", "equals": 0 }
+    { "step": 2, "object": "marker", "property": "position", "equals": [3.1, 11.1] },
+    { "step": 2, "object": "marker", "property": "opacity", "equals": 0.9 },
+    { "step": 30, "object": "marker", "property": "opacity", "equals": 0 }
   ]
 }

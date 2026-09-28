@@ -3,6 +3,13 @@
     "obstacle": "flag",
     "hero": "flag",
     "marker": "flag",
-    "hero_frame": "number"
+    "frame": "number",
+    "health": "number",
+    "max_health": "number",
+    "damage": "number",
+    "enemy_unit": "flag",
+    "enemy": "text",
+    "target": "flag",
+    "title": "text"
   }
 }
