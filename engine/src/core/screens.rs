@@ -84,6 +84,21 @@ impl Anchor {
             _ => return None,
         })
     }
+
+    /// «Картинки», требование 8: mirrors left and right, leaves an anchor on the vertical midline
+    /// (`Top`/`Center`/`Bottom`) unchanged — `render::atlas::own_size_rect` uses this together with
+    /// negating `offset.x` to place a `flip_x` object's own-size image.
+    pub(crate) fn flip_x(self) -> Anchor {
+        match self {
+            Anchor::TopLeft => Anchor::TopRight,
+            Anchor::TopRight => Anchor::TopLeft,
+            Anchor::Left => Anchor::Right,
+            Anchor::Right => Anchor::Left,
+            Anchor::BottomLeft => Anchor::BottomRight,
+            Anchor::BottomRight => Anchor::BottomLeft,
+            other => other,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

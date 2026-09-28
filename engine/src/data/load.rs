@@ -673,7 +673,7 @@ fn validate_opacity_range(n: f64, file: &str, path: &str, errors: &mut ErrorSink
 
 /// «Картинки»: `opacity` без `image` — ошибка данных везде, где может появиться `opacity`:
 /// объект, шаблон создания, панель и кнопка. Текст написан один раз здесь и его же берёт
-/// `validate_opacity_reachable_image`, проверяющая ту же ошибку по расширенной форме объекта.
+/// `validate_reachable_image`, проверяющая ту же ошибку по расширенной форме объекта.
 const OPACITY_WITHOUT_IMAGE: &str =
     "opacity задан без image: множить не на что, у цвета для этого есть #rrggbbaa";
 fn validate_opacity_has_image(
@@ -691,7 +691,7 @@ fn validate_opacity_has_image(
 /// «Картинки»: `color`+`image` together is a data error, checked once here for every place a
 /// fixed set of properties gets built at once — a scene object and a spawn template alike.
 /// `opacity` without `image` is checked separately, after `possible_shapes` widens the shape by
-/// `keys` and collide effects — see `validate_opacity_reachable_image`: unlike `color`, which a
+/// `keys` and collide effects — see `validate_reachable_image`: unlike `color`, which a
 /// scene object's shape never gains at runtime, `image` can arrive through a `keys` edit or a
 /// `set`/`give` collide effect, so judging it here, from the object's file shape alone, would
 /// reject a game that only ever adds `image` once the object is already moving.
@@ -1181,6 +1181,9 @@ pub struct ImageDecl {
     /// `resolve_image_frame_by`) — `game.json` alone doesn't know property names yet.
     pub frame_by: Option<PropertyId>,
     pub(crate) frame_by_name: Option<String>,
+    /// «Картинки» → «Сглаживание», требования 1–2: необязательный, `true`/`false`, по умолчанию
+    /// `false` — линейная выборка вместо выборки по точкам, everywhere this image is drawn.
+    pub smooth: bool,
 }
 
 /// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук» → «Загрузка и проверка»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
@@ -1735,6 +1738,7 @@ fn parse_images_table(
                 "size",
                 "anchor",
                 "offset",
+                "smooth",
             ],
             file,
             &entry_path,
@@ -1927,6 +1931,22 @@ fn parse_images_table(
                 None => continue,
             },
         };
+        // «Картинки» → «Сглаживание», требования 1–2: необязательный, true/false.
+        let smooth = match decl_obj.get("smooth") {
+            None => Some(false),
+            Some(v) => match v.as_bool() {
+                Some(b) => Some(b),
+                None => {
+                    errors.push(
+                        file,
+                        &join(&entry_path, "smooth"),
+                        format!("ожидался признак (true/false), получено {}", kind_name(v)),
+                    );
+                    None
+                }
+            },
+        };
+        let Some(smooth) = smooth else { continue };
         out.push(ImageDecl {
             frame_by: None,
             frame_by_name,
@@ -1939,6 +1959,7 @@ fn parse_images_table(
             size,
             anchor,
             offset,
+            smooth,
         });
     }
     Some(out)
@@ -3810,32 +3831,42 @@ fn possible_shapes(
     shapes
 }
 
-/// «Картинки»: `opacity` declared on a scene object or spawn template needs `image` to multiply,
+/// «Картинки» → «Отражение», требование 13: текст ошибки `flip_x` без картинки.
+const FLIP_X_WITHOUT_IMAGE: &str = "flip_x задан объекту, которому картинка не достанется никак: ни в файле, ни клавишей, ни правилом, ни кодом";
+
+/// «Картинки»: engine properties that only mean something on top of a picture — `opacity`
+/// multiplies it, `flip_x` (требование 13) mirrors it — each with its own «картинки нет» message.
+const NEEDS_IMAGE: [(PropertyId, &str); 2] = [
+    (property::OPACITY, OPACITY_WITHOUT_IMAGE),
+    (property::FLIP_X, FLIP_X_WITHOUT_IMAGE),
+];
+
+/// «Картинки»: `opacity` or `flip_x` declared on a scene object or spawn template needs `image`,
 /// but not necessarily from the object's own file shape — a `keys` edit or a collide rule's
 /// `set`/`give` can hand it `image` once the game is running (`possible_shapes`'s `maybe`), and a
 /// `broken_properties` `image` is already reported by its own error, so its presence is
 /// known-incomplete rather than known-absent (see `validate_image_fill`). Run once here, after
 /// `possible_shapes` has widened every shape, instead of at parse time like the `color`+`image`
-/// check, which needs no such widening.
-fn validate_opacity_reachable_image(
-    shapes: &[PossibleShape],
-    code: Option<&str>,
-    errors: &mut ErrorSink,
-) {
+/// check, which needs no such widening. A property that reaches an object only at runtime (a
+/// `keys` edit, a rule, or code) is not checked — «Крайние случаи»: the prestart check only looks
+/// at the scene and templates.
+fn validate_reachable_image(shapes: &[PossibleShape], code: Option<&str>, errors: &mut ErrorSink) {
     // «Код игры»: слово `image` в тексте кода — код тоже мог дать объекту картинку, проверка
     // здесь бессильна отличить это от настоящей нехватки источника, так что просто не спорит.
     if code.is_some_and(|c| code_mentions_word(c, "image")) {
         return;
     }
     for ps in shapes {
-        if !ps.shape.certain.contains(&property::OPACITY) {
-            continue;
-        }
         let has_image = ps.shape.certain.contains(&property::IMAGE)
             || ps.shape.maybe.contains(&property::IMAGE)
             || ps.shape.broken_properties.contains(&property::IMAGE);
-        if !has_image {
-            errors.push(&ps.file, &ps.path, OPACITY_WITHOUT_IMAGE);
+        if has_image {
+            continue;
+        }
+        for (prop, message) in NEEDS_IMAGE {
+            if ps.shape.certain.contains(&prop) {
+                errors.push(&ps.file, &ps.path, message);
+            }
         }
     }
 }
@@ -3866,7 +3897,7 @@ fn validate_camera_follows_needs_view_height(
 /// «Код игры» → «Проверка перед запуском»: whether `word` appears in `code`'s text as its own
 /// identifier, not merely as a substring of a longer one — such a mention counts as "used" for
 /// the «объявлено и не используется» warnings, and a mention of `image` specifically excuses
-/// `validate_opacity_reachable_image`.
+/// `validate_reachable_image`.
 fn code_mentions_word(code: &str, word: &str) -> bool {
     if word.is_empty() {
         return false;
@@ -7373,7 +7404,7 @@ pub fn load_rest_with_tables(
         &properties,
         &mut errors,
     );
-    validate_opacity_reachable_image(&shapes, code_json, &mut errors);
+    validate_reachable_image(&shapes, code_json, &mut errors);
     validate_camera_follows_needs_view_height(&shapes, config.scene.view_height, &mut errors);
     // «Формат игры»: предупреждение не мешает игре запуститься — но раз игра уже не запустится
     // из-за ошибок собранных выше, считать эти три предупреждения незачем: правило, не

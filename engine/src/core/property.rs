@@ -24,6 +24,7 @@ pub const CAMERA_FOLLOWS: PropertyId = 14;
 pub const WALK_TO: PropertyId = 15;
 pub const WALK_SPEED: PropertyId = 16;
 pub const ON_CLICK: PropertyId = 17;
+pub const FLIP_X: PropertyId = 18;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -44,6 +45,7 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("walk_to", PropKind::Vec2),
     ("walk_speed", PropKind::Number),
     ("on_click", PropKind::OnClick),
+    ("flip_x", PropKind::Flag),
 ];
 
 #[derive(Debug, Clone)]
@@ -139,6 +141,8 @@ mod tests {
         assert_eq!(table.kind(IMAGE), PropKind::Image);
         assert_eq!(table.resolve("opacity"), Some(OPACITY));
         assert_eq!(table.kind(OPACITY), PropKind::Number);
+        assert_eq!(table.resolve("flip_x"), Some(FLIP_X));
+        assert_eq!(table.kind(FLIP_X), PropKind::Flag);
     }
 
     #[test]
