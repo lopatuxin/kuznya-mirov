@@ -67,18 +67,48 @@ describe("grassVariantTile / decorationTile", () => {
   });
 });
 
-describe("grassVariantTile — единственный вариант (ревью: второй вариант убран, п. 1)", () => {
-  // Второй вариант травы оказался вырезкой из фермерского GPL-набора Daniel Eddeland и был убран
-  // без замены (`buildRpgArt.mjs`); распределение по клеткам больше не проверяем — разнообразие
-  // теперь даёт только `decorationTile`/`hasDecoration`, проверенные ниже.
-  it("на реальной карте всегда возвращает единственный объявленный вариант", () => {
+describe("grassVariantTile — распределение вариантов (требование 6)", () => {
+  function primaryFraction(cells) {
+    const primary = cells.filter(([x, y]) => grassVariantTile(x, y) === GRASS_VARIANT_TILES[0]).length;
+    return primary / cells.length;
+  }
+
+  it("на реальной карте основной вариант — 75–95% клеток", () => {
     const map = parseLocationMap(REAL_LOCATION_TEXT);
+    const cells = [];
+    for (let y = 0; y < map.height; y++) for (let x = 0; x < map.width; x++) cells.push([x, y]);
+    const fraction = primaryFraction(cells);
+    expect(fraction).toBeGreaterThan(0.75);
+    expect(fraction).toBeLessThan(0.95);
+  });
+
+  it("нет чередования через клетку: доля основного варианта одна и та же на чётных и нечётных x+y", () => {
+    const map = parseLocationMap(REAL_LOCATION_TEXT);
+    const evenCells = [];
+    const oddCells = [];
     for (let y = 0; y < map.height; y++) {
       for (let x = 0; x < map.width; x++) {
-        expect(grassVariantTile(x, y)).toBe(GRASS_VARIANT_TILES[0]);
+        ((x + y) % 2 === 0 ? evenCells : oddCells).push([x, y]);
       }
     }
-    expect(GRASS_VARIANT_TILES).toHaveLength(1);
+    const evenFraction = primaryFraction(evenCells);
+    const oddFraction = primaryFraction(oddCells);
+    // Прежний баг («чётность x^y») давал 0 на одной чётности и 1 на другой — разница должна быть
+    // небольшой, не почти-единичной.
+    expect(Math.abs(evenFraction - oddFraction)).toBeLessThan(0.1);
+  });
+
+  it("соседние по горизонтали клетки не отличаются каждый раз (не строгая шахматка)", () => {
+    const map = parseLocationMap(REAL_LOCATION_TEXT);
+    let differing = 0;
+    let pairs = 0;
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width - 1; x++) {
+        pairs++;
+        if (grassVariantTile(x, y) !== grassVariantTile(x + 1, y)) differing++;
+      }
+    }
+    expect(differing / pairs).toBeLessThan(0.5);
   });
 });
 

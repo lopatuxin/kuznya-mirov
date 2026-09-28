@@ -94,7 +94,7 @@
   Авторы: bluecarrot16
   Лицензии: GPL 3.0
 
-Трава — базовый слой земли
+Трава — базовый слой земли, основной и редкий варианты: две вырезки одного травяного узора
   Источник: https://opengameart.org/content/lpc-tile-atlas
   Авторы: Lanea Zimmerman (Sharm)
   Лицензии: CC-BY-SA 3.0, GPL 3.0
@@ -104,12 +104,22 @@
   Авторы: Lanea Zimmerman (Sharm)
   Лицензии: CC-BY-SA 3.0, GPL 3.0
 
+Цветы — мелочи поверх травы
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Lanea Zimmerman (Sharm)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+
+Пучок травы — мелочи поверх травы (основание куста рогоза)
+  Источник: https://opengameart.org/content/lpc-tile-atlas
+  Авторы: Lanea Zimmerman (Sharm)
+  Лицензии: CC-BY-SA 3.0, GPL 3.0
+
 Вода пруда
   Источник: https://opengameart.org/content/lpc-tile-atlas
   Авторы: Lanea Zimmerman (Sharm)
   Лицензии: CC-BY-SA 3.0, GPL 3.0
 
-Стены построек (кирпичная кладка)
+Стены построек — кирпичная кладка и серый камень верха стены (парапет)
   Источник: https://opengameart.org/content/lpc-tile-atlas
   Авторы: Daniel Armstrong (HughSpectrum)
   Лицензии: CC-BY-SA 3.0, GPL 3.0

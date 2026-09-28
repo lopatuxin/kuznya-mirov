@@ -133,7 +133,7 @@
   ],
   "atlasPieces": [
     {
-      "usedAs": "Трава — базовый слой земли",
+      "usedAs": "Трава — базовый слой земли, основной и редкий варианты: две вырезки одного травяного узора",
       "authors": ["Lanea Zimmerman (Sharm)"],
       "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
     },
@@ -143,12 +143,22 @@
       "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
     },
     {
+      "usedAs": "Цветы — мелочи поверх травы",
+      "authors": ["Lanea Zimmerman (Sharm)"],
+      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
+    },
+    {
+      "usedAs": "Пучок травы — мелочи поверх травы (основание куста рогоза)",
+      "authors": ["Lanea Zimmerman (Sharm)"],
+      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
+    },
+    {
       "usedAs": "Вода пруда",
       "authors": ["Lanea Zimmerman (Sharm)"],
       "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
     },
     {
-      "usedAs": "Стены построек (кирпичная кладка)",
+      "usedAs": "Стены построек — кирпичная кладка и серый камень верха стены (парапет)",
       "authors": ["Daniel Armstrong (HughSpectrum)"],
       "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
     },

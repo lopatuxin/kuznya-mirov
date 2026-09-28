@@ -115,7 +115,7 @@
       },
       "terrain": {
         "path": "images/terrain.png",
-        "frames": 35,
+        "frames": 37,
         "columns": 8
       },
       "tree": {

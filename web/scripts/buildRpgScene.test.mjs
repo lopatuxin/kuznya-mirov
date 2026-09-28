@@ -2,8 +2,9 @@ import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { parseLocationMap } from "./rpgLocationMap.mjs";
+import { parseLocationMap, CELL } from "./rpgLocationMap.mjs";
 import { buildGroundLayers, buildObjects, buildScene } from "./buildRpgScene.mjs";
+import { NEIGHBOR_BIT } from "./rpgTerrainTiles.mjs";
 
 const scriptDir = fileURLToPath(new URL(".", import.meta.url));
 const REAL_LOCATION_TEXT = readFileSync(resolve(scriptDir, "rpg-lpc/location.txt"), "utf8");
@@ -39,6 +40,17 @@ describe("buildGroundLayers", () => {
     const waterFrame = feature.cells[2][5];
     expect(pathFrame).toBeLessThan(16);
     expect(waterFrame).toBeGreaterThanOrEqual(16);
+  });
+
+  it("ревью: у тропинки нет каймы со стороны стены — стена считается своим соседом", () => {
+    // Клетка 'H' (2,2) граничит со стеной слева (1,2)='#'; бит W должен быть установлен (нет
+    // отступа, тропинка подходит к стене вплотную), хотя стена — не тропинка.
+    expect(feature.cells[2][2] & NEIGHBOR_BIT.W).toBe(NEIGHBOR_BIT.W);
+  });
+
+  it("ревью: у воды нет каймы со стороны стены, если вода её касается", () => {
+    // '~' стоит на (5,2), справа от неё стена (6,2)='#' — бит E должен быть установлен.
+    expect(feature.cells[2][5] & NEIGHBOR_BIT.E).toBe(NEIGHBOR_BIT.E);
   });
 
   it("все слои — набор плиток terrain", () => {
@@ -114,6 +126,32 @@ describe("buildScene — реальная карта location.txt", () => {
   it("не больше 100 препятствий (требование 13)", () => {
     const obstacles = scene.objects.filter((o) => o.obstacle);
     expect(obstacles.length).toBeLessThanOrEqual(100);
+  });
+
+  it("ревью: у клетки тропинки или воды, соседней со стеной, с этой стороны нет каймы", () => {
+    const [, feature] = buildGroundLayers(map);
+    const SIDE = [
+      { dx: 0, dy: -1, bit: NEIGHBOR_BIT.N },
+      { dx: 1, dy: 0, bit: NEIGHBOR_BIT.E },
+      { dx: 0, dy: 1, bit: NEIGHBOR_BIT.S },
+      { dx: -1, dy: 0, bit: NEIGHBOR_BIT.W },
+    ];
+    let checked = 0;
+    for (let y = 0; y < map.height; y++) {
+      for (let x = 0; x < map.width; x++) {
+        const frame = feature.cells[y][x];
+        if (frame < 0) continue; // не тропинка и не вода
+        for (const { dx, dy, bit } of SIDE) {
+          const nx = x + dx;
+          const ny = y + dy;
+          if (nx < 0 || ny < 0 || nx >= map.width || ny >= map.height) continue;
+          if (map.rows[ny][nx] !== CELL.WALL) continue;
+          checked++;
+          expect(frame & bit).toBe(bit);
+        }
+      }
+    }
+    expect(checked).toBeGreaterThan(0); // реальная карта действительно даёт такие соседства
   });
 
   it("размер сцены равен размеру карты (требование 9/12: из location.txt, не из чисел в скрипте)", () => {
