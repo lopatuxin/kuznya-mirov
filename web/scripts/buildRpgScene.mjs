@@ -37,6 +37,13 @@ export function buildGroundLayers(map) {
   const isPath = (x, y) => PATH_LIKE.has(rows[y][x]);
   const isWater = (x, y) => rows[y][x] === CELL.WATER;
   const isGlade = (x, y) => rows[y][x] === CELL.GLADE;
+  const isWall = (x, y) => rows[y][x] === CELL.WALL;
+  // Ревью: кайма (переход к траве) рисуется со стороны соседа, который сама плитка не считает
+  // «своим»; стена — не трава, но и не то, у чего должна быть каёмка — тропинка и вода подходят
+  // к её подножию вплотную. Стену считаем «своей» только для расчёта каймы (бит соседа), не для
+  // самой принадлежности клетки к тропинке/воде.
+  const isPathOrWall = (x, y) => isPath(x, y) || isWall(x, y);
+  const isWaterOrWall = (x, y) => isWater(x, y) || isWall(x, y);
 
   const grassCells = [];
   const featureCells = [];
@@ -48,9 +55,9 @@ export function buildGroundLayers(map) {
     for (let x = 0; x < width; x++) {
       grassRow.push(grassVariantTile(x, y));
       if (isPath(x, y)) {
-        featureRow.push(pathTileIndex(neighborBitmask(width, height, x, y, isPath)));
+        featureRow.push(pathTileIndex(neighborBitmask(width, height, x, y, isPathOrWall)));
       } else if (isWater(x, y)) {
-        featureRow.push(waterTileIndex(neighborBitmask(width, height, x, y, isWater)));
+        featureRow.push(waterTileIndex(neighborBitmask(width, height, x, y, isWaterOrWall)));
       } else {
         featureRow.push(-1);
       }

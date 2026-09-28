@@ -79,6 +79,26 @@ export function compositeRegion(dest, sw, sh, src, srcX, srcY, destX, destY) {
   }
 }
 
+// Как `compositeRegion`, но точки источника, близкие к `keyColor` (в пределах 6 на канал —
+// допуск ±1, что и у `recolorSkin`, взятый шире из-за сглаживания на краю вырезки), пропускаются
+// как прозрачные — источник вырезан вместе с фоном травы, не отдельным спрайтом на своей
+// прозрачности; так мелочь ложится только своими точками, а не всем прямоугольником вырезки
+// (требование 6, ревью: «швы оттенков»). Только для мака — используется внутри этого файла.
+const KEY_TOLERANCE = 6;
+function compositeRegionKeyed(dest, sw, sh, src, srcX, srcY, destX, destY, keyColor) {
+  const [kr, kg, kb] = keyColor;
+  for (let y = 0; y < sh; y++) {
+    for (let x = 0; x < sw; x++) {
+      const srcIdx = ((srcY + y) * src.width + (srcX + x)) * 4;
+      const r = src.data[srcIdx];
+      const g = src.data[srcIdx + 1];
+      const b = src.data[srcIdx + 2];
+      if (Math.abs(r - kr) <= KEY_TOLERANCE && Math.abs(g - kg) <= KEY_TOLERANCE && Math.abs(b - kb) <= KEY_TOLERANCE) continue;
+      compositeRegion(dest, 1, 1, src, srcX + x, srcY + y, destX + x, destY + y);
+    }
+  }
+}
+
 export { hexToRgb };
 
 // ---------------------------------------------------------------------------------------------
@@ -308,24 +328,40 @@ function getAtlas() {
   return atlasCache;
 }
 
-// Требование 1: базовый слой — настоящая трава LPC Tile Atlas. `grassA` — единственный вариант,
-// ровная заливка фона куска травы Lanea Zimmerman на всём базовом слое (ревью: план запрещает
-// части, взятые только под GPL без второй лицензии — прежний второй вариант `grassB` {20,800}
-// оказался вырезкой из фермерского набора Daniel Eddeland рядом с капустой и пшеницей, такой
-// части в атласе, а не отдельным смещением травы Zimmerman; убран без замены, разнообразие даёт
-// не второй фон, а мелочи, см. `rpgTerrainTiles.mjs`). Тропинка — кусок «dirt.png» того же автора
-// (земля, не серая брусчатка).
+// Требование 6: базовый слой — настоящая текстурная трава LPC Tile Atlas, не ровная заливка
+// (ревью): `grassA` и `grassB` — два выреза одного и того же мелкого травяного узора (тонкие
+// стебли на просвет): узор двухцветный и мелкий, поэтому стык двух копий на глаз не виден, хотя
+// края вырезки совпадают не точно; близки по среднему тону (±1 на канал), но заметно различаются
+// рисунком (~40% точек расходятся между вырезками, разный узор стеблей).
+// Ревью: прежний `water` {306,390} был вырезан из середины ОДНОГО пруда-блоба — соседние клетки
+// каждая заново копировали тот же кадр, но волновые полосы там текут к берегу под разным углом
+// в разных точках блоба, так что стык двух копий давал видимый шов (и цеплял край берега). `water`
+// {672,544} — открытая водная гладь с рябью, которая сама по себе повторяется по кругу: проверено
+// сдвигом на 32 по обеим осям — шва нет (см. тест бесшовности воды, как у травы).
 const ATLAS_SWATCH = {
-  grassA: { x: 704, y: 288 },
+  grassA: { x: 24, y: 728 },
+  grassB: { x: 40, y: 744 },
   path: { x: 256, y: 640 },
-  // Ревью: прежний `water` (420,20) был тёмным нецветным пятном (часть другого рисунка, не воды).
-  // Заменён на настоящую голубую воду одного из прудов атласа; `shore` — не берег ЭТОГО пруда
-  // (полосы у его кромки не тайлятся сплошным фоном), а тот же кусок «dirt.png», что и `path` —
-  // берег читается как мокрая земля у воды и остаётся тем же уже проверенным автором/лицензией.
-  water: { x: 306, y: 390 },
+  water: { x: 672, y: 544 },
   shore: { x: 256, y: 672 },
 };
 const BRICK_SWATCH = { x: 672, y: 705 };
+// Верх стены — верхний край блока серой стены развалин из атласа (ревью: прежняя {40,540} давала
+// шов через каждые 32 точки и захватывала обрывок пучка травы); у этой вырезки крайние столбцы и
+// строки совпадают, поэтому при повторе через 32 точки шва нет (см. тест), чужих вкраплений нет.
+const WALL_TOP_SWATCH = { x: 672, y: 832 };
+// Требование 6: цветок среди мелочей — маленький цветок со стеблем, вырезан вместе с фоном травы
+// (47,129,54 — фон именно этой конкретной вырезки исходника, не текущих `grassA`/`grassB`);
+// мелочи кладутся на прозрачный кадр (см. `rpgTerrainTiles.mjs`), поэтому фон вырезки маскируется
+// этим же цветом — ключом прозрачности — при композиции (`compositeRegionKeyed`), а не остаётся
+// сплошным прямоугольником.
+const FLOWER_BBOX = { x: 740, y: 371, w: 12, h: 13 };
+const FLOWER_BACKGROUND = [47, 129, 54];
+// Требование 6: камешек и пучок травы среди мелочей — настоящие маленькие вырезки со своей
+// прозрачностью (не кусок середины большого камня, ревью): камешек — отдельный обломок рядом с
+// валуном `ROCK_BBOX`, пучок — основание куста рогоза (без его тёмных метёлок).
+const ROCK_DECORATION_BBOX = { x: 930, y: 886, w: 11, h: 8 };
+const TUFT_BBOX = { x: 835, y: 962, w: 22, h: 20 };
 const TREE_BBOX = { x: 929, y: 902, w: 95, h: 117 };
 const ROCK_BBOX = { x: 866, y: 852, w: 58, h: 41 };
 
@@ -386,8 +422,10 @@ export function insideAutotileBlob(x, y, insets) {
   return true;
 }
 
-function drawAutotileTile(dest, destX, destY, bitmask, backgroundSwatch, featureSwatch, shoreSwatch) {
-  tileFill(dest, destX, destY, TILE, TILE, backgroundSwatch);
+// Плитка остаётся прозрачной везде, кроме тропинки/берега/воды (ревью: «швы оттенков») — слой
+// травы уже лежит под ней в `ground` (требование 15), закрашивать фон второй раз не нужно, и он
+// не заслонит собой не тот вариант травы, если под этой клеткой лежит `grassB`, а не `grassA`.
+function drawAutotileTile(dest, destX, destY, bitmask, featureSwatch, shoreSwatch) {
   const insets = autotileInsets(bitmask);
   if (shoreSwatch) {
     const shoreInsets = {
@@ -413,14 +451,22 @@ function drawAutotileTile(dest, destX, destY, bitmask, backgroundSwatch, feature
   }
 }
 
-// Мелкая насыпь камешков — кусок скалы из того же атласа, вырезанный без фона (требование 6:
-// «мелочи поверх травы»); сама насыпь не занимает весь кадр, но кадр не остаётся прозрачным
-// вокруг неё — вызывающий код (`buildTerrainSheet`) сперва заливает клетку травой, эта функция
-// только докладывает насыпь поверх уже готового фона.
-function drawDecorationTile(dest, destX, destY, variant, atlas) {
-  const cx = variant === 0 ? 8 : 18;
-  const cy = variant === 0 ? 10 : 6;
-  compositeRegion(dest, 14, 10, atlas, ROCK_BBOX.x + 6, ROCK_BBOX.y + 6, destX + cx, destY + cy);
+// Камешек — маленький обломок камня, вырезан по форме на своей прозрачности (ревью: не
+// прямоугольник из середины валуна), требование 6 «мелочи поверх травы», один кадр на прозрачном
+// фоне — трава под ней видна сквозь прозрачное, какой бы вариант ни лежал в клетке.
+function drawRockDecoration(dest, destX, destY, atlas) {
+  compositeRegion(dest, ROCK_DECORATION_BBOX.w, ROCK_DECORATION_BBOX.h, atlas, ROCK_DECORATION_BBOX.x, ROCK_DECORATION_BBOX.y, destX + 10, destY + 12);
+}
+
+// Цветок — та же идея, но вырезка `FLOWER_BBOX` держит фон вместе с собой (не на своей
+// прозрачности), поэтому фон маскируется по цвету при композиции (`compositeRegionKeyed`).
+function drawFlowerDecoration(dest, destX, destY, atlas) {
+  compositeRegionKeyed(dest, FLOWER_BBOX.w, FLOWER_BBOX.h, atlas, FLOWER_BBOX.x, FLOWER_BBOX.y, destX + 10, destY + 10, FLOWER_BACKGROUND);
+}
+
+// Пучок травы — основание куста рогоза, тоже на своей прозрачности (требование 6).
+function drawTuftDecoration(dest, destX, destY, atlas) {
+  compositeRegion(dest, TUFT_BBOX.w, TUFT_BBOX.h, atlas, TUFT_BBOX.x, TUFT_BBOX.y, destX + 5, destY + 8);
 }
 
 export function buildTerrainSheet() {
@@ -428,6 +474,7 @@ export function buildTerrainSheet() {
   const sheet = makeCanvas(TILE * TERRAIN_COLUMNS, TILE * rows);
   const atlas = getAtlas();
   const grassA = tileFrom(atlas, ATLAS_SWATCH.grassA);
+  const grassB = tileFrom(atlas, ATLAS_SWATCH.grassB);
   const path = tileFrom(atlas, ATLAS_SWATCH.path);
   const water = tileFrom(atlas, ATLAS_SWATCH.water);
   const shore = tileFrom(atlas, ATLAS_SWATCH.shore);
@@ -440,25 +487,33 @@ export function buildTerrainSheet() {
 
   for (let bitmask = 0; bitmask < 16; bitmask++) {
     const { x, y } = frameXY(pathTileIndex(bitmask));
-    drawAutotileTile(sheet, x, y, bitmask, grassA, path, null);
+    drawAutotileTile(sheet, x, y, bitmask, path, null);
   }
   for (let bitmask = 0; bitmask < 16; bitmask++) {
     const { x, y } = frameXY(waterTileIndex(bitmask));
-    drawAutotileTile(sheet, x, y, bitmask, grassA, water, shore);
+    drawAutotileTile(sheet, x, y, bitmask, water, shore);
   }
   {
     const { x, y } = frameXY(GRASS_VARIANT_TILES[0]);
     tileFill(sheet, x, y, TILE, TILE, grassA);
   }
   {
+    const { x, y } = frameXY(GRASS_VARIANT_TILES[1]);
+    tileFill(sheet, x, y, TILE, TILE, grassB);
+  }
+  // Требование 6: мелочи поверх травы — камешек, цветок и пучок травы, один кадр на вид, на
+  // прозрачном фоне.
+  {
     const { x, y } = frameXY(DECORATION_TILES[0]);
-    tileFill(sheet, x, y, TILE, TILE, grassA);
-    drawDecorationTile(sheet, x, y, 0, atlas);
+    drawRockDecoration(sheet, x, y, atlas);
   }
   {
     const { x, y } = frameXY(DECORATION_TILES[1]);
-    tileFill(sheet, x, y, TILE, TILE, grassA);
-    drawDecorationTile(sheet, x, y, 1, atlas);
+    drawFlowerDecoration(sheet, x, y, atlas);
+  }
+  {
+    const { x, y } = frameXY(DECORATION_TILES[2]);
+    drawTuftDecoration(sheet, x, y, atlas);
   }
   return sheet;
 }
@@ -466,26 +521,16 @@ export function buildTerrainSheet() {
 // ---------------------------------------------------------------------------------------------
 // Стены, деревья и камень: отдельные картинки объектов, каждая своего размера («Картинки»,
 // требование 8 фазы). Стена — картинка на прямоугольник ЛЮБОГО размера в клетках (требование 3):
-// лицевая кирпичная кладка на всю ширину/высоту прямоугольника, сверху — невысокий парапет
-// (кусок кладки из того же атласа, слегка высветленный, как грань блока у демо-кубов тетриса).
+// лицевая кирпичная кладка на всю ширину/высоту прямоугольника, сверху — настоящая текстура верха
+// стены из того же атласа (ревью: раньше это была заливка одним высветленным цветом).
 // ---------------------------------------------------------------------------------------------
 
 const WALL_CAP_HEIGHT = 16; // половина клетки — «парапет» над полосой препятствия
 
-function lighten([r, g, b], factor) {
-  return [r, g, b].map((c) => Math.min(255, Math.round(c + (255 - c) * factor)));
-}
-
-function buildWallImage(cellsWide, cellsTall) {
-  const brick = tileFrom(getAtlas(), BRICK_SWATCH);
-  const capColor = lighten([brick.data[0], brick.data[1], brick.data[2]], 0.3);
-  const capSwatch = makeCanvas(TILE, TILE);
-  for (let i = 0; i < capSwatch.data.length; i += 4) {
-    capSwatch.data[i] = capColor[0];
-    capSwatch.data[i + 1] = capColor[1];
-    capSwatch.data[i + 2] = capColor[2];
-    capSwatch.data[i + 3] = 255;
-  }
+export function buildWallImage(cellsWide, cellsTall) {
+  const atlas = getAtlas();
+  const brick = tileFrom(atlas, BRICK_SWATCH);
+  const capSwatch = tileFrom(atlas, WALL_TOP_SWATCH);
 
   const width = cellsWide * TILE;
   const height = cellsTall * TILE + WALL_CAP_HEIGHT;
@@ -592,8 +637,10 @@ function buildCreditsText(sources) {
   for (const entry of sources.atlasPieces) {
     lines.push(entry.usedAs);
     lines.push(`  Источник: ${sources.atlas.page}`);
-    lines.push(`  Авторы: ${entry.authors.join(", ")}`);
-    lines.push(`  Лицензии: ${entry.licenses.join(", ")}`);
+    // Ревью: если по атласу автора/лицензию установить не удалось, так и пишем — не приписываем
+    // наугад (пустой список в `sources.json`, не выдуманное имя).
+    lines.push(`  Авторы: ${entry.authors.length > 0 ? entry.authors.join(", ") : "не установлены по атласу"}`);
+    lines.push(`  Лицензии: ${entry.licenses.length > 0 ? entry.licenses.join(", ") : "не установлены по атласу"}`);
     lines.push("");
   }
   return lines.join("\n");
