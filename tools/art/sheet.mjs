@@ -1,5 +1,6 @@
 // Превращает видео или картинку нейросети на однотонном ярко-зелёном фоне в PNG с прозрачным
-// фоном для игры. Картинка вырезается по своему содержимому. Видео становится листом кадров
+// фоном для игры. Траву, листву и всё зелёное нейросеть рисует на ярко-розовом фоне
+// (`--key magenta`): зелёный фон убрал бы их вместе с собой. Картинка вырезается по своему содержимому. Видео становится листом кадров
 // сеткой: повторяющийся шаг находится сам, а движение без повтора (удар, падение) задаётся
 // номерами кадров через --range. Персонаж в видео должен двигаться на месте при неподвижной
 // камере: все кадры режутся одним общим прямоугольником, и если персонаж идёт через кадр, он
@@ -15,7 +16,7 @@ import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
-const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png> [--frames N] [--height H] [--columns C] [--range A-B]";
+const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--fade-ends P]";
 const MARGIN = 4;
 const VISIBLE_ALPHA = 26;
 const THUMB_SIZE = 96;
@@ -37,7 +38,7 @@ export function parseRange(text) {
   return { start: first - 1, length: last - first + 1 };
 }
 
-function smoothstep(edge0, edge1, x) {
+export function smoothstep(edge0, edge1, x) {
   const t = Math.min(1, Math.max(0, (x - edge0) / (edge1 - edge0)));
   return t * t * (3 - 2 * t);
 }
@@ -63,9 +64,31 @@ export function keyGreen(rgb) {
   return rgba;
 }
 
-async function removeGreen(file) {
+/**
+ * Точки RGB — в RGBA без ярко-розового фона. Прозрачность — по тому, насколько меньший из красного
+ * и синего выше зелёного: у розового высоки оба, у бурой земли и красных цветов — только один.
+ * Красный и синий снижаются на этот избыток, чтобы по краю не оставалась розовая кайма.
+ */
+export function keyMagenta(rgb) {
+  const rgba = Buffer.alloc((rgb.length / 3) * 4);
+  for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 4) {
+    const red = rgb[src];
+    const green = rgb[src + 1];
+    const blue = rgb[src + 2];
+    const excess = Math.max(0, Math.min(red, blue) - green);
+    rgba[dst] = red - excess;
+    rgba[dst + 1] = green;
+    rgba[dst + 2] = blue - excess;
+    rgba[dst + 3] = Math.round(255 * (1 - smoothstep(25, 110, excess)));
+  }
+  return rgba;
+}
+
+const KEYS = { green: keyGreen, magenta: keyMagenta };
+
+async function removeBackground(file, key) {
   const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  return { rgba: keyGreen(data), width: info.width, height: info.height };
+  return { rgba: KEYS[key](data), width: info.width, height: info.height };
 }
 
 // Один прямоугольник на все кадры: иначе персонаж прыгал бы внутри листа от кадра к кадру.
@@ -86,7 +109,7 @@ function visibleBox(images) {
       }
     }
   }
-  if (right < 0) throw new Error("после удаления зелёного фона ничего не осталось");
+  if (right < 0) throw new Error("после удаления фона ничего не осталось");
   left = Math.max(0, left - MARGIN);
   top = Math.max(0, top - MARGIN);
   right = Math.min(width - 1, right + MARGIN);
@@ -199,7 +222,7 @@ async function makeSheet(input, output, options) {
       span = findCycle(thumbs);
     }
     const count = Math.min(options.frames ?? span.length, span.length);
-    const images = await Promise.all(pickFrames(span, count).map((i) => removeGreen(files[i])));
+    const images = await Promise.all(pickFrames(span, count).map((i) => removeBackground(files[i], options.key)));
     const box = visibleBox(images);
     const frames = await Promise.all(images.map((image) => cutOut(image, box, options.height)));
     const { width: frameWidth, height: frameHeight } = frames[0].info;
@@ -218,10 +241,39 @@ async function makeSheet(input, output, options) {
   }
 }
 
-async function makeCutout(input, output, height) {
-  const image = await removeGreen(input);
+/**
+ * Плавно гасит левый и правый концы куска земли на `fade` точек от крайней видимой точки. Кусок
+ * дорожки, заведённый на соседний на удвоенную длину угасания, ложится на него без шва: погашенный
+ * конец одного лежит поверх или под непрозрачной серединой другого.
+ */
+export function fadeEnds(rgba, width, height, fade) {
+  let left = width;
+  let right = -1;
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (rgba[(y * width + x) * 4 + 3] < VISIBLE_ALPHA) continue;
+      left = Math.min(left, x);
+      right = Math.max(right, x);
+    }
+  }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const alpha = (y * width + x) * 4 + 3;
+      rgba[alpha] = Math.round(rgba[alpha] * smoothstep(0, fade, x - left) * smoothstep(0, fade, right - x));
+    }
+  }
+}
+
+async function makeCutout(input, output, height, key, fade) {
+  const image = await removeBackground(input, key);
   const { data, info } = await cutOut(image, visibleBox([image]), height);
-  writeFileSync(output, data);
+  if (fade === undefined) {
+    writeFileSync(output, data);
+  } else {
+    const raw = await sharp(data).raw().toBuffer();
+    fadeEnds(raw, info.width, info.height, fade);
+    await sharp(raw, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toFile(output);
+  }
   console.log(`картинка ${info.width}×${info.height}`);
 }
 
@@ -233,18 +285,23 @@ async function main() {
       height: { type: "string" },
       columns: { type: "string" },
       range: { type: "string" },
+      key: { type: "string", default: "green" },
+      "fade-ends": { type: "string" },
     },
   });
   if (positionals.length !== 2) throw new Error(USAGE);
   const [input, output] = positionals;
   const height = positiveInt("height", values.height);
+  if (!Object.hasOwn(KEYS, values.key)) throw new Error(`--key должно быть green или magenta, а не «${values.key}»`);
   if (!VIDEO_EXTENSIONS.has(extname(input).toLowerCase())) {
     if ([values.frames, values.columns, values.range].some((value) => value !== undefined)) throw new Error("--frames, --columns и --range — только для видео");
-    await makeCutout(input, output, height);
+    await makeCutout(input, output, height, values.key, positiveInt("fade-ends", values["fade-ends"]));
     return;
   }
+  if (values["fade-ends"] !== undefined) throw new Error("--fade-ends — только для картинки");
   await makeSheet(input, output, {
     height,
+    key: values.key,
     frames: positiveInt("frames", values.frames),
     columns: positiveInt("columns", values.columns) ?? 8,
     range: values.range === undefined ? undefined : parseRange(values.range),

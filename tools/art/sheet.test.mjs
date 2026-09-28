@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { findCycle, keyGreen, parseRange, pickFrames } from "./sheet.mjs";
+import { fadeEnds, findCycle, keyGreen, keyMagenta, parseRange, pickFrames } from "./sheet.mjs";
 
 const THUMB = 64;
 
@@ -36,6 +36,40 @@ describe("keyGreen", () => {
     const [red, green, blue, alpha] = keyGreen(Buffer.from([100, 170, 60]));
     assert.deepEqual([red, green, blue], [100, 100, 60]);
     assert.ok(alpha > 0 && alpha < 255, `прозрачность ${alpha}`);
+  });
+});
+
+describe("keyMagenta", () => {
+  it("чистый розовый фон становится прозрачным", () => {
+    const rgba = keyMagenta(Buffer.from([250, 10, 245]));
+    assert.equal(rgba[3], 0);
+  });
+
+  it("трава и бурая земля остаются непрозрачными и своего цвета", () => {
+    assert.deepEqual([...keyMagenta(Buffer.from([80, 140, 40]))], [80, 140, 40, 255]);
+    assert.deepEqual([...keyMagenta(Buffer.from([200, 150, 90]))], [200, 150, 90, 255]);
+  });
+
+  it("край получает промежуточную прозрачность, а красный и синий снижаются на избыток над зелёным", () => {
+    const [red, green, blue, alpha] = keyMagenta(Buffer.from([180, 100, 170]));
+    assert.deepEqual([red, green, blue], [110, 100, 100]);
+    assert.ok(alpha > 0 && alpha < 255, `прозрачность ${alpha}`);
+  });
+});
+
+describe("fadeEnds", () => {
+  it("гасит концы от крайних видимых точек, середину и прозрачные поля не трогает", () => {
+    const alphas = [0, 255, 255, 255, 255, 255, 255, 255, 255, 0];
+    const rgba = Buffer.from(alphas.flatMap((alpha) => [100, 80, 60, alpha]));
+    fadeEnds(rgba, alphas.length, 1, 3);
+    const faded = alphas.map((_, x) => rgba[x * 4 + 3]);
+    assert.equal(faded[0], 0);
+    assert.equal(faded[1], 0);
+    assert.ok(faded[2] > 0 && faded[2] < 255, `прозрачность ${faded[2]}`);
+    assert.equal(faded[4], 255);
+    assert.equal(faded[5], 255);
+    assert.equal(faded[8], 0);
+    assert.equal(faded[9], 0);
   });
 });
 
