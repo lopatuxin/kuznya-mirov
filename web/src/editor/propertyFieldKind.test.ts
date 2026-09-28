@@ -17,6 +17,10 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("camera_follows", true, NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "checkbox" });
   });
 
+  it("flip_x — галочка (Фаза 14, требование 20)", () => {
+    expect(propertyFieldKind("flip_x", true, NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "checkbox" });
+  });
+
   it("walk_to, walk_speed и on_click — текстовое поле, как другие пары, числа и keys", () => {
     expect(propertyFieldKind("walk_to", [3, 4], NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "text" });
     expect(propertyFieldKind("walk_speed", 4, NO_AUTHOR_PROPERTIES, IMAGES)).toEqual({ kind: "text" });

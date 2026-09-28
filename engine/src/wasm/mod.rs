@@ -556,6 +556,8 @@ fn draw_rect(
     color: [f32; 4],
     atlas_rect: AtlasRect,
     rotation_quarters: f32,
+    smooth: bool,
+    flip_x: bool,
 ) -> DrawRect {
     DrawRect {
         position,
@@ -564,6 +566,9 @@ fn draw_rect(
         atlas_pos: [atlas_rect.x as f32, atlas_rect.y as f32],
         atlas_size: [atlas_rect.w as f32, atlas_rect.h as f32],
         rotation_quarters,
+        atlas_layer: atlas_rect.sheet as f32,
+        smooth: smooth as u8 as f32,
+        flip_x: flip_x as u8 as f32,
     }
 }
 
@@ -626,6 +631,8 @@ fn to_draw_rects(paints: Vec<atlas::RectPaint>) -> Vec<DrawRect> {
                 paint.color,
                 paint.atlas_rect,
                 paint.rotation_quarters as f32,
+                paint.smooth,
+                paint.flip_x,
             )
         })
         .collect()
@@ -686,7 +693,7 @@ fn compose_ui(
     for (index, element) in screen.elements.iter().enumerate() {
         match element {
             screens::Element::Panel { placement, fill } => {
-                let (color, atlas_rect) =
+                let (color, atlas_rect, smooth) =
                     atlas::fill_paint(fill, ui_elapsed_steps, images, atlas_rects);
                 rects.push(draw_rect(
                     placement.top_left(viewport),
@@ -694,6 +701,8 @@ fn compose_ui(
                     color,
                     atlas_rect,
                     0.0,
+                    smooth,
+                    false,
                 ));
             }
             screens::Element::Label {
@@ -727,9 +736,17 @@ fn compose_ui(
             } => {
                 let [x, y] = placement.top_left(viewport);
                 let chosen = screens::button_fill(fill, fill_hover, fill_pressed, index, mouse);
-                let (color, atlas_rect) =
+                let (color, atlas_rect, smooth) =
                     atlas::fill_paint(chosen, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect([x, y], placement.size, color, atlas_rect, 0.0));
+                rects.push(draw_rect(
+                    [x, y],
+                    placement.size,
+                    color,
+                    atlas_rect,
+                    0.0,
+                    smooth,
+                    false,
+                ));
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
                 texts.push(TextDraw {
@@ -770,6 +787,8 @@ fn compose_world_elements(
                 back.color,
                 atlas::WHITE_PIXEL,
                 0.0,
+                false,
+                false,
             ));
         }
         rects.push(draw_rect(
@@ -778,6 +797,8 @@ fn compose_world_elements(
             bar.fill.color,
             atlas::WHITE_PIXEL,
             0.0,
+            false,
+            false,
         ));
     }
     let texts = labels

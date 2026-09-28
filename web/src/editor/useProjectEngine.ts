@@ -1,6 +1,7 @@
 import init, { Engine } from "engine";
 import { useEffect, useRef, useState, type RefObject } from "react";
 import { loadProject, type ProjectLoadResult } from "../projectLoader";
+import { hideWebGpuIfRequested, logEngineBackend } from "../renderBackend";
 import { createCachingProjectFileReader, createOverridingReader } from "./cachingProjectFileReader";
 import { watchFolderProject } from "./folderProjectWatcher";
 import { listedProjectBaseUrl, createReaderForSource, type ProjectSource } from "./projectSource";
@@ -113,6 +114,7 @@ export function useProjectEngine(
       const canvas = canvasRef.current;
       if (!canvas) return;
 
+      hideWebGpuIfRequested(location.search);
       let wasm: Awaited<ReturnType<typeof init>>;
       try {
         wasm = await init();
@@ -132,6 +134,7 @@ export function useProjectEngine(
         engineInstance.free();
         return;
       }
+      logEngineBackend(engineInstance);
       createdEngine = engineInstance;
       setEngine(engineInstance);
       setMemory(wasm.memory);

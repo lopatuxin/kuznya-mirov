@@ -4,6 +4,7 @@ import { formatError, formatErrorScreen, type EngineError } from "./engineErrors
 import { loadGameOptions, type GameOptionsResult } from "./gameOptions";
 import { gameListSearch, resolveGameName } from "./gameSelection";
 import { createHttpProjectFileReader, loadProject, type LoadedMusicVerdict, type LoadedSound } from "./projectLoader";
+import { hideWebGpuIfRequested, logEngineBackend } from "./renderBackend";
 import { decodeSoundBuffer } from "./sound/soundLoader";
 import { createSoundPlayer, type MusicAsset, type SoundPlayer } from "./sound/soundPlayer";
 import { readSoundWindow } from "./sound/soundWindow";
@@ -309,6 +310,7 @@ async function runGame(gameName: string): Promise<void> {
 
   applyCanvasLayout(canvas, null);
 
+  hideWebGpuIfRequested(location.search);
   const wasm = await init();
 
   let engine: Engine;
@@ -318,6 +320,7 @@ async function runGame(gameName: string): Promise<void> {
     showError(error instanceof Error ? error.message : String(error));
     return;
   }
+  logEngineBackend(engine);
 
   // Создаётся внутри `loadProject`, сразу после `read_texts` — стоит в `suspended` до первого
   // нажатия игрока («Звук» → «Проигрывание на странице»), но нужен уже там: им же проверяются

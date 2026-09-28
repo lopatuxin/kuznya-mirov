@@ -12,8 +12,8 @@ const ROTATION_OPTIONS = [0, 90, 180, 270] as const;
 const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
 
 /**
- * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `camera_follows`
- * и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
+ * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `camera_follows`,
+ * `flip_x` (Фаза 14, требование 20) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
  * `rotation` (0/90/180/270), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; объявленное свойство
  * автора вида `text` — строковое поле без разбора JSON («Таблицы данных», требование 40); остальное —
  * текст. Значение, которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), —
@@ -27,7 +27,7 @@ export function propertyFieldKind(
   imageNames: readonly string[],
 ): PropertyFieldKind {
   if (authorPropertyKinds[key] === "text") return { kind: "raw-text" };
-  if (key === "collides" || key === "camera_follows" || authorPropertyKinds[key] === "flag") {
+  if (key === "collides" || key === "camera_follows" || key === "flip_x" || authorPropertyKinds[key] === "flag") {
     return typeof value === "boolean" ? { kind: "checkbox" } : { kind: "text" };
   }
   if (key === "image") {

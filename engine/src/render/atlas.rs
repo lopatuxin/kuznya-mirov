@@ -1,8 +1,9 @@
 //! «Картинки» → «Атлас и отрисовка»: packs every declared image's whole strip (frames and all —
 //! slicing a strip into its individual frames is `frame_atlas_rect`'s job at draw time, not
-//! `pack`'s) into one fixed-size canvas by shelves (sort tallest first, lay left to right, start a
-//! new shelf when a row would overflow), with a one-pixel gap between neighbors and one opaque
-//! white pixel reserved for color fills; also picks each image's current frame and, from `Game`'s
+//! `pack`'s) into a stack of fixed-size sheets by shelves (sort tallest first, lay left to right,
+//! start a new shelf when a row would overflow, a new sheet when a shelf would), with a one-pixel
+//! gap between neighbors and one opaque white pixel reserved for color fills, then writes the
+//! points one sheet at a time (`fill_sheet`); also picks each image's current frame and, from `Game`'s
 //! `World`, the world's own list of things to draw, by `layer`. No `wgpu`, no browser types — this
 //! is the part of «Отрисовка» plain enough to run and test on any target, unlike the GPU resources
 //! built from its result (see `super::gpu`, wasm32-only).
@@ -15,9 +16,14 @@ use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
-/// «Картинки» → «Атлас и отрисовка»: the canvas is this size in every browser, so the game either
-/// starts everywhere or nowhere, never differently depending on what WebGPU would actually allow.
+/// «Картинки» → «Атлас», требование 14: the canvas is this size in every browser, so the game
+/// either starts everywhere or nowhere, never differently depending on what WebGPU would actually
+/// allow.
 pub const ATLAS_SIZE: u32 = 2048;
+
+/// «Картинки» → «Атлас», требования 14, 21: the atlas is a stack of at most this many
+/// `ATLAS_SIZE`×`ATLAS_SIZE` sheets — `pack` fails once a set of images needs one more.
+pub const MAX_SHEETS: u32 = 16;
 
 const PADDING: u32 = 1;
 
@@ -31,52 +37,73 @@ pub struct AtlasImage {
     pub pixels: Vec<u8>,
 }
 
-/// A rectangle inside the atlas, in atlas pixels.
+/// A rectangle inside one atlas sheet, in that sheet's own pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct AtlasRect {
     pub x: u32,
     pub y: u32,
     pub w: u32,
     pub h: u32,
+    /// «Картинки» → «Атлас», требование 14: which of the atlas's stacked sheets this rectangle
+    /// lives on — below `Atlas::sheet_count`, the sheet `fill_sheet` writes it into and, on the
+    /// GPU, a layer of the same `D2Array` texture (`render::gpu`).
+    pub sheet: u32,
 }
 
-/// «Картинки» → «Атлас и отрисовка»: a plain color fill is this pixel, stretched over the
-/// rectangle and multiplied by the color — `pack` always places it here, at a fixed spot every
-/// atlas has regardless of which images the game declares (including none at all).
+/// «Картинки» → «Атлас»: a plain color fill is this pixel, stretched over the rectangle and
+/// multiplied by the color — `pack` always places it here, on the first sheet, at a fixed spot
+/// every atlas has regardless of which images the game declares (including none at all).
 pub const WHITE_PIXEL: AtlasRect = AtlasRect {
     x: 0,
     y: 0,
     w: 1,
     h: 1,
+    sheet: 0,
 };
 
-/// The packed canvas: `pixels` is `ATLAS_SIZE * ATLAS_SIZE * 4` bytes of RGBA8, meant to be
-/// uploaded to the GPU once and then dropped — «точки после сборки атласа в памяти движка не
-/// остаются» — `rects[i]` is where the `i`-th input image (its whole strip) landed, in the same
-/// order `pack` was given them, so `i` doubles as that image's `ImageId`.
+/// The packed layout, without the points themselves: `rects[i]` is where the `i`-th input image
+/// (its whole strip) landed, in the same order `pack` was given them, so `i` doubles as that
+/// image's `ImageId`; `sheet_count` sheets hold them all. The points are written by `fill_sheet`
+/// one sheet at a time into one reused buffer, uploaded and overwritten by the next — wasm memory
+/// never shrinks, so holding every sheet at once would keep up to `MAX_SHEETS` × `SHEET_BYTES`
+/// reserved for the page's whole life.
 #[derive(Debug)]
 pub struct Atlas {
-    pub pixels: Vec<u8>,
     pub rects: Vec<AtlasRect>,
+    pub sheet_count: u32,
 }
+
+/// Bytes of one sheet's points: RGBA8, `ATLAS_SIZE` × `ATLAS_SIZE`.
+pub const SHEET_BYTES: usize = ATLAS_SIZE as usize * ATLAS_SIZE as usize * 4;
 
 fn set_pixel(pixels: &mut [u8], x: u32, y: u32, rgba: [u8; 4]) {
     let start = ((y * ATLAS_SIZE + x) * 4) as usize;
     pixels[start..start + 4].copy_from_slice(&rgba);
 }
 
+/// «Картинки» → «Сглаживание», требование 5: copies `src` into `rect` with its color channels
+/// multiplied by its own alpha — so a sampled edge between an opaque point and a transparent
+/// neighbor blends only the picture's own color and whatever is behind it, never a fraction of
+/// black. Rounds to the nearest whole channel value (требование 6's own one-step tolerance).
 fn blit(pixels: &mut [u8], rect: AtlasRect, src: &[u8]) {
     for row in 0..rect.h {
-        let dst_start = (((rect.y + row) * ATLAS_SIZE + rect.x) * 4) as usize;
-        let dst_len = (rect.w * 4) as usize;
-        let src_start = (row * rect.w * 4) as usize;
-        pixels[dst_start..dst_start + dst_len]
-            .copy_from_slice(&src[src_start..src_start + dst_len]);
+        let dst_row_start = (((rect.y + row) * ATLAS_SIZE + rect.x) * 4) as usize;
+        let src_row_start = (row * rect.w * 4) as usize;
+        for col in 0..rect.w as usize {
+            let s = src_row_start + col * 4;
+            let d = dst_row_start + col * 4;
+            let alpha = src[s + 3];
+            let factor = alpha as f32 / 255.0;
+            pixels[d] = (src[s] as f32 * factor).round() as u8;
+            pixels[d + 1] = (src[s + 1] as f32 * factor).round() as u8;
+            pixels[d + 2] = (src[s + 2] as f32 * factor).round() as u8;
+            pixels[d + 3] = alpha;
+        }
     }
 }
 
 /// Total atlas-pixel area every image would occupy, `+1` for the white pixel — the "занятое
-/// место" a doesn't-fit error names next to `ATLAS_SIZE`'s own limit.
+/// место" a doesn't-fit error names next to the atlas's own `MAX_SHEETS` limit.
 fn occupied_area(images: &[AtlasImage]) -> u64 {
     1 + images
         .iter()
@@ -84,11 +111,13 @@ fn occupied_area(images: &[AtlasImage]) -> u64 {
         .sum::<u64>()
 }
 
-/// Shelf-packs every image's whole strip into one `ATLAS_SIZE`×`ATLAS_SIZE` canvas — «Картинки» →
-/// «Атлас и отрисовка»: sorted tallest first (a stable sort, so two images of the same height keep
-/// `images`' own order), laid left to right on a shelf, wrapping to a new shelf when a row would
-/// overflow. `Err` names what didn't fit: a single image wider or taller than the atlas on its
-/// own, or the declared set's combined area next to the atlas's own limit.
+/// Shelf-packs every image's whole strip into a stack of `ATLAS_SIZE`×`ATLAS_SIZE` sheets —
+/// «Картинки» → «Атлас», требование 14: sorted tallest first (a stable sort, so two images of the
+/// same height keep `images`' own order), laid left to right on a shelf, wrapping to a new shelf
+/// when a row would overflow the sheet's width, and to a new sheet when a shelf would overflow its
+/// height — free space left on an earlier sheet is never revisited. `Err` names what didn't fit: a
+/// single image wider or taller than one sheet on its own, or the declared set needing more than
+/// `MAX_SHEETS` sheets (требование 21).
 pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
     for img in images {
         let expected = img.width as usize * img.height as usize * 4;
@@ -116,10 +145,12 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
             x: 0,
             y: 0,
             w: 0,
-            h: 0
+            h: 0,
+            sheet: 0,
         };
         images.len()
     ];
+    let mut sheet = 0u32;
     let mut cursor_x = WHITE_PIXEL.w + PADDING;
     let mut shelf_y = 0u32;
     let mut shelf_height = WHITE_PIXEL.h;
@@ -132,35 +163,63 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
             shelf_height = 0;
         }
         if shelf_y + img.height > ATLAS_SIZE {
-            return Err(format!(
-                "картинки не умещаются в атлас {ATLAS_SIZE}×{ATLAS_SIZE}: полка на высоте {shelf_y} требует ещё {} точек по высоте и выходит за предел; суммарно все картинки занимают {} точек, предел {}",
-                img.height,
-                occupied_area(images),
-                ATLAS_SIZE as u64 * ATLAS_SIZE as u64
-            ));
+            sheet += 1;
+            if sheet >= MAX_SHEETS {
+                return Err(format!(
+                    "картинки не умещаются в атлас: предел {MAX_SHEETS} листов {ATLAS_SIZE}×{ATLAS_SIZE}; суммарно все картинки занимают {} точек",
+                    occupied_area(images)
+                ));
+            }
+            shelf_y = 0;
+            cursor_x = 0;
+            shelf_height = 0;
         }
         rects[i] = AtlasRect {
             x: cursor_x,
             y: shelf_y,
             w: img.width,
             h: img.height,
+            sheet,
         };
         cursor_x += img.width + PADDING;
         shelf_height = shelf_height.max(img.height);
     }
 
-    let mut pixels = vec![0u8; ATLAS_SIZE as usize * ATLAS_SIZE as usize * 4];
-    set_pixel(
-        &mut pixels,
-        WHITE_PIXEL.x,
-        WHITE_PIXEL.y,
-        [255, 255, 255, 255],
-    );
-    for (i, img) in images.iter().enumerate() {
-        blit(&mut pixels, rects[i], &img.pixels);
-    }
+    Ok(Atlas {
+        rects,
+        sheet_count: sheet + 1,
+    })
+}
 
-    Ok(Atlas { pixels, rects })
+/// «Картинки» → «Атлас», требование 14: writes sheet `sheet`'s points into `pixels`
+/// (`SHEET_BYTES` long, reused from one sheet to the next): cleared to transparent, the white
+/// pixel on the first sheet, and every image `atlas` placed on this sheet, color multiplied by
+/// alpha (требование 5). `images` is the same slice `pack` was given.
+pub fn fill_sheet(atlas: &Atlas, images: &[AtlasImage], sheet: u32, pixels: &mut [u8]) {
+    pixels.fill(0);
+    if sheet == WHITE_PIXEL.sheet {
+        set_pixel(pixels, WHITE_PIXEL.x, WHITE_PIXEL.y, [255, 255, 255, 255]);
+    }
+    for (img, rect) in images.iter().zip(&atlas.rects) {
+        if rect.sheet == sheet {
+            blit(pixels, *rect, &img.pixels);
+        }
+    }
+}
+
+/// «Стек и инфраструктура» → «Ловушка WebGL2»: `wgpu-hal` 29.0.4's GLES backend turns a `D2`
+/// texture of exactly one layer into a plain `TEXTURE_2D` and, when it's also square, one whose
+/// layer count is a multiple of 6 into a cube map — either way `render::gpu`'s `D2Array` view stops
+/// working. Called only for the WebGL2 backend (`render::gpu::Renderer::build_atlas`); WebGPU
+/// allocates exactly `needed` layers. Pure and native-testable on purpose — the GPU texture itself
+/// is wasm32-only (`render::gpu`, gated out of a native build), but this number has to be right
+/// before any texture gets created.
+pub fn webgl2_safe_layer_count(needed: u32) -> u32 {
+    let mut layers = needed.max(1);
+    while layers == 1 || layers.is_multiple_of(6) {
+        layers += 1;
+    }
+    layers
 }
 
 /// «Картинки» → «Кадры»: the atlas rectangle an image's *current* frame occupies. The frame
@@ -209,6 +268,7 @@ fn frame_atlas_rect_at(
                 y: whole.y,
                 w: frame_w,
                 h: whole.h,
+                sheet: whole.sheet,
             }
         }
         Some(columns) => {
@@ -221,6 +281,7 @@ fn frame_atlas_rect_at(
                 y: whole.y + (frame / columns) * frame_h,
                 w: frame_w,
                 h: frame_h,
+                sheet: whole.sheet,
             }
         }
     }
@@ -237,11 +298,12 @@ fn frame_by_index(world: &World, id: u32, prop: property::PropertyId, frame_coun
     (raw.floor() as u64).min(frame_count.saturating_sub(1) as u64) as u32
 }
 
-/// A `Fill`'s resolved `(color, atlas rect)` for the current frame — «Картинки» → «Атлас и
-/// отрисовка»: a color fill is the atlas's white pixel stretched and multiplied by the color; an
-/// image fill leaves the color white (only its alpha carries `opacity`) and samples the image's
-/// current frame instead. Either way the result is one draw instance, so a fill and an image go
-/// out through the very same math — shared by a screen element's own `Fill`
+/// A `Fill`'s resolved `(color, atlas rect, smooth)` for the current frame — «Картинки» → «Атлас»:
+/// a color fill is the atlas's white pixel stretched and multiplied by the color, never smoothed;
+/// an image fill leaves the color white (only its alpha carries `opacity`), samples the image's
+/// current frame instead, and carries that image's own `smooth` (требование 3: a panel or button
+/// draws an image the same way an object does). Either way the result is one draw instance, so a
+/// fill and an image go out through the very same math — shared by a screen element's own `Fill`
 /// (`wasm::compose_ui`) and, via a `Fill` built from a world object's `image`/`opacity`, by
 /// `compose_world_paints` below.
 pub fn fill_paint(
@@ -249,12 +311,13 @@ pub fn fill_paint(
     elapsed_steps: f64,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
-) -> ([f32; 4], AtlasRect) {
+) -> ([f32; 4], AtlasRect, bool) {
     match *fill {
-        Fill::Color(c) => (c, WHITE_PIXEL),
+        Fill::Color(c) => (c, WHITE_PIXEL, false),
         Fill::Image { image, opacity } => (
             [1.0, 1.0, 1.0, opacity],
             frame_atlas_rect(image, elapsed_steps, images, atlas_rects),
+            images[image].smooth,
         ),
     }
 }
@@ -270,6 +333,12 @@ pub struct RectPaint {
     /// «Картинки», требование 24: quarter turns (0–3) clockwise, from the object's own
     /// `rotation` — always 0 for a color fill (rotation never affects a plain color).
     pub rotation_quarters: u8,
+    /// «Картинки» → «Сглаживание»: the drawn image's own `smooth` — always `false` for a color
+    /// fill (требование 3: only a picture's points blend into their neighbors).
+    pub smooth: bool,
+    /// «Картинки» → «Отражение», требование 7: the drawn object's own `flip_x` — always `false`
+    /// for a color fill (требование 12: `flip_x` changes nothing about how a color draws).
+    pub flip_x: bool,
 }
 
 /// «Картинки» → «Кадры»: the world's own frame is picked by steps taken (`elapsed_steps`, frozen
@@ -315,7 +384,8 @@ pub fn compose_world_paints(
                 }
                 None => Fill::Color(world.color(id, property::COLOR).expect("filtered above")),
             };
-            let (color, mut atlas_rect) = fill_paint(&fill, elapsed_steps, images, atlas_rects);
+            let (color, mut atlas_rect, smooth) =
+                fill_paint(&fill, elapsed_steps, images, atlas_rects);
             // «Картинки», требование 23: `frame_by` overrides the time-driven frame `fill_paint`
             // already picked — the object's own property decides instead.
             if let Fill::Image { image, .. } = fill
@@ -324,21 +394,26 @@ pub fn compose_world_paints(
                 let frame = frame_by_index(world, id, frame_by, images[image].frames);
                 atlas_rect = frame_atlas_rect_at(image, frame, images, atlas_rects);
             }
-            // «Картинки», требование 24: заливка цветом поворот не видит.
-            let rotation_quarters = if matches!(fill, Fill::Image { .. }) {
+            // «Картинки», требование 24: заливка цветом поворот не видит; требование 12: и
+            // отражение тоже.
+            let is_image = matches!(fill, Fill::Image { .. });
+            let rotation_quarters = if is_image {
                 world
                     .rotation(id, property::ROTATION)
                     .map_or(0, |r| r.quarters())
             } else {
                 0
             };
+            let flip_x = is_image && world.flag(id, property::FLIP_X);
             // «Картинки» → «Картинка своего размера», требования 8–10: own-size placement (and,
             // with a nonzero rotation, требование 9's rigid rotation around the object's own
             // middle) replaces the object's own rectangle only for drawing — every filter/sort
             // above already ran against `p`/`s` unchanged.
             let (position, size) = match fill {
-                Fill::Image { image, .. } => own_size_rect(&images[image], p, s, rotation_quarters)
-                    .unwrap_or(([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32])),
+                Fill::Image { image, .. } => {
+                    own_size_rect(&images[image], p, s, rotation_quarters, flip_x)
+                        .unwrap_or(([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32]))
+                }
                 Fill::Color(_) => ([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32]),
             };
             RectPaint {
@@ -347,6 +422,8 @@ pub fn compose_world_paints(
                 color,
                 atlas_rect,
                 rotation_quarters,
+                smooth,
+                flip_x,
             }
         })
         .collect()
@@ -370,22 +447,33 @@ fn rotate_quarter(v: [f32; 2], quarters: u8) -> [f32; 2] {
 /// shifted by `offset` (требование 8); a nonzero `rotation_quarters` then rotates that whole
 /// rectangle, as a rigid body, around the object's own middle (требование 9) — width/height swap
 /// on an odd quarter turn, since only a swap keeps an axis-aligned rectangle axis-aligned after a
-/// quarter turn around a point other than its own center.
+/// quarter turn around a point other than its own center. «Картинки» → «Отражение», требование 8:
+/// `flip_x` mirrors left and right before any of that — the anchor's own left/right point swaps
+/// (`Anchor::flip_x`) and `offset.x` negates — so the same math places the mirrored rectangle, and
+/// требование 9's rotation then turns that already-mirrored rectangle exactly as it would any
+/// other.
 fn own_size_rect(
     decl: &ImageDecl,
     obj_position: Vec2,
     obj_size: Vec2,
     rotation_quarters: u8,
+    flip_x: bool,
 ) -> Option<([f32; 2], [f32; 2])> {
     let size = decl.size?;
     let obj_pos = [obj_position[0] as f32, obj_position[1] as f32];
     let obj_size = [obj_size[0] as f32, obj_size[1] as f32];
     let img_size = [size[0] as f32, size[1] as f32];
-    let offset = [decl.offset[0] as f32, decl.offset[1] as f32];
+    let mut offset = [decl.offset[0] as f32, decl.offset[1] as f32];
+    let anchor = if flip_x {
+        offset[0] = -offset[0];
+        decl.anchor.flip_x()
+    } else {
+        decl.anchor
+    };
 
-    let anchor_point = decl.anchor.point_on(obj_pos, obj_size);
+    let anchor_point = anchor.point_on(obj_pos, obj_size);
     let target = [anchor_point[0] + offset[0], anchor_point[1] + offset[1]];
-    let own_anchor = decl.anchor.point_on([0.0, 0.0], img_size);
+    let own_anchor = anchor.point_on([0.0, 0.0], img_size);
     let top_left = [target[0] - own_anchor[0], target[1] - own_anchor[1]];
 
     if rotation_quarters == 0 {
@@ -449,6 +537,8 @@ pub fn compose_ground_paints(
                     color: [1.0, 1.0, 1.0, 1.0],
                     atlas_rect: frame_atlas_rect_at(layer.image, n as u32, images, atlas_rects),
                     rotation_quarters: 0,
+                    smooth: images[layer.image].smooth,
+                    flip_x: false,
                 });
             }
         }
@@ -482,12 +572,66 @@ mod tests {
         !(a.x + a.w <= b.x || b.x + b.w <= a.x || a.y + a.h <= b.y || b.y + b.h <= a.y)
     }
 
+    fn sheet_pixels(atlas: &Atlas, images: &[AtlasImage], sheet: u32) -> Vec<u8> {
+        let mut pixels = vec![0u8; SHEET_BYTES];
+        fill_sheet(atlas, images, sheet, &mut pixels);
+        pixels
+    }
+
+    fn pixel_at(pixels: &[u8], x: u32, y: u32) -> &[u8] {
+        let start = ((y * ATLAS_SIZE + x) * 4) as usize;
+        &pixels[start..start + 4]
+    }
+
     #[test]
     fn empty_input_still_places_the_white_pixel() {
         let atlas = pack(&[]).expect("пустой набор — не ошибка");
         assert!(atlas.rects.is_empty());
-        let idx = ((WHITE_PIXEL.y * ATLAS_SIZE + WHITE_PIXEL.x) * 4) as usize;
-        assert_eq!(&atlas.pixels[idx..idx + 4], &[255, 255, 255, 255]);
+        assert_eq!(atlas.sheet_count, 1, "игра без картинок — один лист");
+        let sheet = sheet_pixels(&atlas, &[], 0);
+        assert_eq!(
+            pixel_at(&sheet, WHITE_PIXEL.x, WHITE_PIXEL.y),
+            &[255, 255, 255, 255]
+        );
+    }
+
+    /// Один буфер на все листы: лист, заполненный поверх прежнего, не хранит его картинок — только
+    /// свои.
+    #[test]
+    fn a_sheet_filled_over_a_reused_buffer_keeps_nothing_of_the_previous_sheet() {
+        let images = vec![
+            AtlasImage {
+                width: 1200,
+                height: 1100,
+                pixels: [9u8, 9, 9, 255].repeat(1200 * 1100),
+            },
+            AtlasImage {
+                width: 10,
+                height: 1100,
+                pixels: [5u8, 5, 5, 255].repeat(10 * 1100),
+            },
+            AtlasImage {
+                width: 1200,
+                height: 1100,
+                pixels: [3u8, 3, 3, 255].repeat(1200 * 1100),
+            },
+        ];
+        let atlas = pack(&images).unwrap();
+        let first = atlas.rects[0];
+        let last = atlas.rects[2];
+        assert_ne!(first.sheet, last.sheet, "{:?}", atlas.rects);
+
+        let mut pixels = vec![0u8; SHEET_BYTES];
+        fill_sheet(&atlas, &images, first.sheet, &mut pixels);
+        assert_eq!(pixel_at(&pixels, first.x, first.y), &[9, 9, 9, 255]);
+        fill_sheet(&atlas, &images, last.sheet, &mut pixels);
+        assert_eq!(pixel_at(&pixels, last.x, last.y), &[3, 3, 3, 255]);
+        let foreign = pixels
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .find(|px| **px != [0, 0, 0, 0] && **px != [3, 3, 3, 255]);
+        assert_eq!(foreign, None, "на втором листе остались точки первого");
     }
 
     #[test]
@@ -516,15 +660,29 @@ mod tests {
         }
     }
 
+    /// Опаque points don't change under premultiplication (требование 6) — «unmodified» here
+    /// means an opaque source pixel, not any pixel: a translucent one is scaled down, checked
+    /// separately in `blit_multiplies_color_by_alpha_and_leaves_opaque_and_transparent_points`.
     #[test]
     fn blitted_pixels_land_at_their_own_rect_unmodified() {
-        let images = vec![img(4, 3)];
+        let images = vec![AtlasImage {
+            width: 4,
+            height: 3,
+            pixels: [7u8, 7, 7, 255].repeat(4 * 3),
+        }];
         let atlas = pack(&images).unwrap();
         let rect = atlas.rects[0];
+        let sheet = sheet_pixels(&atlas, &images, rect.sheet);
         for row in 0..rect.h {
             let start = (((rect.y + row) * ATLAS_SIZE + rect.x) * 4) as usize;
             let len = (rect.w * 4) as usize;
-            assert!(atlas.pixels[start..start + len].iter().all(|&b| b == 7));
+            assert!(
+                sheet[start..start + len]
+                    .as_chunks::<4>()
+                    .0
+                    .iter()
+                    .all(|px| *px == [7, 7, 7, 255])
+            );
         }
     }
 
@@ -541,23 +699,104 @@ mod tests {
         assert!(pack(&images).is_err());
     }
 
+    /// «Картинки» → «Атлас», требование 21: 17 картинок 2048×2048 нужны 17+ листов (белая точка
+    /// на первом сдвигает даже первую картинку на второй) — больше предела `MAX_SHEETS`, ошибка
+    /// называет и предел, и суммарно занятые точки.
     #[test]
-    fn a_set_that_does_not_fit_together_is_rejected_with_area_and_limit_named() {
-        let images: Vec<AtlasImage> = (0..10).map(|_| img(ATLAS_SIZE, 250)).collect();
-        let err = pack(&images).expect_err("суммарно больше 2048×2048 — ошибка");
+    fn seventeen_full_sheet_images_exceed_the_sheet_limit() {
+        let images: Vec<AtlasImage> = (0..17).map(|_| img(ATLAS_SIZE, ATLAS_SIZE)).collect();
+        let err = pack(&images).expect_err("17 листов 2048×2048 — ошибка предела листов");
+        assert!(err.contains(&MAX_SHEETS.to_string()), "{err}");
         assert!(err.contains(&ATLAS_SIZE.to_string()), "{err}");
     }
 
+    /// «Крайние случаи»: «Две картинки 1200×1100 … каждая на своём листе, игра запускается» —
+    /// раньше (одно полотно) это была ошибка нехватки полок; с листами каждая просто уходит на
+    /// свой собственный лист.
     #[test]
-    fn a_set_that_fits_by_area_but_not_by_shelf_packing_names_the_real_reason() {
-        // Two 1200×1100 images: combined area (2×1,320,000 + 1) is well under 2048×2048's own
-        // 4,194,304, but shelf packing needs two 1100-tall shelves (2201 > 2048) since neither
-        // image fits next to the other on one row — the doesn't-fit error must say so, not just
-        // repeat the area that, read alone, says it should have fit.
+    fn two_images_that_do_not_share_a_shelf_land_on_separate_sheets() {
         let images = vec![img(1200, 1100), img(1200, 1100)];
-        let err =
-            pack(&images).expect_err("влезают по площади, но не по полкам — всё равно ошибка");
-        assert!(err.contains("полк"), "{err}");
+        let atlas = pack(&images).expect("каждая картинка получает свой лист");
+        assert_ne!(
+            atlas.rects[0].sheet, atlas.rects[1].sheet,
+            "{:?}",
+            atlas.rects
+        );
+        assert_eq!(atlas.sheet_count, 2);
+    }
+
+    /// «Крайние случаи»: «Одна картинка ровно 2048×2048: на первом листе ей мешает белая точка,
+    /// она целиком ложится на второй лист.»
+    #[test]
+    fn one_full_sheet_image_lands_entirely_on_the_second_sheet() {
+        let images = vec![img(ATLAS_SIZE, ATLAS_SIZE)];
+        let atlas = pack(&images).expect("одна картинка ровно с лист — не ошибка");
+        assert_eq!(atlas.rects[0].sheet, 1);
+        assert_eq!(
+            atlas.rects[0],
+            AtlasRect {
+                x: 0,
+                y: 0,
+                w: ATLAS_SIZE,
+                h: ATLAS_SIZE,
+                sheet: 1,
+            }
+        );
+        assert_eq!(atlas.sheet_count, 2);
+    }
+
+    /// «Картинки» → «Атлас», требования 14, 16: картинки суммарно больше одного листа ложатся на
+    /// два, ни одна не пересекает другую и край своего листа, у каждой свой номер листа.
+    #[test]
+    fn images_that_overflow_one_sheet_spread_across_two_without_crossing_edges() {
+        let images: Vec<AtlasImage> = (0..4).map(|_| img(1100, 1100)).collect();
+        let atlas = pack(&images).expect("должно уместиться на нескольких листах");
+        assert!(atlas.sheet_count >= 2, "{:?}", atlas.rects);
+        for r in &atlas.rects {
+            assert!(r.x + r.w <= ATLAS_SIZE && r.y + r.h <= ATLAS_SIZE, "{r:?}");
+        }
+        for i in 0..atlas.rects.len() {
+            for j in (i + 1)..atlas.rects.len() {
+                let a = atlas.rects[i];
+                let b = atlas.rects[j];
+                if a.sheet != b.sheet {
+                    continue;
+                }
+                assert!(!overlap(a, b), "{a:?} vs {b:?}");
+            }
+        }
+    }
+
+    /// «Картинки» → «Сглаживание», требования 5–6: атлас хранит цвет, умноженный на прозрачность
+    /// — `(200, 100, 50, 128)` → `(100, 50, 25, 128)`, непрозрачная точка не меняется, прозрачная
+    /// становится `(0, 0, 0, 0)`.
+    #[test]
+    fn blit_multiplies_color_by_alpha_and_leaves_opaque_and_transparent_points() {
+        let images = vec![AtlasImage {
+            width: 3,
+            height: 1,
+            pixels: vec![
+                200, 100, 50, 128, // полупрозрачная
+                10, 20, 30, 255, // непрозрачная
+                255, 255, 255, 0, // полностью прозрачная
+            ],
+        }];
+        let atlas = pack(&images).unwrap();
+        let rect = atlas.rects[0];
+        let sheet = sheet_pixels(&atlas, &images, rect.sheet);
+        let px = |col: u32| pixel_at(&sheet, rect.x + col, rect.y);
+        assert_eq!(px(0), [100, 50, 25, 128]);
+        assert_eq!(px(1), [10, 20, 30, 255]);
+        assert_eq!(px(2), [0, 0, 0, 0]);
+    }
+
+    /// «Стек и инфраструктура» → «Ловушка WebGL2»: 1 и число, кратное 6, поднимаются до
+    /// ближайшего безопасного значения; всё остальное остаётся как есть.
+    #[test]
+    fn webgl2_safe_layer_count_avoids_one_and_multiples_of_six() {
+        for (needed, expected) in [(1, 2), (6, 7), (12, 13), (2, 2)] {
+            assert_eq!(webgl2_safe_layer_count(needed), expected, "needed={needed}");
+        }
     }
 
     #[test]
@@ -571,6 +810,43 @@ mod tests {
             .expect("объявление ATLAS_SIZE оканчивается ;");
         let declared: f32 = rest[..end].trim().parse().expect("ATLAS_SIZE — число");
         assert_eq!(declared, ATLAS_SIZE as f32);
+    }
+
+    /// `smooth` is a WGSL reserved word — naga rejects an instance field with that name, but only
+    /// wasm32-side (`include_str!` is opaque to a native build), so this is checked on the source
+    /// text instead, same as `rect_wgsl_atlas_size_matches_the_rust_constant` above.
+    #[test]
+    fn rect_wgsl_does_not_declare_a_reserved_smooth_field() {
+        let shader = include_str!("../../shaders/rect.wgsl");
+        assert!(
+            !shader.contains("smooth: f32"),
+            "поле smooth — зарезервированное слово WGSL"
+        );
+        assert!(
+            shader.contains("smooth_flag"),
+            "должно называться smooth_flag"
+        );
+    }
+
+    /// «Стек и инфраструктура» → «Ловушка WebGL2»: naga's GLSL writer refuses to sample one
+    /// texture through two samplers (`ImageMultipleSamplers`) — the shader must bind at most one.
+    #[test]
+    fn rect_wgsl_binds_the_atlas_texture_to_at_most_one_sampler() {
+        let shader = include_str!("../../shaders/rect.wgsl");
+        let sampler_bindings = shader.matches(": sampler;").count();
+        assert_eq!(sampler_bindings, 1, "{shader}");
+    }
+
+    /// «Картинки» → «Сглаживание», требование 5: `PREMULTIPLIED_ALPHA_BLENDING` (`render::gpu`)
+    /// expects the fragment's whole output premultiplied, not just the atlas's own points — a
+    /// color fill's own alpha (opacity, translucent panels) must be premultiplied too.
+    #[test]
+    fn rect_wgsl_premultiplies_the_instance_color_by_its_own_alpha() {
+        let shader = include_str!("../../shaders/rect.wgsl");
+        assert!(
+            shader.contains("instance.color.rgb * instance.color.a"),
+            "{shader}"
+        );
     }
 
     #[test]
@@ -610,6 +886,7 @@ mod tests {
             offset: [0.0, 0.0],
             frame_by: None,
             frame_by_name: None,
+            smooth: false,
         }
     }
 
@@ -638,6 +915,7 @@ mod tests {
             y: 20,
             w: 30,
             h: 40,
+            sheet: 0,
         }];
 
         let scene = test_scene();
@@ -647,6 +925,55 @@ mod tests {
         assert_eq!(paints[0].atlas_rect, WHITE_PIXEL);
         assert_eq!(paints[1].atlas_rect, atlas_rects[0]);
         assert_eq!(paints[1].color, [1.0, 1.0, 1.0, 1.0]);
+    }
+
+    /// «Картинки» → «Сглаживание», требование 3: `smooth` доходит от описания картинки до списка
+    /// рисования у объекта мира — заливка цветом никогда не сглажена, что бы ни стояло у самого
+    /// объекта.
+    #[test]
+    fn smooth_reaches_the_draw_list_for_a_world_object_but_never_for_a_color_fill() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+
+        let mut smooth_image = one_frame_image();
+        smooth_image.smooth = true;
+        let images = vec![smooth_image, one_frame_image()];
+        let atlas_rects = vec![
+            AtlasRect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+                sheet: 0,
+            },
+            AtlasRect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+                sheet: 0,
+            },
+        ];
+
+        let smooth_obj = world.create();
+        world.set_vec2(smooth_obj, property::POSITION, [0.0, 0.0]);
+        world.set_vec2(smooth_obj, property::SIZE, [1.0, 1.0]);
+        world.set_image(smooth_obj, property::IMAGE, 0);
+
+        let crisp_obj = world.create();
+        world.set_vec2(crisp_obj, property::POSITION, [0.0, 0.0]);
+        world.set_vec2(crisp_obj, property::SIZE, [1.0, 1.0]);
+        world.set_image(crisp_obj, property::IMAGE, 1);
+
+        let color_obj = world.create();
+        world.set_vec2(color_obj, property::POSITION, [0.0, 0.0]);
+        world.set_vec2(color_obj, property::SIZE, [1.0, 1.0]);
+        world.set_color(color_obj, property::COLOR, [1.0, 1.0, 1.0, 1.0]);
+
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let smooth: Vec<bool> = paints.iter().map(|p| p.smooth).collect();
+        assert_eq!(smooth, vec![true, false, false], "{paints:?}");
     }
 
     /// «Картинки»: план фазы 04 — «opacity 0.5 умножает прозрачность, opacity 1 и его отсутствие
@@ -661,6 +988,7 @@ mod tests {
             y: 0,
             w: 8,
             h: 8,
+            sheet: 0,
         }];
 
         let mut object = |opacity: Option<f64>| {
@@ -695,6 +1023,7 @@ mod tests {
             y: 5,
             w: 20,
             h: 20,
+            sheet: 0,
         }];
         let base = Fill::Image {
             image: 0,
@@ -707,7 +1036,7 @@ mod tests {
         };
 
         let chosen = button_fill(&base, &base, &base, 0, &mouse);
-        let (_, atlas_rect) = fill_paint(chosen, 0.0, &images, &atlas_rects);
+        let (_, atlas_rect, _) = fill_paint(chosen, 0.0, &images, &atlas_rects);
         assert_eq!(atlas_rect, atlas_rects[0]);
     }
 
@@ -720,12 +1049,14 @@ mod tests {
                 y: 0,
                 w: 10,
                 h: 10,
+                sheet: 0,
             },
             AtlasRect {
                 x: 50,
                 y: 50,
                 w: 10,
                 h: 10,
+                sheet: 0,
             },
         ];
         let base = Fill::Image {
@@ -743,8 +1074,34 @@ mod tests {
         };
 
         let chosen = button_fill(&base, &hover, &base, 0, &mouse);
-        let (_, atlas_rect) = fill_paint(chosen, 0.0, &images, &atlas_rects);
+        let (_, atlas_rect, _) = fill_paint(chosen, 0.0, &images, &atlas_rects);
         assert_eq!(atlas_rect, atlas_rects[1]);
+    }
+
+    /// «Картинки» → «Сглаживание», требование 3: панель или кнопка рисует картинку так же, как
+    /// объект — `fill_paint` доносит `smooth` до самого результата; заливка цветом — всегда
+    /// `false`.
+    #[test]
+    fn fill_paint_carries_the_images_own_smooth_but_never_for_a_color_fill() {
+        let mut smooth_image = one_frame_image();
+        smooth_image.smooth = true;
+        let images = vec![smooth_image];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            sheet: 0,
+        }];
+        let image_fill = Fill::Image {
+            image: 0,
+            opacity: 1.0,
+        };
+        let (_, _, smooth) = fill_paint(&image_fill, 0.0, &images, &atlas_rects);
+        assert!(smooth);
+        let color_fill = Fill::Color([1.0, 0.0, 0.0, 1.0]);
+        let (_, _, smooth) = fill_paint(&color_fill, 0.0, &images, &atlas_rects);
+        assert!(!smooth);
     }
 
     /// «Картинки», требование 23: `frame_by` picks the frame from the object's own property,
@@ -770,12 +1127,14 @@ mod tests {
             offset: [0.0, 0.0],
             frame_by: Some(hits),
             frame_by_name: None,
+            smooth: false,
         }];
         let atlas_rects = vec![AtlasRect {
             x: 0,
             y: 0,
             w: 30,
             h: 10,
+            sheet: 0,
         }];
 
         let no_hits = world.create();
@@ -805,7 +1164,8 @@ mod tests {
                 x: 0,
                 y: 0,
                 w: 10,
-                h: 10
+                h: 10,
+                sheet: 0,
             },
             "нет свойства — первый кадр"
         );
@@ -815,7 +1175,8 @@ mod tests {
                 x: 10,
                 y: 0,
                 w: 10,
-                h: 10
+                h: 10,
+                sheet: 0,
             },
             "1.7 округляется вниз до 1"
         );
@@ -825,7 +1186,8 @@ mod tests {
                 x: 20,
                 y: 0,
                 w: 10,
-                h: 10
+                h: 10,
+                sheet: 0,
             },
             "за концом — последний кадр"
         );
@@ -848,6 +1210,7 @@ mod tests {
             offset: [0.0, 0.0],
             frame_by: None,
             frame_by_name: None,
+            smooth: false,
         }
     }
 
@@ -863,6 +1226,7 @@ mod tests {
             y: 20,
             w: 300,
             h: 90,
+            sheet: 0,
         };
         let atlas_rects = vec![whole];
         let rect_of = |frame: u32| frame_atlas_rect_at(0, frame, &images, &atlas_rects);
@@ -872,7 +1236,8 @@ mod tests {
                 x: 10,
                 y: 20,
                 w: 100,
-                h: 30
+                h: 30,
+                sheet: 0,
             }
         );
         assert_eq!(
@@ -881,7 +1246,8 @@ mod tests {
                 x: 210,
                 y: 20,
                 w: 100,
-                h: 30
+                h: 30,
+                sheet: 0,
             },
             "строка 0, столбец 2"
         );
@@ -891,7 +1257,8 @@ mod tests {
                 x: 10,
                 y: 50,
                 w: 100,
-                h: 30
+                h: 30,
+                sheet: 0,
             },
             "строка 1, столбец 0"
         );
@@ -901,7 +1268,8 @@ mod tests {
                 x: 10,
                 y: 80,
                 w: 100,
-                h: 30
+                h: 30,
+                sheet: 0,
             },
             "последняя, неполная строка — столбец 0"
         );
@@ -917,6 +1285,7 @@ mod tests {
             y: 0,
             w: 400,
             h: 50,
+            sheet: 0,
         };
         let atlas_rects = vec![whole];
         for frame in 0..4 {
@@ -941,6 +1310,7 @@ mod tests {
             y: 0,
             w: 300,
             h: 20,
+            sheet: 0,
         }];
         // 25 шагов / 10 на кадр = кадр 2 (строка 0, столбец 2).
         let rect = frame_atlas_rect(0, 25.0, &images, &atlas_rects);
@@ -950,7 +1320,8 @@ mod tests {
                 x: 200,
                 y: 0,
                 w: 100,
-                h: 10
+                h: 10,
+                sheet: 0,
             }
         );
     }
@@ -965,6 +1336,7 @@ mod tests {
             y: 0,
             w: 50,
             h: 10,
+            sheet: 0,
         }];
         for elapsed in [0.0, 1.0, 500.0] {
             assert_eq!(
@@ -973,7 +1345,8 @@ mod tests {
                     x: 0,
                     y: 0,
                     w: 10,
-                    h: 10
+                    h: 10,
+                    sheet: 0,
                 },
                 "elapsed_steps = {elapsed}"
             );
@@ -990,6 +1363,7 @@ mod tests {
             y: 7,
             w: 360,
             h: 240,
+            sheet: 0,
         };
         for (frames, columns) in [(7, Some(3)), (12, Some(4)), (5, Some(1)), (9, None)] {
             let images = vec![grid_image(frames, columns)];
@@ -1036,6 +1410,7 @@ mod tests {
             offset,
             frame_by: None,
             frame_by_name: None,
+            smooth: false,
         }
     }
 
@@ -1074,6 +1449,7 @@ mod tests {
             y: 0,
             w: 10,
             h: 10,
+            sheet: 0,
         }];
         let scene = test_scene();
         let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
@@ -1111,6 +1487,7 @@ mod tests {
                 y: 0,
                 w: 10,
                 h: 10,
+                sheet: 0,
             }];
             let scene = test_scene();
             let paints =
@@ -1137,6 +1514,7 @@ mod tests {
             y: 0,
             w: 10,
             h: 10,
+            sheet: 0,
         }];
         let scene = test_scene();
         let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
@@ -1155,6 +1533,7 @@ mod tests {
             y: 0,
             w: 10,
             h: 10,
+            sheet: 0,
         }];
         let scene = test_scene();
         // Object [0,0]..[4,2], middle (2,1). Unrotated image rect at the object's top-left,
@@ -1186,11 +1565,192 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------------------------
+    // Фаза 14 — отражение
+    // -----------------------------------------------------------------------------------------
+
+    fn one_flipped_sized_object(
+        world: &mut World,
+        position: [f64; 2],
+        size: [f64; 2],
+        rotation: Option<u16>,
+    ) -> u32 {
+        let id = one_sized_object(world, position, size, rotation);
+        world.set_flag(id, property::FLIP_X, true);
+        id
+    }
+
+    /// «Картинки», требование 8 — тот же числовой пример, что и без отражения, но с `flip_x`:
+    /// линия отражения `x = 10.5` (середина объекта), прямоугольник от `(8.5, 4.5)` до
+    /// `(10.5, 6.5)`.
+    #[test]
+    fn flip_x_mirrors_the_own_size_placement_from_the_plans_worked_example() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        one_flipped_sized_object(&mut world, [10.0, 5.0], [1.0, 1.5], None);
+
+        let images = vec![sized_image([2.0, 2.0], Anchor::BottomLeft, [0.5, 0.0])];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            sheet: 0,
+        }];
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        assert_eq!(paints.len(), 1);
+        assert!((paints[0].position[0] - 8.5).abs() < 1e-5, "{paints:?}");
+        assert!((paints[0].position[1] - 4.5).abs() < 1e-5, "{paints:?}");
+        assert!((paints[0].size[0] - 2.0).abs() < 1e-5, "{paints:?}");
+        assert!((paints[0].size[1] - 2.0).abs() < 1e-5, "{paints:?}");
+        assert!(paints[0].flip_x);
+    }
+
+    /// «Картинки», требование 8: `flip_x` mirrors each of the nine anchors left/right before
+    /// placing — an anchor's flipped result matches the *unflipped* result of its mirror anchor
+    /// (`every_anchor_places_the_own_size_image_at_the_matching_point`).
+    #[test]
+    fn flip_x_swaps_each_anchors_placement_with_its_mirror() {
+        let properties = PropertyTable::new();
+        let cases: [(Anchor, [f32; 2]); 9] = [
+            (Anchor::TopLeft, [-1.0, 0.0]),
+            (Anchor::Top, [-0.5, 0.0]),
+            (Anchor::TopRight, [0.0, 0.0]),
+            (Anchor::Left, [-1.0, -0.5]),
+            (Anchor::Center, [-0.5, -0.5]),
+            (Anchor::Right, [0.0, -0.5]),
+            (Anchor::BottomLeft, [-1.0, -1.0]),
+            (Anchor::Bottom, [-0.5, -1.0]),
+            (Anchor::BottomRight, [0.0, -1.0]),
+        ];
+        for (anchor, expected_top_left) in cases {
+            let mut world = World::new(&properties);
+            one_flipped_sized_object(&mut world, [0.0, 0.0], [1.0, 1.0], None);
+            let images = vec![sized_image([2.0, 2.0], anchor, [0.0, 0.0])];
+            let atlas_rects = vec![AtlasRect {
+                x: 0,
+                y: 0,
+                w: 10,
+                h: 10,
+                sheet: 0,
+            }];
+            let scene = test_scene();
+            let paints =
+                compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+            assert!(
+                (paints[0].position[0] - expected_top_left[0]).abs() < 1e-5
+                    && (paints[0].position[1] - expected_top_left[1]).abs() < 1e-5,
+                "{anchor:?}: {:?} != {expected_top_left:?}",
+                paints[0].position
+            );
+        }
+    }
+
+    /// «Картинки», требование 9 — тот же поворот на 90°, что и
+    /// `rotation_rotates_the_own_size_rectangle_around_the_objects_middle`, но с `flip_x`:
+    /// картинка сначала отражается в своих осях (искомый прямоугольник до поворота сдвигается с
+    /// `[0,0]..[1,3]` на `[3,0]..[4,3]`), затем поворачивается вокруг середины объекта как обычно
+    /// — результат отличается от простого поворота без отражения.
+    #[test]
+    fn flip_x_mirrors_before_rotation_rotates_around_the_objects_middle() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        one_flipped_sized_object(&mut world, [0.0, 0.0], [4.0, 2.0], Some(90));
+        let images = vec![sized_image([1.0, 3.0], Anchor::TopLeft, [0.0, 0.0])];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            sheet: 0,
+        }];
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        assert!((paints[0].position[0] - 0.0).abs() < 1e-4, "{paints:?}");
+        assert!((paints[0].position[1] - 2.0).abs() < 1e-4, "{paints:?}");
+        assert!((paints[0].size[0] - 3.0).abs() < 1e-4, "{paints:?}");
+        assert!((paints[0].size[1] - 1.0).abs() < 1e-4, "{paints:?}");
+        assert!(paints[0].flip_x);
+    }
+
+    /// «Картинки», требование 8: без `size` `flip_x` не двигает прямоугольник (он остаётся
+    /// прямоугольником объекта, как и без отражения) — признак отражения всё равно попадает в
+    /// список рисования, чтобы шейдер зеркалил саму выборку.
+    #[test]
+    fn flip_x_without_size_keeps_the_objects_own_rectangle_but_still_flags_the_draw() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        one_flipped_sized_object(&mut world, [3.0, 4.0], [2.0, 5.0], None);
+        let images = vec![one_frame_image()];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            sheet: 0,
+        }];
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        assert_eq!(paints[0].position, [3.0, 4.0]);
+        assert_eq!(paints[0].size, [2.0, 5.0]);
+        assert!(paints[0].flip_x);
+    }
+
+    /// «Картинки», требование 12: `flip_x` у объекта с заливкой цветом ничего не меняет в
+    /// рисовании.
+    #[test]
+    fn flip_x_has_no_effect_on_a_color_fill() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        let id = world.create();
+        world.set_vec2(id, property::POSITION, [1.0, 1.0]);
+        world.set_vec2(id, property::SIZE, [2.0, 2.0]);
+        world.set_color(id, property::COLOR, [1.0, 0.0, 0.0, 1.0]);
+        world.set_flag(id, property::FLIP_X, true);
+
+        let scene = test_scene();
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &[], &[]);
+        assert_eq!(paints.len(), 1);
+        assert!(!paints[0].flip_x, "{paints:?}");
+        assert_eq!(paints[0].position, [1.0, 1.0]);
+        assert_eq!(paints[0].size, [2.0, 2.0]);
+    }
+
+    // -----------------------------------------------------------------------------------------
     // Фаза 13 — земля из плиток
     // -----------------------------------------------------------------------------------------
 
     fn tileset(frames: u32, columns: Option<u32>) -> ImageDecl {
         grid_image(frames, columns)
+    }
+
+    /// «Картинки» → «Сглаживание», требование 3: `smooth` набора плиток доходит до списка
+    /// рисования земли так же, как у объекта.
+    #[test]
+    fn smooth_reaches_the_draw_list_for_a_ground_tile() {
+        let mut smooth_tileset = tileset(1, None);
+        smooth_tileset.smooth = true;
+        let images = vec![smooth_tileset];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            sheet: 0,
+        }];
+        let ground = vec![GroundLayer {
+            image: 0,
+            cells: vec![vec![0]],
+        }];
+        let visible = CellRange {
+            x0: 0,
+            y0: 0,
+            x1: 1,
+            y1: 1,
+        };
+        let paints = compose_ground_paints(&ground, visible, &images, &atlas_rects);
+        assert_eq!(paints.len(), 1);
+        assert!(paints[0].smooth);
     }
 
     /// «Мир на экране» → «Земля», требования 16–18: плитки в своих клетках с кадрами набора по
@@ -1203,6 +1763,7 @@ mod tests {
             y: 0,
             w: 20,
             h: 20,
+            sheet: 0,
         }];
         let ground = vec![
             GroundLayer {
@@ -1252,6 +1813,7 @@ mod tests {
             y: 0,
             w: 10,
             h: 10,
+            sheet: 0,
         }];
         let ground = vec![GroundLayer {
             image: 0,
@@ -1277,6 +1839,7 @@ mod tests {
             y: 0,
             w: 10,
             h: 10,
+            sheet: 0,
         }];
         let ground = vec![GroundLayer {
             image: 0,

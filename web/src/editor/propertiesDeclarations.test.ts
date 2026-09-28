@@ -39,6 +39,10 @@ describe("suggestPropertyNames", () => {
     expect(suggestions).toContain("walk_speed");
     expect(suggestions).toContain("on_click");
   });
+
+  it("flip_x Фазы 14 — среди подсказок", () => {
+    expect(suggestPropertyNames([], {})).toContain("flip_x");
+  });
 });
 
 describe("defaultValueForPropertyKind", () => {

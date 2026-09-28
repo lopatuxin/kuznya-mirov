@@ -10,8 +10,8 @@ pub struct DrawRect {
     pub position: [f32; 2],
     pub size: [f32; 2],
     pub color: [f32; 4],
-    /// «Картинки» → «Атлас и отрисовка»: the rectangle in the atlas this instance samples, in
-    /// atlas pixels — the shader divides by `ATLAS_SIZE` itself. A plain color fill uses
+    /// «Картинки» → «Атлас»: the rectangle in the atlas this instance samples, in that sheet's
+    /// own pixels — the shader divides by `ATLAS_SIZE` itself. A plain color fill uses
     /// `atlas::WHITE_PIXEL` here, stretched and multiplied by `color`, so a fill and an image go
     /// out through the very same instance and the very same draw call.
     pub atlas_pos: [f32; 2],
@@ -20,6 +20,17 @@ pub struct DrawRect {
     /// before it stretches to fill `position`/`size` — the interface's own rectangles (panels,
     /// buttons) always pass `0.0` here; only a world object's `rotation` ever sets it.
     pub rotation_quarters: f32,
+    /// «Картинки» → «Атлас», требование 14: which layer of the `D2Array` atlas texture to sample
+    /// — `atlas::AtlasRect::sheet`, carried straight through.
+    pub atlas_layer: f32,
+    /// «Картинки» → «Сглаживание»: `0.0`/`1.0` — the fragment shader samples this instance both as
+    /// a texel fetch (crisp) and through the linear sampler (smoothed) and picks between them with
+    /// `select`, never a branch (a texture sample needs the same path for every fragment in a
+    /// quad). WGSL's own field for this is `smooth_flag`, not `smooth` — `smooth` is reserved.
+    pub smooth: f32,
+    /// «Картинки» → «Отражение», требование 9: `0.0`/`1.0` — mirrors the sampled point in the
+    /// image's own axes, after the rotation above has already picked which corner maps where.
+    pub flip_x: f32,
 }
 
 /// One label or button caption to hand to `glyphon` this frame. `rect_px` is the element's
@@ -90,6 +101,23 @@ fn glyphon_color(color: [f32; 4]) -> glyphon::Color {
     )
 }
 
+/// A no-op [`wgpu::rwh::HasDisplayHandle`] for `InstanceDescriptor::display` — `WebDisplayHandle`
+/// carries no fields, so nothing here can dangle or mismatch; it only tags the handle as "web" so
+/// `wgpu-core`'s `create_surface` (the WebGL2/GLES path) has a display to pair with the canvas's
+/// window handle instead of rejecting the surface as `MissingDisplayHandle`. The `SurfaceTarget::
+/// Canvas` helper always passes `raw_display_handle: None`, so this is never compared against a
+/// different handle — see `wgpu-core` 29.0.4 `instance.rs`, `Instance::create_surface`.
+#[derive(Debug)]
+struct WebDisplay;
+
+impl wgpu::rwh::HasDisplayHandle for WebDisplay {
+    fn display_handle(&self) -> Result<wgpu::rwh::DisplayHandle<'_>, wgpu::rwh::HandleError> {
+        let raw = wgpu::rwh::RawDisplayHandle::Web(wgpu::rwh::WebDisplayHandle::new());
+        // SAFETY: `WebDisplayHandle` has no fields to invalidate; there is nothing to uphold.
+        Ok(unsafe { wgpu::rwh::DisplayHandle::borrow_raw(raw) })
+    }
+}
+
 /// Draws one frame in five layers over the same canvas, back to front: the world's colored
 /// rectangles (scene cells, letterboxed into the window — a world element's own bar rectangles go
 /// out through this same pass), the world's own label text (`glyphon`, a separate pass — «Надписи
@@ -114,10 +142,21 @@ pub struct Renderer {
     ui_instance_buffer: wgpu::Buffer,
     ui_instance_capacity: usize,
 
-    /// «Картинки» → «Атлас и отрисовка»: one `ATLAS_SIZE`×`ATLAS_SIZE` texture, allocated once
-    /// here and never resized — `build_atlas` only ever rewrites its contents, so neither bind
-    /// group above ever needs recreating after this constructor returns.
+    /// «Картинки» → «Атлас», требование 14: a `D2` texture with one layer per atlas sheet,
+    /// sampled through a `D2Array` view — `build_atlas` recreates it (and both bind groups above,
+    /// which reference its view) whenever the layer count a game needs changes, since a texture's
+    /// own layer count is fixed at creation; it never grows or shrinks in place otherwise.
     atlas_texture: wgpu::Texture,
+    /// The layer count `atlas_texture` currently has — compared against what the next
+    /// `build_atlas` needs before deciding whether to recreate it.
+    atlas_layers: u32,
+    /// Shared by `world_bind_group`/`ui_bind_group`; kept so `build_atlas` can rebuild either one
+    /// after recreating `atlas_texture`, without re-describing the layout every time.
+    atlas_bind_group_layout: wgpu::BindGroupLayout,
+    /// «Картинки» → «Сглаживание»: the atlas's crisp path is a texel fetch (no sampler — see the
+    /// shader's own binding comment), so only the smoothed path needs one; `ClampToEdge` keeps a
+    /// stretched fill from bleeding into a neighboring atlas entry.
+    linear_sampler: wgpu::Sampler,
 
     font_system: glyphon::FontSystem,
     swash_cache: glyphon::SwashCache,
@@ -163,7 +202,7 @@ impl Renderer {
         // descriptor when it is not there — this is the documented way to get the fallback.
         let instance_desc = wgpu::InstanceDescriptor {
             backends: wgpu::Backends::BROWSER_WEBGPU | wgpu::Backends::GL,
-            ..wgpu::InstanceDescriptor::new_without_display_handle()
+            ..wgpu::InstanceDescriptor::new_with_display_handle(Box::new(WebDisplay))
         };
         let instance = wgpu::util::new_instance_with_webgpu_detection(instance_desc).await;
 
@@ -229,66 +268,69 @@ impl Renderer {
             source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/rect.wgsl").into()),
         });
 
-        // «Картинки» → «Атлас и отрисовка»: one fixed-size texture and sampler, shared by both
-        // passes' bind groups — `Rgba8Unorm` carries alpha without premultiplying it, `Nearest`
-        // keeps a scaled-up sprite blocky rather than smoothed, `ClampToEdge` keeps a stretched
-        // fill from bleeding into a neighboring atlas entry.
-        let atlas_texture = device.create_texture(&wgpu::TextureDescriptor {
-            label: Some("atlas"),
-            size: wgpu::Extent3d {
-                width: ATLAS_SIZE,
-                height: ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: wgpu::TextureDimension::D2,
-            format: wgpu::TextureFormat::Rgba8Unorm,
-            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
-        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor::default());
-        let atlas_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
-            label: Some("atlas_sampler"),
+        // «Картинки» → «Атлас», требования 14, 18–19: one `D2Array` texture and one sampler,
+        // shared by both passes' bind groups — `Rgba8Unorm` carries alpha without premultiplying
+        // it a second time (the atlas's own pixels already are, see `atlas::blit`); the crisp path
+        // is a texel fetch (no sampler, see the shader's own binding comment), `Linear` smooths
+        // the other, `ClampToEdge` keeps a stretched fill from bleeding into a neighboring atlas
+        // entry.
+        let linear_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+            label: Some("atlas_sampler_linear"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
             address_mode_w: wgpu::AddressMode::ClampToEdge,
-            mag_filter: wgpu::FilterMode::Nearest,
-            min_filter: wgpu::FilterMode::Nearest,
-            mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            mag_filter: wgpu::FilterMode::Linear,
+            min_filter: wgpu::FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..Default::default()
         });
 
-        let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
-            label: Some("globals_layout"),
-            entries: &[
-                wgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: wgpu::ShaderStages::VERTEX,
-                    ty: wgpu::BindingType::Buffer {
-                        ty: wgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: false,
-                        min_binding_size: None,
+        let atlas_bind_group_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("globals_layout"),
+                entries: &[
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 0,
+                        visibility: wgpu::ShaderStages::VERTEX,
+                        ty: wgpu::BindingType::Buffer {
+                            ty: wgpu::BufferBindingType::Uniform,
+                            has_dynamic_offset: false,
+                            min_binding_size: None,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Float { filterable: true },
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 1,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Texture {
+                            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                            view_dimension: wgpu::TextureViewDimension::D2Array,
+                            multisampled: false,
+                        },
+                        count: None,
                     },
-                    count: None,
-                },
-                wgpu::BindGroupLayoutEntry {
-                    binding: 2,
-                    visibility: wgpu::ShaderStages::FRAGMENT,
-                    ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
-                    count: None,
-                },
-            ],
+                    wgpu::BindGroupLayoutEntry {
+                        binding: 2,
+                        visibility: wgpu::ShaderStages::FRAGMENT,
+                        ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                        count: None,
+                    },
+                ],
+            });
+
+        // «Стек и инфраструктура» → «Ловушка WebGL2»: a game that only needs one sheet still
+        // starts with a safe layer count for the backend it's actually drawing through — `load()`
+        // hasn't called `build_atlas` yet at this point, so this is a placeholder exactly like
+        // `world_scale`/`world_offset` below, replaced by the game's own real need on the first
+        // `build_atlas`.
+        let atlas_layers = match backend {
+            GpuBackend::WebGpu => 1,
+            GpuBackend::WebGl2 => atlas::webgl2_safe_layer_count(1),
+        };
+        let atlas_texture = create_atlas_texture(&device, atlas_layers);
+        let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
         });
 
         let canvas_size_px = [width_px.max(1) as f32, height_px.max(1) as f32];
@@ -301,24 +343,14 @@ impl Renderer {
             contents: bytemuck::bytes_of(&world_globals),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let world_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("world_globals_bind_group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: world_globals_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&atlas_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
-                },
-            ],
-        });
+        let world_bind_group = make_atlas_bind_group(
+            &device,
+            &atlas_bind_group_layout,
+            &world_globals_buffer,
+            &atlas_view,
+            &linear_sampler,
+            "world_globals_bind_group",
+        );
 
         let ui_globals = ui_globals_data(canvas_size_px, 1.0);
         let ui_globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -326,28 +358,18 @@ impl Renderer {
             contents: bytemuck::bytes_of(&ui_globals),
             usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
         });
-        let ui_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
-            label: Some("ui_globals_bind_group"),
-            layout: &bind_group_layout,
-            entries: &[
-                wgpu::BindGroupEntry {
-                    binding: 0,
-                    resource: ui_globals_buffer.as_entire_binding(),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 1,
-                    resource: wgpu::BindingResource::TextureView(&atlas_view),
-                },
-                wgpu::BindGroupEntry {
-                    binding: 2,
-                    resource: wgpu::BindingResource::Sampler(&atlas_sampler),
-                },
-            ],
-        });
+        let ui_bind_group = make_atlas_bind_group(
+            &device,
+            &atlas_bind_group_layout,
+            &ui_globals_buffer,
+            &atlas_view,
+            &linear_sampler,
+            "ui_globals_bind_group",
+        );
 
         let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
             label: Some("rect_pipeline_layout"),
-            bind_group_layouts: &[Some(&bind_group_layout)],
+            bind_group_layouts: &[Some(&atlas_bind_group_layout)],
             immediate_size: 0,
         });
 
@@ -394,6 +416,21 @@ impl Renderer {
                     offset: 48,
                     shader_location: 6,
                 },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 52,
+                    shader_location: 7,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 56,
+                    shader_location: 8,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 60,
+                    shader_location: 9,
+                },
             ],
         };
 
@@ -411,7 +448,11 @@ impl Renderer {
                 entry_point: Some("fs_main"),
                 targets: &[Some(wgpu::ColorTargetState {
                     format,
-                    blend: Some(wgpu::BlendState::ALPHA_BLENDING),
+                    // «Картинки» → «Сглаживание», требование 5: the atlas's own points are
+                    // already color-times-alpha (`atlas::blit`), so blending must not multiply by
+                    // source alpha a second time — that's exactly what a non-premultiplied blend
+                    // does, and it's what painted the dark/colored fringe requirement 5 rules out.
+                    blend: Some(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING),
                     write_mask: wgpu::ColorWrites::ALL,
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
@@ -475,6 +516,9 @@ impl Renderer {
             ui_instance_buffer,
             ui_instance_capacity,
             atlas_texture,
+            atlas_layers,
+            atlas_bind_group_layout,
+            linear_sampler,
             font_system: glyphon::FontSystem::new(),
             swash_cache: glyphon::SwashCache::new(),
             text_cache,
@@ -544,35 +588,84 @@ impl Renderer {
         );
     }
 
-    /// «Картинки» → «Атлас и отрисовка»: packs `images` (already checked, one whole strip per
-    /// declared picture) into the fixed-size atlas and uploads it — one texture write, no bind
-    /// group ever needs recreating. Returns the packed rectangles, indexed the same way `images`
-    /// was — i.e. by `ImageId`; the packed bytes themselves are dropped right after the upload.
+    /// «Картинки» → «Атлас», требование 14: packs `images` (already checked, one whole strip per
+    /// declared picture) into a stack of sheets and uploads each one its own texture layer —
+    /// «Стек и инфраструктура» → «Ловушка WebGL2»: the WebGL2 backend gets a bumped layer count
+    /// (`atlas::webgl2_safe_layer_count`) instead of the exact number of sheets, since `wgpu-hal`
+    /// 29.0.4's GLES backend turns a one-layer `D2` into a plain `TEXTURE_2D` and a square one
+    /// with a layer count divisible by 6 into a cube map, either of which breaks this module's
+    /// `D2Array` view; WebGPU always gets exactly as many layers as there are sheets. Recreates
+    /// the texture (and both bind groups, which reference its view) only when that layer count
+    /// actually changes from one game to the next. Returns the packed rectangles, indexed the same
+    /// way `images` was — i.e. by `ImageId`. The points go through one sheet-sized buffer, filled
+    /// and uploaded sheet by sheet (`write_texture` copies it before returning), so no more than
+    /// one sheet's bytes ever exist at once, and it is dropped right after the last upload.
     pub fn build_atlas(
         &mut self,
         images: &[atlas::AtlasImage],
     ) -> Result<Vec<atlas::AtlasRect>, String> {
         let packed = atlas::pack(images)?;
-        self.queue.write_texture(
-            wgpu::TexelCopyTextureInfo {
-                texture: &self.atlas_texture,
-                mip_level: 0,
-                origin: wgpu::Origin3d::ZERO,
-                aspect: wgpu::TextureAspect::All,
-            },
-            &packed.pixels,
-            wgpu::TexelCopyBufferLayout {
-                offset: 0,
-                bytes_per_row: Some(ATLAS_SIZE * 4),
-                rows_per_image: Some(ATLAS_SIZE),
-            },
-            wgpu::Extent3d {
-                width: ATLAS_SIZE,
-                height: ATLAS_SIZE,
-                depth_or_array_layers: 1,
-            },
-        );
+        let layers = match self.backend {
+            GpuBackend::WebGpu => packed.sheet_count,
+            GpuBackend::WebGl2 => atlas::webgl2_safe_layer_count(packed.sheet_count),
+        };
+        if layers != self.atlas_layers {
+            self.recreate_atlas_texture(layers);
+        }
+        let mut pixels = vec![0u8; atlas::SHEET_BYTES];
+        for sheet in 0..packed.sheet_count {
+            atlas::fill_sheet(&packed, images, sheet, &mut pixels);
+            self.queue.write_texture(
+                wgpu::TexelCopyTextureInfo {
+                    texture: &self.atlas_texture,
+                    mip_level: 0,
+                    origin: wgpu::Origin3d {
+                        x: 0,
+                        y: 0,
+                        z: sheet,
+                    },
+                    aspect: wgpu::TextureAspect::All,
+                },
+                &pixels,
+                wgpu::TexelCopyBufferLayout {
+                    offset: 0,
+                    bytes_per_row: Some(ATLAS_SIZE * 4),
+                    rows_per_image: Some(ATLAS_SIZE),
+                },
+                wgpu::Extent3d {
+                    width: ATLAS_SIZE,
+                    height: ATLAS_SIZE,
+                    depth_or_array_layers: 1,
+                },
+            );
+        }
         Ok(packed.rects)
+    }
+
+    fn recreate_atlas_texture(&mut self, layers: u32) {
+        let texture = create_atlas_texture(&self.device, layers);
+        let view = texture.create_view(&wgpu::TextureViewDescriptor {
+            dimension: Some(wgpu::TextureViewDimension::D2Array),
+            ..Default::default()
+        });
+        self.world_bind_group = make_atlas_bind_group(
+            &self.device,
+            &self.atlas_bind_group_layout,
+            &self.world_globals_buffer,
+            &view,
+            &self.linear_sampler,
+            "world_globals_bind_group",
+        );
+        self.ui_bind_group = make_atlas_bind_group(
+            &self.device,
+            &self.atlas_bind_group_layout,
+            &self.ui_globals_buffer,
+            &view,
+            &self.linear_sampler,
+            "ui_globals_bind_group",
+        );
+        self.atlas_texture = texture;
+        self.atlas_layers = layers;
     }
 
     /// The game's scene size and background become known only once it has loaded, well after
@@ -915,6 +1008,57 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
         size: (capacity * std::mem::size_of::<DrawRect>()) as u64,
         usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
+    })
+}
+
+/// «Картинки» → «Атлас», требование 14: a `D2` texture of `layers` array layers, `ATLAS_SIZE`²
+/// each — shared by `Renderer::new` (the placeholder texture before any game has loaded) and
+/// `Renderer::recreate_atlas_texture` (a real game's own sheet count).
+fn create_atlas_texture(device: &wgpu::Device, layers: u32) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("atlas"),
+        size: wgpu::Extent3d {
+            width: ATLAS_SIZE,
+            height: ATLAS_SIZE,
+            depth_or_array_layers: layers.max(1),
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8Unorm,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+/// One globals-uniform-plus-atlas bind group, shared by `Renderer::new` (`world_bind_group`/
+/// `ui_bind_group`) and `Renderer::recreate_atlas_texture`, which rebuilds both against a new
+/// atlas view.
+fn make_atlas_bind_group(
+    device: &wgpu::Device,
+    layout: &wgpu::BindGroupLayout,
+    globals_buffer: &wgpu::Buffer,
+    atlas_view: &wgpu::TextureView,
+    linear_sampler: &wgpu::Sampler,
+    label: &str,
+) -> wgpu::BindGroup {
+    device.create_bind_group(&wgpu::BindGroupDescriptor {
+        label: Some(label),
+        layout,
+        entries: &[
+            wgpu::BindGroupEntry {
+                binding: 0,
+                resource: globals_buffer.as_entire_binding(),
+            },
+            wgpu::BindGroupEntry {
+                binding: 1,
+                resource: wgpu::BindingResource::TextureView(atlas_view),
+            },
+            wgpu::BindGroupEntry {
+                binding: 2,
+                resource: wgpu::BindingResource::Sampler(linear_sampler),
+            },
+        ],
     })
 }
 

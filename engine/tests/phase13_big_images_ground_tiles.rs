@@ -493,6 +493,7 @@ fn ground_end_to_end_through_a_real_atlas_lands_tiles_on_their_own_cells() {
         y: whole.y + (n / 2) * frame_h,
         w: frame_w,
         h: frame_h,
+        sheet: whole.sheet,
     };
     assert_eq!(at(0.0, 0.0).atlas_rect, rect_of(0));
     assert_eq!(at(1.0, 0.0).atlas_rect, rect_of(1));
