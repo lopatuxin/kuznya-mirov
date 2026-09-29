@@ -1,14 +1,15 @@
 {
   "start": "location",
   "input": [
-    { "step": 1, "cursor": [6.9, 3.5] },
+    { "step": 1, "cursor": [20, 12], "eye": [8.7376, 28.0261, 12.769] },
     { "step": 1, "press": "MouseLeft" }
   ],
-  "steps": 158,
+  "steps": 290,
   "checks": [
-    { "step": 150, "object": "hero", "property": "frame", "equals": 33 },
-    { "step": 157, "object": "hero", "property": "position", "equals": [6.525, 3.25] },
-    { "step": 158, "object": "hero", "property": "frame", "equals": 27 },
-    { "step": 158, "count": { "has": ["hero"], "without": ["walk_to"] }, "equals": 1 }
+    { "step": 100, "object": "hero", "property": "position", "equals": [8.589283972937954, 17.296977467920293] },
+    { "step": 200, "object": "hero", "property": "position", "equals": [14.388569166014513, 14.067746275391114] },
+    { "step": 287, "count": { "has": ["hero", "walk_to"] }, "equals": 1 },
+    { "step": 288, "object": "hero", "property": "position", "equals": [19.7, 11.7] },
+    { "step": 288, "count": { "has": ["hero"], "without": ["walk_to"] }, "equals": 1 }
   ]
 }

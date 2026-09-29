@@ -1,6 +1,6 @@
 use super::keys::{KeyEdit, KeyTable};
 use super::property::{PropertyId, PropertyTable};
-use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2};
+use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Shape, Value, Vec2};
 
 #[derive(Debug, Clone)]
 enum Column {
@@ -17,6 +17,7 @@ enum Column {
     Image(Vec<Option<ImageId>>),
     Rotation(Vec<Option<Rotation>>),
     FollowMouse(Vec<Option<FollowAxis>>),
+    Shape(Vec<Option<Shape>>),
     OnClick(Vec<Option<Vec<KeyEdit>>>),
 }
 
@@ -36,6 +37,7 @@ impl Column {
             PropKind::Image => Column::Image(Vec::new()),
             PropKind::Rotation => Column::Rotation(Vec::new()),
             PropKind::FollowMouse => Column::FollowMouse(Vec::new()),
+            PropKind::Shape => Column::Shape(Vec::new()),
             PropKind::OnClick => Column::OnClick(Vec::new()),
         }
     }
@@ -55,6 +57,7 @@ impl Column {
             Column::Image(v) => v.push(None),
             Column::Rotation(v) => v.push(None),
             Column::FollowMouse(v) => v.push(None),
+            Column::Shape(v) => v.push(None),
             Column::OnClick(v) => v.push(None),
         }
     }
@@ -74,6 +77,7 @@ impl Column {
             Column::Image(v) => v[id] = None,
             Column::Rotation(v) => v[id] = None,
             Column::FollowMouse(v) => v[id] = None,
+            Column::Shape(v) => v[id] = None,
             Column::OnClick(v) => v[id] = None,
         }
     }
@@ -93,6 +97,7 @@ impl Column {
             Column::Image(v) => v[id].is_some(),
             Column::Rotation(v) => v[id].is_some(),
             Column::FollowMouse(v) => v[id].is_some(),
+            Column::Shape(v) => v[id].is_some(),
             Column::OnClick(v) => v[id].is_some(),
         }
     }
@@ -108,6 +113,9 @@ pub struct World {
     /// while an object was alive can tell it apart from a later, unrelated object that reused the
     /// same freed slot — see `generation`.
     generation: Vec<u32>,
+    /// «Трёхмерная сцена»: мир трёхмерной игры — `rotation` поворачивает и место на земле, а не только
+    /// вид (`core::footprint`). Берётся из таблицы свойств, по которой мир строится.
+    three_d: bool,
 }
 
 impl World {
@@ -122,7 +130,12 @@ impl World {
             columns,
             grid_counter: Vec::new(),
             generation: Vec::new(),
+            three_d: properties.three_d(),
         }
+    }
+
+    pub fn three_d(&self) -> bool {
+        self.three_d
     }
 
     pub fn create(&mut self) -> u32 {
@@ -418,6 +431,19 @@ impl World {
         }
     }
 
+    pub fn shape(&self, id: u32, prop: PropertyId) -> Option<Shape> {
+        match &self.columns[prop as usize] {
+            Column::Shape(v) => v[id as usize],
+            _ => None,
+        }
+    }
+
+    pub fn set_shape(&mut self, id: u32, prop: PropertyId, value: Shape) {
+        if let Column::Shape(v) = &mut self.columns[prop as usize] {
+            v[id as usize] = Some(value);
+        }
+    }
+
     pub fn on_click(&self, id: u32, prop: PropertyId) -> Option<&[KeyEdit]> {
         match &self.columns[prop as usize] {
             Column::OnClick(v) => v[id as usize].as_deref(),
@@ -454,6 +480,7 @@ impl World {
             Value::Image(i) => self.set_image(id, prop, *i),
             Value::Rotation(r) => self.set_rotation(id, prop, *r),
             Value::FollowMouse(a) => self.set_follow_mouse(id, prop, *a),
+            Value::Shape(s) => self.set_shape(id, prop, *s),
         }
     }
 
@@ -470,6 +497,7 @@ impl World {
             PropKind::Image => self.image(id, prop).map(Value::Image),
             PropKind::Rotation => self.rotation(id, prop).map(Value::Rotation),
             PropKind::FollowMouse => self.follow_mouse(id, prop).map(Value::FollowMouse),
+            PropKind::Shape => self.shape(id, prop).map(Value::Shape),
             PropKind::Grid | PropKind::Keys | PropKind::OnClick => None,
         }
     }

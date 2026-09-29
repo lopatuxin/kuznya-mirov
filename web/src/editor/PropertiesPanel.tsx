@@ -19,6 +19,8 @@ type PropertiesPanelProps = {
   canEdit: boolean;
   imageNames: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
+  /** Сцена трёхмерная — `rotation` там любое число, а не выбор из четырёх значений. */
+  isThreeDimensionalScene: boolean;
   onSetValue: (key: string, value: unknown) => void;
   onRemove: (key: string) => void;
   onAdd: (key: string, value: unknown) => void | string;
@@ -141,12 +143,13 @@ type PropertyValueControlProps = {
   canEdit: boolean;
   imageNames: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
+  isThreeDimensionalScene: boolean;
   onSetValue: (value: unknown) => void;
 };
 
 /** Вид поля по свойству — «Редактор», требование 11. */
-function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNames, declaredProperties, onSetValue }: PropertyValueControlProps): React.JSX.Element {
-  const kind = propertyFieldKind(propertyKey, value, declaredProperties, imageNames);
+function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNames, declaredProperties, isThreeDimensionalScene, onSetValue }: PropertyValueControlProps): React.JSX.Element {
+  const kind = propertyFieldKind(propertyKey, value, declaredProperties, imageNames, isThreeDimensionalScene);
 
   if (kind.kind === "checkbox") {
     return (
@@ -328,6 +331,7 @@ export function PropertiesPanel({
   canEdit,
   imageNames,
   declaredProperties,
+  isThreeDimensionalScene,
   onSetValue,
   onRemove,
   onAdd,
@@ -390,6 +394,7 @@ export function PropertiesPanel({
                       canEdit={canEdit}
                       imageNames={imageNames}
                       declaredProperties={declaredProperties}
+                      isThreeDimensionalScene={isThreeDimensionalScene}
                       onSetValue={(value) => onSetValue(property.key, value)}
                     />
                     <button type="button" className="property-row__remove" title="Убрать свойство" onClick={() => onRemove(property.key)}>

@@ -20,6 +20,8 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "opacity",
   "rotation",
   "flip_x",
+  "shape",
+  "height",
   "keys",
   "follow_mouse",
   "lifetime",

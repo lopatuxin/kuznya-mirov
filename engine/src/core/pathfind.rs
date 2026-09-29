@@ -1,14 +1,17 @@
 //! «Ходьба», требования 22–32: путь в обход прямоугольников `avoid` для правила `walk`. Каждое
-//! препятствие раздувается на половину ширины и высоты идущего, край сцены сдвигается внутрь на
-//! столько же, а сам идущий считается точкой (требование 27); путь — ломаная по углам раздутых
-//! препятствий, кратчайшая по A* с расстоянием по прямой. Ничего здесь не знает про `World` —
+//! препятствие раздувается на тело идущего (сумма Минковского), край сцены сдвигается внутрь на
+//! его полуразмер, а сам идущий считается точкой (требование 27); путь — ломаная по углам раздутых
+//! препятствий, кратчайшая по A* с расстоянием по прямой. Без поворотов раздутое препятствие —
+//! прямоугольник по осям, как раньше; с поворотом (трёхмерная сцена, «Трёхмерная сцена» →
+//! `rotation`) — выпуклый многоугольник до восьми углов. Ничего здесь не знает про `World` —
 //! `core::step::apply_walk_rule` читает мир и решает свойства, это только геометрия.
 
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet};
 
+use super::footprint::Footprint;
 use super::grid::Rect;
-use super::value::Vec2;
+use super::value::{Rotation, Vec2};
 
 /// Строгий допуск на «касание не мешает» (требование 27) и на сравнение чисел с плавающей
 /// точкой при проверке углов — каждое использование обосновано соседним комментарием.
@@ -77,6 +80,181 @@ fn clip_segment(p0: Vec2, p1: Vec2, rect: &Rect) -> Option<(f64, f64)> {
     (t0 <= t1).then_some((t0, t1))
 }
 
+/// Выпуклый многоугольник — раздутое повёрнутое препятствие. Вершины идут против часовой стрелки
+/// (в математическом смысле `x`, `y`); у каждой стороны — единичная внешняя нормаль `n` и число
+/// `d`, для которого точки многоугольника — это `n·p ≤ d` по всем сторонам.
+#[derive(Debug, Clone)]
+struct Poly {
+    verts: Vec<Vec2>,
+    edges: Vec<(Vec2, f64)>,
+    bbox: Rect,
+}
+
+impl Poly {
+    /// Оболочка Эндрю по монотонной цепочке; `None`, когда точки лежат на одной прямой.
+    fn hull(mut points: Vec<Vec2>) -> Option<Poly> {
+        points.sort_by(|a, b| a[0].total_cmp(&b[0]).then(a[1].total_cmp(&b[1])));
+        points.dedup_by(|a, b| dist(*a, *b) < 1e-12);
+        if points.len() < 3 {
+            return None;
+        }
+        let cross = |o: Vec2, a: Vec2, b: Vec2| {
+            (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+        };
+        let mut chain: Vec<Vec2> = Vec::with_capacity(points.len() * 2);
+        for pass in 0..2 {
+            let start = chain.len();
+            let ordered: Vec<Vec2> = if pass == 0 {
+                points.clone()
+            } else {
+                points.iter().rev().copied().collect()
+            };
+            for p in ordered {
+                while chain.len() >= start + 2
+                    && cross(chain[chain.len() - 2], chain[chain.len() - 1], p) <= 1e-12
+                {
+                    chain.pop();
+                }
+                chain.push(p);
+            }
+            chain.pop();
+        }
+        if chain.len() < 3 {
+            return None;
+        }
+        let edges: Vec<(Vec2, f64)> = (0..chain.len())
+            .map(|i| {
+                let (a, b) = (chain[i], chain[(i + 1) % chain.len()]);
+                let (ex, ey) = (b[0] - a[0], b[1] - a[1]);
+                let len = (ex * ex + ey * ey).sqrt();
+                let n = [ey / len, -ex / len];
+                (n, n[0] * a[0] + n[1] * a[1])
+            })
+            .collect();
+        let xs = chain.iter().map(|v| v[0]);
+        let ys = chain.iter().map(|v| v[1]);
+        let (x0, x1) = (
+            xs.clone().fold(f64::INFINITY, f64::min),
+            xs.fold(f64::NEG_INFINITY, f64::max),
+        );
+        let (y0, y1) = (
+            ys.clone().fold(f64::INFINITY, f64::min),
+            ys.fold(f64::NEG_INFINITY, f64::max),
+        );
+        Some(Poly {
+            verts: chain,
+            edges,
+            bbox: Rect {
+                x: x0,
+                y: y0,
+                w: x1 - x0,
+                h: y1 - y0,
+            },
+        })
+    }
+
+    fn strictly_inside(&self, p: Vec2) -> bool {
+        self.edges
+            .iter()
+            .all(|(n, d)| n[0] * p[0] + n[1] * p[1] < *d)
+    }
+
+    /// Отрезок заходит внутрь многоугольника, сжатого на `EPS` со всех сторон: касание краем не
+    /// мешает — как у `shrink`/`clip_segment` для прямоугольника. Cyrus-Beck по полуплоскостям.
+    fn clipped_by_segment(&self, p0: Vec2, p1: Vec2) -> bool {
+        let dir = [p1[0] - p0[0], p1[1] - p0[1]];
+        let (mut t0, mut t1) = (0.0_f64, 1.0_f64);
+        for (n, d) in &self.edges {
+            let room = (d - EPS) - (n[0] * p0[0] + n[1] * p0[1]);
+            let toward = n[0] * dir[0] + n[1] * dir[1];
+            if toward.abs() < 1e-12 {
+                if room < 0.0 {
+                    return false;
+                }
+                continue;
+            }
+            let t = room / toward;
+            if toward < 0.0 {
+                t0 = t0.max(t);
+            } else {
+                t1 = t1.min(t);
+            }
+            if t0 > t1 {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Точка на ближайшей к `p` стороне — куда выходит из многоугольника точка, что внутри него.
+    fn nearest_exit(&self, p: Vec2) -> Vec2 {
+        let mut best = (f64::INFINITY, [0.0, 0.0]);
+        for (n, d) in &self.edges {
+            let depth = d - (n[0] * p[0] + n[1] * p[1]);
+            if depth < best.0 {
+                best = (depth, *n);
+            }
+        }
+        [p[0] + best.1[0] * best.0, p[1] + best.1[1] * best.0]
+    }
+}
+
+/// Раздутое препятствие: прямоугольник по осям (пара без поворотов, прежний код) или выпуклый
+/// многоугольник (хоть один из двух повёрнут).
+#[derive(Debug, Clone)]
+enum Obstacle {
+    Rect(Rect),
+    Poly(Poly),
+}
+
+impl Obstacle {
+    fn strictly_inside(&self, p: Vec2) -> bool {
+        match self {
+            Obstacle::Rect(r) => point_strictly_inside(p, r),
+            Obstacle::Poly(poly) => poly.strictly_inside(p),
+        }
+    }
+
+    fn corners(&self) -> Vec<Vec2> {
+        match self {
+            Obstacle::Rect(r) => rect_corners(r).to_vec(),
+            Obstacle::Poly(poly) => poly.verts.clone(),
+        }
+    }
+
+    fn blocks_segment(&self, p0: Vec2, p1: Vec2, bbox: (f64, f64, f64, f64)) -> bool {
+        match self {
+            Obstacle::Rect(r) => segment_blocked_by(p0, p1, r, bbox),
+            Obstacle::Poly(poly) => {
+                !segment_bbox_misses(bbox, &poly.bbox) && poly.clipped_by_segment(p0, p1)
+            }
+        }
+    }
+
+    /// «Ходьба», требование 29: точка, что внутри, выходит по прямой к ближайшему краю.
+    fn exit(&self, p: Vec2) -> Vec2 {
+        match self {
+            Obstacle::Rect(r) => {
+                let left = p[0] - r.x;
+                let right = (r.x + r.w) - p[0];
+                let top = p[1] - r.y;
+                let bottom = (r.y + r.h) - p[1];
+                let m = left.min(right).min(top).min(bottom);
+                if m == left {
+                    [r.x, p[1]]
+                } else if m == right {
+                    [r.x + r.w, p[1]]
+                } else if m == top {
+                    [p[0], r.y]
+                } else {
+                    [p[0], r.y + r.h]
+                }
+            }
+            Obstacle::Poly(poly) => poly.nearest_exit(p),
+        }
+    }
+}
+
 /// «Ходьба», требование 27: отрезок проходим, если не заходит строго внутрь ни одного раздутого
 /// препятствия — сжатый на `EPS` тест значит, что впритык касание краем (проход ровно шириной
 /// идущего) не блокирует, а погрешность дробных чисел не даёт наложения на ничтожную долю клетки.
@@ -96,21 +274,19 @@ fn segment_blocked_by(p0: Vec2, p1: Vec2, rect: &Rect, bbox: (f64, f64, f64, f64
     shrink(rect).is_some_and(|shrunk| clip_segment(p0, p1, &shrunk).is_some())
 }
 
-fn segment_passable(p0: Vec2, p1: Vec2, obstacles: &[Rect]) -> bool {
+fn segment_passable(p0: Vec2, p1: Vec2, obstacles: &[Obstacle]) -> bool {
     let bbox = (
         p0[0].min(p1[0]),
         p0[0].max(p1[0]),
         p0[1].min(p1[1]),
         p0[1].max(p1[1]),
     );
-    !obstacles
-        .iter()
-        .any(|r| segment_blocked_by(p0, p1, r, bbox))
+    !obstacles.iter().any(|o| o.blocks_segment(p0, p1, bbox))
 }
 
 /// «Ходьба», требование 27: угол берётся в узлы видимости, только если не лежит строго внутри
 /// другого раздутого препятствия и не за сдвинутым краем сцены (`bounds`).
-fn corner_valid(p: Vec2, obstacles: &[Rect], skip: usize, bounds: &Rect) -> bool {
+fn corner_valid(p: Vec2, obstacles: &[Obstacle], skip: usize, bounds: &Rect) -> bool {
     let in_bounds = p[0] >= bounds.x - EPS
         && p[0] <= bounds.x + bounds.w + EPS
         && p[1] >= bounds.y - EPS
@@ -121,7 +297,7 @@ fn corner_valid(p: Vec2, obstacles: &[Rect], skip: usize, bounds: &Rect) -> bool
     obstacles
         .iter()
         .enumerate()
-        .all(|(i, r)| i == skip || !point_strictly_inside(p, r))
+        .all(|(i, o)| i == skip || !o.strictly_inside(p))
 }
 
 fn rect_corners(r: &Rect) -> [Vec2; 4] {
@@ -175,14 +351,14 @@ fn build_path(mut node: usize, came_from: &[usize], nodes: &[Vec2]) -> Vec<Vec2>
 /// прямой отрезок уже проходим. `None`, только когда до `goal` в принципе не добраться ни от
 /// одного достигнутого узла — вызывающий сам решает идти к ближайшему найденному месту
 /// (требование 25).
-fn astar(start: Vec2, goal: Vec2, obstacles: &[Rect], bounds: &Rect) -> Option<Vec<Vec2>> {
+fn astar(start: Vec2, goal: Vec2, obstacles: &[Obstacle], bounds: &Rect) -> Option<Vec<Vec2>> {
     if segment_passable(start, goal, obstacles) {
         return Some(vec![goal]);
     }
 
     let mut nodes: Vec<Vec2> = vec![start, goal];
-    for (i, r) in obstacles.iter().enumerate() {
-        for c in rect_corners(r) {
+    for (i, o) in obstacles.iter().enumerate() {
+        for c in o.corners() {
             if corner_valid(c, obstacles, i, bounds) {
                 nodes.push(c);
             }
@@ -255,16 +431,18 @@ fn astar(start: Vec2, goal: Vec2, obstacles: &[Rect], bounds: &Rect) -> Option<V
 /// than the walker is wide still end up touching once each is inflated by half the walker's own
 /// width/height (requirement 27), so a margin based on obstacle size alone can call a wall's
 /// far pieces "irrelevant" while the inflated wall is in fact still standing there, unblocked in
-/// this function's own (un-inflated) view of the world.
+/// this function's own (un-inflated) view of the world. Повёрнутое препятствие считается своим
+/// охватывающим прямоугольником — оно лишь шире, а значит, оставляет не меньше, чем нужно.
 fn relevant_obstacles(
-    obstacles: Vec<(u32, Rect)>,
+    obstacles: Vec<(u32, Footprint)>,
     from: Vec2,
     to: Vec2,
     walker_size: Vec2,
-) -> Vec<(u32, Rect)> {
-    let margin = obstacles
+) -> Vec<(u32, Footprint)> {
+    let boxes: Vec<Rect> = obstacles.iter().map(|(_, f)| f.aabb()).collect();
+    let margin = boxes
         .iter()
-        .map(|(_, r)| r.w.max(r.h))
+        .map(|r| r.w.max(r.h))
         .fold(walker_size[0].max(walker_size[1]).max(1.0), f64::max)
         * 4.0;
     let seed = Rect {
@@ -275,15 +453,15 @@ fn relevant_obstacles(
     };
     let mut kept = vec![false; obstacles.len()];
     let mut frontier: Vec<usize> = (0..obstacles.len())
-        .filter(|&i| rects_overlap(&seed, &obstacles[i].1))
+        .filter(|&i| rects_overlap(&seed, &boxes[i]))
         .collect();
     for &i in &frontier {
         kept[i] = true;
     }
     while let Some(i) = frontier.pop() {
-        let widened = widen(&obstacles[i].1, margin);
+        let widened = widen(&boxes[i], margin);
         for j in 0..obstacles.len() {
-            if !kept[j] && rects_overlap(&widened, &obstacles[j].1) {
+            if !kept[j] && rects_overlap(&widened, &boxes[j]) {
                 kept[j] = true;
                 frontier.push(j);
             }
@@ -313,27 +491,39 @@ fn rects_overlap(a: &Rect, b: &Rect) -> bool {
 /// ближайшему краю того препятствия, что её держит — повторяется на случай, если этот край сам
 /// лежит внутри соседнего препятствия. Та же функция решает требование 25's «цель внутри
 /// препятствия»: применяется и к точке цели.
-fn escape_point(mut p: Vec2, obstacles: &[Rect]) -> Vec2 {
+fn escape_point(mut p: Vec2, obstacles: &[Obstacle]) -> Vec2 {
     for _ in 0..obstacles.len().saturating_add(1) {
-        let Some(r) = obstacles.iter().find(|r| point_strictly_inside(p, r)) else {
+        let Some(o) = obstacles.iter().find(|o| o.strictly_inside(p)) else {
             break;
         };
-        let left = p[0] - r.x;
-        let right = (r.x + r.w) - p[0];
-        let top = p[1] - r.y;
-        let bottom = (r.y + r.h) - p[1];
-        let m = left.min(right).min(top).min(bottom);
-        p = if m == left {
-            [r.x, p[1]]
-        } else if m == right {
-            [r.x + r.w, p[1]]
-        } else if m == top {
-            [p[0], r.y]
-        } else {
-            [p[0], r.y + r.h]
-        };
+        p = o.exit(p);
     }
     p
+}
+
+/// Раздутое препятствие `obstacle` для идущего с телом `body` — углы тела относительно его
+/// середины. Пара без поворотов — прямоугольник, раздутый на полуразмеры тела, ровно как раньше;
+/// иначе — оболочка сумм углов препятствия и тела (сумма Минковского двух прямоугольников).
+fn inflate(obstacle: &Footprint, body: &Footprint) -> Obstacle {
+    if let (Footprint::Aligned(r), Footprint::Aligned(b)) = (obstacle, body) {
+        let (hw, hh) = (b.w / 2.0, b.h / 2.0);
+        return Obstacle::Rect(Rect {
+            x: r.x - hw,
+            y: r.y - hh,
+            w: r.w + 2.0 * hw,
+            h: r.h + 2.0 * hh,
+        });
+    }
+    let sums: Vec<Vec2> = obstacle
+        .corners()
+        .iter()
+        .flat_map(|o| {
+            body.corners()
+                .into_iter()
+                .map(move |b| [o[0] + b[0], o[1] + b[1]])
+        })
+        .collect();
+    Poly::hull(sums).map_or_else(|| Obstacle::Rect(obstacle.aabb()), Obstacle::Poly)
 }
 
 /// «Ходьба», требование 28: запомненный путь одного идущего объекта — вне мира, в `Game`,
@@ -342,7 +532,8 @@ fn escape_point(mut p: Vec2, obstacles: &[Rect]) -> Vec2 {
 pub struct WalkCache {
     target: Vec2,
     size: Vec2,
-    obstacles: Vec<(u32, Rect)>,
+    rotation: Option<Rotation>,
+    obstacles: Vec<(u32, Footprint)>,
     waypoints: Vec<Vec2>,
 }
 
@@ -355,16 +546,18 @@ pub fn prune(caches: &mut WalkCaches, keep: &HashSet<u32>) {
 }
 
 /// «Ходьба», требования 22–29: продвигает одного идущего на `budget` клеток этого шага —
-/// `obstacles` уже отобраны по `avoid` (сам объект исключён), пока не раздуты. Возвращает новую
-/// середину объекта и «дошёл ли до конечной точки» (`waypoints` опустел) — вызывающий сам решает
-/// `walk_to` при этом снять и как отметить `moved`.
+/// `obstacles` уже отобраны по `avoid` (сам объект исключён), пока не раздуты. `rotation` —
+/// поворот тела идущего в трёхмерной сцене (`None` — по осям). Возвращает новую середину объекта
+/// и «дошёл ли до конечной точки» (`waypoints` опустел) — вызывающий сам решает `walk_to` при этом
+/// снять и как отметить `moved`.
 #[allow(clippy::too_many_arguments)]
 pub fn advance(
     id: u32,
     center: Vec2,
     size: Vec2,
+    rotation: Option<Rotation>,
     raw_target: Vec2,
-    mut obstacles: Vec<(u32, Rect)>,
+    mut obstacles: Vec<(u32, Footprint)>,
     scene_size: (f64, f64),
     budget: f64,
     caches: &mut WalkCaches,
@@ -376,8 +569,10 @@ pub fn advance(
     // that matter.
     obstacles = relevant_obstacles(obstacles, center, raw_target, size);
 
-    let hw = size[0] / 2.0;
-    let hh = size[1] / 2.0;
+    let body = Footprint::rotated([-size[0] / 2.0, -size[1] / 2.0], size, rotation);
+    let body_box = body.aabb();
+    let hw = body_box.w / 2.0;
+    let hh = body_box.h / 2.0;
     // «Крайние случаи»: идущий больше сцены по оси — по этой оси он не двигается; сдвинутый край
     // сцены на этой оси сжимается в одну точку, саму текущую.
     let frozen_x = 2.0 * hw >= scene_size.0;
@@ -399,15 +594,7 @@ pub fn advance(
         h: (by1 - by0).max(0.0),
     };
 
-    let inflated: Vec<Rect> = obstacles
-        .iter()
-        .map(|(_, r)| Rect {
-            x: r.x - hw,
-            y: r.y - hh,
-            w: r.w + 2.0 * hw,
-            h: r.h + 2.0 * hh,
-        })
-        .collect();
+    let inflated: Vec<Obstacle> = obstacles.iter().map(|(_, f)| inflate(f, &body)).collect();
 
     let target = escape_point(
         [
@@ -421,9 +608,12 @@ pub fn advance(
     // «Ходьба», требование 28: путь не пересчитывается, пока препятствия, цель и размер идущего
     // те же самые — сравнение точное, ровно этот вопрос и задаёт требование.
     #[allow(clippy::float_cmp)]
-    let reuse = caches
-        .get(&id)
-        .is_some_and(|c| c.target == raw_target && c.size == size && c.obstacles == obstacles);
+    let reuse = caches.get(&id).is_some_and(|c| {
+        c.target == raw_target
+            && c.size == size
+            && c.rotation == rotation
+            && c.obstacles == obstacles
+    });
     if !reuse {
         let start = escape_point(center, &inflated);
         let mut waypoints = astar(start, target, &inflated, &bounds).unwrap_or_default();
@@ -436,6 +626,7 @@ pub fn advance(
             WalkCache {
                 target: raw_target,
                 size,
+                rotation,
                 obstacles,
                 waypoints,
             },
@@ -487,10 +678,42 @@ mod tests {
         Rect { x, y, w, h }
     }
 
+    fn aligned(obstacles: Vec<(u32, Rect)>) -> Vec<(u32, Footprint)> {
+        obstacles
+            .into_iter()
+            .map(|(id, rect)| (id, Footprint::Aligned(rect)))
+            .collect()
+    }
+
+    /// Прежний вызов без поворотов: препятствия и идущий по осям.
+    #[allow(clippy::too_many_arguments)]
+    fn walk(
+        id: u32,
+        center: Vec2,
+        size: Vec2,
+        target: Vec2,
+        obstacles: Vec<(u32, Rect)>,
+        scene: (f64, f64),
+        budget: f64,
+        caches: &mut WalkCaches,
+    ) -> (Vec2, bool) {
+        advance(
+            id,
+            center,
+            size,
+            None,
+            target,
+            aligned(obstacles),
+            scene,
+            budget,
+            caches,
+        )
+    }
+
     #[test]
     fn straight_line_when_nothing_is_in_the_way() {
         let mut caches = WalkCaches::new();
-        let (pos, arrived) = advance(
+        let (pos, arrived) = walk(
             0,
             [5.0, 5.0],
             [1.0, 1.0],
@@ -507,7 +730,7 @@ mod tests {
     #[test]
     fn arrives_exactly_and_clears_the_cache() {
         let mut caches = WalkCaches::new();
-        let (pos, arrived) = advance(
+        let (pos, arrived) = walk(
             0,
             [5.0, 5.0],
             [1.0, 1.0],
@@ -529,7 +752,7 @@ mod tests {
         let obstacles = vec![(1u32, r(54.0, 40.0, 1.0, 30.0))];
         let mut pos = [50.0, 50.0];
         for _ in 0..200 {
-            let (p, arrived) = advance(
+            let (p, arrived) = walk(
                 0,
                 pos,
                 [1.0, 1.0],
@@ -561,7 +784,7 @@ mod tests {
             .collect();
         let mut pos = [49.5, 30.0];
         for _ in 0..1000 {
-            let (p, arrived) = advance(
+            let (p, arrived) = walk(
                 0,
                 pos,
                 [1.0, 1.0],
@@ -590,7 +813,7 @@ mod tests {
             .map(|i| (i as u32 + 1, r(50.0, i as f64 * 7.0, 1.0, 1.0)))
             .collect();
         let kept = relevant_obstacles(
-            obstacles.clone(),
+            aligned(obstacles.clone()),
             [40.0, 100.0],
             [60.0, 100.0],
             [10.0, 10.0],
@@ -610,7 +833,7 @@ mod tests {
             .collect();
         let mut pos = [30.0, 60.0];
         for _ in 0..2000 {
-            let (p, arrived) = advance(
+            let (p, arrived) = walk(
                 0,
                 pos,
                 [10.0, 10.0],
@@ -640,7 +863,7 @@ mod tests {
         ];
         let mut pos = [0.5, 50.5];
         for _ in 0..400 {
-            let (p, arrived) = advance(
+            let (p, arrived) = walk(
                 0,
                 pos,
                 [1.0, 1.0],
@@ -689,7 +912,7 @@ mod tests {
         let obstacles = vec![(1u32, r(5.0, -5.0, 4.0, 10.0))];
         let mut pos = [0.0, 0.0];
         for _ in 0..100 {
-            let (p, arrived) = advance(
+            let (p, arrived) = walk(
                 0,
                 pos,
                 [1.0, 1.0],
@@ -714,7 +937,7 @@ mod tests {
         let obstacles = vec![(1u32, r(-2.0, -2.0, 4.0, 4.0))];
         // Walker's own center at [1.9, 0], size 1x1 → inflated rect is [-2.5,-2.5,5,5]; nearest
         // edge from there is the right one, at x=2.5.
-        let (pos, _) = advance(
+        let (pos, _) = walk(
             0,
             [1.9, 0.0],
             [1.0, 1.0],
@@ -730,7 +953,7 @@ mod tests {
     #[test]
     fn scene_edge_acts_as_a_wall_the_walker_cannot_cross() {
         let mut caches = WalkCaches::new();
-        let (pos, arrived) = advance(
+        let (pos, arrived) = walk(
             0,
             [0.5, 5.0],
             [1.0, 1.0],
@@ -752,6 +975,7 @@ mod tests {
             WalkCache {
                 target: [0.0, 0.0],
                 size: [1.0, 1.0],
+                rotation: None,
                 obstacles: Vec::new(),
                 waypoints: Vec::new(),
             },
@@ -761,6 +985,7 @@ mod tests {
             WalkCache {
                 target: [0.0, 0.0],
                 size: [1.0, 1.0],
+                rotation: None,
                 obstacles: Vec::new(),
                 waypoints: Vec::new(),
             },
@@ -770,5 +995,188 @@ mod tests {
         prune(&mut caches, &keep);
         assert_eq!(caches.len(), 1);
         assert!(caches.contains_key(&2));
+    }
+
+    // ---------------------------------------------------------------------------------------
+    // «Трёхмерная сцена»: повёрнутые препятствия и идущий
+    // ---------------------------------------------------------------------------------------
+
+    fn rotated_wall(x: f64, y: f64, w: f64, h: f64, degrees: f64) -> Footprint {
+        Footprint::rotated([x, y], [w, h], Rotation::from_degrees(degrees))
+    }
+
+    fn walk_until_arrival(
+        walker: (Vec2, Vec2, Option<Rotation>),
+        target: Vec2,
+        obstacles: Vec<(u32, Footprint)>,
+        scene: (f64, f64),
+    ) -> (Vec2, usize) {
+        let (mut pos, size, rotation) = walker;
+        let mut caches = WalkCaches::new();
+        for step in 0..4000 {
+            let (next, arrived) = advance(
+                0,
+                pos,
+                size,
+                rotation,
+                target,
+                obstacles.clone(),
+                scene,
+                0.1,
+                &mut caches,
+            );
+            pos = next;
+            if arrived {
+                return (pos, step);
+            }
+        }
+        (pos, 4000)
+    }
+
+    /// Идущий 1×1 к точке за стеной под 30° — обходит её по концу и не проходит сквозь тело стены:
+    /// каждая точка пути остаётся вне стены, раздутой на тело идущего.
+    #[test]
+    fn walks_around_a_wall_turned_thirty_degrees_by_its_end() {
+        // Wall 10 long, 1 thick, centered at (20, 20), turned 30° clockwise.
+        let wall = rotated_wall(15.0, 19.5, 10.0, 1.0, 30.0);
+        let obstacles = vec![(1, wall)];
+        let target = [24.0, 12.0];
+        let start = [16.0, 28.0];
+        let mut caches = WalkCaches::new();
+        let mut pos = start;
+        let mut trail = vec![pos];
+        for _ in 0..4000 {
+            let (next, arrived) = advance(
+                0,
+                pos,
+                [1.0, 1.0],
+                None,
+                target,
+                obstacles.clone(),
+                (60.0, 60.0),
+                0.1,
+                &mut caches,
+            );
+            pos = next;
+            trail.push(pos);
+            if arrived {
+                break;
+            }
+        }
+        assert!(dist(pos, target) < 1e-6, "{pos:?}");
+        let body = Footprint::flat([0.0, 0.0], [1.0, 1.0]);
+        let Obstacle::Poly(inflated) = inflate(&wall, &body) else {
+            panic!("a turned wall inflates to a polygon");
+        };
+        assert!(
+            trail.iter().all(|&p| !inflated.strictly_inside(p)),
+            "путь прошёл сквозь стену"
+        );
+        let straight = dist(start, target);
+        let walked: f64 = trail.windows(2).map(|w| dist(w[0], w[1])).sum();
+        assert!(
+            walked > straight + 1.0,
+            "обход длиннее прямой: {walked} против {straight}"
+        );
+    }
+
+    /// Щель между двумя частями стены под 30° шире идущего — проходит сквозь неё, уже — идёт к
+    /// ближайшему месту и останавливается перед стеной.
+    #[test]
+    fn a_gap_wider_than_the_walker_lets_it_through_and_a_narrower_one_does_not() {
+        let build = |gap: f64| {
+            // Two collinear wall pieces along the 30° line through (20, 20), `gap` apart, both
+            // running out past the scene's edge so the only way across is the gap.
+            let (sin, cos) = (0.5_f64, 30.0_f64.to_radians().cos());
+            let length = 40.0;
+            let piece = |offset: f64| {
+                let center = [20.0 + cos * offset, 20.0 + sin * offset];
+                rotated_wall(
+                    center[0] - length / 2.0,
+                    center[1] - 0.25,
+                    length,
+                    0.5,
+                    30.0,
+                )
+            };
+            let step = length / 2.0 + gap / 2.0;
+            vec![(1, piece(-step)), (2, piece(step))]
+        };
+        // The walker crosses the wall line along the wall's normal (-sin, cos).
+        let (sin, cos) = (0.5_f64, 30.0_f64.to_radians().cos());
+        let start = [20.0 + sin * 6.0, 20.0 - cos * 6.0];
+        let target = [20.0 - sin * 6.0, 20.0 + cos * 6.0];
+        let (through, _) =
+            walk_until_arrival((start, [1.0, 1.0], None), target, build(2.0), (40.0, 40.0));
+        assert!(
+            dist(through, target) < 1e-6,
+            "щель 2 при идущем 1: {through:?}"
+        );
+        let (stopped, _) =
+            walk_until_arrival((start, [1.0, 1.0], None), target, build(0.5), (40.0, 40.0));
+        assert!(
+            dist(stopped, target) > 0.5,
+            "щель 0,5 при идущем 1 закрыта: {stopped:?}"
+        );
+    }
+
+    /// Повёрнутый идущий шире по диагонали: щель, в которую влезает квадрат по осям, ему
+    /// тесна; поворот, кратный 90, ничего не меняет.
+    #[test]
+    fn a_turned_walker_needs_a_wider_gap_than_an_aligned_one() {
+        let pillars = vec![
+            (1, Footprint::flat([10.0, 0.0], [1.0, 10.0])),
+            (2, Footprint::flat([10.0, 11.4], [1.0, 11.0])),
+        ];
+        let gap_center = [10.5, 10.7];
+        let start = [4.0, 10.7];
+        let target = [17.0, 10.7];
+        let size = [1.0, 1.0];
+        let scene = (30.0, 22.4);
+        let (aligned, _) = walk_until_arrival((start, size, None), target, pillars.clone(), scene);
+        assert!(
+            dist(aligned, target) < 1e-6,
+            "по осям пролезает в щель 1,4: {aligned:?}"
+        );
+        let (diamond, _) = walk_until_arrival(
+            (start, size, Rotation::from_degrees(45.0)),
+            target,
+            pillars.clone(),
+            scene,
+        );
+        assert!(
+            dist(diamond, target) > 0.5 && diamond[0] < gap_center[0],
+            "повёрнутый на 45° квадрат (диагональ 1,41) в щель 1,4 не проходит: {diamond:?}"
+        );
+        let (quarter, _) = walk_until_arrival(
+            (start, size, Rotation::from_degrees(90.0)),
+            target,
+            pillars,
+            scene,
+        );
+        assert!(dist(quarter, target) < 1e-6, "{quarter:?}");
+    }
+
+    #[test]
+    fn polygon_clipping_ignores_a_segment_that_only_grazes_an_edge() {
+        let poly =
+            Poly::hull(vec![[0.0, 0.0], [4.0, 0.0], [4.0, 4.0], [0.0, 4.0]]).expect("square");
+        assert!(poly.clipped_by_segment([-1.0, 2.0], [5.0, 2.0]));
+        assert!(
+            !poly.clipped_by_segment([-1.0, 0.0], [5.0, 0.0]),
+            "по краю — не мешает"
+        );
+        assert!(!poly.clipped_by_segment([-1.0, -1.0], [5.0, -1.0]));
+        assert_eq!(poly.nearest_exit([0.5, 2.0]), [0.0, 2.0]);
+    }
+
+    #[test]
+    fn the_hull_of_two_squares_turned_against_each_other_is_an_octagon() {
+        let wall = Footprint::flat([0.0, 0.0], [2.0, 2.0]);
+        let body = Footprint::rotated([-0.5, -0.5], [1.0, 1.0], Rotation::from_degrees(45.0));
+        let Obstacle::Poly(poly) = inflate(&wall, &body) else {
+            panic!("expected a polygon");
+        };
+        assert_eq!(poly.verts.len(), 8);
     }
 }

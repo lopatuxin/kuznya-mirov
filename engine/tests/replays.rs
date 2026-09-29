@@ -84,7 +84,7 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
 enum InputEvent {
     Press(String),
     Release(String),
-    Cursor([f64; 2]),
+    Cursor([f64; 2], Option<[f64; 3]>),
 }
 
 struct ReplayCheck {
@@ -138,7 +138,10 @@ fn parse_replay(text: &str, file: &str) -> ReplaySpec {
         } else if let Some(cursor) = entry.get("cursor").and_then(Json::as_array) {
             let x = cursor[0].as_f64().expect("cursor[0] число");
             let y = cursor[1].as_f64().expect("cursor[1] число");
-            input.push((step, InputEvent::Cursor([x, y])));
+            let eye = entry.get("eye").and_then(Json::as_array).map(|eye| {
+                std::array::from_fn(|axis| eye[axis].as_f64().expect("eye — три числа"))
+            });
+            input.push((step, InputEvent::Cursor([x, y], eye)));
         } else {
             panic!("{file}: элемент input на шаге {step} без press/release/cursor");
         }
@@ -219,7 +222,11 @@ fn read_property_as_json(game: &Game, id: u32, prop: PropertyId) -> Option<Json>
         PropKind::Rotation => game
             .world
             .rotation(id, prop)
-            .map(|r| json_number(r.degrees() as f64)),
+            .map(|r| json_number(r.angle())),
+        PropKind::Shape => game
+            .world
+            .shape(id, prop)
+            .map(|shape| Json::String(shape.as_str().to_string())),
         PropKind::Layer => game.world.layer(id, prop).map(|l| json_number(l as f64)),
         PropKind::Text => game
             .world
@@ -392,7 +399,8 @@ fn run_replay(path: &Path) {
                     match event {
                         InputEvent::Press(code) => ui_queue.push_key_down(code),
                         InputEvent::Release(code) => ui_queue.push_key_up(code),
-                        InputEvent::Cursor(cell) => game.set_cursor_cell(*cell),
+                        InputEvent::Cursor(cell, Some(eye)) => game.set_cursor_ray(*cell, *eye),
+                        InputEvent::Cursor(cell, None) => game.set_cursor_cell(*cell),
                     }
                 }
             }

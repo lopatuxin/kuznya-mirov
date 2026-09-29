@@ -1,7 +1,7 @@
 {
   "start": "location",
   "input": [
-    { "step": 1, "cursor": [3.5, 11.5] },
+    { "step": 1, "cursor": [3.5, 11.5], "eye": [8.7376, 28.0261, 12.769] },
     { "step": 1, "press": "MouseLeft" }
   ],
   "steps": 30,

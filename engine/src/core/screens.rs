@@ -217,7 +217,11 @@ pub(crate) fn format_property(
             .unwrap_or_default(),
         PropKind::Rotation => world
             .rotation(id, prop)
-            .map(|r| format!("{}", r.degrees()))
+            .map(|r| format!("{}", r.angle()))
+            .unwrap_or_default(),
+        PropKind::Shape => world
+            .shape(id, prop)
+            .map(|shape| shape.as_str().to_string())
             .unwrap_or_default(),
         PropKind::Flag => {
             if world.flag(id, prop) {

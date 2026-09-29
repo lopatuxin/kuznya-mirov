@@ -28,7 +28,7 @@ use luars::{
 use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
 use super::sound::SoundMarks;
-use super::value::{PropKind, Rotation, parse_color};
+use super::value::{PropKind, Rotation, Shape, parse_color};
 use super::world::World;
 
 /// «Код игры»: предел операций Lua — на прогон файла при загрузке (свой, отдельный бюджет) и на
@@ -450,7 +450,10 @@ fn read_property(
         })),
         PropKind::Rotation => Ok(world
             .rotation(id, prop)
-            .map_or(PropValue::Nil, |r| PropValue::Number(r.degrees() as f64))),
+            .map_or(PropValue::Nil, |r| PropValue::Number(r.angle()))),
+        PropKind::Shape => Ok(world.shape(id, prop).map_or(PropValue::Nil, |shape| {
+            PropValue::Str(shape.as_str().to_string())
+        })),
         PropKind::Layer => Ok(world
             .layer(id, prop)
             .map_or(PropValue::Nil, |l| PropValue::Number(l as f64))),
@@ -516,6 +519,7 @@ fn write_property(
         }
         other => other,
     };
+    check_shape_rules(world, properties, id, prop, &value)?;
     match (kind, value) {
         (PropKind::Flag, AnyValue::Bool(b)) => {
             world.set_flag(id, prop, b);
@@ -539,6 +543,17 @@ fn write_property(
             Ok(())
         }
         (PropKind::Timer, _) => Err("ожидалось число секунд".to_string()),
+        (PropKind::Rotation, AnyValue::Number(degrees)) if properties.three_d() => {
+            match Rotation::from_degrees(degrees) {
+                Some(r) => {
+                    world.set_rotation(id, prop, r);
+                    Ok(())
+                }
+                None => Err(format!(
+                    "rotation должен быть конечным числом, получено {degrees}"
+                )),
+            }
+        }
         (PropKind::Rotation, AnyValue::Number(degrees)) => {
             match Rotation::from_degrees_exact(degrees) {
                 Some(r) => {
@@ -550,7 +565,18 @@ fn write_property(
                 )),
             }
         }
+        (PropKind::Rotation, _) if properties.three_d() => Err("ожидалось число".to_string()),
         (PropKind::Rotation, _) => Err("ожидалось число (0, 90, 180 или 270)".to_string()),
+        (PropKind::Shape, AnyValue::Str(name)) => match Shape::parse(&name) {
+            Some(shape) => {
+                world.set_shape(id, prop, shape);
+                Ok(())
+            }
+            None => Err(format!(
+                "неизвестная фигура \"{name}\"; ожидалась одна из: box, cylinder, capsule, sphere"
+            )),
+        },
+        (PropKind::Shape, _) => Err("ожидалось имя фигуры строкой".to_string()),
         (PropKind::Layer, AnyValue::Number(n)) => {
             world.set_layer(id, prop, require_integer(n)?);
             Ok(())
@@ -600,6 +626,42 @@ fn write_property(
         (PropKind::Grid | PropKind::Keys | PropKind::FollowMouse | PropKind::OnClick, _) => {
             unreachable!("checked above")
         }
+    }
+}
+
+/// «Трёхмерная сцена», «Загрузка и проверка»: что код не даёт объекту — `shape` и `height` в плоской
+/// сцене, `height` не больше нуля, `shape` вместе с `image`, `flip_x` или `opacity`.
+fn check_shape_rules(
+    world: &World,
+    properties: &PropertyTable,
+    id: u32,
+    prop: PropertyId,
+    value: &AnyValue,
+) -> Result<(), String> {
+    let name = properties.name(prop);
+    match prop {
+        property::SHAPE | property::HEIGHT if !properties.three_d() => {
+            Err(format!("{name} есть только в трёхмерной сцене"))
+        }
+        property::HEIGHT if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
+            Err("height должен быть больше нуля".to_string())
+        }
+        property::SHAPE
+            if world.has(id, property::IMAGE)
+                || world.has(id, property::FLIP_X)
+                || world.has(id, property::OPACITY) =>
+        {
+            Err("shape нельзя объекту с image, flip_x или opacity".to_string())
+        }
+        property::IMAGE | property::OPACITY if world.has(id, property::SHAPE) => {
+            Err(format!("{name} нельзя объекту с shape"))
+        }
+        property::FLIP_X
+            if matches!(value, AnyValue::Bool(true)) && world.has(id, property::SHAPE) =>
+        {
+            Err("flip_x нельзя объекту с shape".to_string())
+        }
+        _ => Ok(()),
     }
 }
 

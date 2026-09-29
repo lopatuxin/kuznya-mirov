@@ -1,9 +1,11 @@
 use std::collections::HashSet;
 
 use super::code::{CodeError, Runner as CodeRunner};
+use super::footprint::Footprint;
 use super::grid::{Rect, SpatialGrid, largest_dimension};
 use super::input::{KeyAction, KeyEvent};
 use super::keys::EditValue;
+use super::math3::Vec3;
 use super::pathfind::{self, WalkCaches};
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, RuleFired, StepReportBuilder};
@@ -102,14 +104,15 @@ pub fn selector_matches(selector: &Selector, world: &World, id: u32) -> bool {
     world.has_all(id, &selector.has) && world.has_none(id, &selector.without)
 }
 
-fn rect_of(world: &World, id: u32) -> Option<Rect> {
-    let p = world.vec2(id, property::POSITION)?;
-    let s = world.vec2(id, property::SIZE)?;
-    Some(Rect {
-        x: p[0],
-        y: p[1],
-        w: s[0],
-        h: s[1],
+/// «Трёхмерная сцена» → `rotation`: место объекта на земле — в плоской сцене его прямоугольник, в
+/// трёхмерной — повёрнутый на `rotation`.
+fn footprint_of(world: &World, id: u32) -> Option<Footprint> {
+    let position = world.vec2(id, property::POSITION)?;
+    let size = world.vec2(id, property::SIZE)?;
+    Some(if world.three_d() {
+        Footprint::rotated(position, size, world.rotation(id, property::ROTATION))
+    } else {
+        Footprint::flat(position, size)
     })
 }
 
@@ -137,7 +140,12 @@ fn resolve_edit_value(
     match value {
         EditValue::Const(v) => Some(v.clone()),
         EditValue::Cursor => {
-            let point = cursor?;
+            let cursor = cursor?;
+            let point = if scene.is_3d() {
+                scene.clamp_point(cursor)
+            } else {
+                cursor
+            };
             if prop == property::POSITION {
                 let size = world.vec2(id, property::SIZE)?;
                 Some(Value::Vec2([
@@ -155,8 +163,13 @@ fn resolve_edit_value(
 /// contains `point` gets its own records applied — «keys, потом on_click» (требование 20) is
 /// already the caller's own ordering, this only runs once, after every key edit of the same
 /// batch.
-fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec2) {
-    let Some(id) = scene::on_click_target(world, scene, point) else {
+fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec2, eye: Option<Vec3>) {
+    let target = if scene.is_3d() {
+        scene::on_click_target_ray(world, scene, eye, point)
+    } else {
+        scene::on_click_target(world, scene, point)
+    };
+    let Some(id) = target else {
         return;
     };
     let Some(edits) = world.on_click(id, property::ON_CLICK).map(<[_]>::to_vec) else {
@@ -182,6 +195,7 @@ pub fn apply_input(
     world: &mut World,
     events: &[KeyEvent],
     cursor: Option<Vec2>,
+    eye: Option<Vec3>,
     scene: &SceneConfig,
 ) {
     let mut edits: Vec<(u32, PropertyId, EditValue)> = Vec::new();
@@ -208,7 +222,7 @@ pub fn apply_input(
     if let Some(point) = cursor {
         for event in events {
             if event.code == "MouseLeft" && event.action == KeyAction::Press {
-                apply_on_click(world, scene, point);
+                apply_on_click(world, scene, point, eye);
             }
         }
     }
@@ -351,9 +365,9 @@ pub fn condition_holds(
                 .number_like(id, *prop)
                 .is_some_and(|lhs| op.apply(lhs, *value))
         }),
-        Condition::OutsideScene => {
-            id.is_some_and(|id| rect_of(world, id).is_some_and(|r| outside_scene(&r, scene)))
-        }
+        Condition::OutsideScene => id.is_some_and(|id| {
+            footprint_of(world, id).is_some_and(|place| outside_scene(&place, scene))
+        }),
         Condition::FewerThan { count, of } => count_selector(of) < *count,
         Condition::AfterMoveOf { of } => world
             .ids()
@@ -433,9 +447,9 @@ fn group_overlaps_blocker(
     deleted: &[u32],
     grid: &mut SpatialGrid,
 ) -> bool {
-    let mut objects: Vec<(u32, Rect)> = group
+    let mut objects: Vec<(u32, Footprint)> = group
         .iter()
-        .filter_map(|&id| rect_of(world, id).map(|r| (id, r)))
+        .filter_map(|&id| footprint_of(world, id).map(|f| (id, f)))
         .collect();
     let group_len = objects.len();
     for id in world.ids() {
@@ -443,18 +457,39 @@ fn group_overlaps_blocker(
             continue;
         }
         if selector_matches(blocked_by, world, id)
-            && let Some(r) = rect_of(world, id)
+            && let Some(f) = footprint_of(world, id)
         {
-            objects.push((id, r));
+            objects.push((id, f));
         }
     }
     if objects.len() == group_len {
         return false;
     }
-    let cell_size = largest_dimension(&objects).max(1e-3);
-    grid.find_pairs(cell_size, &objects)
+    overlapping_pairs(&objects, grid)
         .into_iter()
         .any(|(a, b)| group.contains(&a) != group.contains(&b))
+}
+
+/// Пары мест, что строго пересекаются: сначала по охватывающим прямоугольникам через
+/// `SpatialGrid` (как искала прежняя плоская сцена), затем — только когда среди мест есть
+/// повёрнутое — точно, по разделяющим осям. Без поворотов ответ тот же, что давал один `Rect::overlap`.
+fn overlapping_pairs(objects: &[(u32, Footprint)], grid: &mut SpatialGrid) -> Vec<(u32, u32)> {
+    let boxes: Vec<(u32, Rect)> = objects.iter().map(|(id, f)| (*id, f.aabb())).collect();
+    let cell_size = largest_dimension(&boxes).max(1e-3);
+    let mut pairs = grid.find_pairs(cell_size, &boxes);
+    if objects.iter().any(|(_, f)| f.is_oriented()) {
+        let place = |id: u32| {
+            objects
+                .iter()
+                .find(|(other, _)| *other == id)
+                .map(|(_, f)| *f)
+        };
+        pairs.retain(|&(a, b)| match (place(a), place(b)) {
+            (Some(fa), Some(fb)) => fa.overlaps(&fb),
+            _ => false,
+        });
+    }
+    pairs
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -573,7 +608,9 @@ fn execute_turn(
             [d[1], -d[0]]
         };
         let new_center = [pivot[0] + rotated[0], pivot[1] + rotated[1]];
-        let new_size = [s[1], s[0]];
+        // «Трёхмерная сцена», требование 16: ширина и высота не меняются — объект поворачивает сама
+        // `rotation`.
+        let new_size = if world.three_d() { s } else { [s[1], s[0]] };
         let new_pos = [
             new_center[0] - new_size[0] / 2.0,
             new_center[1] - new_size[1] / 2.0,
@@ -728,20 +765,25 @@ fn apply_walk_rule(
         if speed <= 0.0 {
             continue;
         }
-        let obstacles: Vec<(u32, Rect)> = match avoid {
+        let obstacles: Vec<(u32, Footprint)> = match avoid {
             None => Vec::new(),
             Some(sel) => world
                 .ids()
                 .filter(|&oid| oid != id)
                 .filter(|&oid| selector_matches(sel, world, oid))
-                .filter_map(|oid| rect_of(world, oid).map(|r| (oid, r)))
+                .filter_map(|oid| footprint_of(world, oid).map(|f| (oid, f)))
                 .collect(),
         };
+        let rotation = world
+            .three_d()
+            .then(|| world.rotation(id, property::ROTATION))
+            .flatten();
         let budget = speed / 60.0;
         let (new_center, arrived) = pathfind::advance(
             id,
             center_from,
             size,
+            rotation,
             target,
             obstacles,
             (scene.width as f64, scene.height as f64),
@@ -827,25 +869,59 @@ pub fn apply_stage4(
 
 /// Stage 5: uniform grid over `collides` objects, sized to the largest of them.
 pub fn find_collision_pairs(world: &World, grid: &mut SpatialGrid) -> Vec<(u32, u32)> {
-    let objects: Vec<(u32, Rect)> = world
+    let objects: Vec<(u32, Footprint)> = world
         .ids()
         .filter(|&id| world.flag(id, property::COLLIDES))
-        .filter_map(|id| rect_of(world, id).map(|r| (id, r)))
+        .filter_map(|id| footprint_of(world, id).map(|f| (id, f)))
         .collect();
-    let cell_size = largest_dimension(&objects).max(1e-3);
-    grid.find_pairs(cell_size, &objects)
+    overlapping_pairs(&objects, grid)
 }
 
 fn bounce(world: &mut World, bouncer: u32, other: u32) {
-    let (Some(rb), Some(ro)) = (rect_of(world, bouncer), rect_of(world, other)) else {
+    let (Some(fb), Some(fo)) = (footprint_of(world, bouncer), footprint_of(world, other)) else {
         return;
     };
-    if rb.overlap(&ro).is_none() {
-        return;
-    }
     let Some(vel) = world.vec2(bouncer, property::VELOCITY) else {
         return;
     };
+    match (fb, fo) {
+        (Footprint::Aligned(rb), Footprint::Aligned(ro)) => {
+            bounce_aligned(world, bouncer, vel, rb, ro);
+        }
+        _ => bounce_oriented(world, bouncer, vel, &fb, &fo),
+    }
+}
+
+/// «Исполнение игры» → «Столкновения»: хотя бы один из двух повёрнут — объект выталкивается поперёк
+/// той стороны любого из двух прямоугольников, где выталкивать меньше всего, со стороны своей
+/// середины, и скорость отражается от этой стороны.
+fn bounce_oriented(world: &mut World, bouncer: u32, vel: Vec2, own: &Footprint, other: &Footprint) {
+    let Some((normal, depth)) = own.push_out(other) else {
+        return;
+    };
+    let Some(pos) = world.vec2(bouncer, property::POSITION) else {
+        return;
+    };
+    let along = vel[0] * normal[0] + vel[1] * normal[1];
+    world.set_vec2(
+        bouncer,
+        property::POSITION,
+        [pos[0] + normal[0] * depth, pos[1] + normal[1] * depth],
+    );
+    world.set_vec2(
+        bouncer,
+        property::VELOCITY,
+        [
+            vel[0] - 2.0 * along * normal[0],
+            vel[1] - 2.0 * along * normal[1],
+        ],
+    );
+}
+
+fn bounce_aligned(world: &mut World, bouncer: u32, vel: Vec2, rb: Rect, ro: Rect) {
+    if rb.overlap(&ro).is_none() {
+        return;
+    }
     // «Исполнение игры»: объект выталкивается наружу вплотную к краю другого — с той стороны, где
     // его середина, и по оси, где выталкивать меньше. Когда ни один объект не выступает за другой ни
     // по одной оси, сдвиг равен ширине пересечения; объект, накрывший другой, иначе остался бы в нём
@@ -1168,8 +1244,8 @@ pub struct PendingCreate {
 
 struct PendingState {
     deleted: HashSet<u32>,
-    world_occupied: Vec<(u32, Rect)>,
-    create_occupied: Vec<Rect>,
+    world_occupied: Vec<(u32, Footprint)>,
+    create_occupied: Vec<Footprint>,
     creates: Vec<PendingCreate>,
 }
 
@@ -1204,20 +1280,9 @@ impl PendingState {
         let mut free = Vec::new();
         for x in 0..scene.width {
             for y in 0..scene.height {
-                let cell = Rect {
-                    x: x as f64,
-                    y: y as f64,
-                    w: 1.0,
-                    h: 1.0,
-                };
-                let occupied = self
-                    .world_occupied
-                    .iter()
-                    .any(|(_, r)| r.overlap(&cell).is_some())
-                    || self
-                        .create_occupied
-                        .iter()
-                        .any(|r| r.overlap(&cell).is_some());
+                let cell = Footprint::flat([x as f64, y as f64], [1.0, 1.0]);
+                let occupied = self.world_occupied.iter().any(|(_, f)| f.overlaps(&cell))
+                    || self.create_occupied.iter().any(|f| f.overlaps(&cell));
                 if !occupied {
                     free.push((x, y));
                 }
@@ -1301,13 +1366,17 @@ impl PendingState {
                 _ => None,
             });
         if collides {
-            let (w, h) = size.map(|s| (s[0], s[1])).unwrap_or((1.0, 1.0));
-            self.create_occupied.push(Rect {
-                x: position[0],
-                y: position[1],
-                w,
-                h,
-            });
+            let size = size.unwrap_or([1.0, 1.0]);
+            let footprint = if ctx.world.three_d() {
+                let rotation = props.iter().find_map(|(p, v)| match (*p, v) {
+                    (property::ROTATION, Value::Rotation(r)) => Some(*r),
+                    _ => None,
+                });
+                Footprint::rotated(position, size, rotation)
+            } else {
+                Footprint::flat(position, size)
+            };
+            self.create_occupied.push(footprint);
         }
         self.creates.push(PendingCreate {
             position,
@@ -1441,7 +1510,7 @@ pub fn queue_create_and_delete_rules(
             .ids()
             .filter(|id| !already_deleted.contains(id))
             .filter(|&id| world.flag(id, property::COLLIDES))
-            .filter_map(|id| rect_of(world, id).map(|r| (id, r)))
+            .filter_map(|id| footprint_of(world, id).map(|f| (id, f)))
             .collect(),
         create_occupied: Vec::new(),
         creates: Vec::new(),
@@ -1694,10 +1763,24 @@ pub fn queue_create_and_delete_rules(
     Ok((pending.deleted.into_iter().collect(), pending.creates))
 }
 
-fn outside_scene(rect: &Rect, scene: &SceneConfig) -> bool {
-    let left = rect.x + rect.w < -rect.w;
-    let right = rect.x > scene.width as f64 + rect.w;
-    let top = rect.y + rect.h < -rect.h;
-    let bottom = rect.y > scene.height as f64 + rect.h;
-    left || right || top || bottom
+/// Объект за сценой дальше собственного размера по осям сцены; повёрнутое место — сам повёрнутый
+/// прямоугольник, а не охватывающий его.
+fn outside_scene(place: &Footprint, scene: &SceneConfig) -> bool {
+    let rect = place.aabb();
+    match place {
+        Footprint::Aligned(_) => {
+            let left = rect.x + rect.w < -rect.w;
+            let right = rect.x > scene.width as f64 + rect.w;
+            let top = rect.y + rect.h < -rect.h;
+            let bottom = rect.y > scene.height as f64 + rect.h;
+            left || right || top || bottom
+        }
+        Footprint::Oriented(_) => place.is_apart_from(&Footprint::flat(
+            [-rect.w, -rect.h],
+            [
+                scene.width as f64 + 2.0 * rect.w,
+                scene.height as f64 + 2.0 * rect.h,
+            ],
+        )),
+    }
 }

@@ -1,5 +1,6 @@
 use serde_json::Value as Json;
 
+use crate::core::footprint::Footprint;
 use crate::core::game::{self, Game};
 use crate::core::keys::{EditValue, KeyBinding, KeyEdit, KeyTable};
 use crate::core::property::{self, PropertyId, PropertyTable};
@@ -8,7 +9,7 @@ use crate::core::rules::{
     Selector, SetValue, ShiftSpec, SoundId, SpawnCell, SpawnCondition, SpawnPlace, SpawnVariant,
     TemplateValue, TurnDir, TurnSpec,
 };
-use crate::core::scene::{GroundLayer, ObjectSpec, SceneConfig};
+use crate::core::scene::{CameraConfig, GroundLayer, LightConfig, ObjectSpec, SceneConfig};
 use crate::core::screens::{
     Align, Anchor, ButtonCommand, Element, Fill, FontId, MaxSpec, MusicId, Placement, Screen,
     ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement, WorldElementKind,
@@ -246,6 +247,9 @@ pub(crate) fn parse_scalar_value(
             if prop == property::OPACITY && !validate_opacity_range(n, file, path, errors) {
                 return None;
             }
+            if prop == property::HEIGHT && !validate_height(n, properties, file, path, errors) {
+                return None;
+            }
             Some(Value::Number(n))
         }
         PropKind::Time => {
@@ -266,6 +270,17 @@ pub(crate) fn parse_scalar_value(
             }
             Some(Value::Timer(seconds_to_steps_delta(s)))
         }
+        PropKind::Rotation if properties.three_d() => {
+            let n = expect_number(value, file, path, errors)?;
+            Rotation::from_degrees(n).map(Value::Rotation).or_else(|| {
+                errors.push(
+                    file,
+                    path,
+                    format!("rotation должен быть числом, получено {n}"),
+                );
+                None
+            })
+        }
         PropKind::Rotation => {
             let n = expect_number(value, file, path, errors)?;
             match Rotation::from_degrees_exact(n) {
@@ -279,6 +294,24 @@ pub(crate) fn parse_scalar_value(
                     None
                 }
             }
+        }
+        PropKind::Shape => {
+            if !properties.three_d() {
+                errors.push(file, path, SHAPE_IN_FLAT_SCENE);
+                return None;
+            }
+            let s = expect_string(value, file, path, errors)?;
+            crate::core::value::Shape::parse(&s)
+                .map(Value::Shape).or_else(|| {
+                errors.push(
+                    file,
+                    path,
+                    format!(
+                        "неизвестная фигура \"{s}\"; ожидалась одна из: box, cylinder, capsule, sphere"
+                    ),
+                );
+                None
+            })
         }
         PropKind::FollowMouse => {
             let s = expect_string(value, file, path, errors)?;
@@ -671,6 +704,52 @@ fn validate_opacity_range(n: f64, file: &str, path: &str, errors: &mut ErrorSink
     }
 }
 
+const SHAPE_IN_FLAT_SCENE: &str =
+    "shape есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+/// «Трёхмерная сцена», требование 30: `height` есть только в трёхмерной сцене — везде, где его можно
+/// записать: объект, шаблон, клавиша, `on_click`, `add`/`set` правил.
+fn height_fits_the_scene(
+    prop: PropertyId,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if prop == property::HEIGHT && !properties.three_d() {
+        errors.push(
+            file,
+            path,
+            "height есть только в трёхмерной сцене: у scene в game.json нет camera",
+        );
+        return false;
+    }
+    true
+}
+
+/// «Трёхмерная сцена», «Загрузка и проверка»: `height` — число больше нуля и только в трёхмерной
+/// сцене; текст ошибки написан один раз для объекта, шаблона, клавиши и правила.
+fn validate_height(
+    n: f64,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if !height_fits_the_scene(property::HEIGHT, properties, file, path, errors) {
+        return false;
+    }
+    if n > 0.0 {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!("height должен быть больше нуля, получено {n}"),
+    );
+    false
+}
+
 /// «Картинки»: `opacity` без `image` — ошибка данных везде, где может появиться `opacity`:
 /// объект, шаблон создания, панель и кнопка. Текст написан один раз здесь и его же берёт
 /// `validate_reachable_image`, проверяющая ту же ошибку по расширенной форме объекта.
@@ -706,6 +785,49 @@ fn validate_image_fill(
             file,
             path,
             "заданы и color, и image; должно быть ровно одно из двух",
+        );
+    }
+}
+
+/// «Трёхмерная сцена», требование 30: фигуре нужен цвет и место на земле, картинки, `flip_x` и
+/// `opacity` ей не полагаются. `check_position` — как у `validate_follow_mouse_shape`.
+fn validate_shape_fill(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if !shape.contains(&property::SHAPE) {
+        return;
+    }
+    if !shape.contains(&property::COLOR) {
+        errors.push(
+            file,
+            path,
+            "shape задан без color: цвет — единственная заливка фигуры",
+        );
+    }
+    for (prop, name) in [
+        (property::IMAGE, "image"),
+        (property::FLIP_X, "flip_x"),
+        (property::OPACITY, "opacity"),
+    ] {
+        if shape.contains(&prop) {
+            errors.push(
+                file,
+                path,
+                format!("{name} задан объекту с shape: фигура рисуется цветом"),
+            );
+        }
+    }
+    let missing_size = !shape.contains(&property::SIZE);
+    let missing_position = check_position && !shape.contains(&property::POSITION);
+    if missing_size || missing_position {
+        errors.push(
+            file,
+            path,
+            "shape разрешён только объекту с position и size",
         );
     }
 }
@@ -825,6 +947,7 @@ fn parse_scene_object(
 
     validate_image_fill(&shape, file, &path, errors);
     validate_follow_mouse_shape(&shape, true, file, &path, errors);
+    validate_shape_fill(&shape, true, file, &path, errors);
 
     Some(ParsedObject {
         path,
@@ -1053,13 +1176,83 @@ struct SceneJsonConfig {
     background: [f32; 4],
     view_height: Option<f64>,
     y_sort: bool,
+    camera: Option<CameraConfig>,
+    light: LightConfig,
+}
+
+/// «Трёхмерная сцена» → «Камера», требование 30: `camera` — объект с одним числом `pitch` от 30 до
+/// 90 включительно.
+fn parse_camera(value: &Json, errors: &mut ErrorSink) -> Option<CameraConfig> {
+    let obj = expect_object(value, "game.json", "scene → camera", errors)?;
+    reject_unknown_keys(obj, &["pitch"], "game.json", "scene → camera", errors);
+    let pitch_json = require_field(obj, "pitch", "game.json", "scene → camera", errors)?;
+    let pitch = expect_number(pitch_json, "game.json", "scene → camera → pitch", errors)?;
+    if !(30.0..=90.0).contains(&pitch) {
+        errors.push(
+            "game.json",
+            "scene → camera → pitch",
+            format!("pitch должен быть от 30 до 90 включительно, получено {pitch}"),
+        );
+        return None;
+    }
+    Some(CameraConfig { pitch })
+}
+
+/// «Трёхмерная сцена» → «Земля, свет и плоские объекты», требование 30: все три поля необязательны,
+/// каждое в своём отрезке.
+fn parse_light(value: &Json, errors: &mut ErrorSink) -> Option<LightConfig> {
+    let obj = expect_object(value, "game.json", "scene → light", errors)?;
+    reject_unknown_keys(
+        obj,
+        &["sun_from", "sun_height", "shadow"],
+        "game.json",
+        "scene → light",
+        errors,
+    );
+    let defaults = LightConfig::default();
+    let mut field = |key: &str, range: std::ops::RangeInclusive<f64>, default: f64| {
+        let Some(v) = obj.get(key) else {
+            return Some(default);
+        };
+        let path = format!("scene → light → {key}");
+        let n = expect_number(v, "game.json", &path, errors)?;
+        if range.contains(&n) {
+            return Some(n);
+        }
+        errors.push(
+            "game.json",
+            &path,
+            format!(
+                "{key} должен быть от {} до {} включительно, получено {n}",
+                range.start(),
+                range.end()
+            ),
+        );
+        None
+    };
+    let sun_from = field("sun_from", 0.0..=360.0, defaults.sun_from);
+    let sun_height = field("sun_height", 10.0..=90.0, defaults.sun_height);
+    let shadow = field("shadow", 0.0..=1.0, defaults.shadow);
+    Some(LightConfig {
+        sun_from: sun_from?,
+        sun_height: sun_height?,
+        shadow: shadow?,
+    })
 }
 
 fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonConfig> {
     let obj = expect_object(value, "game.json", "scene", errors)?;
     reject_unknown_keys(
         obj,
-        &["width", "height", "background", "view_height", "y_sort"],
+        &[
+            "width",
+            "height",
+            "background",
+            "view_height",
+            "y_sort",
+            "camera",
+            "light",
+        ],
         "game.json",
         "scene",
         errors,
@@ -1111,12 +1304,44 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
             }
         },
     };
+    let camera = match obj.get("camera") {
+        None => Some(None),
+        Some(v) => parse_camera(v, errors).map(Some),
+    };
+    let light = match obj.get("light") {
+        None => Some(LightConfig::default()),
+        Some(v) => parse_light(v, errors),
+    };
+    let three_d = matches!(camera, Some(Some(_)));
+    if obj.contains_key("camera") && !obj.contains_key("view_height") {
+        errors.push(
+            "game.json",
+            "scene → camera",
+            "camera без view_height: в трёхмерной сцене view_height обязателен",
+        );
+    }
+    if obj.contains_key("light") && !obj.contains_key("camera") {
+        errors.push(
+            "game.json",
+            "scene → light",
+            "light без camera: свет есть только в трёхмерной сцене",
+        );
+    }
+    if three_d && y_sort == Some(true) {
+        errors.push(
+            "game.json",
+            "scene → y_sort",
+            "y_sort вместе с camera: порядок рисования в трёхмерной сцене задаёт глубина",
+        );
+    }
     Some(SceneJsonConfig {
         width: width?,
         height: height?,
         background: background?,
         view_height: view_height?,
         y_sort: y_sort?,
+        camera: camera?,
+        light: light?,
     })
 }
 
@@ -1491,6 +1716,8 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             background: scene.background,
             view_height: scene.view_height,
             y_sort: scene.y_sort,
+            camera: scene.camera,
+            light: scene.light,
         },
         random_seed,
         max_objects: max_objects as usize,
@@ -2344,6 +2571,9 @@ fn require_number_kind(
     path: &str,
     errors: &mut ErrorSink,
 ) -> Option<PropKind> {
+    if !height_fits_the_scene(prop, properties, file, path, errors) {
+        return None;
+    }
     let kind = properties.kind(prop);
     if matches!(kind, PropKind::Number | PropKind::Time | PropKind::Timer) {
         Some(kind)
@@ -2373,6 +2603,9 @@ fn parse_set_value(
 ) -> Option<SetValue> {
     let kind = properties.kind(prop);
     if matches!(kind, PropKind::Number | PropKind::Time | PropKind::Timer) {
+        if !height_fits_the_scene(prop, properties, file, path, errors) {
+            return None;
+        }
         return parse_number_expr(value, kind, properties, file, path, errors)
             .map(SetValue::Number);
     }
@@ -2973,6 +3206,7 @@ fn parse_template(
     let shape: std::collections::HashSet<PropertyId> = template.iter().map(|(p, _)| *p).collect();
     validate_image_fill(&shape, file, path, errors);
     validate_follow_mouse_shape(&shape, false, file, path, errors);
+    validate_shape_fill(&shape, false, file, path, errors);
     (template, broken_properties)
 }
 
@@ -3849,7 +4083,8 @@ const NEEDS_IMAGE: [(PropertyId, &str); 2] = [
 /// `possible_shapes` has widened every shape, instead of at parse time like the `color`+`image`
 /// check, which needs no such widening. A property that reaches an object only at runtime (a
 /// `keys` edit, a rule, or code) is not checked — «Крайние случаи»: the prestart check only looks
-/// at the scene and templates.
+/// at the scene and templates. An object with `shape` is skipped: `validate_shape_fill` already
+/// reports its `opacity`/`flip_x`.
 fn validate_reachable_image(shapes: &[PossibleShape], code: Option<&str>, errors: &mut ErrorSink) {
     // «Код игры»: слово `image` в тексте кода — код тоже мог дать объекту картинку, проверка
     // здесь бессильна отличить это от настоящей нехватки источника, так что просто не спорит.
@@ -3860,7 +4095,7 @@ fn validate_reachable_image(shapes: &[PossibleShape], code: Option<&str>, errors
         let has_image = ps.shape.certain.contains(&property::IMAGE)
             || ps.shape.maybe.contains(&property::IMAGE)
             || ps.shape.broken_properties.contains(&property::IMAGE);
-        if has_image {
+        if has_image || ps.shape.certain.contains(&property::SHAPE) {
             continue;
         }
         for (prop, message) in NEEDS_IMAGE {
@@ -4607,18 +4842,37 @@ fn validate_objects_within_scene(
         ) else {
             continue;
         };
-        let outside = pos[0] + size[0] <= 0.0
-            || pos[0] >= config.width as f64
-            || pos[1] + size[1] <= 0.0
-            || pos[1] >= config.height as f64;
-        if !outside {
+        // «Трёхмерная сцена», требование 15: повёрнутый прямоугольник — сам, не охватывающий его.
+        let rotation = match find_value(&obj.values, property::ROTATION) {
+            Some(Value::Rotation(r)) if config.is_3d() => Some(*r),
+            _ => None,
+        };
+        let on_scene = match rotation.filter(|r| r.angle() != 0.0) {
+            None => {
+                pos[0] + size[0] > 0.0
+                    && pos[1] + size[1] > 0.0
+                    && pos[0] < config.width as f64
+                    && pos[1] < config.height as f64
+            }
+            Some(turned) => {
+                let scene_place =
+                    Footprint::flat([0.0, 0.0], [config.width as f64, config.height as f64]);
+                Footprint::rotated(*pos, *size, Some(turned)).overlaps(&scene_place)
+            }
+        };
+        if on_scene {
             continue;
         }
+        let turn = rotation
+            .filter(|r| r.angle() != 0.0)
+            .map_or_else(String::new, |r| {
+                format!(", повёрнутый на {}° вокруг середины", r.angle())
+            });
         errors.push_warning(
             scene_file,
             &join(&obj.path, "position"),
             format!(
-                "объект{} стоит за пределами сцены: прямоугольник [{}, {}]..[{}, {}] не пересекается со сценой [0, 0]..[{}, {}]; ожидалось, что объект будет хотя бы частично на сцене",
+                "объект{} стоит за пределами сцены: прямоугольник [{}, {}]..[{}, {}]{turn} не пересекается со сценой [0, 0]..[{}, {}]; ожидалось, что объект будет хотя бы частично на сцене",
                 name_suffix(obj),
                 pos[0],
                 pos[1],
@@ -7215,7 +7469,7 @@ pub fn load_rest_with_tables(
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
-    let properties = match properties_json {
+    let mut properties = match properties_json {
         Some(text) => parse_properties_json(text, &config.files.properties, &mut errors),
         None => {
             errors.push(
@@ -7226,6 +7480,7 @@ pub fn load_rest_with_tables(
             PropertyTable::new()
         }
     };
+    properties.set_three_d(config.scene.is_3d());
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
 
     let ParsedSceneFile {
