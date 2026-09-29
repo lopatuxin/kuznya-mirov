@@ -1,7 +1,8 @@
-use super::camera;
+use super::camera::{self, Camera3d};
 use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
+use super::math3::Vec3;
 use super::pathfind::WalkCaches;
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, StepReport, StepReportBuilder};
@@ -71,6 +72,9 @@ pub struct Game {
     /// the page reports a mouse move (live screen or not — требование 26: сдвиги на паузе
     /// копятся). `None` until the cursor has moved at least once.
     cursor_current: Option<Vec2>,
+    /// «Трёхмерная сцена», требование 23: где стояла камера, когда курсор пришёл в `cursor_current` —
+    /// щелчок идёт лучом от неё через эту точку земли. `None` — плоская сцена или курсор без камеры.
+    cursor_eye: Option<Vec3>,
     /// The position the most recent step actually took — compared against `cursor_current` at
     /// `take_input_snapshot` time to decide whether *this* step gets a cursor at all.
     cursor_last_step: Option<Vec2>,
@@ -179,6 +183,7 @@ impl Game {
             moved: Vec::new(),
             bounced: Vec::new(),
             cursor_current: None,
+            cursor_eye: None,
             cursor_last_step: None,
             session_active: false,
             session_step: 0,
@@ -263,7 +268,13 @@ impl Game {
     /// either happens, so the two can never drift apart. `step`, `release_held_keys` and
     /// `release_key` all go through this rather than calling `step::apply_input` on their own.
     fn apply_to_world(&mut self, events: &[KeyEvent]) {
-        step::apply_input(&mut self.world, events, self.cursor_current, &self.scene);
+        step::apply_input(
+            &mut self.world,
+            events,
+            self.cursor_current,
+            self.cursor_eye,
+            &self.scene,
+        );
         for event in events {
             match event.action {
                 KeyAction::Press => {
@@ -449,6 +460,7 @@ impl Game {
         // «телепортировалась»), здесь начинается новая партия/повтор/переход по шкале — курсор от
         // прошлой партии не должен попасть в первый шаг новой записи, которая его не видела.
         self.cursor_current = None;
+        self.cursor_eye = None;
         self.cursor_last_step = None;
         self.reset_camera_and_walk();
         self.max_objects_warned = false;
@@ -475,6 +487,20 @@ impl Game {
         if let Some(center) = camera::followed_center(&self.world) {
             self.camera_last = Some(center);
         }
+    }
+
+    /// «Трёхмерная сцена», требования 2–5: камера сверху под углом на середину followed-объекта,
+    /// остановленная у края сцены; `None` в плоской сцене.
+    pub fn camera_3d(&self, viewport: [f32; 2]) -> Option<Camera3d> {
+        let pitch = self.scene.camera?.pitch;
+        let view_height = self.scene.view_height?;
+        let viewport = [viewport[0] as f64, viewport[1] as f64];
+        let center = self.camera_last.unwrap_or([
+            self.scene.width as f64 / 2.0,
+            self.scene.height as f64 / 2.0,
+        ]);
+        let center = camera::clamp_center_3d(&self.scene, pitch, view_height, viewport, center);
+        Some(Camera3d::looking_at(center, pitch, view_height, viewport))
     }
 
     /// «Камера», требование 4: the scale/offset «Мир на экране» draws and picks the world by
@@ -581,6 +607,18 @@ impl Game {
     /// directly, bypassing the window-pixel translation that has its own, separate tests.
     pub fn set_cursor_cell(&mut self, cell: Vec2) {
         self.cursor_current = Some(cell);
+        self.cursor_eye = None;
+    }
+
+    /// «Трёхмерная сцена», требование 23: то же, с местом камеры в клетках сцены и высоте — щелчок
+    /// идёт лучом от неё через `cell`.
+    pub fn set_cursor_ray(&mut self, cell: Vec2, eye: Vec3) {
+        self.cursor_current = Some(cell);
+        self.cursor_eye = Some(eye);
+    }
+
+    pub fn cursor_eye(&self) -> Option<Vec3> {
+        self.cursor_eye
     }
 
     /// «Редактор», требование 27: the world cursor's current scene-cell position, for the session

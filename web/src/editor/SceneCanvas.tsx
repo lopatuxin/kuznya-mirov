@@ -25,9 +25,12 @@ type SceneCanvasProps = {
   isGameInputActive: boolean;
   /**
    * В партии, на паузе и в повторе холст занимает всю часть окна под сцену, как страница игры —
-   * «Редактор», требование 42; вне партии сцена вписывается по своим пропорциям.
+   * «Редактор», требование 42; трёхмерная сцена занимает её и вне партии — камера сама вписывает
+   * землю в холст («Фаза 15», требование 27); плоская вне партии вписывается по своим пропорциям.
    */
   fillsStageArea: boolean;
+  /** Трёхмерная сцена вне партии — щелчок по холсту объект не выбирает, рамки и переноса нет («Фаза 15», требование 28). */
+  isThreeDimensionalScene: boolean;
   selectedIndex: number | null;
   /** Подпись над рамкой выбранного объекта — его имя или номер. */
   selectedLabel: string | null;
@@ -123,6 +126,7 @@ export function SceneCanvas({
   canEditScene,
   isGameInputActive,
   fillsStageArea,
+  isThreeDimensionalScene,
   selectedIndex,
   selectedLabel,
   onSelect,
@@ -141,6 +145,8 @@ export function SceneCanvas({
   canEditSceneRef.current = canEditScene;
   const isGameInputActiveRef = useRef(isGameInputActive);
   isGameInputActiveRef.current = isGameInputActive;
+  const isThreeDimensionalSceneRef = useRef(isThreeDimensionalScene);
+  isThreeDimensionalSceneRef.current = isThreeDimensionalScene;
   const onMoveObjectRef = useRef(onMoveObject);
   onMoveObjectRef.current = onMoveObject;
   const dragRef = useRef<DragState | null>(null);
@@ -260,7 +266,7 @@ export function SceneCanvas({
         overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
         const selected = selectedIndexRef.current;
         // Нефункциональное требование: пока ничего не выбрано, object_rect не зовётся.
-        if (selected !== null) {
+        if (selected !== null && !isThreeDimensionalSceneRef.current) {
           const rect = activeEngine.object_rect(selected) as CanvasRect | undefined;
           if (rect) drawSelection(overlayContext, rect, selectedLabelRef.current, window.devicePixelRatio || 1);
         }
@@ -290,6 +296,7 @@ export function SceneCanvas({
       engine.mouse_down();
       return;
     }
+    if (isThreeDimensionalSceneRef.current) return;
     const bounds = event.currentTarget.getBoundingClientRect();
     const hit = engine.object_at(event.clientX - bounds.left, event.clientY - bounds.top) as number | undefined;
     // Открытое поле свойства записывается в прежний объект (требование 13) до смены выбора: иначе

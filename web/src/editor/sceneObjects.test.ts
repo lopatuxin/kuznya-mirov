@@ -3,6 +3,7 @@ import {
   buildObjectPropertiesView,
   getObjectGeometry,
   parseSceneObjects,
+  parseSceneIsThreeDimensional,
   parseSceneSize,
   resolveSelectionAfterReload,
   summarizeSceneObjects,
@@ -89,6 +90,24 @@ describe("parseSceneSize", () => {
     expect(parseSceneSize("null")).toBe(null);
     expect(parseSceneSize(JSON.stringify({ name: "x" }))).toBe(null);
     expect(parseSceneSize(JSON.stringify({ scene: { width: 0, height: 5 } }))).toBe(null);
+  });
+});
+
+describe("parseSceneIsThreeDimensional", () => {
+  it("у scene есть camera — трёхмерная", () => {
+    expect(parseSceneIsThreeDimensional(JSON.stringify({ scene: { width: 32, height: 24, camera: { pitch: 55 } } }))).toBe(true);
+  });
+
+  it("camera нет — плоская", () => {
+    expect(parseSceneIsThreeDimensional(JSON.stringify({ scene: { width: 17, height: 27 } }))).toBe(false);
+  });
+
+  it("файл не прочитан, не JSON или scene нет — плоская", () => {
+    expect(parseSceneIsThreeDimensional(null)).toBe(false);
+    expect(parseSceneIsThreeDimensional("{не json")).toBe(false);
+    expect(parseSceneIsThreeDimensional("null")).toBe(false);
+    expect(parseSceneIsThreeDimensional(JSON.stringify({ name: "x" }))).toBe(false);
+    expect(parseSceneIsThreeDimensional(JSON.stringify({ scene: { camera: "55" } }))).toBe(false);
   });
 });
 

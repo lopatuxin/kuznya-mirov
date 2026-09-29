@@ -43,6 +43,12 @@ describe("suggestPropertyNames", () => {
   it("flip_x Фазы 14 — среди подсказок", () => {
     expect(suggestPropertyNames([], {})).toContain("flip_x");
   });
+
+  it("shape и height Фазы 15 — среди подсказок", () => {
+    const suggestions = suggestPropertyNames([], {});
+    expect(suggestions).toContain("shape");
+    expect(suggestions).toContain("height");
+  });
 });
 
 describe("defaultValueForPropertyKind", () => {

@@ -103,6 +103,22 @@ export function parseSceneSize(gameJsonText: string | null): SceneSize | null {
 }
 
 /**
+ * Трёхмерная сцена — у `scene` в `game.json` есть `camera` («Трёхмерная сцена»). Файл не читается или
+ * не разбирается — сцена плоская: редактор ведёт себя как прежде.
+ */
+export function parseSceneIsThreeDimensional(gameJsonText: string | null): boolean {
+  if (gameJsonText === null) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(gameJsonText);
+  } catch {
+    return false;
+  }
+  const camera = (parsed as { scene?: { camera?: unknown } } | null)?.scene?.camera;
+  return camera !== null && typeof camera === "object" && !Array.isArray(camera);
+}
+
+/**
  * Свойства выбранного объекта — по строке на ключ, в порядке файла, значение компактным JSON
  * («Редактор», требования 29–30). Элемент `objects`, который не объект (например, строка или
  * `null`), — одной строкой его JSON, а не список свойств.

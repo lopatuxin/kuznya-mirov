@@ -29,6 +29,15 @@ fn format_hex_color(c: [f32; 4]) -> String {
     format!("#{:02x}{:02x}{:02x}", byte(c[0]), byte(c[1]), byte(c[2]))
 }
 
+/// Целое число градусов — целым в JSON, как писал файл, пока `rotation` знал четыре значения.
+fn rotation_to_json(degrees: f64) -> Json {
+    if degrees.fract() == 0.0 && degrees.abs() < 1e15 {
+        Json::Number((degrees as i64).into())
+    } else {
+        json_number(degrees)
+    }
+}
+
 /// A `Value` in the same units and shape `scene.json` itself writes it in — «Редактор», требование
 /// 14. `images` resolves an `Image` value back to its declared name.
 pub fn value_to_json(value: &Value, images: &[ImageDecl]) -> Json {
@@ -45,7 +54,8 @@ pub fn value_to_json(value: &Value, images: &[ImageDecl]) -> Json {
             .get(*id)
             .map(|decl| Json::String(decl.name.clone()))
             .unwrap_or(Json::Null),
-        Value::Rotation(r) => Json::Number(r.degrees().into()),
+        Value::Rotation(r) => rotation_to_json(r.angle()),
+        Value::Shape(shape) => Json::String(shape.as_str().to_string()),
         Value::FollowMouse(a) => Json::String(a.as_str().to_string()),
     }
 }
@@ -243,6 +253,107 @@ mod tests {
         let mut t = PropertyTable::new();
         t.declare_author("score", PropKind::Number).unwrap();
         t
+    }
+
+    /// «Трёхмерная сцена»: `rotation` — любое число градусов, `shape` — имя фигуры; в плоской
+    /// сцене правка их не принимает, как и файл.
+    #[test]
+    fn shape_height_and_any_rotation_round_trip_only_in_a_three_dimensional_scene() {
+        let mut properties = table();
+        properties.set_three_d(true);
+        let mut world = World::new(&properties);
+        let id = world.create();
+        set_property(
+            &mut world,
+            &properties,
+            &[],
+            id,
+            "shape",
+            &serde_json::json!("capsule"),
+        )
+        .expect("фигура");
+        set_property(
+            &mut world,
+            &properties,
+            &[],
+            id,
+            "height",
+            &serde_json::json!(1.8),
+        )
+        .expect("высота");
+        set_property(
+            &mut world,
+            &properties,
+            &[],
+            id,
+            "rotation",
+            &serde_json::json!(37.5),
+        )
+        .expect("любой угол");
+        let json = object_properties_json(&world, &properties, &[], id).expect("жив");
+        assert_eq!(json["shape"], serde_json::json!("capsule"));
+        assert_eq!(json["height"], serde_json::json!(1.8));
+        assert_eq!(json["rotation"], serde_json::json!(37.5));
+        assert!(
+            set_property(
+                &mut world,
+                &properties,
+                &[],
+                id,
+                "shape",
+                &serde_json::json!("cone")
+            )
+            .is_err()
+        );
+        assert!(
+            set_property(
+                &mut world,
+                &properties,
+                &[],
+                id,
+                "height",
+                &serde_json::json!(0)
+            )
+            .is_err()
+        );
+
+        let flat = table();
+        let mut world = World::new(&flat);
+        let id = world.create();
+        assert!(
+            set_property(
+                &mut world,
+                &flat,
+                &[],
+                id,
+                "shape",
+                &serde_json::json!("box")
+            )
+            .is_err()
+        );
+        assert!(set_property(&mut world, &flat, &[], id, "height", &serde_json::json!(2)).is_err());
+        assert!(
+            set_property(
+                &mut world,
+                &flat,
+                &[],
+                id,
+                "rotation",
+                &serde_json::json!(30)
+            )
+            .is_err()
+        );
+        set_property(
+            &mut world,
+            &flat,
+            &[],
+            id,
+            "rotation",
+            &serde_json::json!(270),
+        )
+        .expect("четверть");
+        let json = object_properties_json(&world, &flat, &[], id).expect("жив");
+        assert_eq!(json["rotation"].to_string(), "270");
     }
 
     #[test]

@@ -13,6 +13,46 @@ pub struct GroundLayer {
     pub cells: Vec<Vec<i32>>,
 }
 
+/// «Трёхмерная сцена» → «Камера»: `scene.camera` — наклон камеры к земле в градусах, 30–90.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CameraConfig {
+    pub pitch: f64,
+}
+
+/// «Трёхмерная сцена» → «Земля, свет и плоские объекты»: `scene.light`; без него — эти значения.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LightConfig {
+    /// Откуда светит солнце, градусы: 0 — от игрока, 90 — слева, 180 — из глубины, 270 — справа.
+    pub sun_from: f64,
+    /// Высота солнца над землёй, градусы.
+    pub sun_height: f64,
+    /// Насколько темна тень, 0–1.
+    pub shadow: f64,
+}
+
+impl Default for LightConfig {
+    fn default() -> Self {
+        LightConfig {
+            sun_from: 135.0,
+            sun_height: 50.0,
+            shadow: 0.4,
+        }
+    }
+}
+
+impl LightConfig {
+    /// Единичный вектор от точки на земле к солнцу: `x` сцены вправо, `y` — к игроку, `z` — вверх.
+    pub fn direction(&self) -> [f64; 3] {
+        let from = self.sun_from.to_radians();
+        let height = self.sun_height.to_radians();
+        [
+            -from.sin() * height.cos(),
+            from.cos() * height.cos(),
+            height.sin(),
+        ]
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct SceneConfig {
     pub width: u32,
@@ -23,6 +63,15 @@ pub struct SceneConfig {
     pub view_height: Option<f64>,
     /// «Порядок рисования», требование 9: при равных `layer` поверх тот, чей нижний край ниже.
     pub y_sort: bool,
+    /// «Трёхмерная сцена»: есть камера — сцена трёхмерная; `None` — плоская, как раньше.
+    pub camera: Option<CameraConfig>,
+    pub light: LightConfig,
+}
+
+impl SceneConfig {
+    pub fn is_3d(&self) -> bool {
+        self.camera.is_some()
+    }
 }
 
 /// The scale and top-left offset (in the same unit `viewport` is given in) that letterboxes the
@@ -38,6 +87,14 @@ pub fn letterbox(viewport: [f32; 2], scene_cells: [f32; 2]) -> (f32, [f32; 2]) {
 }
 
 impl SceneConfig {
+    /// «Трёхмерная сцена», требование 21: точка земли за краем сцены прижимается к краю сцены.
+    pub fn clamp_point(&self, point: super::value::Vec2) -> super::value::Vec2 {
+        [
+            point[0].clamp(0.0, self.width as f64),
+            point[1].clamp(0.0, self.height as f64),
+        ]
+    }
+
     /// «Курсор в мире», требование 25: translates a window-pixel cursor position into scene
     /// coordinates, by the same letterboxed mapping the renderer draws the scene with, then
     /// clamps to the scene's own edges. Used outside a battle (editor without a session) and by
@@ -70,6 +127,20 @@ impl SceneConfig {
             (cell[0] as f64).clamp(0.0, self.width as f64),
             (cell[1] as f64).clamp(0.0, self.height as f64),
         ]
+    }
+
+    /// «Трёхмерная сцена»: целые клетки сцены, которых касается прямоугольник `[low, high]`, — в
+    /// пределах сцены.
+    pub fn cell_range_covering(
+        &self,
+        low: super::value::Vec2,
+        high: super::value::Vec2,
+    ) -> CellRange {
+        let x0 = (low[0].floor().max(0.0) as u32).min(self.width);
+        let y0 = (low[1].floor().max(0.0) as u32).min(self.height);
+        let x1 = (high[0].ceil().max(0.0) as u32).clamp(x0, self.width);
+        let y1 = (high[1].ceil().max(0.0) as u32).clamp(y0, self.height);
+        CellRange { x0, y0, x1, y1 }
     }
 
     /// «Мир на экране» → «Земля», требование 20: whole scene cells `[x0, x1) × [y0, y1)` at least
@@ -258,6 +329,69 @@ pub fn object_at_frame(
     best
 }
 
+/// «Трёхмерная сцена» → «Мышь и надписи», требование 22: луч от глаза камеры через точку земли под
+/// курсором. Фигура ловит его своим объёмом по форме, объект без фигуры — своим повёрнутым
+/// прямоугольником на земле; из тех, в кого луч попал, срабатывает ближний к камере, при равной
+/// дальности — нарисованный сверху (`draw_order`). Объект без `on_click` луч не задерживает. Без
+/// `eye` (записи нет, камеры нет) луч идёт прямо вниз через точку.
+pub fn on_click_target_ray(
+    world: &World,
+    scene: &SceneConfig,
+    eye: Option<super::math3::Vec3>,
+    point: super::value::Vec2,
+) -> Option<u32> {
+    let (origin, direction) = match eye {
+        Some(eye) => super::shapes::ray_through_ground(eye, point),
+        None => ([point[0], point[1], 1000.0], [0.0, 0.0, -1.0]),
+    };
+    let mut best: Option<(f64, u32)> = None;
+    for id in world.ids() {
+        if !world.has(id, property::ON_CLICK) {
+            continue;
+        }
+        let Some(distance) = ray_distance(world, id, origin, direction) else {
+            continue;
+        };
+        let replace = match best {
+            None => true,
+            Some((best_distance, best_id)) => {
+                distance < best_distance - RAY_TIE
+                    || (distance <= best_distance + RAY_TIE
+                        && draw_order(world, scene, best_id, id) != std::cmp::Ordering::Greater)
+            }
+        };
+        if replace {
+            best = Some((distance, id));
+        }
+    }
+    best.map(|(_, id)| id)
+}
+
+/// Равная дальность для `on_click_target_ray`: плоские объекты на одной земле.
+const RAY_TIE: f64 = 1e-9;
+
+/// Расстояние вдоль луча до объекта: до объёма фигуры или до её прямоугольника на земле.
+fn ray_distance(
+    world: &World,
+    id: u32,
+    origin: super::math3::Vec3,
+    direction: super::math3::Vec3,
+) -> Option<f64> {
+    if let Some(body) = super::shapes::Body::of_object(world, id) {
+        return body.ray_hit(origin, direction);
+    }
+    let position = world.vec2(id, property::POSITION)?;
+    let size = world.vec2(id, property::SIZE)?;
+    if direction[2] >= 0.0 {
+        return None;
+    }
+    let t = -origin[2] / direction[2];
+    let ground = [origin[0] + t * direction[0], origin[1] + t * direction[1]];
+    super::footprint::Footprint::rotated(position, size, world.rotation(id, property::ROTATION))
+        .contains(ground)
+        .then_some(t)
+}
+
 /// «Мышь в мире», требование 19: the topmost live object with `on_click` whose rectangle
 /// (`position`/`size`, scene cells) contains `point` (scene cells) — left/top edges included,
 /// right/bottom excluded, топ по `draw_order`. `None` off every such object.
@@ -305,6 +439,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         // A 10x20 scene into an 800x600 window scales by 30 (600/20), letterboxed 100px on
         // each side horizontally (800 - 10*30 = 500, halved).
@@ -324,6 +460,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let cell = scene.window_to_scene([-500.0, -500.0], [800.0, 600.0]);
         assert_eq!(cell, [0.0, 0.0]);
@@ -344,6 +482,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let id = world.create();
         world.set_vec2(id, property::POSITION, [1.0, 2.0]);
@@ -366,6 +506,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let bare = world.create();
         assert_eq!(object_rect(&world, &scene, bare, [800.0, 600.0]), None);
@@ -382,6 +524,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let moved = world.create();
         world.set_vec2(moved, property::POSITION, [1.0, 2.0]);
@@ -429,6 +573,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let viewport = [100.0, 100.0]; // scale 10, no letterbox margin
 
@@ -457,6 +603,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let viewport = [800.0, 600.0]; // scale 30, offset [250, 0]
 
@@ -480,6 +628,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let viewport = [100.0, 100.0]; // scale 10, no margin
 
@@ -518,6 +668,8 @@ mod tests {
             background: [0.0; 4],
             view_height: Some(10.0),
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         }
     }
 
@@ -529,6 +681,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         let (scale, offset) = letterbox([800.0, 600.0], [20.0, 15.0]);
         let visible = scene.visible_cell_range(scale, offset, [800.0, 600.0]);

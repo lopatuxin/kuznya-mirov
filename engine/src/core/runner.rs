@@ -152,6 +152,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         };
         Game::new(
             properties,

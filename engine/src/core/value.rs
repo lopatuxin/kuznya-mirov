@@ -20,6 +20,8 @@ pub enum PropKind {
     Image,
     Rotation,
     FollowMouse,
+    /// «Трёхмерная сцена»: `shape` — имя простой фигуры; в плоской сцене недоступно.
+    Shape,
     /// «Мышь в мире», требование 19: `on_click` — список записей `[свойство, значение]`, как
     /// `keys`' `press`, но без таблицы кодов и без `release`. Как `Grid`/`Keys`: не заводится
     /// простым значением и не входит в generic `Value`.
@@ -42,6 +44,7 @@ impl PropKind {
             PropKind::Image => "картинка",
             PropKind::Rotation => "поворот",
             PropKind::FollowMouse => "слежение за мышью",
+            PropKind::Shape => "фигура",
             PropKind::OnClick => "on_click",
         }
     }
@@ -83,10 +86,11 @@ impl FollowAxis {
     }
 }
 
-/// «Свойства» → `rotation`: degrees clockwise, one of the four values a quarter turn can land
-/// on — 90×quarters, never anything else.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Rotation(u16);
+/// «Свойства» → `rotation`: degrees clockwise. Плоская сцена держит только четыре значения (вид
+/// поворачивается четвертями, `from_degrees_exact`); трёхмерная — любой конечный угол
+/// (`from_degrees`), которым поворачивается и место на земле.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rotation(f64);
 
 impl Rotation {
     pub const ALLOWED: [u16; 4] = [0, 90, 180, 270];
@@ -98,24 +102,81 @@ impl Rotation {
         Self::ALLOWED
             .iter()
             .find(|&&d| d as f64 == degrees)
-            .map(|&d| Rotation(d))
+            .map(|&d| Rotation(d as f64))
+    }
+
+    /// «Трёхмерная сцена»: любое конечное число градусов, без приведения к кругу — `360` остаётся
+    /// `360`, а значит и печатается в файле как есть.
+    pub fn from_degrees(degrees: f64) -> Option<Rotation> {
+        degrees.is_finite().then_some(Rotation(degrees))
     }
 
     pub fn from_quarters(quarters: i32) -> Rotation {
-        Rotation((quarters.rem_euclid(4) * 90) as u16)
+        Rotation((quarters.rem_euclid(4) * 90) as f64)
     }
 
+    /// Ближайшая четверть оборота в градусах — 0, 90, 180 или 270, то, что хранит плоская сцена.
     pub fn degrees(self) -> u16 {
+        self.quarters() as u16 * 90
+    }
+
+    /// Угол как есть, в градусах: в трёхмерной сцене — любое конечное число.
+    pub fn angle(self) -> f64 {
         self.0
     }
 
+    /// Четверти оборота по часовой (0–3): кратное четверти значение — точно, остальное
+    /// округляется до ближайшей четверти (плоская сцена другого не хранит).
     pub fn quarters(self) -> u8 {
-        (self.0 / 90) as u8
+        ((self.0 / 90.0).round() as i64).rem_euclid(4) as u8
     }
 
     /// «turn»: rotates by `dir` quarters (`1` clockwise, `-1` counter-clockwise).
     pub fn turned(self, dir: i32) -> Rotation {
-        Rotation::from_quarters(self.quarters() as i32 + dir)
+        Rotation((self.0 + 90.0 * dir as f64).rem_euclid(360.0))
+    }
+
+    /// «Исполнение игры» → «Повторяемость», требование 17: синус и косинус угла — из `libm`, одни и
+    /// те же в браузере и на компьютере; кратный 90 поворот — точные 0 и ±1. Возвращает `(sin, cos)`.
+    pub fn sin_cos(self) -> (f64, f64) {
+        let d = self.0.rem_euclid(360.0);
+        if d % 90.0 == 0.0 {
+            return match (d / 90.0) as u8 {
+                0 => (0.0, 1.0),
+                1 => (1.0, 0.0),
+                2 => (0.0, -1.0),
+                _ => (-1.0, 0.0),
+            };
+        }
+        let radians = d.to_radians();
+        (libm::sin(radians), libm::cos(radians))
+    }
+}
+
+/// «Трёхмерная сцена», «Объект в объёме»: простая фигура — заполняет прямоугольник объекта и
+/// `height` над ним.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    Box,
+    Cylinder,
+    Capsule,
+    Sphere,
+}
+
+impl Shape {
+    pub const ALL: [Shape; 4] = [Shape::Box, Shape::Cylinder, Shape::Capsule, Shape::Sphere];
+
+    pub fn parse(name: &str) -> Option<Shape> {
+        Self::ALL.into_iter().find(|shape| shape.as_str() == name)
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Shape::Box => "box",
+            Shape::Cylinder => "cylinder",
+            Shape::Capsule => "capsule",
+            Shape::Sphere => "sphere",
+        }
     }
 }
 
@@ -132,6 +193,7 @@ pub enum Value {
     Image(ImageId),
     Rotation(Rotation),
     FollowMouse(FollowAxis),
+    Shape(Shape),
 }
 
 impl Value {
@@ -148,6 +210,7 @@ impl Value {
             Value::Image(_) => PropKind::Image,
             Value::Rotation(_) => PropKind::Rotation,
             Value::FollowMouse(_) => PropKind::FollowMouse,
+            Value::Shape(_) => PropKind::Shape,
         }
     }
 

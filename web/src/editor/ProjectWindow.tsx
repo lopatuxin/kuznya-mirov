@@ -14,7 +14,14 @@ import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { SceneCanvas } from "./SceneCanvas";
 import { fallbackDisplayName, type ProjectSource } from "./projectSource";
-import { buildObjectPropertiesView, getObjectGeometry, parseSceneObjects, parseSceneSize, summarizeSceneObjects } from "./sceneObjects";
+import {
+  buildObjectPropertiesView,
+  getObjectGeometry,
+  parseSceneIsThreeDimensional,
+  parseSceneObjects,
+  parseSceneSize,
+  summarizeSceneObjects,
+} from "./sceneObjects";
 import { useBattleSession } from "./useBattleSession";
 import { useSceneEditing } from "./useSceneEditing";
 import { useStoredPanelWidth } from "./useStoredPanelWidth";
@@ -108,6 +115,7 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
   const objectSummaries = useMemo(() => summarizeSceneObjects(objects), [objects]);
   const propertiesView = useMemo(() => buildObjectPropertiesView(objects, selectedIndex), [objects, selectedIndex]);
   const sceneSize = useMemo(() => parseSceneSize(gameJsonText), [gameJsonText]);
+  const isThreeDimensionalScene = useMemo(() => parseSceneIsThreeDimensional(gameJsonText), [gameJsonText]);
   const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const selectedObject = selectedIndex !== null ? (objectSummaries[selectedIndex] ?? null) : null;
@@ -285,7 +293,8 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
           objectsVersion={isLive ? battle.liveObjectSummaries : objects}
           canEditScene={displayedCanEdit}
           isGameInputActive={battle.mode === "battle" && battle.isRunning}
-          fillsStageArea={isLive}
+          fillsStageArea={isLive || isThreeDimensionalScene}
+          isThreeDimensionalScene={isThreeDimensionalScene}
           selectedIndex={displayedSelectedIndex}
           selectedLabel={displayedSelectedObject === null ? null : (displayedSelectedObject.name ?? `№ ${displayedSelectedObject.index}`)}
           onSelect={displayedOnSelect}
@@ -303,6 +312,7 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
           canEdit={displayedCanEdit}
           imageNames={imageNames}
           declaredProperties={declaredProperties}
+          isThreeDimensionalScene={isThreeDimensionalScene}
           disallowDeclare={isLive}
           onSetValue={(key, value) =>
             isLive

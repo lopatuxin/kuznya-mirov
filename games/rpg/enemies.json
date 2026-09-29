@@ -1,4 +1,4 @@
 {
-  "goblin": { "name": "Гоблин", "image": "goblin", "health": 30, "damage": 10 },
-  "orc": { "name": "Орк", "image": "orc", "health": 60, "damage": 15 }
+  "goblin": { "name": "Гоблин", "health": 30, "damage": 10 },
+  "orc": { "name": "Орк", "health": 60, "damage": 15 }
 }

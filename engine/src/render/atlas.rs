@@ -322,6 +322,23 @@ pub fn fill_paint(
     }
 }
 
+/// «Трёхмерная сцена», требование 19: поворот плоского прямоугольника на земле — вся заливка вместе
+/// с картинкой поворачивается вокруг середины объекта на угол `rotation`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Turn {
+    pub pivot: [f32; 2],
+    pub sin: f32,
+    pub cos: f32,
+}
+
+impl Turn {
+    pub const NONE: Turn = Turn {
+        pivot: [0.0, 0.0],
+        sin: 0.0,
+        cos: 1.0,
+    };
+}
+
 /// A rectangle's resolved placement and paint, free of `bytemuck`/`wgpu` so this builds and tests
 /// natively — `wasm::compose_instances` turns each into a `DrawRect` for the GPU, unchanged.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -339,6 +356,8 @@ pub struct RectPaint {
     /// «Картинки» → «Отражение», требование 7: the drawn object's own `flip_x` — always `false`
     /// for a color fill (требование 12: `flip_x` changes nothing about how a color draws).
     pub flip_x: bool,
+    /// Поворот на земле в трёхмерной сцене; `Turn::NONE` в плоской.
+    pub turn: Turn,
 }
 
 /// «Картинки» → «Кадры»: the world's own frame is picked by steps taken (`elapsed_steps`, frozen
@@ -356,12 +375,16 @@ pub fn compose_world_paints(
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
 ) -> Vec<RectPaint> {
+    let three_d = world.three_d();
+    // «Трёхмерная сцена», требование 19: фигуры рисует свой проход, плоскими прямоугольниками на земле
+    // остаются только объекты без фигуры.
     let mut ordered: Vec<u32> = ids
         .filter(|&id| {
             world.vec2(id, property::POSITION).is_some()
                 && world.vec2(id, property::SIZE).is_some()
                 && (world.color(id, property::COLOR).is_some()
                     || world.image(id, property::IMAGE).is_some())
+                && !(three_d && world.shape(id, property::SHAPE).is_some())
         })
         .collect();
     ordered.sort_by(|&a, &b| scene::draw_order(world, scene, a, b));
@@ -397,12 +420,23 @@ pub fn compose_world_paints(
             // «Картинки», требование 24: заливка цветом поворот не видит; требование 12: и
             // отражение тоже.
             let is_image = matches!(fill, Fill::Image { .. });
-            let rotation_quarters = if is_image {
+            let rotation_quarters = if is_image && !three_d {
                 world
                     .rotation(id, property::ROTATION)
                     .map_or(0, |r| r.quarters())
             } else {
                 0
+            };
+            let turn = match world.rotation(id, property::ROTATION) {
+                Some(rotation) if three_d => {
+                    let (sin, cos) = rotation.sin_cos();
+                    Turn {
+                        pivot: [(p[0] + s[0] / 2.0) as f32, (p[1] + s[1] / 2.0) as f32],
+                        sin: sin as f32,
+                        cos: cos as f32,
+                    }
+                }
+                _ => Turn::NONE,
             };
             let flip_x = is_image && world.flag(id, property::FLIP_X);
             // «Картинки» → «Картинка своего размера», требования 8–10: own-size placement (and,
@@ -424,6 +458,7 @@ pub fn compose_world_paints(
                 rotation_quarters,
                 smooth,
                 flip_x,
+                turn,
             }
         })
         .collect()
@@ -539,6 +574,7 @@ pub fn compose_ground_paints(
                     rotation_quarters: 0,
                     smooth: images[layer.image].smooth,
                     flip_x: false,
+                    turn: Turn::NONE,
                 });
             }
         }
@@ -557,6 +593,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         }
     }
 

@@ -2,6 +2,7 @@ use web_sys::HtmlCanvasElement;
 use wgpu::util::DeviceExt;
 
 use super::atlas::{self, ATLAS_SIZE};
+use super::gpu3d;
 use crate::core::screens::{Align, FontId};
 
 #[repr(C)]
@@ -186,6 +187,9 @@ pub struct Renderer {
     world_offset: [f32; 2],
     scene_cells: [f32; 2],
     device_pixel_ratio: f32,
+    /// «Трёхмерная сцена»: ресурсы создаются при первом её кадре; сброшены, когда атлас получил новую
+    /// текстуру.
+    scene3d: Option<gpu3d::Scene3d>,
 }
 
 impl Renderer {
@@ -237,10 +241,14 @@ impl Renderer {
             .await
             .map_err(|e| format!("не удалось создать устройство видеокарты: {e}"))?;
 
+        // Shaders and glyphon (`ColorMode::Web`) write colors already in sRGB, so the surface must
+        // not encode them again; wgpu-core lists sRGB formats first for the WebGL2 surface.
         let caps = surface.get_capabilities(&adapter);
         let format = caps
             .formats
-            .first()
+            .iter()
+            .find(|format| !format.is_srgb())
+            .or_else(|| caps.formats.first())
             .copied()
             .ok_or_else(|| "нет поддерживаемых форматов поверхности".to_string())?;
         let config = wgpu::SurfaceConfiguration {
@@ -484,7 +492,13 @@ impl Renderer {
         let ui_instance_buffer = make_instance_buffer(&device, ui_instance_capacity);
 
         let text_cache = glyphon::Cache::new(&device);
-        let mut text_atlas = glyphon::TextAtlas::new(&device, &queue, &text_cache, format);
+        let mut text_atlas = glyphon::TextAtlas::with_color_mode(
+            &device,
+            &queue,
+            &text_cache,
+            format,
+            glyphon::ColorMode::Web,
+        );
         let text_viewport = glyphon::Viewport::new(&device, &text_cache);
         let text_renderer = glyphon::TextRenderer::new(
             &mut text_atlas,
@@ -534,6 +548,7 @@ impl Renderer {
             world_offset,
             scene_cells,
             device_pixel_ratio: 1.0,
+            scene3d: None,
         })
     }
 
@@ -580,11 +595,12 @@ impl Renderer {
         self.font_system = glyphon::FontSystem::new();
         self.fonts.clear();
         self.swash_cache = glyphon::SwashCache::new();
-        self.text_atlas = glyphon::TextAtlas::new(
+        self.text_atlas = glyphon::TextAtlas::with_color_mode(
             &self.device,
             &self.queue,
             &self.text_cache,
             self.config.format,
+            glyphon::ColorMode::Web,
         );
     }
 
@@ -666,6 +682,7 @@ impl Renderer {
         );
         self.atlas_texture = texture;
         self.atlas_layers = layers;
+        self.scene3d = None;
     }
 
     /// The game's scene size and background become known only once it has loaded, well after
@@ -860,6 +877,141 @@ impl Renderer {
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
     ) -> Result<(), String> {
+        self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
+        let Some(surface_texture) = self.acquire_frame()? else {
+            return Ok(()); // occluded/timeout: skip this frame, try again next tick
+        };
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame"),
+            });
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("clear_and_draw"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: self.background[0] as f64,
+                            g: self.background[1] as f64,
+                            b: self.background[2] as f64,
+                            a: self.background[3] as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.draw_overlay(
+                &mut pass,
+                [
+                    world_instances.len(),
+                    world_texts.len(),
+                    ui_instances.len(),
+                    texts.len(),
+                ],
+            )?;
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        surface_texture.present();
+        Ok(())
+    }
+
+    /// «Трёхмерная сцена»: кадр из трёх частей — тени и мир с глубиной (`gpu3d::Scene3d::encode`),
+    /// затем тот же проход без глубины, что у плоской сцены, поверх готового цвета: полоски мира
+    /// (`world_instances`, в точках окна), надписи в мире, интерфейс — надписи и полоски над
+    /// фигурами не закрывает ничто.
+    pub fn render_frame_3d(
+        &mut self,
+        frame: &gpu3d::Scene3dFrame<'_>,
+        world_instances: &[DrawRect],
+        world_texts: &[WorldTextDraw],
+        ui_instances: &[DrawRect],
+        texts: &[TextDraw],
+    ) -> Result<(), String> {
+        self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
+        let size = [self.config.width, self.config.height];
+        let atlas_view = self
+            .atlas_texture
+            .create_view(&wgpu::TextureViewDescriptor {
+                dimension: Some(wgpu::TextureViewDimension::D2Array),
+                ..Default::default()
+            });
+        let scene3d = self.scene3d.get_or_insert_with(|| {
+            gpu3d::Scene3d::new(
+                &self.device,
+                self.config.format,
+                &atlas_view,
+                &self.linear_sampler,
+                size,
+            )
+        });
+        scene3d.upload(&self.device, &self.queue, size, frame);
+
+        let Some(surface_texture) = self.acquire_frame()? else {
+            return Ok(());
+        };
+        let view = surface_texture
+            .texture
+            .create_view(&wgpu::TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
+                label: Some("frame_3d"),
+            });
+        if let Some(scene3d) = self.scene3d.as_ref() {
+            scene3d.encode(&mut encoder, &self.quad_buffer, &view, self.background);
+        }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("overlay"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None,
+                occlusion_query_set: None,
+                multiview_mask: None,
+            });
+            self.draw_overlay(
+                &mut pass,
+                [
+                    world_instances.len(),
+                    world_texts.len(),
+                    ui_instances.len(),
+                    texts.len(),
+                ],
+            )?;
+        }
+        self.queue.submit(std::iter::once(encoder.finish()));
+        surface_texture.present();
+        Ok(())
+    }
+
+    /// Записывает прямоугольники мира и интерфейса в буферы и готовит их тексты — общая часть кадра
+    /// плоской и трёхмерной сцены.
+    fn upload_overlay(
+        &mut self,
+        world_instances: &[DrawRect],
+        world_texts: &[WorldTextDraw],
+        ui_instances: &[DrawRect],
+        texts: &[TextDraw],
+    ) -> Result<(), String> {
         self.grow_world_instances(world_instances.len());
         if !world_instances.is_empty() {
             self.queue.write_buffer(
@@ -908,69 +1060,43 @@ impl Renderer {
                 )
                 .map_err(|e| format!("не удалось подготовить текст: {e:?}"))?;
         }
+        Ok(())
+    }
 
-        let Some(surface_texture) = self.acquire_frame()? else {
-            return Ok(()); // occluded/timeout: skip this frame, try again next tick
-        };
-        let view = surface_texture
-            .texture
-            .create_view(&wgpu::TextureViewDescriptor::default());
-        let mut encoder = self
-            .device
-            .create_command_encoder(&wgpu::CommandEncoderDescriptor {
-                label: Some("frame"),
-            });
-        {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("clear_and_draw"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: &view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(wgpu::Color {
-                            r: self.background[0] as f64,
-                            g: self.background[1] as f64,
-                            b: self.background[2] as f64,
-                            a: self.background[3] as f64,
-                        }),
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
-            pass.set_pipeline(&self.rect_pipeline);
-            pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
-            if !world_instances.is_empty() {
-                pass.set_bind_group(0, &self.world_bind_group, &[]);
-                pass.set_vertex_buffer(1, self.world_instance_buffer.slice(..));
-                pass.draw(0..6, 0..world_instances.len() as u32);
-            }
-            if !world_texts.is_empty() {
-                self.world_text_renderer
-                    .render(&self.text_atlas, &self.text_viewport, &mut pass)
-                    .map_err(|e| format!("не удалось нарисовать текст в мире: {e:?}"))?;
-            }
-            // `world_text_renderer.render` above rebinds its own pipeline/vertex buffer on this
-            // same pass — restored here before the interface rectangles draw.
-            pass.set_pipeline(&self.rect_pipeline);
-            pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
-            if !ui_instances.is_empty() {
-                pass.set_bind_group(0, &self.ui_bind_group, &[]);
-                pass.set_vertex_buffer(1, self.ui_instance_buffer.slice(..));
-                pass.draw(0..6, 0..ui_instances.len() as u32);
-            }
-            if !texts.is_empty() {
-                self.text_renderer
-                    .render(&self.text_atlas, &self.text_viewport, &mut pass)
-                    .map_err(|e| format!("не удалось нарисовать текст: {e:?}"))?;
-            }
+    /// Рисует в открытом проходе четыре слоя: прямоугольники мира, текст в мире, прямоугольники
+    /// интерфейса, текст интерфейса; `counts` — сколько чего подготовил `upload_overlay`.
+    fn draw_overlay(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        counts: [usize; 4],
+    ) -> Result<(), String> {
+        let [world_instances, world_texts, ui_instances, texts] = counts;
+        pass.set_pipeline(&self.rect_pipeline);
+        pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+        if world_instances > 0 {
+            pass.set_bind_group(0, &self.world_bind_group, &[]);
+            pass.set_vertex_buffer(1, self.world_instance_buffer.slice(..));
+            pass.draw(0..6, 0..world_instances as u32);
         }
-        self.queue.submit(std::iter::once(encoder.finish()));
-        surface_texture.present();
+        if world_texts > 0 {
+            self.world_text_renderer
+                .render(&self.text_atlas, &self.text_viewport, pass)
+                .map_err(|e| format!("не удалось нарисовать текст в мире: {e:?}"))?;
+        }
+        // `world_text_renderer.render` above rebinds its own pipeline/vertex buffer on this
+        // same pass — restored here before the interface rectangles draw.
+        pass.set_pipeline(&self.rect_pipeline);
+        pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+        if ui_instances > 0 {
+            pass.set_bind_group(0, &self.ui_bind_group, &[]);
+            pass.set_vertex_buffer(1, self.ui_instance_buffer.slice(..));
+            pass.draw(0..6, 0..ui_instances as u32);
+        }
+        if texts > 0 {
+            self.text_renderer
+                .render(&self.text_atlas, &self.text_viewport, pass)
+                .map_err(|e| format!("не удалось нарисовать текст: {e:?}"))?;
+        }
         Ok(())
     }
 }

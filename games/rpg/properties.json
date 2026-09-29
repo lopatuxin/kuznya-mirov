@@ -3,7 +3,6 @@
     "obstacle": "flag",
     "hero": "flag",
     "marker": "flag",
-    "frame": "number",
     "health": "number",
     "max_health": "number",
     "damage": "number",

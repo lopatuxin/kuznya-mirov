@@ -2,8 +2,10 @@ use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
+use crate::core::camera::{self, Camera3d};
 use crate::core::game::Game;
 use crate::core::input::{MouseState, UiQueue};
+use crate::core::math3::Vec3;
 use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
@@ -17,7 +19,10 @@ use crate::data::error::GameError;
 use crate::data::load::{self, GameConfig, ImageDecl, ImageVerdict, MusicVerdict, NeededMedia};
 use crate::data::session::{self, PlaySession};
 use crate::render::atlas::{self, AtlasRect};
-use crate::render::{DrawRect, Renderer, TextDraw, WorldTextDraw};
+use crate::render::scene3d::{self, Frame3d};
+use crate::render::{
+    DrawRect, Globals3d, GroundRect, Renderer, Scene3dFrame, ShapeInstance, TextDraw, WorldTextDraw,
+};
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
     let _ = Reflect::set(obj, &JsValue::from_str(key), value);
@@ -581,12 +586,55 @@ fn draw_rect(
 /// wall-to-wall letterbox outside one (требование 41). A free function (not an `Engine` method)
 /// so `tick`/`step`/`seek`/`step_back` can call it while they already hold `game` mutably
 /// borrowed from `self.game` — a `&self`/`&mut self` method there would conflict with that borrow.
-fn frame_for(game: &Game, battle_view: bool, viewport: [f32; 2]) -> (f32, [f32; 2]) {
-    if battle_view {
+fn frame_for(game: &Game, battle_view: bool, viewport: [f32; 2]) -> View {
+    if let Some(camera_config) = game.scene.camera {
+        let space = if battle_view {
+            game.camera_3d(viewport)
+        } else {
+            // «Редактор», требование 27: вне партии трёхмерная сцена — неподвижной камерой.
+            let window = [viewport[0] as f64, viewport[1] as f64];
+            Some(camera::fit_scene_camera(
+                &game.scene,
+                camera_config.pitch,
+                window,
+            ))
+        };
+        if let Some(camera) = space {
+            return View::Space(camera);
+        }
+    }
+    let (scale, offset) = if battle_view {
         game.camera_frame(viewport)
     } else {
         let scene_cells = [game.scene.width as f32, game.scene.height as f32];
         crate::core::scene::letterbox(viewport, scene_cells)
+    };
+    View::Flat { scale, offset }
+}
+
+/// Как мир виден в этом кадре: плоско, масштабом и сдвигом сцены, или трёхмерной камерой.
+enum View {
+    Flat { scale: f32, offset: [f32; 2] },
+    Space(Camera3d),
+}
+
+/// «Курсор в мире», «Трёхмерная сцена» → «Мышь», требования 21, 23: точка сцены под курсором в
+/// окне и, в трёхмерной сцене, место камеры, от которого щелчок идёт лучом. В трёхмерной сцене
+/// точка земли не прижата к краю сцены: прижимает её шаг там, где она идёт как место сцены.
+fn pointer_at(
+    game: &Game,
+    view: &View,
+    window: [f32; 2],
+) -> (crate::core::value::Vec2, Option<Vec3>) {
+    match view {
+        View::Flat { scale, offset } => (
+            game.scene.window_to_scene_frame(window, *scale, *offset),
+            None,
+        ),
+        View::Space(camera) => (
+            camera.ground_point([window[0] as f64, window[1] as f64]),
+            Some(camera.eye),
+        ),
     }
 }
 
@@ -608,16 +656,21 @@ fn recompute_cursor_after_step(
     let Some(last_mouse_window_pos) = last_mouse_window_pos else {
         return;
     };
-    let (scale, offset) = frame_for(game, battle_view, viewport);
-    let cell = game
-        .scene
-        .window_to_scene_frame(last_mouse_window_pos, scale, offset);
-    if game.cursor_current() == Some(cell) {
+    let view = frame_for(game, battle_view, viewport);
+    let (cell, eye) = pointer_at(game, &view, last_mouse_window_pos);
+    if game.cursor_current() == Some(cell) && game.cursor_eye() == eye {
         return;
     }
-    game.set_cursor_cell(cell);
+    set_pointer(game, cell, eye);
     if let Some(session) = session {
         session.record_cursor(game, cell);
+    }
+}
+
+fn set_pointer(game: &mut Game, cell: crate::core::value::Vec2, eye: Option<Vec3>) {
+    match eye {
+        Some(eye) => game.set_cursor_ray(cell, eye),
+        None => game.set_cursor_cell(cell),
     }
 }
 
@@ -771,13 +824,23 @@ fn compose_ui(
 fn compose_world_elements(
     game: &Game,
     screens_config: &ScreensConfig,
+    camera: Option<&Camera3d>,
 ) -> (Vec<DrawRect>, Vec<WorldTextDraw>) {
-    let (bars, labels) = world_elements::compute_world_draws(
-        &game.world,
-        &game.scene,
-        &game.properties,
-        &screens_config.world_elements,
-    );
+    let (bars, labels) = match camera {
+        None => world_elements::compute_world_draws(
+            &game.world,
+            &game.scene,
+            &game.properties,
+            &screens_config.world_elements,
+        ),
+        Some(camera) => world_elements::compute_world_draws_3d(
+            &game.world,
+            &game.scene,
+            &game.properties,
+            &screens_config.world_elements,
+            camera,
+        ),
+    };
     let mut rects = Vec::with_capacity(bars.len() * 2);
     for bar in &bars {
         if let Some(back) = bar.back {
@@ -813,6 +876,106 @@ fn compose_world_elements(
         })
         .collect();
     (rects, texts)
+}
+
+/// «Трёхмерная сцена»: кадр мира в данные для видеокарты — фигуры по видам, плоские прямоугольники
+/// на земле, камера, солнце.
+fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundRect>, [Vec<ShapeInstance>; 4]) {
+    let globals = Globals3d {
+        view_proj: frame.view_proj,
+        light_view_proj: frame.light_view_proj,
+        sun: frame.sun,
+        shade: [frame.shadow, frame.depth_per_cell, 0.02, 0.0],
+    };
+    let ground = frame
+        .ground
+        .iter()
+        .map(|paint| GroundRect {
+            position: paint.position,
+            size: paint.size,
+            color: paint.color,
+            atlas_pos: [paint.atlas_rect.x as f32, paint.atlas_rect.y as f32],
+            atlas_size: [paint.atlas_rect.w as f32, paint.atlas_rect.h as f32],
+            atlas_layer: paint.atlas_rect.sheet as f32,
+            smooth: paint.smooth as u8 as f32,
+            flip_x: paint.flip_x as u8 as f32,
+            _padding: 0.0,
+            turn: [
+                paint.turn.pivot[0],
+                paint.turn.pivot[1],
+                paint.turn.sin,
+                paint.turn.cos,
+            ],
+        })
+        .collect();
+    let mut shapes: [Vec<ShapeInstance>; 4] = Default::default();
+    for shape in &frame.shapes {
+        // `Shape` идёт в порядке `Shape::ALL`, как и сетки в `render::gpu3d`.
+        shapes[shape.shape as usize].push(ShapeInstance {
+            placement: [shape.center[0], shape.center[1], shape.cos, shape.sin],
+            dims: [shape.size[0], shape.size[1], shape.height, shape.cap_height],
+            color: [shape.color[0], shape.color[1], shape.color[2], 1.0],
+        });
+    }
+    (globals, ground, shapes)
+}
+
+/// Рисует мир и интерфейс одного кадра: плоскую сцену прежним путём, трёхмерную — тенями, глубиной
+/// и надписями над фигурами. `config` — `None` вне загруженных экранов: тогда нет и надписей в мире.
+#[allow(clippy::too_many_arguments)]
+fn render_world(
+    renderer: &mut Renderer,
+    game: &Game,
+    config: Option<&ScreensConfig>,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+    view: &View,
+    viewport: [f32; 2],
+    ui_instances: &[DrawRect],
+    texts: &[TextDraw],
+) -> Result<(), String> {
+    match view {
+        View::Flat { scale, offset } => {
+            renderer.set_world_frame(*scale, *offset);
+            let visible = game.scene.visible_cell_range(*scale, *offset, viewport);
+            let mut world_instances =
+                compose_ground_instances(&game.ground, visible, images, atlas_rects);
+            world_instances.extend(compose_instances(game, images, atlas_rects));
+            // «Надписи и полоски в мире», требование 37: рисуются везде, где нарисован мир — в
+            // редакторе вне партии тоже, в отличие от интерфейса, который виден только в партии.
+            let world_texts = match config {
+                Some(config) => {
+                    let (bar_rects, world_texts) = compose_world_elements(game, config, None);
+                    world_instances.extend(bar_rects);
+                    world_texts
+                }
+                None => Vec::new(),
+            };
+            renderer.render_frame(&world_instances, &world_texts, ui_instances, texts)
+        }
+        View::Space(camera) => {
+            // Полоски и надписи над фигурами посчитаны сразу в точках окна.
+            renderer.set_world_frame(1.0, [0.0, 0.0]);
+            let frame = scene3d::compose_frame3d(
+                game,
+                camera,
+                game.step_count() as f64,
+                images,
+                atlas_rects,
+            );
+            let (bar_rects, world_texts) = match config {
+                Some(config) => compose_world_elements(game, config, Some(camera)),
+                None => (Vec::new(), Vec::new()),
+            };
+            let (globals, ground, shapes) = gpu_frame_parts(&frame);
+            let parts = Scene3dFrame {
+                globals,
+                ground: &ground,
+                shapes: [&shapes[0], &shapes[1], &shapes[2], &shapes[3]],
+            };
+            renderer.render_frame_3d(&parts, &bar_rects, &world_texts, ui_instances, texts)
+        }
+    }
 }
 
 /// The engine, one per canvas. See the crate's README / contract notes for the exact JS-side
@@ -1117,7 +1280,7 @@ impl Engine {
 
     /// «Камера»: масштаб и сдвиг этого кадра — камера ядра в партии/повторе, letterbox сцены
     /// целиком вне партии (требование 41). `None` без загруженной игры.
-    fn frame(&self) -> Option<(f32, [f32; 2])> {
+    fn frame(&self) -> Option<View> {
         let game = self.game.as_ref()?;
         let viewport = self.renderer.window_size_css();
         Some(frame_for(game, self.battle_view, viewport))
@@ -1156,24 +1319,9 @@ impl Engine {
             let _ = self.renderer.render_frame(&[], &[], &[], &[]);
             return;
         }
-        let (scale, offset) = self.frame().expect("checked above");
-        self.renderer.set_world_frame(scale, offset);
+        let view = self.frame().expect("checked above");
         let game = self.game.as_ref().expect("checked above");
         let viewport = self.renderer.window_size_css();
-        let visible = game.scene.visible_cell_range(scale, offset, viewport);
-        let mut world_instances =
-            compose_ground_instances(&game.ground, visible, &self.images, &self.atlas_rects);
-        world_instances.extend(compose_instances(game, &self.images, &self.atlas_rects));
-        // «Надписи и полоски в мире», требование 37: рисуются везде, где нарисован мир — в
-        // редакторе вне партии тоже, в отличие от `ui_instances`/`texts` ниже, которые видны
-        // только в партии или повторе.
-        let world_texts = if let Some(config) = self.screens_config.as_ref() {
-            let (bar_rects, world_texts) = compose_world_elements(game, config);
-            world_instances.extend(bar_rects);
-            world_texts
-        } else {
-            Vec::new()
-        };
         let show_ui = self
             .session
             .as_ref()
@@ -1199,10 +1347,17 @@ impl Engine {
             }
             _ => (Vec::new(), Vec::new()),
         };
-        if let Err(e) =
-            self.renderer
-                .render_frame(&world_instances, &world_texts, &ui_instances, &texts)
-        {
+        if let Err(e) = render_world(
+            &mut self.renderer,
+            game,
+            self.screens_config.as_ref(),
+            &self.images,
+            &self.atlas_rects,
+            &view,
+            viewport,
+            &ui_instances,
+            &texts,
+        ) {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
     }
@@ -1214,7 +1369,8 @@ impl Engine {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
-        let Some((scale, offset)) = self.frame() else {
+        // «Редактор», требование 28: в трёхмерной сцене щелчок по холсту объект не выбирает.
+        let Some(View::Flat { scale, offset }) = self.frame() else {
             return JsValue::UNDEFINED;
         };
         match crate::core::scene::object_at_frame(&game.world, &game.scene, [x, y], scale, offset) {
@@ -1230,7 +1386,7 @@ impl Engine {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
-        let Some((scale, offset)) = self.frame() else {
+        let Some(View::Flat { scale, offset }) = self.frame() else {
             return JsValue::UNDEFINED;
         };
         match crate::core::scene::object_rect_frame(&game.world, id, scale, offset) {
@@ -1287,12 +1443,12 @@ impl Engine {
         if self.session.as_ref().is_some_and(PlaySession::is_replay) {
             return;
         }
-        let Some((scale, offset)) = self.frame() else {
+        let Some(view) = self.frame() else {
             return;
         };
         if let Some(game) = self.game.as_mut() {
-            let cell = game.scene.window_to_scene_frame([x, y], scale, offset);
-            game.set_cursor_cell(cell);
+            let (cell, eye) = pointer_at(game, &view, [x, y]);
+            set_pointer(game, cell, eye);
             if let Some(session) = self.session.as_mut() {
                 session.record_cursor(game, cell);
             }
@@ -1393,15 +1549,7 @@ impl Engine {
 
         // «Камера», требования 41–42: на игровой странице ничего кроме `tick` кадр не задаёт —
         // без этого мир рисовался бы заглушкой, которую поставил последний `set_scene`/`resize`.
-        let (scale, offset) = frame_for(game, self.battle_view, viewport);
-        self.renderer.set_world_frame(scale, offset);
-
-        let visible = game.scene.visible_cell_range(scale, offset, viewport);
-        let mut world_instances =
-            compose_ground_instances(&game.ground, visible, &self.images, &self.atlas_rects);
-        world_instances.extend(compose_instances(game, &self.images, &self.atlas_rects));
-        let (bar_rects, world_texts) = compose_world_elements(game, config);
-        world_instances.extend(bar_rects);
+        let view = frame_for(game, self.battle_view, viewport);
         let screen = &config.screens[state.active()];
         let (ui_instances, texts) = compose_ui(
             screen,
@@ -1413,10 +1561,17 @@ impl Engine {
             &self.atlas_rects,
             ui_clock_steps,
         );
-        if let Err(e) =
-            self.renderer
-                .render_frame(&world_instances, &world_texts, &ui_instances, &texts)
-        {
+        if let Err(e) = render_world(
+            &mut self.renderer,
+            game,
+            Some(config),
+            &self.images,
+            &self.atlas_rects,
+            &view,
+            viewport,
+            &ui_instances,
+            &texts,
+        ) {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
 

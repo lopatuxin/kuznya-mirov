@@ -1,0 +1,17 @@
+{
+  "start": "location",
+  "input": [
+    { "step": 1, "cursor": [22.4793, 8.0784], "eye": [8.7376, 28.0261, 12.769] },
+    { "step": 1, "press": "MouseLeft" }
+  ],
+  "steps": 640,
+  "checks": [
+    { "step": 2, "object": "goblin_1", "property": "target", "equals": true },
+    { "step": 334, "object": "hero", "property": "health", "equals": 100 },
+    { "step": 335, "object": "hero", "property": "health", "equals": 90 },
+    { "step": 395, "object": "goblin_1", "property": "health", "equals": 20 },
+    { "step": 634, "object": "goblin_1", "property": "health", "equals": 10 },
+    { "step": 635, "count": { "has": ["enemy_unit"] }, "equals": 2 },
+    { "step": 635, "object": "hero", "property": "health", "equals": 70 }
+  ]
+}

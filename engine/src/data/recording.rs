@@ -32,7 +32,9 @@ pub enum ReplayEdit {
 pub enum ReplayEventKind {
     KeyDown(String),
     KeyUp(String),
-    Cursor([f64; 2]),
+    /// Точка земли под курсором и, в трёхмерной игре, место камеры `eye` (клетки сцены и высота),
+    /// от которого щелчок идёт лучом через эту точку.
+    Cursor([f64; 2], Option<[f64; 3]>),
     Command(ReplayCommand),
     Edit(ReplayEdit),
 }
@@ -154,7 +156,23 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
         let y = arr[1]
             .as_f64()
             .ok_or_else(|| format!("events[{index}].cursor[1] должен быть числом"))?;
-        ReplayEventKind::Cursor([x, y])
+        let eye = match obj.get("eye") {
+            None => None,
+            Some(v) => {
+                let arr = v
+                    .as_array()
+                    .filter(|a| a.len() == 3)
+                    .ok_or_else(|| format!("events[{index}].eye должен быть тройкой чисел"))?;
+                let mut eye = [0.0; 3];
+                for (axis, slot) in eye.iter_mut().enumerate() {
+                    *slot = arr[axis]
+                        .as_f64()
+                        .ok_or_else(|| format!("events[{index}].eye[{axis}] должен быть числом"))?;
+                }
+                Some(eye)
+            }
+        };
+        ReplayEventKind::Cursor([x, y], eye)
     } else if let Some(v) = obj.get("set") {
         let arr = v.as_array().filter(|a| a.len() == 3).ok_or_else(|| {
             format!("events[{index}].set должен быть [номер, свойство, значение]")
@@ -193,8 +211,11 @@ fn event_to_json(event: &ReplayEvent) -> Json {
         ReplayEventKind::KeyUp(code) => {
             map.insert("key_up".to_string(), Json::String(code.clone()));
         }
-        ReplayEventKind::Cursor([x, y]) => {
+        ReplayEventKind::Cursor([x, y], eye) => {
             map.insert("cursor".to_string(), serde_json::json!([x, y]));
+            if let Some(eye) = eye {
+                map.insert("eye".to_string(), serde_json::json!(eye));
+            }
         }
         ReplayEventKind::Command(cmd) => {
             map.insert("command".to_string(), command_to_json(cmd));
@@ -309,7 +330,11 @@ mod tests {
                 },
                 ReplayEvent {
                     step: 20,
-                    kind: ReplayEventKind::Cursor([15.0, 22.5]),
+                    kind: ReplayEventKind::Cursor([15.0, 22.5], None),
+                },
+                ReplayEvent {
+                    step: 20,
+                    kind: ReplayEventKind::Cursor([15.0, 22.5], Some([16.0, 26.9, 12.8])),
                 },
                 ReplayEvent {
                     step: 300,
@@ -338,6 +363,21 @@ mod tests {
         let text = serialize(&recording);
         let parsed = parse(&text).expect("round trip parses");
         assert_eq!(parsed, recording);
+    }
+
+    #[test]
+    fn the_camera_position_rides_next_to_the_cursor_point_in_the_same_event() {
+        let event = ReplayEvent {
+            step: 20,
+            kind: ReplayEventKind::Cursor([15.0, 22.5], Some([16.0, 26.9, 12.8])),
+        };
+        let line = serde_json::to_string(&event_to_json(&event)).expect("serializes");
+        assert_eq!(
+            line,
+            r#"{"cursor":[15.0,22.5],"eye":[16.0,26.9,12.8],"step":20}"#
+        );
+        let bad = r#"{"format": 1, "steps": 1, "events": [{"step": 0, "cursor": [1, 2], "eye": [1, 2]}]}"#;
+        assert!(parse(bad).unwrap_err().contains("eye"));
     }
 
     #[test]

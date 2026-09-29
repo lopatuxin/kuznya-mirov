@@ -36,7 +36,7 @@ pub struct PlaySession {
     recording: Recording,
     /// «Редактор», требование 27: dedupes consecutive identical cursor positions so a paddle
     /// tracking the mouse for ten minutes doesn't write one event per `mouse_move` call.
-    last_cursor: Option<[f64; 2]>,
+    last_cursor: Option<([f64; 2], Option<[f64; 3]>)>,
     /// «Редактор», требование 5: the replay step whose own recorded events `step_once` last fed
     /// into the world — `None` before the first one. A repeated `step_once` call landing on the
     /// same session step (the active screen still isn't live, so the world never actually
@@ -70,6 +70,17 @@ impl PlaySession {
     ) -> Result<Self, String> {
         let recording =
             recording::parse(text).map_err(|reason| format!("Это не запись партии: {reason}"))?;
+        if game.scene.is_3d()
+            && let Some(event) = recording
+                .events
+                .iter()
+                .find(|e| matches!(e.kind, ReplayEventKind::Cursor(_, None)))
+        {
+            return Err(format!(
+                "Это не запись партии: в трёхмерной игре у указателя на шаге {} нет eye",
+                event.step
+            ));
+        }
         let start_is_live = config.screens[config.start_screen].world_runs;
         game.reset_for_play(start_is_live);
         *state = ScreenState::new(config.start_screen);
@@ -167,13 +178,14 @@ impl PlaySession {
     /// against the last one recorded — a no-op in replay (требование 28: правка мира и ввод
     /// хозяина недоступны там, so there is nothing of the host's own to record).
     pub fn record_cursor(&mut self, game: &Game, cell: [f64; 2]) {
-        if !self.is_live() || self.last_cursor == Some(cell) {
+        let pointer = (cell, game.cursor_eye());
+        if !self.is_live() || self.last_cursor == Some(pointer) {
             return;
         }
-        self.last_cursor = Some(cell);
+        self.last_cursor = Some(pointer);
         self.recording.events.push(ReplayEvent {
             step: game.session_step_count(),
-            kind: ReplayEventKind::Cursor(cell),
+            kind: ReplayEventKind::Cursor(cell, pointer.1),
         });
     }
 
@@ -490,7 +502,8 @@ impl PlaySession {
             match &event.kind {
                 ReplayEventKind::KeyDown(code) => game.press_key(code),
                 ReplayEventKind::KeyUp(code) => game.release_key(code),
-                ReplayEventKind::Cursor(cell) => game.set_cursor_cell(*cell),
+                ReplayEventKind::Cursor(cell, Some(eye)) => game.set_cursor_ray(*cell, *eye),
+                ReplayEventKind::Cursor(cell, None) => game.set_cursor_cell(*cell),
                 ReplayEventKind::Command(cmd) => {
                     apply_replay_command(cmd, game, config, state, images)
                 }

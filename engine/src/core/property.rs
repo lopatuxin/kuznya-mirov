@@ -25,6 +25,8 @@ pub const WALK_TO: PropertyId = 15;
 pub const WALK_SPEED: PropertyId = 16;
 pub const ON_CLICK: PropertyId = 17;
 pub const FLIP_X: PropertyId = 18;
+pub const SHAPE: PropertyId = 19;
+pub const HEIGHT: PropertyId = 20;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -46,6 +48,8 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("walk_speed", PropKind::Number),
     ("on_click", PropKind::OnClick),
     ("flip_x", PropKind::Flag),
+    ("shape", PropKind::Shape),
+    ("height", PropKind::Number),
 ];
 
 #[derive(Debug, Clone)]
@@ -59,6 +63,10 @@ pub struct PropertyDef {
 pub struct PropertyTable {
     defs: Vec<PropertyDef>,
     by_name: HashMap<String, PropertyId>,
+    /// «Трёхмерная сцена»: сцена игры трёхмерная (`scene.camera`). От этого зависит, что значит
+    /// `rotation` и можно ли `shape`/`height`, — таблицу свойств видят все места, что читают и
+    /// пишут значения (файлы, правка на ходу, код), поэтому знать это ей.
+    three_d: bool,
 }
 
 impl PropertyTable {
@@ -66,6 +74,7 @@ impl PropertyTable {
         let mut table = PropertyTable {
             defs: Vec::with_capacity(BUILTINS.len()),
             by_name: HashMap::with_capacity(BUILTINS.len()),
+            three_d: false,
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -93,6 +102,14 @@ impl PropertyTable {
         });
         self.by_name.insert(name.to_string(), id);
         Ok(id)
+    }
+
+    pub fn set_three_d(&mut self, three_d: bool) {
+        self.three_d = three_d;
+    }
+
+    pub fn three_d(&self) -> bool {
+        self.three_d
     }
 
     pub fn resolve(&self, name: &str) -> Option<PropertyId> {
@@ -143,6 +160,18 @@ mod tests {
         assert_eq!(table.kind(OPACITY), PropKind::Number);
         assert_eq!(table.resolve("flip_x"), Some(FLIP_X));
         assert_eq!(table.kind(FLIP_X), PropKind::Flag);
+        assert_eq!(table.resolve("shape"), Some(SHAPE));
+        assert_eq!(table.kind(SHAPE), PropKind::Shape);
+        assert_eq!(table.resolve("height"), Some(HEIGHT));
+        assert_eq!(table.kind(HEIGHT), PropKind::Number);
+    }
+
+    #[test]
+    fn a_table_is_flat_until_the_scene_says_otherwise() {
+        let mut table = PropertyTable::new();
+        assert!(!table.three_d());
+        table.set_three_d(true);
+        assert!(table.three_d());
     }
 
     #[test]

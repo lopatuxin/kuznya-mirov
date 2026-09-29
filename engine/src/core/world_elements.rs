@@ -3,11 +3,13 @@
 //! and the resolved `screens.json` list. Pure function of its three inputs: no browser, no GPU, so
 //! it is tested without a videocard. `wasm::mod` only converts these cells to pixels and draws.
 
+use super::camera::Camera3d;
 use super::property::{self, PropertyTable};
 use super::scene::{self, SceneConfig};
 use super::screens::{
     self, Align, Anchor, FontId, MaxSpec, WorldColor, WorldElement, WorldElementKind, WorldTextPart,
 };
+use super::shapes::Body;
 use super::step::selector_matches;
 use super::value::Vec2;
 use super::world::World;
@@ -115,6 +117,64 @@ pub fn compute_world_draws(
     properties: &PropertyTable,
     elements: &[WorldElement],
 ) -> (Vec<BarDraw>, Vec<LabelDraw>) {
+    compute_draws(world, scene, properties, elements, None)
+}
+
+/// «Трёхмерная сцена» → «Мышь и надписи», требования 24–25: то же для трёхмерной сцены, но
+/// результат — в точках окна, а не в клетках сцены. `anchor` встаёт на прямоугольник, который фигура
+/// (или, без фигуры, её место на земле) занимает на экране; `size`, `offset` и `font_size` переведены
+/// в точки одной клеткой — высота окна, делённая на `view_height`, — так что над ближним и дальним
+/// объектом они одного размера. Объект, которого на экране нет (за камерой), элемента не получает.
+pub fn compute_world_draws_3d(
+    world: &World,
+    scene: &SceneConfig,
+    properties: &PropertyTable,
+    elements: &[WorldElement],
+    camera: &Camera3d,
+) -> (Vec<BarDraw>, Vec<LabelDraw>) {
+    compute_draws(world, scene, properties, elements, Some(camera))
+}
+
+/// Прямоугольник объекта на экране в точках окна — `[x, y]` и `[ширина, высота]`.
+fn screen_rectangle(world: &World, id: u32, camera: &Camera3d) -> Option<([f32; 2], [f32; 2])> {
+    let [x0, y0, x1, y1] = match Body::of_object(world, id) {
+        Some(body) => body.screen_rect(camera)?,
+        None => {
+            let position = world.vec2(id, property::POSITION)?;
+            let size = world.vec2(id, property::SIZE)?;
+            let footprint = super::footprint::Footprint::rotated(
+                position,
+                size,
+                world.rotation(id, property::ROTATION),
+            );
+            let mut rect = [
+                f64::INFINITY,
+                f64::INFINITY,
+                f64::NEG_INFINITY,
+                f64::NEG_INFINITY,
+            ];
+            for corner in footprint.corners() {
+                let point = camera.project([corner[0], corner[1], 0.0])?;
+                rect = [
+                    rect[0].min(point[0]),
+                    rect[1].min(point[1]),
+                    rect[2].max(point[0]),
+                    rect[3].max(point[1]),
+                ];
+            }
+            rect
+        }
+    };
+    Some(([x0 as f32, y0 as f32], [(x1 - x0) as f32, (y1 - y0) as f32]))
+}
+
+fn compute_draws(
+    world: &World,
+    scene: &SceneConfig,
+    properties: &PropertyTable,
+    elements: &[WorldElement],
+    camera: Option<&Camera3d>,
+) -> (Vec<BarDraw>, Vec<LabelDraw>) {
     let mut bars = Vec::new();
     let mut labels = Vec::new();
     for element in elements {
@@ -131,12 +191,29 @@ pub fn compute_world_draws(
             let Some(color) = resolve_world_color(&element.color, world, id) else {
                 continue;
             };
-            let position = world.vec2(id, property::POSITION).expect("filtered above");
-            let obj_size = world.vec2(id, property::SIZE).expect("filtered above");
+            let (position, obj_size, cell) = match camera {
+                None => (
+                    world.vec2(id, property::POSITION).expect("filtered above"),
+                    world.vec2(id, property::SIZE).expect("filtered above"),
+                    1.0,
+                ),
+                Some(camera) => {
+                    let Some((position, size)) = screen_rectangle(world, id, camera) else {
+                        continue;
+                    };
+                    (
+                        [position[0] as f64, position[1] as f64],
+                        [size[0] as f64, size[1] as f64],
+                        camera.cell_points() as f32,
+                    )
+                }
+            };
+            let placement_size = element.placement.size.map(|c| c * cell);
+            let placement_offset = element.placement.offset.map(|c| c * cell);
             let top_left = element_top_left(
                 element.placement.anchor,
-                element.placement.offset,
-                element.placement.size,
+                placement_offset,
+                placement_size,
                 position,
                 obj_size,
             );
@@ -157,7 +234,7 @@ pub fn compute_world_draws(
                     } else {
                         (value_n / max_n).clamp(0.0, 1.0) as f32
                     };
-                    let size = element.placement.size;
+                    let size = placement_size;
                     bars.push(BarDraw {
                         back: back_color.map(|c| WorldRect {
                             position: top_left,
@@ -179,10 +256,10 @@ pub fn compute_world_draws(
                 } => {
                     labels.push(LabelDraw {
                         position: top_left,
-                        size: element.placement.size,
+                        size: placement_size,
                         text: format_world_text(text, world, id, properties),
                         font: *font,
-                        font_size: *font_size,
+                        font_size: *font_size * cell,
                         align: *align,
                         color,
                     });
@@ -211,6 +288,8 @@ mod tests {
             background: [0.0; 4],
             view_height: None,
             y_sort: false,
+            camera: None,
+            light: Default::default(),
         }
     }
 
@@ -572,6 +651,8 @@ mod tests {
         let mut world = World::new(&properties);
         let scene = SceneConfig {
             y_sort: true,
+            camera: None,
+            light: Default::default(),
             ..scene_config()
         };
         // Two objects at the same layer, y_sort on: the lower bottom edge draws on top.
