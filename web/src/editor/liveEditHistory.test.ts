@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorldObjectSummary } from "./battleTypes";
-import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, type LiveEditEntry } from "./liveEditHistory";
+import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, type LiveEditEntry } from "./liveEditHistory";
 
 describe("liveEditHistory", () => {
   it("пустая история — отмена недоступна", () => {
@@ -46,5 +46,32 @@ describe("isLiveEditTargetAlive", () => {
   it("delete — всегда цела: объекта и не должно быть, отмена его восстанавливает", () => {
     const entry: LiveEditEntry = { kind: "delete", id: 4, properties: {} };
     expect(isLiveEditTargetAlive(entry, [])).toBe(true);
+  });
+});
+
+describe("запись «transform» — жест ручки на паузе", () => {
+  const entry = {
+    kind: "transform",
+    id: 4,
+    generation: 2,
+    changes: [
+      { key: "position", hadKey: true, previous: [3, 4] },
+      { key: "size", hadKey: true, previous: [2, 2] },
+      { key: "rotation", hadKey: false, previous: undefined },
+    ],
+  } satisfies LiveEditEntry;
+
+  it("отмена возвращает прежние значения одним проходом и убирает свойство, которого не было", () => {
+    const calls: string[] = [];
+    undoLiveTransform(entry, {
+      set_property: (id, key, value) => calls.push(`set ${id} ${key} ${JSON.stringify(value)}`),
+      remove_property: (id, key) => calls.push(`remove ${id} ${key}`),
+    });
+    expect(calls).toEqual(["set 4 position [3,4]", "set 4 size [2,2]", "remove 4 rotation"]);
+  });
+
+  it("объект под другой меткой жизни — запись не цела", () => {
+    expect(isLiveEditTargetAlive(entry, [{ id: 4, generation: 2, name: null }])).toBe(true);
+    expect(isLiveEditTargetAlive(entry, [{ id: 4, generation: 3, name: null }])).toBe(false);
   });
 });

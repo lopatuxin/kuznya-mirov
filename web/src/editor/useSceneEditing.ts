@@ -14,10 +14,20 @@ import {
   type EditSnapshot,
   type SaveState,
 } from "./editSession";
+import type { EditorCameraStore } from "./editorCamera";
+import type { PlacementChange } from "./objectPlacement";
 import type { PropertyKind } from "./propertiesDeclarations";
 import { parseProjectFilePaths } from "./projectFiles";
 import { writeProjectFile } from "./projectFileWriter";
-import { addObjectProperty, appendSceneObject, declarePropertyKind, removeObjectProperty, removeSceneObject, setObjectPropertyValue } from "./sceneTextEditing";
+import {
+  addObjectProperty,
+  appendSceneObject,
+  declarePropertyKind,
+  removeObjectProperty,
+  removeSceneObject,
+  setObjectPropertyValue,
+  setObjectPropertyValues,
+} from "./sceneTextEditing";
 import { parseSceneObjects, resolveSelectionAfterReload } from "./sceneObjects";
 import { createSerialQueue } from "./serialQueue";
 import type { ProjectSource } from "./projectSource";
@@ -26,6 +36,7 @@ import { useProjectEngine } from "./useProjectEngine";
 export type SceneEditingState = {
   engine: Engine | null;
   memory: WebAssembly.Memory | null;
+  editorCameraStore: EditorCameraStore;
   result: ProjectLoadResult | null;
   loadedAt: Date | null;
   headerNotice: string | null;
@@ -41,6 +52,8 @@ export type SceneEditingState = {
   setSelectedIndex: (index: number | null) => void;
   undo: () => void;
   moveObject: (objectIndex: number, position: readonly [number, number]) => void;
+  /** Ручки трёхмерной сцены: все изменившиеся свойства объекта — одна правка текста и одна отмена. */
+  transformObject: (objectIndex: number, changes: PlacementChange[]) => void;
   setPropertyValue: (objectIndex: number, key: string, value: unknown) => void;
   removeProperty: (objectIndex: number, key: string) => void;
   addProperty: (objectIndex: number, key: string, value: unknown) => void;
@@ -225,6 +238,15 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     });
   }
 
+  function transformObject(objectIndex: number, changes: PlacementChange[]): void {
+    dispatchEdit((displayed) => {
+      const object = parseSceneObjects(displayed.sceneText)[objectIndex];
+      if (object === undefined || object === null || typeof object !== "object" || Array.isArray(object)) return null;
+      const values = Object.fromEntries(changes.map((change) => [change.key, change.value]));
+      return { sceneText: setObjectPropertyValues(displayed.sceneText, objectIndex, values), propertiesText: displayed.propertiesText };
+    });
+  }
+
   function setPropertyValue(objectIndex: number, key: string, value: unknown): void {
     dispatchEdit((displayed) => {
       const objects = parseSceneObjects(displayed.sceneText);
@@ -280,6 +302,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   return {
     engine: engineState.engine,
     memory: engineState.memory,
+    editorCameraStore: engineState.editorCameraStore,
     result: engineState.result,
     loadedAt: engineState.loadedAt,
     headerNotice: engineState.headerNotice,
@@ -294,6 +317,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     setSelectedIndex: setSelectedIndexState,
     undo,
     moveObject,
+    transformObject,
     setPropertyValue,
     removeProperty,
     addProperty,

@@ -7,6 +7,7 @@ import {
   removeObjectProperty,
   removeSceneObject,
   setObjectPropertyValue,
+  setObjectPropertyValues,
 } from "./sceneTextEditing";
 
 // Кусок `games/tetris/scene.json` с ручным выравниванием — «Редактор», критерии готовности «Страница».
@@ -33,6 +34,23 @@ describe("formatSceneValue", () => {
 
   it("пустой объект — без пробела внутри", () => {
     expect(formatSceneValue({})).toBe("{}");
+  });
+});
+
+describe("setObjectPropertyValues", () => {
+  it("меняет несколько свойств одним текстом, остальное байт в байт", () => {
+    const result = setObjectPropertyValues(SCENE_TEXT, 1, { position: [2.5, 6.25], size: [2, 1.5] });
+    expect(result).toBe(SCENE_TEXT.replace('"position": [0, 6], "size": [1, 1]', '"position": [2.5, 6.25], "size": [2, 1.5]'));
+  });
+
+  it("свойство, которого не было, дописывает в конец объекта", () => {
+    const result = setObjectPropertyValues(SCENE_TEXT, 2, { rotation: 280, height: 1.5 });
+    expect(result).toContain('"image": "wall", "layer": 1, "rotation": 280, "height": 1.5 }');
+    expect(result.startsWith(SCENE_TEXT.slice(0, SCENE_TEXT.indexOf('"position": [11, 6]')))).toBe(true);
+  });
+
+  it("пустой набор оставляет текст как был", () => {
+    expect(setObjectPropertyValues(SCENE_TEXT, 0, {})).toBe(SCENE_TEXT);
   });
 });
 

@@ -4,7 +4,8 @@
 
 use super::math3::{self, Mat4, Vec3};
 use super::property;
-use super::scene::{SceneConfig, letterbox};
+use super::scene::{self, SceneConfig, letterbox};
+use super::shapes::Body;
 use super::value::Vec2;
 use super::world::World;
 
@@ -75,15 +76,36 @@ fn view_distance(pitch: f64, view_height: f64) -> f64 {
     view_height * pitch.to_radians().sin() / (2.0 * tan_half_fov())
 }
 
+/// Обратное к `view_distance`: `view_height`, при котором камера стоит на `distance` от середины окна.
+fn view_height_at(pitch: f64, distance: f64) -> f64 {
+    distance * 2.0 * tan_half_fov() / pitch.to_radians().sin()
+}
+
+/// «Редактор», «Сцена»: наклон камеры редактора — от почти горизонтального до взгляда прямо вниз,
+/// ниже земли камера не опускается.
+pub const EDITOR_PITCH_RANGE: (f64, f64) = (5.0, 90.0);
+
+/// Ближе камера редактора к своей точке не подходит: с нулевого расстояния вид не построить.
+const MIN_EDITOR_DISTANCE: f64 = 0.01;
+
+fn angles(pitch: f64, yaw: f64) -> (f64, f64, f64, f64) {
+    let (sin_pitch, cos_pitch) = pitch.to_radians().sin_cos();
+    let (sin_yaw, cos_yaw) = yaw.to_radians().sin_cos();
+    (sin_pitch, cos_pitch, sin_yaw, cos_yaw)
+}
+
 /// «Трёхмерная сцена» → «Камера»: камера, смотрящая сверху под углом на землю. Земля — плоскость
-/// `z = 0`, `x` сцены вправо, `y` — к игроку, `z` — вверх; камера смотрит вглубь сцены (к меньшим
-/// `y`), не поворачиваясь. Ход игры и мышь считают всё здесь, в `f64`; видеокарта берёт готовую
-/// матрицу `view_proj`.
+/// `z = 0`, `x` сцены вправо, `y` — к игроку, `z` — вверх; камера игры смотрит вглубь сцены (к
+/// меньшим `y`), не поворачиваясь, камера редактора ещё и поворачивается вокруг вертикали. Ход игры
+/// и мышь считают всё здесь, в `f64`; видеокарта берёт готовую матрицу `view_proj`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Camera3d {
     pub eye: Vec3,
     /// Точка земли в середине окна.
     pub target: Vec2,
+    /// Поворот вокруг вертикали по часовой стрелке, если смотреть сверху, в градусах; 0 — вглубь
+    /// сцены, как у камеры игры.
+    pub yaw: f64,
     pub pitch: f64,
     pub view_height: f64,
     /// Окно в точках (CSS-пикселях), как у мыши и `screens.json`.
@@ -91,17 +113,46 @@ pub struct Camera3d {
 }
 
 impl Camera3d {
-    /// Камера с серединой окна в `target`.
+    /// Камера игры: без поворота, с серединой окна в `target`.
     pub fn looking_at(target: Vec2, pitch: f64, view_height: f64, viewport: [f64; 2]) -> Camera3d {
+        Camera3d::placed(target, 0.0, pitch, view_height, viewport)
+    }
+
+    /// Камера редактора: смотрит на `target` под поворотом `yaw` и наклоном `pitch` (от 5° до 90°)
+    /// с `distance` клеток по лучу взгляда.
+    pub fn orbiting(
+        target: Vec2,
+        yaw: f64,
+        pitch: f64,
+        distance: f64,
+        viewport: [f64; 2],
+    ) -> Camera3d {
+        Camera3d::placed(
+            target,
+            yaw,
+            pitch,
+            view_height_at(pitch, distance),
+            viewport,
+        )
+    }
+
+    fn placed(
+        target: Vec2,
+        yaw: f64,
+        pitch: f64,
+        view_height: f64,
+        viewport: [f64; 2],
+    ) -> Camera3d {
         let distance = view_distance(pitch, view_height);
-        let radians = pitch.to_radians();
+        let (sin_pitch, cos_pitch, sin_yaw, cos_yaw) = angles(pitch, yaw);
         Camera3d {
             eye: [
-                target[0],
-                target[1] + distance * radians.cos(),
-                distance * radians.sin(),
+                target[0] - distance * cos_pitch * sin_yaw,
+                target[1] + distance * cos_pitch * cos_yaw,
+                distance * sin_pitch,
             ],
             target,
+            yaw,
             pitch,
             view_height,
             viewport,
@@ -109,17 +160,18 @@ impl Camera3d {
     }
 
     pub fn forward(&self) -> Vec3 {
-        let radians = self.pitch.to_radians();
-        [0.0, -radians.cos(), -radians.sin()]
+        let (sin_pitch, cos_pitch, sin_yaw, cos_yaw) = angles(self.pitch, self.yaw);
+        [cos_pitch * sin_yaw, -cos_pitch * cos_yaw, -sin_pitch]
     }
 
     pub fn up(&self) -> Vec3 {
-        let radians = self.pitch.to_radians();
-        [0.0, -radians.sin(), radians.cos()]
+        let (sin_pitch, cos_pitch, sin_yaw, cos_yaw) = angles(self.pitch, self.yaw);
+        [sin_pitch * sin_yaw, -sin_pitch * cos_yaw, cos_pitch]
     }
 
     pub fn right(&self) -> Vec3 {
-        [1.0, 0.0, 0.0]
+        let (_, _, sin_yaw, cos_yaw) = angles(self.pitch, self.yaw);
+        [cos_yaw, sin_yaw, 0.0]
     }
 
     /// Фокусное расстояние в точках окна.
@@ -159,19 +211,25 @@ impl Camera3d {
         math3::normalize(direction)
     }
 
-    /// «Мышь», требование 21: место на земле, куда смотрит точка окна. Луч всегда идёт вниз
-    /// (наклон от 30°, угол зрения 35°), так что земля есть везде; за сцену точку прижимает
-    /// вызывающий.
-    pub fn ground_point(&self, window: [f64; 2]) -> Vec2 {
+    /// Место на земле, куда смотрит точка окна; `None`, если луч через неё не идёт к земле, —
+    /// точка выше горизонта.
+    pub fn ground_hit(&self, window: [f64; 2]) -> Option<Vec2> {
         let direction = self.ray_direction(window);
         if direction[2] >= 0.0 {
-            return self.target;
+            return None;
         }
         let t = -self.eye[2] / direction[2];
-        [
+        Some([
             self.eye[0] + t * direction[0],
             self.eye[1] + t * direction[1],
-        ]
+        ])
+    }
+
+    /// «Мышь», требование 21: место на земле, куда смотрит точка окна. У камеры игры луч всегда
+    /// идёт вниз (наклон от 30°, угол зрения 35°), так что земля есть везде; за сцену точку
+    /// прижимает вызывающий. Над горизонтом камеры редактора — её точка на земле.
+    pub fn ground_point(&self, window: [f64; 2]) -> Vec2 {
+        self.ground_hit(window).unwrap_or(self.target)
     }
 
     /// Матрица «мир → вырез»: вид и перспектива с глубиной `0..1`.
@@ -187,12 +245,60 @@ impl Camera3d {
         math3::mul(&projection, &view)
     }
 
-    /// Четыре точки земли под углами окна, по кругу от левого верхнего: дальние углы могут лежать
-    /// далеко за сценой, ближние — тоже, если сцена меньше видимого.
-    pub fn ground_corners(&self) -> [Vec2; 4] {
-        let [w, h] = self.viewport;
-        [[0.0, 0.0], [w, 0.0], [w, h], [0.0, h]].map(|corner| self.ground_point(corner))
+    /// Прямоугольник по осям `[низ, верх]`, охватывающий землю в пределах сцены, которую камера
+    /// видит; `None`, если из сцены не видно ничего. Сцена обрезается по четырём боковым плоскостям
+    /// взгляда, так что луч выше горизонта и поворот камеры ничего не ломают.
+    pub fn visible_ground(&self, scene: &SceneConfig) -> Option<[Vec2; 2]> {
+        let (width, height) = (scene.width as f64, scene.height as f64);
+        let mut ground = vec![[0.0, 0.0], [width, 0.0], [width, height], [0.0, height]];
+        let tan_y = tan_half_fov();
+        let tan_x = tan_y * self.viewport[0] / self.viewport[1].max(1.0);
+        let (forward, up, right) = (self.forward(), self.up(), self.right());
+        let inward = [
+            math3::add(right, math3::scale(forward, tan_x)),
+            math3::add(math3::scale(right, -1.0), math3::scale(forward, tan_x)),
+            math3::add(up, math3::scale(forward, tan_y)),
+            math3::add(math3::scale(up, -1.0), math3::scale(forward, tan_y)),
+        ];
+        for normal in inward {
+            ground = clip_ground(&ground, |point| {
+                math3::dot(
+                    normal,
+                    [point[0] - self.eye[0], point[1] - self.eye[1], -self.eye[2]],
+                )
+            });
+            if ground.is_empty() {
+                return None;
+            }
+        }
+        let low = ground
+            .iter()
+            .fold([f64::INFINITY; 2], |m, p| [m[0].min(p[0]), m[1].min(p[1])]);
+        let high = ground.iter().fold([f64::NEG_INFINITY; 2], |m, p| {
+            [m[0].max(p[0]), m[1].max(p[1])]
+        });
+        Some([low, high])
     }
+}
+
+/// Часть выпуклого многоугольника на земле, где `side` не отрицательна.
+fn clip_ground(polygon: &[Vec2], side: impl Fn(Vec2) -> f64) -> Vec<Vec2> {
+    let mut clipped = Vec::with_capacity(polygon.len() + 1);
+    for (index, &current) in polygon.iter().enumerate() {
+        let previous = polygon[(index + polygon.len() - 1) % polygon.len()];
+        let (before, now) = (side(previous), side(current));
+        if (before >= 0.0) != (now >= 0.0) {
+            let t = before / (before - now);
+            clipped.push([
+                previous[0] + t * (current[0] - previous[0]),
+                previous[1] + t * (current[1] - previous[1]),
+            ]);
+        }
+        if now >= 0.0 {
+            clipped.push(current);
+        }
+    }
+    clipped
 }
 
 /// «Камера», требование 5: середина камеры — середина объекта на земле, но так, чтобы точки земли
@@ -231,30 +337,94 @@ fn clamp_axis(center: f64, scene_len: f64, low: f64, high: f64) -> f64 {
     }
 }
 
-/// «Редактор», требование 27: неподвижная камера вне партии — наклон `pitch` игры, смотрит на
-/// середину сцены с такого расстояния, чтобы вся земля поместилась в холст.
-pub fn fit_scene_camera(scene: &SceneConfig, pitch: f64, viewport: [f64; 2]) -> Camera3d {
-    let target = [scene.width as f64 / 2.0, scene.height as f64 / 2.0];
-    let base = Camera3d::looking_at(target, pitch, 1.0, viewport);
+/// «Редактор», «Вызовы движка»: камера редактора — точка на земле в середине окна, поворот и наклон
+/// в градусах и расстояние до точки по лучу взгляда в клетках; то, что шлют `editor_camera` и
+/// возвращает `fit_camera`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct EditorCamera {
+    pub target: Vec2,
+    pub yaw: f64,
+    pub pitch: f64,
+    pub distance: f64,
+}
+
+impl EditorCamera {
+    /// Наклон в пределах `EDITOR_PITCH_RANGE`, расстояние не меньше сотой клетки.
+    pub fn clamped(self) -> EditorCamera {
+        EditorCamera {
+            pitch: self.pitch.clamp(EDITOR_PITCH_RANGE.0, EDITOR_PITCH_RANGE.1),
+            distance: self.distance.max(MIN_EDITOR_DISTANCE),
+            ..self
+        }
+    }
+
+    pub fn camera(&self, viewport: [f64; 2]) -> Camera3d {
+        Camera3d::orbiting(self.target, self.yaw, self.pitch, self.distance, viewport)
+    }
+}
+
+/// Наименьшее расстояние, с которого камера с точкой `target` под `yaw` и `pitch` видит в окне
+/// все `points`.
+fn fit_distance(points: &[Vec3], target: Vec2, yaw: f64, pitch: f64, viewport: [f64; 2]) -> f64 {
+    let base = Camera3d::orbiting(target, yaw, pitch, 1.0, viewport);
     let (forward, up, right) = (base.forward(), base.up(), base.right());
     let tan = tan_half_fov();
     let aspect = viewport[0] / viewport[1].max(1.0);
-    let mut distance = 0.0_f64;
-    for corner in [
-        [0.0, 0.0],
-        [scene.width as f64, 0.0],
-        [scene.width as f64, scene.height as f64],
-        [0.0, scene.height as f64],
-    ] {
-        let q = [corner[0] - target[0], corner[1] - target[1], 0.0];
+    points.iter().fold(0.0_f64, |distance, point| {
+        let q = [point[0] - target[0], point[1] - target[1], point[2]];
         let ahead = math3::dot(q, forward);
-        distance = distance
+        distance
             .max(math3::dot(q, right).abs() / (tan * aspect) - ahead)
-            .max(math3::dot(q, up).abs() / tan - ahead);
-    }
-    // `looking_at` считает расстояние по `view_height`; подбираем его так, чтобы получилось `distance`.
-    let view_height = distance * 2.0 * tan / pitch.to_radians().sin();
-    Camera3d::looking_at(target, pitch, view_height, viewport)
+            .max(math3::dot(q, up).abs() / tan - ahead)
+    })
+}
+
+/// «Редактор», «Сцена», требование 5: камера редактора при открытии проекта — наклон `pitch` игры,
+/// без поворота, смотрит на середину сцены с такого расстояния, чтобы вся земля поместилась в
+/// окно. `None` в плоской сцене.
+pub fn fit_ground(scene: &SceneConfig, viewport: [f64; 2]) -> Option<EditorCamera> {
+    let pitch = scene.camera?.pitch;
+    let (width, height) = (scene.width as f64, scene.height as f64);
+    let corners = [
+        [0.0, 0.0, 0.0],
+        [width, 0.0, 0.0],
+        [width, height, 0.0],
+        [0.0, height, 0.0],
+    ];
+    let target = [width / 2.0, height / 2.0];
+    Some(EditorCamera {
+        target,
+        yaw: 0.0,
+        pitch,
+        distance: fit_distance(&corners, target, 0.0, pitch, viewport),
+    })
+}
+
+/// «Редактор», «Сцена», требование 4: камера, что смотрит на середину объекта на земле под тем же
+/// `yaw` и `pitch` и стоит так близко, чтобы объём объекта — прямоугольник на земле и `height` над
+/// ним, у плоского объекта только прямоугольник — был виден целиком. `None` без объекта или его
+/// `position` и `size`.
+pub fn fit_object(
+    world: &World,
+    id: u32,
+    yaw: f64,
+    pitch: f64,
+    viewport: [f64; 2],
+) -> Option<EditorCamera> {
+    let footprint = scene::ground_footprint(world, id)?;
+    let height = Body::of_object(world, id).map_or(0.0, |body| body.height.max(0.0));
+    let points: Vec<Vec3> = footprint
+        .corners()
+        .iter()
+        .flat_map(|corner| [[corner[0], corner[1], 0.0], [corner[0], corner[1], height]])
+        .collect();
+    let target = footprint.center();
+    Some(EditorCamera {
+        target,
+        yaw,
+        pitch,
+        distance: fit_distance(&points, target, yaw, pitch, viewport),
+    })
 }
 
 #[cfg(test)]
@@ -477,7 +647,9 @@ mod tests {
     fn the_editor_camera_fits_the_whole_ground_and_touches_the_canvas() {
         for viewport in [[1200.0, 700.0], [500.0, 900.0]] {
             let scene = scene_3d(32, 24);
-            let camera = fit_scene_camera(&scene, 55.0, viewport);
+            let camera = fit_ground(&scene, viewport)
+                .expect("трёхмерная сцена")
+                .camera(viewport);
             let mut extreme = 0.0_f64;
             for corner in [[0.0, 0.0], [32.0, 0.0], [32.0, 24.0], [0.0, 24.0]] {
                 let px = camera
