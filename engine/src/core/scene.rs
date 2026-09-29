@@ -276,6 +276,71 @@ pub fn move_object(world: &mut World, id: u32, position: super::value::Vec2) {
     world.set_vec2(id, property::POSITION, position);
 }
 
+/// «Редактор», «Вызовы движка»: то, что `transform_object` ставит объекту в собранном мире —
+/// `position` и `size` всегда, `height` и `rotation`, только если названы.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ObjectTransform {
+    pub position: super::value::Vec2,
+    pub size: super::value::Vec2,
+    pub height: Option<f64>,
+    pub rotation: Option<f64>,
+}
+
+/// «Редактор», «Правка сцены»: ставит объекту значения ручек в собранном мире — файлы и разобранная
+/// сцена остаются как были. Не делает ничего без объекта или без его `position` и `size`; не названные
+/// `height` и `rotation` не меняются.
+pub fn transform_object(world: &mut World, id: u32, transform: ObjectTransform) {
+    if id as usize >= world.slot_count()
+        || !world.has_all(id, &[property::POSITION, property::SIZE])
+    {
+        return;
+    }
+    world.set_vec2(id, property::POSITION, transform.position);
+    world.set_vec2(id, property::SIZE, transform.size);
+    if let Some(height) = transform.height {
+        world.set_number(id, property::HEIGHT, height);
+    }
+    if let Some(rotation) = transform
+        .rotation
+        .and_then(super::value::Rotation::from_degrees)
+    {
+        world.set_rotation(id, property::ROTATION, rotation);
+    }
+}
+
+/// «Трёхмерная сцена», «Редактор»: место объекта на земле — его прямоугольник, повёрнутый вокруг
+/// середины на `rotation`. `None` без объекта или его `position` и `size`.
+pub fn ground_footprint(world: &World, id: u32) -> Option<super::footprint::Footprint> {
+    if id as usize >= world.slot_count() {
+        return None;
+    }
+    let position = world.vec2(id, property::POSITION)?;
+    let size = world.vec2(id, property::SIZE)?;
+    Some(super::footprint::Footprint::rotated(
+        position,
+        size,
+        world.rotation(id, property::ROTATION),
+    ))
+}
+
+/// «Редактор», требование 19 трёхмерной сцены: четыре угла повёрнутого прямоугольника объекта на
+/// земле в точках окна камеры, по кругу, в порядке `Footprint::corners`. `None` без объекта, его
+/// `position` и `size` или если угол за камерой.
+pub fn object_screen_corners(
+    world: &World,
+    id: u32,
+    camera: &super::camera::Camera3d,
+) -> Option<[[f64; 2]; 4]> {
+    let mut corners = [[0.0; 2]; 4];
+    for (slot, corner) in corners
+        .iter_mut()
+        .zip(ground_footprint(world, id)?.corners())
+    {
+        *slot = camera.project([corner[0], corner[1], 0.0])?;
+    }
+    Some(corners)
+}
+
 /// «Редактор», требование 18: the topmost object (по порядку рисования — `draw_order`, требование
 /// 10) whose canvas rectangle contains `point` (CSS pixels, canvas top-left origin) — left/top
 /// edges included, right/bottom excluded. A candidate needs `position`, `size` and a `color` or
@@ -344,9 +409,45 @@ pub fn on_click_target_ray(
         Some(eye) => super::shapes::ray_through_ground(eye, point),
         None => ([point[0], point[1], 1000.0], [0.0, 0.0, -1.0]),
     };
+    nearest_along_ray(world, scene, origin, direction, |id| {
+        world.has(id, property::ON_CLICK)
+    })
+}
+
+/// «Редактор», «Сцена», требование 7 трёхмерной сцены: объект под точкой окна `window` камеры — тем
+/// же лучом от глаза, что у щелчка в игре, но `on_click` не нужен: выбирается любой нарисованный
+/// объект (с `shape`, `image` или `color`). Ближний к камере, при равной дальности — нарисованный
+/// сверху.
+pub fn editor_target_ray(
+    world: &World,
+    scene: &SceneConfig,
+    camera: &super::camera::Camera3d,
+    window: [f64; 2],
+) -> Option<u32> {
+    nearest_along_ray(
+        world,
+        scene,
+        camera.eye,
+        camera.ray_direction(window),
+        |id| {
+            world.shape(id, property::SHAPE).is_some()
+                || world.image(id, property::IMAGE).is_some()
+                || world.color(id, property::COLOR).is_some()
+        },
+    )
+}
+
+/// Ближний к `origin` объект, в которого попал луч, из тех, что `pickable` пускает в выбор.
+fn nearest_along_ray(
+    world: &World,
+    scene: &SceneConfig,
+    origin: super::math3::Vec3,
+    direction: super::math3::Vec3,
+    pickable: impl Fn(u32) -> bool,
+) -> Option<u32> {
     let mut best: Option<(f64, u32)> = None;
     for id in world.ids() {
-        if !world.has(id, property::ON_CLICK) {
+        if !pickable(id) {
             continue;
         }
         let Some(distance) = ray_distance(world, id, origin, direction) else {
@@ -367,7 +468,7 @@ pub fn on_click_target_ray(
     best.map(|(_, id)| id)
 }
 
-/// Равная дальность для `on_click_target_ray`: плоские объекты на одной земле.
+/// Равная дальность для `nearest_along_ray`: плоские объекты на одной земле.
 const RAY_TIE: f64 = 1e-9;
 
 /// Расстояние вдоль луча до объекта: до объёма фигуры или до её прямоугольника на земле.
@@ -380,16 +481,13 @@ fn ray_distance(
     if let Some(body) = super::shapes::Body::of_object(world, id) {
         return body.ray_hit(origin, direction);
     }
-    let position = world.vec2(id, property::POSITION)?;
-    let size = world.vec2(id, property::SIZE)?;
+    let footprint = ground_footprint(world, id)?;
     if direction[2] >= 0.0 {
         return None;
     }
     let t = -origin[2] / direction[2];
     let ground = [origin[0] + t * direction[0], origin[1] + t * direction[1]];
-    super::footprint::Footprint::rotated(position, size, world.rotation(id, property::ROTATION))
-        .contains(ground)
-        .then_some(t)
+    footprint.contains(ground).then_some(t)
 }
 
 /// «Мышь в мире», требование 19: the topmost live object with `on_click` whose rectangle

@@ -63,16 +63,17 @@ fn shape_draws(game: &Game) -> Vec<ShapeDraw> {
         .collect()
 }
 
-/// Клетки сцены, которых касается видимая земля.
+/// Клетки сцены, которых касается видимая земля; пустой диапазон, если из сцены не видно ничего.
 fn visible_cells(scene: &SceneConfig, camera: &Camera3d) -> crate::core::scene::CellRange {
-    let corners = camera.ground_corners();
-    let low = corners
-        .iter()
-        .fold([f64::INFINITY; 2], |m, c| [m[0].min(c[0]), m[1].min(c[1])]);
-    let high = corners.iter().fold([f64::NEG_INFINITY; 2], |m, c| {
-        [m[0].max(c[0]), m[1].max(c[1])]
-    });
-    scene.cell_range_covering(low, high)
+    match camera.visible_ground(scene) {
+        Some([low, high]) => scene.cell_range_covering(low, high),
+        None => crate::core::scene::CellRange {
+            x0: 0,
+            y0: 0,
+            x1: 0,
+            y1: 0,
+        },
+    }
 }
 
 /// «Свет и тени»: прямоугольная проекция от солнца, охватывающая видимую землю (в пределах сцены)

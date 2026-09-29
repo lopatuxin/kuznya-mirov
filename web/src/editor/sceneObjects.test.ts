@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   buildObjectPropertiesView,
   getObjectGeometry,
+  getObjectProperties,
   parseSceneObjects,
   parseSceneIsThreeDimensional,
   parseSceneSize,
@@ -152,5 +153,20 @@ describe("resolveSelectionAfterReload", () => {
 
   it("объекта с таким номером больше нет — выбор снят", () => {
     expect(resolveSelectionAfterReload(4, 3)).toBe(null);
+  });
+});
+
+describe("getObjectProperties", () => {
+  it("отдаёт свойства объекта из текста сцены — для ручек трёхмерной сцены", () => {
+    const objects = [{ position: [1, 2], size: [3, 4], shape: "box" }, "не объект", null, [1]];
+    expect(getObjectProperties(objects, 0)).toEqual({ position: [1, 2], size: [3, 4], shape: "box" });
+  });
+
+  it("элемент не объект или номера нет — null", () => {
+    const objects = ["не объект", null, [1]];
+    expect(getObjectProperties(objects, 0)).toBe(null);
+    expect(getObjectProperties(objects, 1)).toBe(null);
+    expect(getObjectProperties(objects, 2)).toBe(null);
+    expect(getObjectProperties(objects, 9)).toBe(null);
   });
 });

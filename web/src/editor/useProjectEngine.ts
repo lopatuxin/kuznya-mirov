@@ -3,6 +3,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { loadProject, type ProjectLoadResult } from "../projectLoader";
 import { hideWebGpuIfRequested, logEngineBackend } from "../renderBackend";
 import { createCachingProjectFileReader, createOverridingReader } from "./cachingProjectFileReader";
+import { createEditorCameraStore, type EditorCameraStore } from "./editorCamera";
 import { watchFolderProject } from "./folderProjectWatcher";
 import { listedProjectBaseUrl, createReaderForSource, type ProjectSource } from "./projectSource";
 import { pollListedProject, type FileFingerprint } from "./listedProjectPoller";
@@ -18,6 +19,8 @@ export type ProjectEngineState = {
   engine: Engine | null;
   /** `wasm.memory` того же `init()`, что завёл движок — «Редактор», партия: чтение окна звука. */
   memory: WebAssembly.Memory | null;
+  /** Камера редактора трёхмерной сцены — «Редактор», «Сцена»: движок после каждого `show_scene` получает её отсюда. */
+  editorCameraStore: EditorCameraStore;
   result: ProjectLoadResult | null;
   /** Когда пришёл `result` — последняя загрузка или перезагрузка после правки файлов. */
   loadedAt: Date | null;
@@ -68,6 +71,7 @@ export function useProjectEngine(
     writeCountAtStart: number,
   ) => void,
 ): ProjectEngineState {
+  const [editorCameraStore] = useState(createEditorCameraStore);
   const [engine, setEngine] = useState<Engine | null>(null);
   const [memory, setMemory] = useState<WebAssembly.Memory | null>(null);
   const [result, setResult] = useState<ProjectLoadResult | null>(null);
@@ -92,6 +96,7 @@ export function useProjectEngine(
 
   useEffect(() => {
     let cancelled = false;
+    editorCameraStore.reset();
     let disposeWatch: (() => void) | null = null;
     let disposePoll: (() => void) | null = null;
     let disposeDebouncer: (() => void) | null = null;
@@ -150,6 +155,13 @@ export function useProjectEngine(
       // `game.json` последней настоящей загрузки — загрузка по правке берёт его отсюда, требование 1.
       let lastGameJsonText: string | null = null;
 
+      // «Редактор», «Сцена», требования 1 и 5: собранный заново мир не помнит камеру редактора — первая
+      // успешная загрузка ставит камеру на всю землю, дальше ей возвращается прежняя.
+      function showScene(): void {
+        engineInstance.show_scene();
+        editorCameraStore.restore(engineInstance);
+      }
+
       async function reload(): Promise<void> {
         // Требование 24: метка снимается до первого чтения, а не после — иначе она уже включала бы
         // запись, которую действие делает, пока эта перезагрузка ещё читает с диска.
@@ -166,7 +178,7 @@ export function useProjectEngine(
           if (cancelled) return;
           // «Редактор», требование 16: собирает мир из сцены заново только на успешной загрузке —
           // без неё `show_scene` было бы нечего собирать, движок сам ничего не делает.
-          if (loadResult.status === "ok") engineInstance.show_scene();
+          if (loadResult.status === "ok") showScene();
         }
         if (cancelled) return;
         setResult(loadResult);
@@ -212,7 +224,7 @@ export function useProjectEngine(
           const overrideReader = createOverridingReader(cache.cachedReader, overrides);
           const loadResult = await loadProject(engineInstance, overrideReader, lastGameJsonText, () => audioContext);
           if (cancelled) return loadResult;
-          if (loadResult.status === "ok") engineInstance.show_scene();
+          if (loadResult.status === "ok") showScene();
           setResult(loadResult);
           setLoadedAt(new Date());
           return loadResult;
@@ -269,7 +281,7 @@ export function useProjectEngine(
         createdAudioContext?.close().catch(() => {});
       });
     };
-  }, [canvasRef, source]);
+  }, [canvasRef, source, editorCameraStore]);
 
-  return { engine, memory, result, loadedAt, headerNotice, engineError, hasQueuedReload, ...editingApi };
+  return { engine, memory, editorCameraStore, result, loadedAt, headerNotice, engineError, hasQueuedReload, ...editingApi };
 }

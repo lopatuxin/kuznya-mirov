@@ -66,6 +66,13 @@ export function getObjectGeometry(objects: unknown[], index: number): { position
   return { position, size };
 }
 
+/** Свойства объекта `objects[index]` из текста сцены для ручек трёхмерной сцены; элемент не объект — `null`. */
+export function getObjectProperties(objects: unknown[], index: number): Record<string, unknown> | null {
+  const entry = objects[index];
+  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
+  return entry as Record<string, unknown>;
+}
+
 /**
  * Строка списка — номер объекта по месту в файле и его `name`, если это строка («Редактор»,
  * требование 27); цвет, картинка и наличие на сцене — для значка строки.

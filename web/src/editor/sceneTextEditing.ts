@@ -51,6 +51,14 @@ export function setObjectPropertyValue(sceneText: string, objectIndex: number, k
   return editAt(sceneText, ["objects", objectIndex, key], value, false);
 }
 
+/**
+ * Заменяет несколько свойств объекта одним текстом — «Редактор», «Правка сцены», ручки: значения
+ * по порядку ключей, свойство, которого у объекта не было, дописывается в конец объекта.
+ */
+export function setObjectPropertyValues(sceneText: string, objectIndex: number, values: Record<string, unknown>): string {
+  return Object.entries(values).reduce((text, [key, value]) => setObjectPropertyValue(text, objectIndex, key, value), sceneText);
+}
+
 /** Удаляет свойство объекта — требование 14. Свойства нет — текст не меняется. */
 export function removeObjectProperty(sceneText: string, objectIndex: number, key: string): string {
   return editAt(sceneText, ["objects", objectIndex, key], undefined, false);

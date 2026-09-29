@@ -10,7 +10,8 @@ import { buildBattleSoundAssets } from "./battleSound";
 import { isPauseResumeShortcut, isPlayStopShortcut, isStepShortcut, type ShortcutKeyEvent } from "./battleShortcuts";
 import { buildLiveObjectSummaries, buildLivePropertiesView, findWorldObject, resolveCanStartReplay, resolveLiveSelection, type LiveSelection } from "./battleSelection";
 import type { EngineAddObjectResult, EngineEditResult, SessionMessage, StepReport, WorldObjectSummary } from "./battleTypes";
-import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, type LiveEditHistory } from "./liveEditHistory";
+import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, type LiveEditHistory } from "./liveEditHistory";
+import type { PlacementChange } from "./objectPlacement";
 import type { ObjectPropertiesView, SceneObjectSummary } from "./sceneObjects";
 import type { ProjectSource } from "./projectSource";
 import { saveRecordingToProject } from "./replayFileWriter";
@@ -64,6 +65,8 @@ export type BattleSessionState = {
   deleteLiveObject(id: number): void;
   previewLiveMove(id: number, position: readonly [number, number]): void;
   commitLiveMove(id: number, position: readonly [number, number], previousPosition: readonly [number, number]): void;
+  /** Отпускание жеста ручки на паузе: `set_property` каждого изменившегося свойства и одна запись отмены. */
+  commitLiveTransform(id: number, changes: PlacementChange[]): void;
   undoLiveEdit(): void;
 };
 
@@ -520,6 +523,23 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     });
   }
 
+  /**
+   * Ручки на паузе — «Редактор», «Партия в редакторе», требование 17: жест уже поставил значения миру
+   * (`transform_object`), здесь они записываются в партию свойствами, а прежние — одной записью отмены.
+   */
+  function commitLiveTransform(id: number, changes: PlacementChange[]): void {
+    withEngine((engine) => {
+      const applied = changes.filter((change) => (engine.set_property(id, change.key, change.value) as EngineEditResult).ok);
+      if (applied.length === 0) return;
+      const generation = findWorldObject(engine.world_objects() as WorldObjectSummary[], id)?.generation;
+      if (generation !== undefined) {
+        const entryChanges = applied.map((change) => ({ key: change.key, hadKey: change.previous !== undefined, previous: change.previous }));
+        setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "transform", id, generation, changes: entryChanges }));
+      }
+      refreshSnapshot(engine);
+    });
+  }
+
   /** Ctrl+Z во время партии — «Редактор», требование 21: откатывает последнюю правку на ходу. */
   function undoLiveEdit(): void {
     withEngine((engine) => {
@@ -555,6 +575,9 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
         }
         case "move":
           engine.set_property(entry.id, "position", [entry.previous[0], entry.previous[1]]);
+          break;
+        case "transform":
+          undoLiveTransform(entry, engine);
           break;
       }
       refreshSnapshot(engine);
@@ -637,6 +660,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     deleteLiveObject,
     previewLiveMove,
     commitLiveMove,
+    commitLiveTransform,
     undoLiveEdit,
   };
 }

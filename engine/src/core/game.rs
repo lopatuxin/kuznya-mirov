@@ -1,4 +1,4 @@
-use super::camera::{self, Camera3d};
+use super::camera::{self, Camera3d, EditorCamera};
 use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
@@ -106,6 +106,9 @@ pub struct Game {
     /// «Ходьба», требование 28: запомненные пути идущих объектов — вне мира, сброшены там же, где
     /// `camera_last`.
     walk_paths: WalkCaches,
+    /// «Редактор», «Сцена»: камера редактора трёхмерной сцены — последняя, что прислал редактор;
+    /// `None`, пока не присылал. Сборка мира её не сбрасывает.
+    editor_camera: Option<EditorCamera>,
 }
 
 /// «Экраны и состояние» / «Редактор», требование 16: builds a fresh world from `scene_objects` —
@@ -192,6 +195,7 @@ impl Game {
             world_exists: start_is_live,
             camera_last: None,
             walk_paths: WalkCaches::new(),
+            editor_camera: None,
         };
         // «Код игры» → «Экраны и состояние»: код грузится ровно один раз на партию. Партия
         // начинается либо прямо здесь (стартовый экран без меню — `world_runs` поднят сразу), и
@@ -511,6 +515,47 @@ impl Game {
             self.scene.height as f64 / 2.0,
         ]);
         camera::frame(&self.scene, center, viewport)
+    }
+
+    /// «Редактор», «Правка сцены», требование 18: ставит объект `id` на `position` в живом мире.
+    /// Камера игры встаёт на объект без отставания только в плоской сцене: в трёхмерной ручку или
+    /// объект тянут под указателем, и камера, ушедшая вслед за объектом, увела бы землю из-под него.
+    pub fn move_object(&mut self, id: u32, position: Vec2) {
+        super::scene::move_object(&mut self.world, id, position);
+        if !self.scene.is_3d() {
+            self.update_camera();
+        }
+    }
+
+    /// «Редактор», «Сцена»: запоминает камеру редактора; наклон и расстояние приводятся к
+    /// допустимым.
+    pub fn set_editor_camera(&mut self, camera: EditorCamera) {
+        self.editor_camera = Some(camera.clamped());
+    }
+
+    /// «Редактор», «Сцена»: камера редактора — присланная или та, что видит всю землю; `None` в
+    /// плоской сцене.
+    fn current_editor_camera(&self, viewport: [f64; 2]) -> Option<EditorCamera> {
+        self.editor_camera
+            .or_else(|| camera::fit_ground(&self.scene, viewport))
+    }
+
+    /// «Редактор», «Сцена», требование 1: камера, которой трёхмерная сцена видна вне партии.
+    pub fn editor_camera_3d(&self, viewport: [f32; 2]) -> Option<Camera3d> {
+        let viewport = [viewport[0] as f64, viewport[1] as f64];
+        Some(self.current_editor_camera(viewport)?.camera(viewport))
+    }
+
+    /// «Редактор», «Вызовы движка», `fit_camera`: без номера — камера, что видит всю землю под
+    /// углом камеры игры; с номером — что видит объём объекта целиком при нынешних повороте и
+    /// наклоне. `None` в плоской сцене и без объекта, его `position` и `size`.
+    pub fn fit_camera(&self, id: Option<u32>, viewport: [f32; 2]) -> Option<EditorCamera> {
+        let viewport = [viewport[0] as f64, viewport[1] as f64];
+        let Some(id) = id else {
+            return camera::fit_ground(&self.scene, viewport);
+        };
+        let current = self.current_editor_camera(viewport)?;
+        camera::fit_object(&self.world, id, current.yaw, current.pitch, viewport)
     }
 
     pub fn is_running(&self) -> bool {

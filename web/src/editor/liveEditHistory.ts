@@ -16,9 +16,30 @@ export type LiveEditEntry =
   | { kind: "remove"; id: number; generation: number; key: string; previous: unknown }
   | { kind: "add"; id: number; generation: number }
   | { kind: "delete"; id: number; properties: Record<string, unknown> }
-  | { kind: "move"; id: number; generation: number; previous: readonly [number, number] };
+  | { kind: "move"; id: number; generation: number; previous: readonly [number, number] }
+  | { kind: "transform"; id: number; generation: number; changes: LiveTransformChange[] };
+
+/** Свойство, которое поменял жест ручки; `hadKey` `false` — свойства не было, отмена его убирает. */
+type LiveTransformChange = { key: string; hadKey: boolean; previous: unknown };
 
 export type LiveEditHistory = readonly LiveEditEntry[];
+
+/** Вызовы движка, которыми отменяется правка свойств объекта. */
+export type LivePropertyEditor = {
+  set_property(id: number, name: string, value: unknown): unknown;
+  remove_property(id: number, name: string): unknown;
+};
+
+/**
+ * Отмена жеста ручки на паузе — «Редактор», требование 17: каждому свойству возвращается прежнее
+ * значение, а свойство, которого до жеста не было, убирается.
+ */
+export function undoLiveTransform(entry: { id: number; changes: LiveTransformChange[] }, editor: LivePropertyEditor): void {
+  for (const change of entry.changes) {
+    if (change.hadKey) editor.set_property(entry.id, change.key, change.previous);
+    else editor.remove_property(entry.id, change.key);
+  }
+}
 
 /**
  * Цела ли ещё запись отмены — «Редактор», требование 21, крайний случай: объект, к которому она

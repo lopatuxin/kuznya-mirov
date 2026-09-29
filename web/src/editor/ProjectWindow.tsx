@@ -17,6 +17,7 @@ import { fallbackDisplayName, type ProjectSource } from "./projectSource";
 import {
   buildObjectPropertiesView,
   getObjectGeometry,
+  getObjectProperties,
   parseSceneIsThreeDimensional,
   parseSceneObjects,
   parseSceneSize,
@@ -157,6 +158,9 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
     [engine],
   );
   const sceneObjectGeometry = useCallback((id: number) => getObjectGeometry(objects, id), [objects]);
+  // Свойства для ручек трёхмерной сцены: место, размер, высота, поворот и `shape` — там же, откуда геометрия переноса.
+  const liveObjectProperties = useCallback((id: number) => (engine?.object_properties(id) as Record<string, unknown> | undefined) ?? null, [engine]);
+  const sceneObjectProperties = useCallback((id: number) => getObjectProperties(objects, id), [objects]);
 
   // Последний selectedIndex и действия правки — в ref, чтобы не переставлять слушатель на каждый рендер.
   const shortcutStateRef = useRef({ selectedIndex, undo: sceneEditing.undo, copyObject: sceneEditing.copyObject, deleteObject: sceneEditing.deleteObject });
@@ -292,13 +296,18 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
           getObjectGeometry={isLive ? liveObjectGeometry : sceneObjectGeometry}
           objectsVersion={isLive ? battle.liveObjectSummaries : objects}
           canEditScene={displayedCanEdit}
+          isSceneShown={sceneAvailable || isLive}
           isGameInputActive={battle.mode === "battle" && battle.isRunning}
           fillsStageArea={isLive || isThreeDimensionalScene}
           isThreeDimensionalScene={isThreeDimensionalScene}
+          isEditorCameraActive={battle.mode === "edit"}
+          editorCameraStore={sceneEditing.editorCameraStore}
+          getObjectProperties={isLive ? liveObjectProperties : sceneObjectProperties}
           selectedIndex={displayedSelectedIndex}
           selectedLabel={displayedSelectedObject === null ? null : (displayedSelectedObject.name ?? `№ ${displayedSelectedObject.index}`)}
           onSelect={displayedOnSelect}
           onMoveObject={isLive ? battle.commitLiveMove : sceneEditing.moveObject}
+          onCommitPlacement={isLive ? battle.commitLiveTransform : sceneEditing.transformObject}
         />
         {!sceneAvailable && !isLive && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
       </main>

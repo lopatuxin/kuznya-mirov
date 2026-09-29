@@ -2,7 +2,7 @@ use js_sys::{Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-use crate::core::camera::{self, Camera3d};
+use crate::core::camera::{Camera3d, EditorCamera};
 use crate::core::game::Game;
 use crate::core::input::{MouseState, UiQueue};
 use crate::core::math3::Vec3;
@@ -10,7 +10,7 @@ use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
-use crate::core::scene::{CellRange, GroundLayer};
+use crate::core::scene::{CellRange, GroundLayer, ObjectTransform};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
 use crate::core::world_elements;
@@ -555,6 +555,65 @@ fn parse_image_verdicts(
     out
 }
 
+fn js_point(point: [f64; 2]) -> JsValue {
+    let pair = Array::new();
+    pair.push(&JsValue::from_f64(point[0]));
+    pair.push(&JsValue::from_f64(point[1]));
+    pair.into()
+}
+
+fn js_editor_camera(camera: &EditorCamera) -> JsValue {
+    let obj = Object::new();
+    set(&obj, "target", &js_point(camera.target));
+    set(&obj, "yaw", &JsValue::from_f64(camera.yaw));
+    set(&obj, "pitch", &JsValue::from_f64(camera.pitch));
+    set(&obj, "distance", &JsValue::from_f64(camera.distance));
+    obj.into()
+}
+
+/// A finite number stored under `key` of a JS object.
+fn js_finite(object: &JsValue, key: &str) -> Option<f64> {
+    Reflect::get(object, &JsValue::from_str(key))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .filter(|v| v.is_finite())
+}
+
+/// A pair of finite numbers stored under `key` of a JS object.
+fn js_finite_pair(object: &JsValue, key: &str) -> Option<[f64; 2]> {
+    let pair = Reflect::get(object, &JsValue::from_str(key)).ok()?;
+    let pair = pair.dyn_into::<Array>().ok()?;
+    let value = |index| pair.get(index).as_f64().filter(|v| v.is_finite());
+    Some([value(0)?, value(1)?])
+}
+
+/// `transform_object`'s `{position, size, height?, rotation?}`; `None` when `position` or `size` is
+/// not a pair of numbers, or a named `height`/`rotation` is not a finite number.
+fn parse_transform(t: &JsValue) -> Option<ObjectTransform> {
+    let optional = |key: &str| -> Option<Option<f64>> {
+        match Reflect::get(t, &JsValue::from_str(key)) {
+            Ok(v) if v.is_undefined() || v.is_null() => Some(None),
+            _ => js_finite(t, key).map(Some),
+        }
+    };
+    Some(ObjectTransform {
+        position: js_finite_pair(t, "position")?,
+        size: js_finite_pair(t, "size")?,
+        height: optional("height")?,
+        rotation: optional("rotation")?,
+    })
+}
+
+/// `editor_camera`'s `{target, yaw, pitch, distance}`; `None` when any of them is not a finite number.
+fn parse_editor_camera(c: &JsValue) -> Option<EditorCamera> {
+    Some(EditorCamera {
+        target: js_finite_pair(c, "target")?,
+        yaw: js_finite(c, "yaw")?,
+        pitch: js_finite(c, "pitch")?,
+        distance: js_finite(c, "distance")?,
+    })
+}
+
 fn draw_rect(
     position: [f32; 2],
     size: [f32; 2],
@@ -587,17 +646,12 @@ fn draw_rect(
 /// so `tick`/`step`/`seek`/`step_back` can call it while they already hold `game` mutably
 /// borrowed from `self.game` — a `&self`/`&mut self` method there would conflict with that borrow.
 fn frame_for(game: &Game, battle_view: bool, viewport: [f32; 2]) -> View {
-    if let Some(camera_config) = game.scene.camera {
+    if game.scene.camera.is_some() {
+        // «Редактор», «Сцена»: вне партии трёхмерная сцена видна камерой редактора.
         let space = if battle_view {
             game.camera_3d(viewport)
         } else {
-            // «Редактор», требование 27: вне партии трёхмерная сцена — неподвижной камерой.
-            let window = [viewport[0] as f64, viewport[1] as f64];
-            Some(camera::fit_scene_camera(
-                &game.scene,
-                camera_config.pitch,
-                window,
-            ))
+            game.editor_camera_3d(viewport)
         };
         if let Some(camera) = space {
             return View::Space(camera);
@@ -1369,11 +1423,21 @@ impl Engine {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
-        // «Редактор», требование 28: в трёхмерной сцене щелчок по холсту объект не выбирает.
-        let Some(View::Flat { scale, offset }) = self.frame() else {
-            return JsValue::UNDEFINED;
+        let picked = match self.frame() {
+            Some(View::Flat { scale, offset }) => {
+                crate::core::scene::object_at_frame(&game.world, &game.scene, [x, y], scale, offset)
+            }
+            // «Редактор», «Сцена», требование 7: в трёхмерной сцене — лучом камеры, которой она
+            // видна сейчас.
+            Some(View::Space(camera)) => crate::core::scene::editor_target_ray(
+                &game.world,
+                &game.scene,
+                &camera,
+                [x as f64, y as f64],
+            ),
+            None => None,
         };
-        match crate::core::scene::object_at_frame(&game.world, &game.scene, [x, y], scale, offset) {
+        match picked {
             Some(id) => JsValue::from_f64(id as f64),
             None => JsValue::UNDEFINED,
         }
@@ -1381,22 +1445,40 @@ impl Engine {
 
     /// «Редактор», требование 19: object `id`'s canvas rectangle — `{x, y, width, height}` in CSS
     /// pixels — or `undefined` without a loaded game, without that object, or without its own
-    /// `position`/`size`. See `core::scene::object_rect`.
+    /// `position`/`size`. See `core::scene::object_rect`. «Редактор», «Вызовы движка»: в
+    /// трёхмерной сцене — `{corners: [[x, y] × 4]}`, углы повёрнутого прямоугольника на земле, и
+    /// `undefined`, если угол за камерой.
     pub fn object_rect(&self, id: u32) -> JsValue {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
-        let Some(View::Flat { scale, offset }) = self.frame() else {
-            return JsValue::UNDEFINED;
-        };
-        match crate::core::scene::object_rect_frame(&game.world, id, scale, offset) {
-            Some(rect) => {
-                let obj = Object::new();
-                set(&obj, "x", &JsValue::from_f64(rect.x as f64));
-                set(&obj, "y", &JsValue::from_f64(rect.y as f64));
-                set(&obj, "width", &JsValue::from_f64(rect.width as f64));
-                set(&obj, "height", &JsValue::from_f64(rect.height as f64));
-                obj.into()
+        match self.frame() {
+            Some(View::Flat { scale, offset }) => {
+                match crate::core::scene::object_rect_frame(&game.world, id, scale, offset) {
+                    Some(rect) => {
+                        let obj = Object::new();
+                        set(&obj, "x", &JsValue::from_f64(rect.x as f64));
+                        set(&obj, "y", &JsValue::from_f64(rect.y as f64));
+                        set(&obj, "width", &JsValue::from_f64(rect.width as f64));
+                        set(&obj, "height", &JsValue::from_f64(rect.height as f64));
+                        obj.into()
+                    }
+                    None => JsValue::UNDEFINED,
+                }
+            }
+            Some(View::Space(camera)) => {
+                match crate::core::scene::object_screen_corners(&game.world, id, &camera) {
+                    Some(corners) => {
+                        let list = Array::new();
+                        for corner in corners {
+                            list.push(&js_point(corner));
+                        }
+                        let obj = Object::new();
+                        set(&obj, "corners", &list);
+                        obj.into()
+                    }
+                    None => JsValue::UNDEFINED,
+                }
             }
             None => JsValue::UNDEFINED,
         }
@@ -1409,10 +1491,67 @@ impl Engine {
     /// `core::scene::move_object`.
     pub fn move_object(&mut self, id: u32, x: f32, y: f32) {
         if let Some(game) = self.game.as_mut() {
-            crate::core::scene::move_object(&mut game.world, id, [x as f64, y as f64]);
-            // «Камера», требование 6: перенос мышью в редакторе двигает камеру без отставания,
-            // не только на следующем шаге.
-            game.update_camera();
+            // «Камера», требование 6: перенос мышью в плоской сцене двигает камеру без отставания,
+            // не только на следующем шаге; в трёхмерной камера игры стоит, требование 18.
+            game.move_object(id, [x as f64, y as f64]);
+        }
+    }
+
+    /// «Редактор», «Вызовы движка»: ставит объекту `id` значения ручек в собранном мире —
+    /// `t = {position: [x, y], size: [w, d], height?, rotation?}`, не названное не меняется.
+    /// Файлы, разобранная сцена и камера игры не меняются. Ничего не делает без игры, без объекта
+    /// или при значении не из чисел.
+    pub fn transform_object(&mut self, id: u32, t: JsValue) {
+        let (Some(game), Some(transform)) = (self.game.as_mut(), parse_transform(&t)) else {
+            return;
+        };
+        crate::core::scene::transform_object(&mut game.world, id, transform);
+    }
+
+    /// «Редактор», «Вызовы движка»: камера редактора `{target: [x, y], yaw, pitch, distance}` —
+    /// вне партии сцена рисуется и щёлкается ею. `show_scene`, `play` и `stop` её не сбрасывают.
+    pub fn editor_camera(&mut self, c: JsValue) {
+        let (Some(game), Some(camera)) = (self.game.as_mut(), parse_editor_camera(&c)) else {
+            return;
+        };
+        game.set_editor_camera(camera);
+    }
+
+    /// «Редактор», «Вызовы движка»: камера редактора, что видит объект `id` целиком при нынешних
+    /// повороте и наклоне, а без номера — всю землю под углом камеры игры; `{target, yaw, pitch,
+    /// distance}` или `undefined` в плоской сцене, без игры, без объекта или его `position` и `size`.
+    pub fn fit_camera(&self, id: Option<u32>) -> JsValue {
+        let Some(game) = self.game.as_ref() else {
+            return JsValue::UNDEFINED;
+        };
+        match game.fit_camera(id, self.renderer.window_size_css()) {
+            Some(camera) => js_editor_camera(&camera),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», «Вызовы движка»: место на земле под точкой холста `(x, y)` камерой, которой
+    /// сцена видна сейчас, без прижатия к краю сцены — `[x, y]`; `undefined` в плоской сцене или
+    /// если луч не идёт к земле.
+    pub fn ground_at(&self, x: f32, y: f32) -> JsValue {
+        match self.frame() {
+            Some(View::Space(camera)) => match camera.ground_hit([x as f64, y as f64]) {
+                Some(ground) => js_point(ground),
+                None => JsValue::UNDEFINED,
+            },
+            _ => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», «Вызовы движка»: точка холста для места сцены `(x, y)` на высоте `z` клеток той
+    /// же камерой — `[x, y]`; `undefined` в плоской сцене или за камерой.
+    pub fn screen_point(&self, x: f64, y: f64, z: f64) -> JsValue {
+        match self.frame() {
+            Some(View::Space(camera)) => match camera.project([x, y, z]) {
+                Some(point) => js_point(point),
+                None => JsValue::UNDEFINED,
+            },
+            _ => JsValue::UNDEFINED,
         }
     }
 
