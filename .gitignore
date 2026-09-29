@@ -2,3 +2,4 @@
 .claude/agent-memory-local/
 web/.claude/
 art/rpg/rejected/
+tools/art/.build/

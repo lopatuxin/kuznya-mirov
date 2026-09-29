@@ -94,42 +94,6 @@
   Авторы: bluecarrot16
   Лицензии: GPL 3.0
 
-Трава — базовый слой земли, основной и редкий варианты: две вырезки одного травяного узора
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Lanea Zimmerman (Sharm)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
-
-Тропинка и берег пруда — плитки коридоров (земля, «dirt»)
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Lanea Zimmerman (Sharm)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
-
-Цветы — мелочи поверх травы
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Lanea Zimmerman (Sharm)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
-
-Пучок травы — мелочи поверх травы (основание куста рогоза)
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Lanea Zimmerman (Sharm)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
-
-Вода пруда
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Lanea Zimmerman (Sharm)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
-
-Стены построек — кирпичная кладка и серый камень верха стены (парапет)
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Daniel Armstrong (HughSpectrum)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
-
-Дерево
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Lanea Zimmerman (Sharm)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
-
-Камень
-  Источник: https://opengameart.org/content/lpc-tile-atlas
-  Авторы: Lanea Zimmerman (Sharm)
-  Лицензии: CC-BY-SA 3.0, GPL 3.0
+Деревня — трава, дорожки, ручей и мост, стены, постройки, деревья, валуны, кусты
+  Источник: изображения, сгенерированные нейросетью GPT Image 2.5 Sunburst по запросам автора проекта, 2026-09-28
+  Обработка: tools/art/ — снят однотонный фон, обрезано по содержимому, приведено к масштабу игры
