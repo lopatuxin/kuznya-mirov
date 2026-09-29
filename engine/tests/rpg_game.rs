@@ -10,6 +10,17 @@ use engine::core::pathfind::{self, WalkCaches};
 use engine::core::property;
 use engine::data::load::{ImageVerdict, load_rest_with_tables, read_entry};
 
+/// Картинки героя и врагов LPC — 32 точки на клетку; остальные картинки игры нарисованы для
+/// деревни, 96 точек на клетку.
+const LPC_IMAGES: [&str; 6] = [
+    "hero",
+    "goblin",
+    "orc",
+    "hero_attack",
+    "goblin_attack",
+    "orc_attack",
+];
+
 fn game_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("..");
@@ -261,14 +272,20 @@ fn sample_coord(i: i64) -> f64 {
 }
 
 /// The search region a flood fill explores, in scene cells — `(x_min, y_min, x_max, y_max)`.
-/// The full scene for a whole-map connectivity check; a corridor's own small bounding box for
-/// `each_enemy_alone_blocks_its_own_corridor`, so a detour clear across the map (open there only
-/// because the *other* three enemies are gone for that check) can't stand in for the local gap
-/// this one enemy either does or doesn't plug.
 type Bounds = (f64, f64, f64, f64);
 
 fn scene_bounds(game: &Game) -> Bounds {
     (0.0, 0.0, game.scene.width as f64, game.scene.height as f64)
+}
+
+/// Где может стоять середина героя: сцена, сжатая на его полуразмер — как в `pathfind::advance`.
+fn hero_center_bounds(game: &Game) -> Bounds {
+    (
+        HERO_HALF_W,
+        HERO_HALF_H,
+        game.scene.width as f64 - HERO_HALF_W,
+        game.scene.height as f64 - HERO_HALF_H,
+    )
 }
 
 /// Flood fill of the sample grid from `start`, avoiding every inflated rect and never leaving
@@ -331,21 +348,25 @@ fn count_free(inflated: &[Rect], bounds: Bounds) -> usize {
     free
 }
 
-/// «Локация», требование 10: дальняя поляна — клетки x 25–29, y 8–15 (`web/scripts/rpg-lpc/
-/// location.txt`) — a patch well inside it, clear of its own edge walls.
-fn far_glade_samples() -> Vec<[f64; 2]> {
-    let mut points = Vec::new();
-    let mut x = 25.5;
-    while x <= 28.5 {
-        let mut y = 8.5;
-        while y <= 14.5 {
-            points.push([x, y]);
-            y += 0.5;
-        }
-        x += 0.5;
-    }
-    points
-}
+/// «Фаза 2.5», требование 16 (`web/scripts/rpg-village/layout.mjs`, `ENEMIES`): три прохода
+/// деревни идут цепочкой от входа героя к кузнице — гоблин в проходе внешней стены, гоблин в
+/// проходе перегородки за ней, орк во входе во двор кузницы. Другого пути нет: мимо живого врага
+/// дальше не пройти.
+const ENEMY_CHAIN: [&str; 3] = ["goblin_1", "goblin_2", "orc_1"];
+
+/// Свободная точка сразу за каждым врагом цепочки: за проходом внешней стены, за проходом
+/// перегородки и во дворе кузницы, перед её фасадом (сама кузница занимает (27; 1)–(30,5; 3,5)).
+const FORGE_TARGET: [f64; 2] = [28.5, 4.2];
+const BEHIND_ENEMY: [[f64; 2]; 3] = [[21.5, 8.0], [27.5, 11.0], FORGE_TARGET];
+
+/// Точки по всему двору кузницы — от левого края до правого, включая закуток за орком.
+const FORGE_YARD_SAMPLES: [[f64; 2]; 5] = [
+    FORGE_TARGET,
+    [26.0, 3.0],
+    [24.0, 2.5],
+    [31.5, 3.0],
+    [31.5, 4.5],
+];
 
 #[test]
 fn rpg_loads_without_errors_or_warnings() {
@@ -358,26 +379,39 @@ fn images_are_declared_at_their_real_generated_size() {
         let (w, h) = png_dimensions(&game_path(&format!("images/{name}.png")));
         assert_eq!((w, h), (576, 320), "{name}: лист 9×5 кадров 64×64");
     }
-    let (tw, th) = png_dimensions(&game_path("images/terrain.png"));
-    assert_eq!(
-        (tw, th),
-        (256, 160),
-        "terrain: 8 столбцов, 5 строк по 32×32"
-    );
+    let (gw, gh) = png_dimensions(&game_path("images/grass.png"));
+    assert_eq!((gw, gh), (384, 384), "grass: 4×4 плитки по 96×96");
 
-    // «Картинки», требование 8: стены, дерево, камень и листы удара — своего рисунка, 32 точки на
-    // клетку; лист удара — сетка 6×4 кадров того же расчёта.
+    // «Фаза 2.5», требования 1 и 6: нарисованные куски деревни — 96 точек на клетку, у картинки
+    // без `size` (трава) кадр — одна клетка; картинки героя и врагов LPC — по-прежнему 32 точки на
+    // клетку, лист удара — сетка 6×4 кадров того же расчёта.
     let game_json = read("game.json");
     let (config, _) = read_entry(&game_json).expect("game.json должен разбираться");
+    let grass = config
+        .files
+        .images
+        .iter()
+        .find(|decl| decl.name == "grass")
+        .expect("картинка \"grass\" объявлена");
+    assert_eq!(
+        (grass.frames, grass.columns),
+        (16, Some(4)),
+        "grass: набор из 16 плиток 4×4"
+    );
     for decl in &config.files.images {
         let Some(size) = decl.size else { continue };
+        let pixels_per_cell = if LPC_IMAGES.contains(&decl.name.as_str()) {
+            32.0
+        } else {
+            96.0
+        };
         let (w, h) = png_dimensions(&game_path(&decl.path));
         if decl.frames > 1 {
             let columns = decl.columns.unwrap_or(1).max(1);
             let rows = decl.frames.div_ceil(columns);
             let expected = (
-                (size[0] * 32.0 * columns as f64).round() as u32,
-                (size[1] * 32.0 * rows as f64).round() as u32,
+                (size[0] * pixels_per_cell * columns as f64).round() as u32,
+                (size[1] * pixels_per_cell * rows as f64).round() as u32,
             );
             assert_eq!(
                 (w, h),
@@ -388,13 +422,13 @@ fn images_are_declared_at_their_real_generated_size() {
             continue;
         }
         let expected = (
-            (size[0] * 32.0).round() as u32,
-            (size[1] * 32.0).round() as u32,
+            (size[0] * pixels_per_cell).round() as u32,
+            (size[1] * pixels_per_cell).round() as u32,
         );
         assert_eq!(
             (w, h),
             expected,
-            "{}: размер картинки не 32 точки на клетку",
+            "{}: размер картинки не {pixels_per_cell} точек на клетку",
             decl.name
         );
     }
@@ -424,49 +458,37 @@ fn every_walkable_cell_is_reachable_from_the_entrance_without_any_enemy() {
 }
 
 #[test]
-fn the_far_glade_is_unreachable_by_either_path_while_all_enemies_stand() {
+fn the_forge_yard_is_unreachable_while_all_enemies_stand() {
     let game = load();
     let (static_rects, enemy_rects) = obstacle_rects_by_kind(&game);
+    let hero = find_named(&game, "hero");
+    let (hx, hy) = rect_center(rect_of(&game, hero));
+    let start = [hx, hy];
+
+    let bounds = hero_center_bounds(&game);
+    let free_without_enemies = flood_fill(&inflate(&static_rects), start, bounds);
     let mut all_rects = static_rects;
     all_rects.extend(enemy_rects.into_iter().map(|(_, r)| r));
-    let inflated = inflate(&all_rects);
-    let hero = find_named(&game, "hero");
-    let hero_rect = rect_of(&game, hero);
-    let start = [
-        (hero_rect.x0 + hero_rect.x1) / 2.0,
-        (hero_rect.y0 + hero_rect.y1) / 2.0,
-    ];
-    let visited = flood_fill(&inflated, start, scene_bounds(&game));
-    for p in far_glade_samples() {
+    let visited = flood_fill(&inflate(&all_rects), start, bounds);
+    for p in FORGE_YARD_SAMPLES {
         let idx = (sample_index(p[0]), sample_index(p[1]));
         assert!(
+            free_without_enemies.contains(&idx),
+            "точка двора {p:?} должна быть достижима без врагов, иначе проверка пуста"
+        );
+        assert!(
             !visited.contains(&idx),
-            "дальняя поляна {p:?} достижима, хотя все враги живы"
+            "двор кузницы {p:?} достижим, хотя все враги живы"
         );
     }
 }
 
-/// A point on each side of each enemy's own chokepoint, tightly boxed to just that one gap in
-/// `web/scripts/rpg-lpc/location.txt` (the wall row/column it plugs has other, unrelated
-/// openings further along — the box excludes them) — «Локация», требование 11: this checks that
-/// *this one* enemy (with the three others gone) still seals its own corridor, not that the far
-/// glade stays unreachable overall (the other path, with its own two enemies gone too, would let
-/// the hero around anyway).
-fn corridor_probe_points(enemy: &str) -> ([f64; 2], [f64; 2], Bounds) {
-    match enemy {
-        "goblin_1" => ([17.0, 5.5], [16.5, 8.5], (15.0, 4.0, 18.0, 10.0)),
-        "orc_1" => ([22.0, 9.0], [26.0, 9.0], (20.5, 7.0, 27.5, 10.5)),
-        "goblin_2" => ([7.5, 17.5], [10.5, 17.5], (6.5, 15.5, 11.5, 19.5)),
-        "goblin_3" => ([22.5, 14.5], [26.5, 14.5], (20.5, 13.0, 27.5, 17.0)),
-        other => panic!("неизвестный враг {other}"),
-    }
-}
-
-/// «Локация», требования 10–11: дальняя поляна достижима из входа тогда и только тогда, когда
-/// убраны оба врага одного из путей — настоящим поиском пути движка (`pathfind::advance`, тот же,
-/// что использует правило `walk`), не сеткой проб. Проверяет все 16 наборов убранных врагов.
+/// «Фаза 2.5», требование 16: цель каждого прохода достижима из входа тогда и только тогда, когда
+/// убиты все враги цепочки до неё включительно (за первым проходом — гоблин 1; за вторым — оба
+/// гоблина; во дворе кузницы — все трое) — настоящим поиском пути движка (`pathfind::advance`,
+/// тот же, что использует правило `walk`), не сеткой проб. Проверяет все 8 наборов убитых врагов.
 #[test]
-fn far_glade_reachable_iff_both_enemies_of_one_path_are_gone() {
+fn every_passage_opens_only_when_all_enemies_up_to_it_are_gone() {
     let game = load();
     let (static_rects, enemy_rects) = obstacle_rects_by_kind(&game);
     let hero = find_named(&game, "hero");
@@ -477,11 +499,7 @@ fn far_glade_reachable_iff_both_enemies_of_one_path_are_gone() {
         [x, y]
     };
     let scene_size = (game.scene.width as f64, game.scene.height as f64);
-    // Well inside the far glade (x 25–29, y 8–15) — the target `pathfind::advance` either
-    // reaches exactly or doesn't reach at all.
-    let target = [27.0, 11.5];
 
-    let names = ["goblin_1", "orc_1", "goblin_2", "goblin_3"];
     let path_rect = |r: &Rect| PathRect {
         x: r.x0,
         y: r.y0,
@@ -494,11 +512,11 @@ fn far_glade_reachable_iff_both_enemies_of_one_path_are_gone() {
         .map(|(i, r)| (i as u32, path_rect(r)))
         .collect();
 
-    for mask in 0u8..16 {
-        let removed: [bool; 4] = std::array::from_fn(|i| mask & (1 << i) != 0);
+    for mask in 0u8..(1 << ENEMY_CHAIN.len()) {
+        let removed: [bool; 3] = std::array::from_fn(|i| mask & (1 << i) != 0);
         let mut obstacles = base_obstacles.clone();
         let mut next_id = obstacles.len() as u32;
-        for (i, name) in names.iter().enumerate() {
+        for (i, name) in ENEMY_CHAIN.iter().enumerate() {
             if removed[i] {
                 continue;
             }
@@ -510,47 +528,72 @@ fn far_glade_reachable_iff_both_enemies_of_one_path_are_gone() {
             next_id += 1;
         }
 
-        let mut caches = WalkCaches::new();
-        let (pos, _) = pathfind::advance(
-            hero,
-            start,
-            hero_size,
-            target,
-            obstacles,
-            scene_size,
-            10_000.0,
-            &mut caches,
-        );
-        let reached = (pos[0] - target[0]).abs() < 1e-6 && (pos[1] - target[1]).abs() < 1e-6;
-        let expected = (removed[0] && removed[1]) || (removed[2] && removed[3]);
-        assert_eq!(
-            reached, expected,
-            "маска {mask:04b} (goblin_1={}, orc_1={}, goblin_2={}, goblin_3={}): достижимость {reached}, ожидалось {expected}",
-            removed[0], removed[1], removed[2], removed[3]
-        );
+        for (passage, target) in BEHIND_ENEMY.iter().enumerate() {
+            let mut caches = WalkCaches::new();
+            let (pos, _) = pathfind::advance(
+                hero,
+                start,
+                hero_size,
+                *target,
+                obstacles.clone(),
+                scene_size,
+                10_000.0,
+                &mut caches,
+            );
+            let reached = (pos[0] - target[0]).abs() < 1e-6 && (pos[1] - target[1]).abs() < 1e-6;
+            let expected = removed[..=passage].iter().all(|&gone| gone);
+            assert_eq!(
+                reached, expected,
+                "маска {mask:03b} (goblin_1={}, goblin_2={}, orc_1={}): цель за врагом {} ({target:?}) — достижимость {reached}, ожидалось {expected}",
+                removed[0], removed[1], removed[2], ENEMY_CHAIN[passage]
+            );
+        }
     }
 }
 
+/// «Фаза 2.5», требование 16: каждый враг цепочки один (остальные убраны) перекрывает свой проход
+/// целиком — с одной стороны от него до другой (от входа героя, от цели прохода до него) по
+/// сетке проб не дойти, а без него дойти, так что перекрывает именно он.
 #[test]
 fn each_enemy_alone_blocks_its_own_corridor() {
     let game = load();
     let (static_rects, enemy_rects) = obstacle_rects_by_kind(&game);
     assert_eq!(
         enemy_rects.len(),
-        4,
-        "каталог: гоблин_1, орк_1, гоблин_2, гоблин_3"
+        ENEMY_CHAIN.len(),
+        "враги сцены: {ENEMY_CHAIN:?}"
     );
+    let hero = find_named(&game, "hero");
+    let (hx, hy) = rect_center(rect_of(&game, hero));
+    let entrance = [hx, hy];
+    let inflated_static = inflate(&static_rects);
+    let bounds = hero_center_bounds(&game);
 
-    for (name, rect) in &enemy_rects {
+    for (i, name) in ENEMY_CHAIN.iter().enumerate() {
+        let before = if i == 0 {
+            entrance
+        } else {
+            BEHIND_ENEMY[i - 1]
+        };
+        let after = BEHIND_ENEMY[i];
+        let after_idx = (sample_index(after[0]), sample_index(after[1]));
+
+        let open = flood_fill(&inflated_static, before, bounds);
+        assert!(
+            open.contains(&after_idx),
+            "без врагов из {before:?} должно быть можно дойти до {after:?}, иначе проверка пуста"
+        );
+
+        let (_, rect) = enemy_rects
+            .iter()
+            .find(|(n, _)| n == name)
+            .unwrap_or_else(|| panic!("врага \"{name}\" нет на сцене"));
         let mut rects = static_rects.clone();
         rects.push(*rect);
-        let inflated = inflate(&rects);
-        let (before, after, bounds) = corridor_probe_points(name);
-        let visited = flood_fill(&inflated, before, bounds);
-        let after_idx = (sample_index(after[0]), sample_index(after[1]));
+        let visited = flood_fill(&inflate(&rects), before, bounds);
         assert!(
             !visited.contains(&after_idx),
-            "{name} один должен перекрывать свой коридор: {before:?} не должно достигать {after:?}"
+            "{name} один должен перекрывать свой проход: {before:?} не должно достигать {after:?}"
         );
     }
 }
@@ -814,17 +857,19 @@ fn hero_dying_to_the_orc_respawns_at_the_entrance_while_the_orc_stays_wounded() 
     let entrance = rect_of(&game, hero);
 
     game.world.set_number(hero, health, 40.0);
-    // Goblin_1 stands earlier in the same corridor and would otherwise block the way there —
-    // removing it outright isolates this test to the orc fight itself, same as the real "враг
-    // упал — удаляется" outcome, rather than leaving a dead `obstacle` flag lying around it.
-    let goblin_1 = find_named(&game, "goblin_1");
-    game.world.delete(goblin_1);
+    // Both goblins stand earlier in the same chain of passages and would otherwise block the way
+    // there — removing them outright isolates this test to the orc fight itself, same as the real
+    // "враг упал — удаляется" outcome, rather than leaving a dead `obstacle` flag lying around them.
+    for goblin in ["goblin_1", "goblin_2"] {
+        let goblin = find_named(&game, goblin);
+        game.world.delete(goblin);
+    }
 
     let orc_rect = rect_of(&game, orc);
-    let click = [
-        (orc_rect.x0 + orc_rect.x1) / 2.0,
-        (orc_rect.y0 + orc_rect.y1) / 2.0,
-    ];
+    // Щелчок по нижней части орка, не по середине: цель внутри раздутого орка `walk` выносит к
+    // ближайшему краю, а от середины (вход шире орка на 0,1 клетки по обе стороны) края север и
+    // юг равноудалены — герой остановился бы в клетке от орка, не дойдя до боя.
+    let click = [(orc_rect.x0 + orc_rect.x1) / 2.0, orc_rect.y1 - 0.2];
     game.set_cursor_cell(click);
     game.key_down("MouseLeft");
     let snap = game.take_input_snapshot();
@@ -836,12 +881,12 @@ fn hero_dying_to_the_orc_respawns_at_the_entrance_while_the_orc_stays_wounded() 
         game.step(StepInput::empty());
     }
 
-    // «Локация»: орк перекрывает проём (7,2) в дальнюю поляну — герой подходит к нему снаружи,
-    // из комнаты (7,2), а не из-за спины из самой поляны.
+    // «Фаза 2.5», требование 16: орк стоит в единственном входе во двор кузницы — герой подходит к
+    // нему снаружи двора, из коридора у края сцены (с юга), а не из-за спины из самого двора.
     let hero_rect = rect_of(&game, hero);
     assert!(
-        hero_rect.x1 <= orc_rect.x0 + 1e-6,
-        "герой должен подойти к орку снаружи поляны (с запада), а не из неё: {hero_rect:?} vs {orc_rect:?}"
+        hero_rect.y0 >= orc_rect.y1 - 1e-6,
+        "герой должен подойти к орку снаружи двора (с юга), а не из него: {hero_rect:?} vs {orc_rect:?}"
     );
 
     // Критерий готовности: орк бьёт на 15/135/255-м шаге боя (15 урона за удар); 40 → 25 → 10 →
@@ -914,18 +959,19 @@ fn hero_dying_to_the_orc_respawns_at_the_entrance_while_the_orc_stays_wounded() 
     );
 }
 
-/// «Локация», требование 11: гоблин_1 перекрывает свой проём целиком — щелчок по клетке за ним
+/// «Фаза 2.5», требование 16: гоблин_1 перекрывает свой проход целиком — щелчок по клетке за ним
 /// (та же самая цель, что доказывает `each_enemy_alone_blocks_its_own_corridor` по сетке проб),
-/// пока он жив, не должен пропустить героя на ту сторону настоящим шагами движка, а не гипотезой.
+/// пока он жив, не должен пропустить героя на ту сторону настоящими шагами движка, а не гипотезой.
 #[test]
 fn clicking_past_a_live_enemy_does_not_let_the_hero_bypass_it() {
     let mut game = load();
     let hero = find_named(&game, "hero");
     let goblin = find_named(&game, "goblin_1");
     let entrance = rect_of(&game, hero);
-    // Hero starts south of goblin_1's gap (the entrance connects to the south corridor first) —
-    // `before` is the point on the *north* side, across the gap it plugs.
-    let (target, _after, _bounds) = corridor_probe_points("goblin_1");
+    // Hero starts south of goblin_1's gap — the target is the point on the *north* side, across
+    // the gap it plugs.
+    let target = BEHIND_ENEMY[0];
+    let goblin_rect = rect_of(&game, goblin);
 
     game.set_cursor_cell(target);
     game.key_down("MouseLeft");
@@ -946,8 +992,8 @@ fn clicking_past_a_live_enemy_does_not_let_the_hero_bypass_it() {
         "герой должен был реально отойти от входа, а не остаться на месте: {hero_rect:?}"
     );
     assert!(
-        hy > 7.0,
-        "герой не должен пройти мимо живого гоблина_1 на северную сторону его проёма: середина {:?}",
+        hy >= goblin_rect.y1,
+        "герой не должен пройти мимо живого гоблина_1 на северную сторону его прохода: середина {:?}",
         (hx, hy)
     );
 
@@ -1250,25 +1296,28 @@ fn combat_distance_is_the_diagonal_not_the_larger_axis_gap() {
 }
 
 /// Обратная проверка: зазор по одной оси (другая ось перекрывается, дистанция там 0) — что по
-/// старой, что по новой формуле ровно 0,3, бой должен начаться. Ставит героя к северу от
-/// гоблина, в открытой земле.
+/// старой, что по новой формуле ровно 0,3, бой должен начаться. Ставит героя к югу от орка, в
+/// коридоре перед входом во двор. Орк, а не гоблин: у обоих гоблинов зазор 0,3 по вычитанию выходит
+/// на 7·10⁻¹⁶ больше порога (0,05 в их координатах двоично неточны), у орка — на 2·10⁻¹⁶ меньше.
 #[test]
 fn combat_starts_at_exactly_0_3_gap_on_a_single_axis() {
     let mut game = load();
     let hero = find_named(&game, "hero");
-    let goblin = find_named(&game, "goblin_1");
-    let goblin_rect = rect_of(&game, goblin);
+    let orc = find_named(&game, "orc_1");
+    let orc_rect = rect_of(&game, orc);
 
     game.world.set_vec2(
         hero,
         property::POSITION,
-        [
-            (goblin_rect.x0 + goblin_rect.x1) / 2.0 - 0.375,
-            goblin_rect.y0 - 0.3 - 0.5,
-        ],
+        [(orc_rect.x0 + orc_rect.x1) / 2.0 - 0.375, orc_rect.y1 + 0.3],
+    );
+    let gap = rect_of(&game, hero).y0 - orc_rect.y1;
+    assert!(
+        (0.3 - 1e-9..=0.3).contains(&gap),
+        "зазор должен быть 0,3 и не больше порога боя: {gap}"
     );
     let target = game.properties.resolve("target").unwrap();
-    game.world.set_flag(goblin, target, true);
+    game.world.set_flag(orc, target, true);
 
     for _ in 0..30 {
         game.step(StepInput::empty());
@@ -1277,10 +1326,10 @@ fn combat_starts_at_exactly_0_3_gap_on_a_single_axis() {
     let health = game.properties.resolve("health").unwrap();
     assert_eq!(
         game.world.number_like(hero, health),
-        Some(90.0),
+        Some(85.0),
         "зазор ровно 0,3 по одной оси (по другой оси прямоугольники перекрываются) — бой должен был начаться, враг уже ударил первым"
     );
-    assert_eq!(game.world.number_like(goblin, health), Some(30.0));
+    assert_eq!(game.world.number_like(orc, health), Some(60.0));
 }
 
 /// `scene.json`'s real text with one enemy's `"enemy"` catalog reference corrupted — a typo, not

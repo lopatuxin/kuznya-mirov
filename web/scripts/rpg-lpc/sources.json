@@ -130,52 +130,5 @@
       "authors": ["bluecarrot16"],
       "licenses": ["GPL 3.0"]
     }
-  ],
-  "atlasPieces": [
-    {
-      "usedAs": "Трава — базовый слой земли, основной и редкий варианты: две вырезки одного травяного узора",
-      "authors": ["Lanea Zimmerman (Sharm)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    },
-    {
-      "usedAs": "Тропинка и берег пруда — плитки коридоров (земля, «dirt»)",
-      "authors": ["Lanea Zimmerman (Sharm)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    },
-    {
-      "usedAs": "Цветы — мелочи поверх травы",
-      "authors": ["Lanea Zimmerman (Sharm)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    },
-    {
-      "usedAs": "Пучок травы — мелочи поверх травы (основание куста рогоза)",
-      "authors": ["Lanea Zimmerman (Sharm)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    },
-    {
-      "usedAs": "Вода пруда",
-      "authors": ["Lanea Zimmerman (Sharm)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    },
-    {
-      "usedAs": "Стены построек — кирпичная кладка и серый камень верха стены (парапет)",
-      "authors": ["Daniel Armstrong (HughSpectrum)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    },
-    {
-      "usedAs": "Дерево",
-      "authors": ["Lanea Zimmerman (Sharm)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    },
-    {
-      "usedAs": "Камень",
-      "authors": ["Lanea Zimmerman (Sharm)"],
-      "licenses": ["CC-BY-SA 3.0", "GPL 3.0"]
-    }
-  ],
-  "atlas": {
-    "usedAs": "Земля, стены, дерево, камень — набор плиток terrain.png и картинки препятствий",
-    "zipUrl": "https://opengameart.org/sites/default/files/Atlas_0.zip",
-    "page": "https://opengameart.org/content/lpc-tile-atlas"
-  }
+  ]
 }

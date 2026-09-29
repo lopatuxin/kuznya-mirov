@@ -18,7 +18,7 @@ import sharp from "sharp";
 const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
 const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--fade-ends P]";
 const MARGIN = 4;
-const VISIBLE_ALPHA = 26;
+export const VISIBLE_ALPHA = 26;
 const THUMB_SIZE = 96;
 const MIN_PERIOD = 4;
 
@@ -86,13 +86,13 @@ export function keyMagenta(rgb) {
 
 const KEYS = { green: keyGreen, magenta: keyMagenta };
 
-async function removeBackground(file, key) {
+export async function removeBackground(file, key) {
   const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   return { rgba: KEYS[key](data), width: info.width, height: info.height };
 }
 
 // Один прямоугольник на все кадры: иначе персонаж прыгал бы внутри листа от кадра к кадру.
-function visibleBox(images) {
+export function visibleBox(images) {
   const { width, height } = images[0];
   let left = width;
   let top = height;
@@ -117,7 +117,7 @@ function visibleBox(images) {
   return { left, top, width: right - left + 1, height: bottom - top + 1 };
 }
 
-function cutOut({ rgba, width, height }, box, targetHeight) {
+export function cutOut({ rgba, width, height }, box, targetHeight) {
   const image = sharp(rgba, { raw: { width, height, channels: 4 } }).extract(box);
   return (targetHeight ? image.resize({ height: targetHeight, kernel: "lanczos3" }) : image)
     .png()

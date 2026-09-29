@@ -7,26 +7,15 @@ import {
   compositeRegion,
   hexToRgb,
   recolorSkin,
-  insideAutotileBlob,
-  wallImageManifest,
-  wallImageName,
-  staleWallImageFiles,
   buildImagesDeclaration,
   buildMainSheet,
   buildAttackSheet,
-  buildTerrainSheet,
-  buildWallImage,
   attackImageSize,
   attackImageOffset,
   CHARACTERS,
   CHARACTER_IMAGE_SIZE,
   CHARACTER_IMAGE_OFFSET,
-  TREE_IMAGE_SIZE,
-  ROCK_IMAGE_SIZE,
-  TREE_FOOTPRINT_SIZE,
-  ROCK_FOOTPRINT_SIZE,
 } from "./buildRpgArt.mjs";
-import { TERRAIN_COLUMNS, TERRAIN_FRAME_COUNT, GRASS_VARIANT_TILES, DECORATION_TILES, waterTileIndex } from "./rpgTerrainTiles.mjs";
 
 const scriptDir = fileURLToPath(new URL(".", import.meta.url));
 const gameDir = resolve(scriptDir, "../../games/rpg");
@@ -131,62 +120,8 @@ describe("recolorSkin", () => {
   });
 });
 
-describe("insideAutotileBlob", () => {
-  const FULL = { top: 0, right: 0, bottom: 0, left: 0 };
-  const ISOLATED = { top: 8, right: 8, bottom: 8, left: 8 };
-
-  it("без отступов (маска 15 — все соседи те же) — вся плитка внутри пятна", () => {
-    expect(insideAutotileBlob(0, 0, FULL)).toBe(true);
-    expect(insideAutotileBlob(31, 31, FULL)).toBe(true);
-    expect(insideAutotileBlob(16, 16, FULL)).toBe(true);
-  });
-
-  it("изолированная плитка (маска 0) — угол среза, центр внутри", () => {
-    expect(insideAutotileBlob(16, 16, ISOLATED)).toBe(true);
-    expect(insideAutotileBlob(0, 0, ISOLATED)).toBe(false); // угол тайла — точно за пределами отступа
-  });
-
-  it("связанная сторона без отступа — до самого края плитки", () => {
-    const topOnly = { top: 0, right: 8, bottom: 8, left: 8 };
-    expect(insideAutotileBlob(16, 0, topOnly)).toBe(true); // верхний край, N — связан
-  });
-});
-
-describe("wallImageManifest / wallImageName", () => {
-  it("собирает размеры прямоугольников стен из карты, включая блок толще одной клетки", () => {
-    // Верхняя стена — горизонтальная полоса 5×1, блок 2×2 слева, отдельная вертикальная 1×3.
-    const text = "#####\n##...\n##...\n#....\n#....\n";
-    const manifest = wallImageManifest(text);
-    expect(manifest).toEqual(
-      expect.arrayContaining([
-        { width: 5, height: 1 },
-        { width: 2, height: 2 },
-      ]),
-    );
-  });
-
-  it("имя картинки зависит от ширины и высоты", () => {
-    expect(wallImageName(5, 1)).toBe("wall_5x1");
-    expect(wallImageName(2, 3)).toBe("wall_2x3");
-  });
-});
-
-describe("staleWallImageFiles — ревью: остатки прежней карты в images/", () => {
-  const wallSizes = [{ width: 5, height: 1 }, { width: 2, height: 2 }];
-
-  it("находит wall_*.png на диске, которых нет в текущем манифесте", () => {
-    const existing = ["wall_5x1.png", "wall_2x2.png", "wall_17x2.png", "wall_1x1.png", "hero.png"];
-    expect(staleWallImageFiles(existing, wallSizes)).toEqual(["wall_17x2.png", "wall_1x1.png"]);
-  });
-
-  it("не трогает файлы из манифеста и не-стеновые файлы", () => {
-    const existing = ["wall_5x1.png", "wall_2x2.png", "terrain.png", "goblin_attack.png"];
-    expect(staleWallImageFiles(existing, wallSizes)).toEqual([]);
-  });
-});
-
 describe("buildImagesDeclaration", () => {
-  const images = buildImagesDeclaration([{ width: 4, height: 1 }, { width: 2, height: 3 }]);
+  const images = buildImagesDeclaration();
 
   it("герой, гоблин и орк — основной лист 45 кадров сеткой 9, frame_by и якорь снизу", () => {
     for (const name of ["hero", "goblin", "orc"]) {
@@ -212,20 +147,6 @@ describe("buildImagesDeclaration", () => {
         offset: attackImageOffset(CHARACTERS[character].attackFrame),
       });
     }
-  });
-
-  it("набор плиток земли — без frame_time и frame_by", () => {
-    expect(images.terrain).toEqual({ path: "images/terrain.png", frames: TERRAIN_FRAME_COUNT, columns: TERRAIN_COLUMNS });
-  });
-
-  it("дерево и камень — своим размером, привязка снизу", () => {
-    expect(images.tree).toEqual({ path: "images/tree.png", size: TREE_IMAGE_SIZE, anchor: "bottom" });
-    expect(images.rock).toEqual({ path: "images/rock.png", size: ROCK_IMAGE_SIZE, anchor: "bottom" });
-  });
-
-  it("стены объявлены под каждый нужный размер прямоугольника", () => {
-    expect(images.wall_4x1.size).toEqual([4, 1.5]);
-    expect(images.wall_2x3.size).toEqual([2, 3.5]);
   });
 
   it("отметка щелчка остаётся из демо-генератора", () => {
@@ -385,190 +306,7 @@ describe("buildAttackSheet — договор с данными игры (ору
   });
 });
 
-describe("buildTerrainSheet — договор с данными игры", () => {
-  it("TERRAIN_FRAME_COUNT кадров сеткой TERRAIN_COLUMNS", () => {
-    const sheet = buildTerrainSheet();
-    expect([sheet.width, sheet.height]).toEqual([TERRAIN_COLUMNS * 32, Math.ceil(TERRAIN_FRAME_COUNT / TERRAIN_COLUMNS) * 32]);
-  });
-
-  it("повторная сборка даёт те же байты", () => {
-    const a = buildTerrainSheet();
-    const b = buildTerrainSheet();
-    expect(a.data.equals(b.data)).toBe(true);
-  });
-
-  function framePixels(sheet, index) {
-    const TILE = 32;
-    const col = index % TERRAIN_COLUMNS;
-    const row = Math.floor(index / TERRAIN_COLUMNS);
-    const pixels = [];
-    for (let y = 0; y < TILE; y++) {
-      const rowPixels = [];
-      for (let x = 0; x < TILE; x++) rowPixels.push(getPixel(sheet, col * TILE + x, row * TILE + y));
-      pixels.push(rowPixels);
-    }
-    return pixels;
-  }
-
-  it("оба варианта травы (требование 6) — текстурная трава, бесшовная через 32 точки, разный рисунок, близкий тон", () => {
-    const sheet = buildTerrainSheet();
-    const TILE = 32;
-    const averages = [];
-    const allPixels = [];
-    for (const index of GRASS_VARIANT_TILES) {
-      const pixels = framePixels(sheet, index);
-      allPixels.push(pixels);
-      let opaque = 0;
-      let greenDominant = 0;
-      let sr = 0, sg = 0, sb = 0;
-      for (const row of pixels) {
-        for (const [r, g, b, a] of row) {
-          if (a === 0) continue;
-          opaque++;
-          sr += r; sg += g; sb += b;
-          if (g > r + 15 && g > b + 15) greenDominant++;
-        }
-      }
-      expect(opaque).toBe(TILE * TILE); // базовый слой не должен просвечивать
-      expect(greenDominant / opaque).toBeGreaterThan(0.9);
-      averages.push([sr / opaque, sg / opaque, sb / opaque]);
-
-      // Бесшовность при повторе через 32 точки: левый край должен совпадать с правым (в этом же
-      // кадре, соседняя копия начинается с той же точки), верхний — с нижним.
-      let seamDiff = 0, seamCount = 0;
-      for (let y = 0; y < TILE; y++) {
-        const [r0, g0, b0] = pixels[y][0];
-        const [r1, g1, b1] = pixels[y][TILE - 1];
-        seamDiff += Math.abs(r0 - r1) + Math.abs(g0 - g1) + Math.abs(b0 - b1);
-        seamCount++;
-      }
-      for (let x = 0; x < TILE; x++) {
-        const [r0, g0, b0] = pixels[0][x];
-        const [r1, g1, b1] = pixels[TILE - 1][x];
-        seamDiff += Math.abs(r0 - r1) + Math.abs(g0 - g1) + Math.abs(b0 - b1);
-        seamCount++;
-      }
-      // Порог заметно выше нуля: мелкая шумовая текстура естественно не даёт идеального
-      // побитового совпадения на стыке, но заметный скачок (проверенные плохие вырезки давали
-      // 100+) отличим от него с запасом.
-      expect(seamDiff / seamCount).toBeLessThan(30);
-    }
-    // Ревью: варианты должны заметно различаться рисунком, но быть близки по среднему тону —
-    // иначе смена варианта либо незаметна, либо читается пятном другого цвета.
-    const [a, b] = averages;
-    const toneDistance = Math.hypot(a[0] - b[0], a[1] - b[1], a[2] - b[2]);
-    expect(toneDistance).toBeLessThan(15);
-
-    let differingPixels = 0;
-    for (let y = 0; y < TILE; y++) {
-      for (let x = 0; x < TILE; x++) {
-        const [r0, g0, b0] = allPixels[0][y][x];
-        const [r1, g1, b1] = allPixels[1][y][x];
-        if (Math.abs(r0 - r1) > 8 || Math.abs(g0 - g1) > 8 || Math.abs(b0 - b1) > 8) differingPixels++;
-      }
-    }
-    expect(differingPixels / (TILE * TILE)).toBeGreaterThan(0.2);
-  });
-
-  it("вода — бесшовна через 32 точки (ревью: шов между соседними клетками пруда)", () => {
-    // Кадр с маской 15 (все соседи — тоже вода) — сплошная вода без берега по краям, ровно то,
-    // что рисуется между двумя соседними клетками воды внутри пруда.
-    const sheet = buildTerrainSheet();
-    const pixels = framePixels(sheet, waterTileIndex(15));
-    let opaque = 0;
-    for (const row of pixels) for (const [, , , a] of row) if (a > 0) opaque++;
-    expect(opaque).toBe(32 * 32); // сплошная вода, без прозрачных прорех
-    let seamDiff = 0, seamCount = 0;
-    for (let y = 0; y < 32; y++) {
-      const [r0, g0, b0] = pixels[y][0];
-      const [r1, g1, b1] = pixels[y][31];
-      seamDiff += Math.abs(r0 - r1) + Math.abs(g0 - g1) + Math.abs(b0 - b1);
-      seamCount++;
-    }
-    for (let x = 0; x < 32; x++) {
-      const [r0, g0, b0] = pixels[0][x];
-      const [r1, g1, b1] = pixels[31][x];
-      seamDiff += Math.abs(r0 - r1) + Math.abs(g0 - g1) + Math.abs(b0 - b1);
-      seamCount++;
-    }
-    expect(seamDiff / seamCount).toBeLessThan(30);
-  });
-
-  it("верх стены — настоящая текстура из атласа, бесшовная через 32 точки (не заливка цветом)", () => {
-    const image = buildWallImage(1, 1);
-    // Кадр верха — первые WALL_CAP_HEIGHT строк изображения.
-    const WALL_CAP_HEIGHT = 16;
-    let seamDiff = 0, seamCount = 0;
-    for (let y = 0; y < WALL_CAP_HEIGHT; y++) {
-      const [r0, g0, b0] = getPixel(image, 0, y);
-      const [r1, g1, b1] = getPixel(image, 31, y);
-      seamDiff += Math.abs(r0 - r1) + Math.abs(g0 - g1) + Math.abs(b0 - b1);
-      seamCount++;
-    }
-    expect(seamDiff / seamCount).toBeLessThan(10);
-    // Не заливка одним цветом — настоящая текстура (требование 2, ревью).
-    const colors = new Set();
-    for (let y = 0; y < WALL_CAP_HEIGHT; y++) for (let x = 0; x < 32; x++) colors.add(getPixel(image, x, y).slice(0, 3).join(","));
-    expect(colors.size).toBeGreaterThan(1);
-  });
-
-  it("требование 6: мелочи — камешек, цветок и пучок травы, по одному кадру на вид, на прозрачном фоне", () => {
-    // Один кадр на вид (не пара под каждый вариант травы, ревью): DECORATION_TILES — 3 записи.
-    // Кадр не залит травой — за пределами самой мелочи он прозрачен, трава клетки видна сквозь
-    // него из слоя под ним.
-    expect(DECORATION_TILES).toHaveLength(3);
-    const sheet = buildTerrainSheet();
-    const TILE = 32;
-    function frameStats(index, predicate) {
-      const pixels = framePixels(sheet, index);
-      let opaque = 0;
-      let matching = false;
-      let backgroundColorHit = false;
-      for (const row of pixels) {
-        for (const [r, g, b, a] of row) {
-          if (a === 0) continue;
-          opaque++;
-          if (predicate(r, g, b)) matching = true;
-          if (Math.abs(r - 47) <= 6 && Math.abs(g - 129) <= 6 && Math.abs(b - 54) <= 6) backgroundColorHit = true;
-        }
-      }
-      return { opaque, matching, backgroundColorHit, pixels };
-    }
-    const isRock = (r, g, b) => Math.abs(r - g) < 15 && Math.abs(g - b) < 15 && r < 160;
-    const isFlower = (r, g, b) => r > g + 40 && r > b + 40;
-    const isTuft = (r, g, b) => g > r + 10 && g > b + 10;
-    const rock = frameStats(DECORATION_TILES[0], isRock);
-    const flower = frameStats(DECORATION_TILES[1], isFlower);
-    const tuft = frameStats(DECORATION_TILES[2], isTuft);
-    expect(rock.matching).toBe(true);
-    expect(flower.matching).toBe(true);
-    expect(tuft.matching).toBe(true);
-    // Мелочь не занимает весь кадр 32×32 — остальное прозрачно (пропускает траву клетки).
-    expect(rock.opaque).toBeLessThan(TILE * TILE);
-    expect(flower.opaque).toBeLessThan(TILE * TILE);
-    expect(tuft.opaque).toBeLessThan(TILE * TILE);
-
-    // Требование 5 (ревью): в кадре мака нет точек цвета фона исходной вырезки — маскирование
-    // сработало, а не просто скопировался прямоугольник целиком (прошло бы и со старым
-    // `compositeRegion` без ключа).
-    expect(flower.backgroundColorHit).toBe(false);
-
-    // Требование 3 (ревью): камешек вырезан по форме — у прямоугольника кадра прозрачные углы,
-    // не прямоугольная вырезка из середины валуна.
-    const corners = [rock.pixels[0][0], rock.pixels[0][TILE - 1], rock.pixels[TILE - 1][0], rock.pixels[TILE - 1][TILE - 1]];
-    for (const [, , , a] of corners) expect(a).toBe(0);
-  });
-});
-
-describe("footprint против размера картинки (требование 14)", () => {
-  it("footprint дерева и камня меньше их картинки", () => {
-    expect(TREE_FOOTPRINT_SIZE[0]).toBeLessThan(TREE_IMAGE_SIZE[0]);
-    expect(TREE_FOOTPRINT_SIZE[1]).toBeLessThan(TREE_IMAGE_SIZE[1]);
-    expect(ROCK_FOOTPRINT_SIZE[0]).toBeLessThanOrEqual(ROCK_IMAGE_SIZE[0]);
-  });
-});
-
-describe("CREDITS.txt и sources.json — каждая использованная часть и кусок атласа названы", () => {
+describe("CREDITS.txt и sources.json — каждая использованная часть персонажей названа", () => {
   const sources = JSON.parse(readFileSync(resolve(lpcDir, "sources.json"), "utf8"));
   const credits = readFileSync(resolve(gameDir, "CREDITS.txt"), "utf8");
 
@@ -580,14 +318,7 @@ describe("CREDITS.txt и sources.json — каждая использованн�
     for (const palette of sources.palettes) expect(credits).toContain(palette.usedAs);
   });
 
-  it("каждый кусок атласа назван, с авторами — или честно «не установлены», если не приписаны наугад", () => {
-    for (const piece of sources.atlasPieces) {
-      expect(credits).toContain(piece.usedAs);
-      expect(credits).toContain(piece.authors.length > 0 ? piece.authors.join(", ") : "не установлены по атласу");
-    }
-  });
-
-  it("CREDITS.txt не отсылает к Attribution.txt — авторов атласа называет сам", () => {
+  it("CREDITS.txt не отсылает к Attribution.txt — авторов называет сам", () => {
     expect(credits).not.toContain("Attribution.txt");
   });
 });
