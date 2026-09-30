@@ -408,12 +408,13 @@ fn clamp_axis(center: f64, scene_len: f64, low: f64, high: f64) -> f64 {
     }
 }
 
-/// «Редактор», «Вызовы движка»: камера редактора — точка на земле в середине окна, поворот и наклон
-/// в градусах и расстояние до точки по лучу взгляда в клетках; то, что шлют `editor_camera` и
-/// возвращает `fit_camera`.
+/// «Редактор», «Вызовы движка»: камера редактора — точка вращения в середине окна (место `target` и
+/// высота `target_z`), поворот и наклон в градусах и расстояние до точки по лучу взгляда в клетках;
+/// то, что шлют `editor_camera` и возвращает `fit_camera`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EditorCamera {
     pub target: Vec2,
+    pub target_z: f64,
     pub yaw: f64,
     pub pitch: f64,
     pub distance: f64,
@@ -429,8 +430,17 @@ impl EditorCamera {
         }
     }
 
+    /// Та же камера с точкой вращения на рельефе под `target`.
+    pub fn on_terrain(self, terrain: &Terrain) -> EditorCamera {
+        EditorCamera {
+            target_z: terrain.height_at(self.target[0], self.target[1]),
+            ..self
+        }
+    }
+
     pub fn camera(&self, viewport: [f64; 2]) -> Camera3d {
         Camera3d::orbiting(self.target, self.yaw, self.pitch, self.distance, viewport)
+            .raised(self.target_z)
     }
 }
 
@@ -490,6 +500,7 @@ pub fn fit_ground(
     let target_z = terrain.height_at(target[0], target[1]);
     Some(EditorCamera {
         target,
+        target_z,
         yaw: 0.0,
         pitch,
         distance: fit_distance(&points, target, target_z, 0.0, pitch, viewport),
@@ -518,6 +529,7 @@ pub fn fit_object(
     let target_z = world.terrain().height_at(target[0], target[1]);
     Some(EditorCamera {
         target,
+        target_z,
         yaw,
         pitch,
         distance: fit_distance(&points, target, target_z, yaw, pitch, viewport),

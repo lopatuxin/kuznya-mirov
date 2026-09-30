@@ -1961,12 +1961,14 @@ fn object_rect_lies_at_the_height_of_the_objects_base() {
 #[test]
 fn the_editor_camera_turns_about_a_point_on_the_terrain() {
     let mut game = load_terrain(&hill_terrain(), &hero_json(2.7, 2.7), NO_RULES);
-    game.set_editor_camera(engine::core::camera::EditorCamera {
+    let camera = engine::core::camera::EditorCamera {
         target: [10.0, 6.0],
+        target_z: 0.0,
         yaw: 30.0,
         pitch: 50.0,
         distance: 14.0,
-    });
+    };
+    game.set_editor_camera(camera.on_terrain(game.world.terrain()));
     let camera = game.editor_camera_3d(WINDOW_F32).expect("трёхмерная сцена");
     near(camera.target_z, 2.0, "высота точки — рельеф под ней");
     let centre = camera.project([10.0, 6.0, 2.0]).expect("перед камерой");

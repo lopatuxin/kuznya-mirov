@@ -4,6 +4,8 @@ import { ProjectSelection } from "./ProjectSelection";
 import { ProjectWindow } from "./ProjectWindow";
 import { resolveProjectName } from "./projectName";
 import type { ProjectSource } from "./projectSource";
+import type { BrushFields } from "./SceneCanvas";
+import { BRUSH_SIZE_LIMITS, BRUSH_STRENGTH_LIMITS } from "./terrainBrush";
 
 function backToProjects(): void {
   location.search = "";
@@ -15,6 +17,10 @@ function backToProjects(): void {
  */
 export function App(): React.JSX.Element {
   const [folderSource, setFolderSource] = useState<ProjectSource | null>(null);
+  // Размер и сила кисти живут, пока открыта страница, и переживают смену проекта («Кисти рельефа», требование 2).
+  const [brushSize, setBrushSize] = useState(BRUSH_SIZE_LIMITS.initial);
+  const [brushStrength, setBrushStrength] = useState(BRUSH_STRENGTH_LIMITS.initial);
+  const brushFields: BrushFields = { size: brushSize, strength: brushStrength, onSizeChange: setBrushSize, onStrengthChange: setBrushStrength };
   const resolution = resolveProjectName(location.search);
   const listedProjectName = resolution.status === "valid" ? resolution.name : null;
   // `useProjectEngine` перезапускает эффект (освобождает и заводит движок заново) по идентичности
@@ -25,7 +31,7 @@ export function App(): React.JSX.Element {
   );
 
   if (folderSource !== null) {
-    return <ProjectWindow source={folderSource} onBackToProjects={() => setFolderSource(null)} />;
+    return <ProjectWindow source={folderSource} onBackToProjects={() => setFolderSource(null)} brushFields={brushFields} />;
   }
 
   switch (resolution.status) {
@@ -47,6 +53,6 @@ export function App(): React.JSX.Element {
       );
     case "valid":
       // `listedProjectName` не `null` именно потому, что `resolution.status === "valid"` — `listedSource` не `null` тоже.
-      return <ProjectWindow source={listedSource as ProjectSource} onBackToProjects={backToProjects} />;
+      return <ProjectWindow source={listedSource as ProjectSource} onBackToProjects={backToProjects} brushFields={brushFields} />;
   }
 }

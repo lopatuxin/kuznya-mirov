@@ -12,6 +12,7 @@ use super::scene::{GroundLayer, ObjectSpec, SceneConfig};
 use super::sound::SoundWindow;
 use super::step;
 use super::surface;
+use super::terrain::Terrain;
 use super::value::{Value, Vec2};
 use super::world::World;
 
@@ -464,6 +465,17 @@ impl Game {
         self.reset_camera_and_walk();
     }
 
+    /// «Редактор», «Вызовы движка», `set_terrain`: ставит рельеф так, будто он прочитан из файла, и собирает
+    /// мир из сцены заново — объекты без `z` в данных садятся по нему. Сети поиска пути прежнего рельефа
+    /// отбрасываются и не строятся заново: их строит «Запуск». Камера редактора не меняется.
+    pub fn set_terrain(&mut self, terrain: Terrain) {
+        self.properties.set_terrain(terrain);
+        self.world = world_from_scene(&self.properties, &self.scene_objects);
+        self.world_exists = true;
+        self.forget_camera_and_paths();
+        self.walk_paths.clear_navigation();
+    }
+
     /// «Экраны и состояние»: `quit` throws the run away entirely — the world empties and there
     /// is no way back to it, a fresh `new_game` starts from a clean scene. Clearing the sticky
     /// win/loss mark here matters as much as emptying the world: `handle_outcome` runs every
@@ -524,12 +536,18 @@ impl Game {
     /// `world` from the scene — the camera forgets the point it was following and every
     /// remembered walk path goes with it, since both describe a world that no longer exists.
     fn reset_camera_and_walk(&mut self) {
+        self.forget_camera_and_paths();
+        if self.scene.is_3d() {
+            self.prepare_walking();
+        }
+    }
+
+    fn forget_camera_and_paths(&mut self) {
         self.camera_last = None;
         self.camera_height = CameraHeight::default();
         self.walk_paths.clear_paths();
         if self.scene.is_3d() {
             self.update_camera();
-            self.prepare_walking();
         }
     }
 
@@ -617,15 +635,11 @@ impl Game {
     }
 
     /// «Редактор», «Сцена», требование 1: камера, которой трёхмерная сцена видна вне партии. Она
-    /// вращается вокруг точки на рельефе: высоту точки `target` берёт рельеф под ней.
+    /// вращается вокруг точки `target` на высоте `target_z`, которую прислал редактор.
     pub fn editor_camera_3d(&self, viewport: [f32; 2]) -> Option<Camera3d> {
         let viewport = [viewport[0] as f64, viewport[1] as f64];
         let editor = self.current_editor_camera(viewport)?;
-        let pivot = self
-            .world
-            .terrain()
-            .height_at(editor.target[0], editor.target[1]);
-        Some(editor.camera(viewport).raised(pivot))
+        Some(editor.camera(viewport))
     }
 
     /// «Редактор», «Вызовы движка», `fit_camera`: без номера — камера, что видит всю землю под

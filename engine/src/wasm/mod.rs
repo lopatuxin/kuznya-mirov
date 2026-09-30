@@ -1,4 +1,4 @@
-use js_sys::{Array, Object, Reflect, Uint8Array};
+use js_sys::{Array, Float64Array, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -10,7 +10,7 @@ use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
-use crate::core::scene::{CellRange, GroundLayer, ObjectTransform, pointer_hit};
+use crate::core::scene::{CellRange, GroundLayer, ObjectTransform, pointer_hit, terrain_hit};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
 use crate::core::world_elements;
@@ -578,7 +578,11 @@ fn js_point3(point: Vec3) -> JsValue {
 
 fn js_editor_camera(camera: &EditorCamera) -> JsValue {
     let obj = Object::new();
-    set(&obj, "target", &js_point(camera.target));
+    set(
+        &obj,
+        "target",
+        &js_point3([camera.target[0], camera.target[1], camera.target_z]),
+    );
     set(&obj, "yaw", &JsValue::from_f64(camera.yaw));
     set(&obj, "pitch", &JsValue::from_f64(camera.pitch));
     set(&obj, "distance", &JsValue::from_f64(camera.distance));
@@ -633,14 +637,36 @@ fn parse_transform(t: &JsValue) -> Option<ObjectTransform> {
     })
 }
 
-/// `editor_camera`'s `{target, yaw, pitch, distance}`; `None` when any of them is not a finite number.
-fn parse_editor_camera(c: &JsValue) -> Option<EditorCamera> {
-    Some(EditorCamera {
-        target: js_finite_pair(c, "target")?,
+/// `editor_camera`'s `{target, yaw, pitch, distance}`, `target` — `[x, y]` или `[x, y, z]`; `None` when any
+/// of them is not a finite number. Камера без `z` в `target` стоит на высоте 0, а флаг говорит, что
+/// высоту надо взять из рельефа.
+fn parse_editor_camera(c: &JsValue) -> Option<(EditorCamera, bool)> {
+    let (target, target_z) = js_place(c, "target")?;
+    let camera = EditorCamera {
+        target,
+        target_z: target_z.unwrap_or(0.0),
         yaw: js_finite(c, "yaw")?,
         pitch: js_finite(c, "pitch")?,
         distance: js_finite(c, "distance")?,
-    })
+    };
+    Some((camera, target_z.is_none()))
+}
+
+/// `set_terrain`'s `water`: `{level, color}` или `undefined`. Уровень не число и цвет не строка
+/// доходят до ядра как `NaN` и пустая строка — ядро отвечает на них ошибкой.
+fn parse_water(water: &JsValue) -> Option<(f64, String)> {
+    if water.is_undefined() || water.is_null() {
+        return None;
+    }
+    let level = Reflect::get(water, &JsValue::from_str("level"))
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(f64::NAN);
+    let color = Reflect::get(water, &JsValue::from_str("color"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .unwrap_or_default();
+    Some((level, color))
 }
 
 fn draw_rect(
@@ -1559,18 +1585,89 @@ impl Engine {
         crate::core::scene::transform_object(&mut game.world, id, transform);
     }
 
-    /// «Редактор», «Вызовы движка»: камера редактора `{target: [x, y], yaw, pitch, distance}` —
-    /// вне партии сцена рисуется и щёлкается ею. `show_scene`, `play` и `stop` её не сбрасывают.
-    pub fn editor_camera(&mut self, c: JsValue) {
-        let (Some(game), Some(camera)) = (self.game.as_mut(), parse_editor_camera(&c)) else {
-            return;
+    /// «Редактор», «Вызовы движка»: камера редактора `{target, yaw, pitch, distance}` — вне партии сцена
+    /// рисуется и щёлкается ею. `target` — `[x, y]`: высота точки вращения берётся из рельефа под ней, или
+    /// `[x, y, z]`: точка вращения ровно на этой высоте. Возвращает высоту, которую взяла, `undefined` без
+    /// игры или при значении не из чисел. `show_scene`, `play`, `stop` и `set_terrain` её не сбрасывают.
+    pub fn editor_camera(&mut self, c: JsValue) -> Option<f64> {
+        let (game, (camera, on_terrain)) = (self.game.as_mut()?, parse_editor_camera(&c)?);
+        let camera = if on_terrain {
+            camera.on_terrain(game.world.terrain())
+        } else {
+            camera
         };
         game.set_editor_camera(camera);
+        Some(camera.target_z)
+    }
+
+    /// «Редактор», «Вызовы движка»: ставит рельеф — `heights` строками сверху вниз, вода `{level, color}`
+    /// или `undefined` — так, будто он прочитан из файла, собирает мир из сцены заново и перестраивает
+    /// сетку рельефа для отрисовки. Сети поиска пути и камера редактора не меняются. `undefined` —
+    /// поставлен; иначе текст ошибки: чисел не столько, высота или уровень не число, цвет не цвет,
+    /// сцена плоская, идёт партия.
+    pub fn set_terrain(&mut self, heights: &[f64], water: JsValue) -> Option<String> {
+        let Some(game) = self.game.as_mut() else {
+            return Some("игра не загружена".to_string());
+        };
+        let water = parse_water(&water);
+        let water = water
+            .as_ref()
+            .map(|(level, color)| (*level, color.as_str()));
+        if let Err(message) = edit::set_terrain(game, heights, water) {
+            return Some(message);
+        }
+        self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
+        None
+    }
+
+    /// «Редактор», «Вызовы движка»: нынешний рельеф `{columns, rows, heights, water}` — `heights`
+    /// (`Float64Array`) строками сверху вниз, как в `set_terrain`, `water` — `{level, color}` или
+    /// `null`. Без файла рельефа — нули нужного размера. `undefined` в плоской сцене.
+    pub fn terrain_heights(&self) -> JsValue {
+        let Some(terrain) = self.game.as_ref().and_then(edit::terrain_heights) else {
+            return JsValue::UNDEFINED;
+        };
+        let obj = Object::new();
+        set(&obj, "columns", &JsValue::from_f64(terrain.columns as f64));
+        set(&obj, "rows", &JsValue::from_f64(terrain.rows as f64));
+        set(
+            &obj,
+            "heights",
+            &Float64Array::from(terrain.heights.as_slice()),
+        );
+        let water = terrain.water.map_or(JsValue::NULL, |(level, color)| {
+            let water = Object::new();
+            set(&water, "level", &JsValue::from_f64(level));
+            set(&water, "color", &JsValue::from_str(&color));
+            water.into()
+        });
+        set(&obj, "water", &water);
+        obj.into()
+    }
+
+    /// «Редактор», «Вызовы движка»: место под точкой холста `(x, y)` (CSS-пиксели) камерой, которой
+    /// сцена видна сейчас, — `[x, y, z]`: где луч первым встретил рельеф в пределах сцены, минуя воду,
+    /// настилы и объекты. `undefined` в плоской сцене, если луч мимо рельефа сцены или не идёт вниз.
+    pub fn terrain_at(&self, x: f64, y: f64) -> JsValue {
+        let (Some(game), Some(View::Space(camera))) = (self.game.as_ref(), self.frame()) else {
+            return JsValue::UNDEFINED;
+        };
+        match terrain_hit(&game.world, &game.scene, &camera, [x, y]) {
+            Some(point) => js_point3(point),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», «Вызовы движка»: высота рельефа в месте сцены `(x, y)`, за краем — высота края.
+    /// `undefined` в плоской сцене.
+    pub fn terrain_height(&self, x: f64, y: f64) -> Option<f64> {
+        let game = self.game.as_ref().filter(|game| game.scene.is_3d())?;
+        Some(game.world.terrain().height_at(x, y))
     }
 
     /// «Редактор», «Вызовы движка»: камера редактора, что видит объект `id` целиком при нынешних
     /// повороте и наклоне, а без номера — всю землю под углом камеры игры; `{target, yaw, pitch,
-    /// distance}` или `undefined` в плоской сцене, без игры, без объекта или его `position` и `size`.
+    /// distance}`, `target` — три числа `[x, y, z]`, или `undefined` в плоской сцене, без игры, без объекта или его `position` и `size`.
     pub fn fit_camera(&self, id: Option<u32>) -> JsValue {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;

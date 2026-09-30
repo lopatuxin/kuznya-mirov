@@ -634,11 +634,17 @@ impl Scene3d {
             queue.write_buffer(&self.ground_buffer, 0, bytemuck::cast_slice(frame.ground));
         }
 
-        self.sync_terrain(device, frame.terrain);
+        self.sync_terrain(device, queue, frame.terrain);
     }
 
-    /// Держит в буфере сетку `mesh`: пишет её заново, только когда сменился номер.
-    fn sync_terrain(&mut self, device: &wgpu::Device, mesh: Option<&TerrainMesh>) {
+    /// Держит в буфере сетку `mesh`: пишет её заново, только когда сменился номер; при том же числе
+    /// вершин — поверх прежнего буфера, без новой памяти в каждом кадре мазка кисти.
+    fn sync_terrain(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        mesh: Option<&TerrainMesh>,
+    ) {
         let Some(mesh) = mesh else {
             self.terrain = None;
             return;
@@ -651,15 +657,22 @@ impl Scene3d {
             .iter()
             .flat_map(|v| v.position.into_iter().chain(v.normal).chain(v.color))
             .collect();
+        let total = mesh.vertices.len() as u32;
+        if let Some(held) = self.terrain.as_mut().filter(|held| held.total == total) {
+            queue.write_buffer(&held.buffer, 0, bytemuck::cast_slice(&floats));
+            held.id = mesh.id;
+            held.land = mesh.land as u32;
+            return;
+        }
         self.terrain = Some(TerrainBuffer {
             id: mesh.id,
             buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("terrain_vertices"),
                 contents: bytemuck::cast_slice(&floats),
-                usage: wgpu::BufferUsages::VERTEX,
+                usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
             }),
             land: mesh.land as u32,
-            total: mesh.vertices.len() as u32,
+            total,
         });
     }
 

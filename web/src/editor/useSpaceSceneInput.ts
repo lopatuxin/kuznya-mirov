@@ -22,7 +22,7 @@ function capturePointer(canvas: HTMLCanvasElement, pointerId: number): void {
 
 /**
  * Связывает события холста с контроллером трёхмерной сцены: нажатие, движение и отпускание
- * указателя, колесо (`passive: false` — иначе страницу листало бы) и клавиши. `mousedown` средней
+ * указателя, колесо (`passive: false` — иначе страницу листало бы) и клавиши (нажатие и отпускание — Shift мазка). `mousedown` средней
  * кнопки гасится вместе с `pointerdown`: без этого Windows включает автопрокрутку. Возвращает тот же
  * контроллер на всю жизнь холста — кадровый цикл рисует им рамку и ручки.
  */
@@ -54,6 +54,7 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
         y: event.clientY - bounds.top,
         ctrlKey: event.ctrlKey,
         shiftKey: event.shiftKey,
+        timeStamp: event.timeStamp,
       };
     }
 
@@ -92,6 +93,10 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
       if (controller.keyDown(event)) event.preventDefault();
     }
 
+    function handleKeyUp(event: KeyboardEvent): void {
+      controller.keyUp(event);
+    }
+
     activeCanvas.addEventListener("mousedown", handleMouseDown);
     activeCanvas.addEventListener("pointerdown", handlePointerDown);
     activeCanvas.addEventListener("pointermove", handlePointerMove);
@@ -100,6 +105,7 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
     activeCanvas.addEventListener("pointerleave", controller.pointerLeave);
     activeCanvas.addEventListener("wheel", handleWheel, { passive: false });
     activeCanvas.addEventListener("keydown", handleKeyDown);
+    activeCanvas.addEventListener("keyup", handleKeyUp);
     return () => {
       activeCanvas.removeEventListener("mousedown", handleMouseDown);
       activeCanvas.removeEventListener("pointerdown", handlePointerDown);
@@ -109,6 +115,7 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
       activeCanvas.removeEventListener("pointerleave", controller.pointerLeave);
       activeCanvas.removeEventListener("wheel", handleWheel);
       activeCanvas.removeEventListener("keydown", handleKeyDown);
+      activeCanvas.removeEventListener("keyup", handleKeyUp);
       controller.abandonGesture();
     };
   }, [overlayCanvasRef, controller, isEnabled]);

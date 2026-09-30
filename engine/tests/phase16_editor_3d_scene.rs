@@ -219,6 +219,7 @@ fn the_sent_camera_stays_through_the_world_rebuilds_and_its_pitch_is_kept_in_ran
     let mut game = load3d();
     let sent = EditorCamera {
         target: [5.0, 6.0],
+        target_z: 0.0,
         yaw: 123.0,
         pitch: 20.0,
         distance: 9.0,
@@ -250,6 +251,7 @@ fn the_fit_to_an_object_shows_its_whole_volume_and_no_closer_is_possible() {
         for pitch in [5.0, 30.0, 55.0, 90.0] {
             game.set_editor_camera(EditorCamera {
                 target: [3.0, 3.0],
+                target_z: 0.0,
                 yaw,
                 pitch,
                 distance: 10.0,
@@ -315,6 +317,7 @@ fn cameras(game: &mut Game) -> Vec<Camera3d> {
         .map(|(yaw, pitch)| {
             game.set_editor_camera(EditorCamera {
                 target: [16.0, 12.0],
+                target_z: 0.0,
                 yaw,
                 pitch,
                 distance: 24.0,
@@ -632,6 +635,7 @@ fn a_frame_from_a_low_turned_editor_camera_has_finite_shadow_matrices() {
     let mut game = load3d();
     game.set_editor_camera(EditorCamera {
         target: [16.0, 12.0],
+        target_z: 0.0,
         yaw: 33.0,
         pitch: 5.0,
         distance: 14.0,

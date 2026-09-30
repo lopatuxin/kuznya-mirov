@@ -686,6 +686,12 @@ impl WalkCaches {
         self.paths.clear();
     }
 
+    /// Забывает сети земли и настилов: они привязаны к адресу рельефа в памяти, а новый рельеф может
+    /// лечь на адрес прежнего.
+    pub fn clear_navigation(&mut self) {
+        self.navigation.clear();
+    }
+
     pub fn is_empty(&self) -> bool {
         self.paths.is_empty()
     }

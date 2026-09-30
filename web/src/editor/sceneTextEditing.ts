@@ -1,4 +1,4 @@
-import { applyEdits, modify, type JSONPath } from "jsonc-parser";
+import { applyEdits, findNodeAtLocation, modify, parseTree, type JSONPath } from "jsonc-parser";
 
 /**
  * Значение свойства или объекта в том виде, в каком его пишут вручную в демо-играх — пробел после
@@ -82,4 +82,22 @@ export function removeSceneObject(sceneText: string, objectIndex: number): strin
 /** Объявляет новое свойство автора в `properties.json` — требование 16. */
 export function declarePropertyKind(propertiesText: string, name: string, kind: string): string {
   return editAt(propertiesText, ["properties", name], kind, false);
+}
+
+/**
+ * Дописывает `"terrain": "<путь>"` в конец `files` файла `game.json` — «Кисти рельефа», требование 19.
+ * Остальной текст остаётся байт в байт; ключ встаёт на своей строке с отступом соседа, если `files`
+ * набран по строке на ключ, и через запятую с пробелом, если в одну строку; пустой `files` заполняет `jsonc-parser`.
+ */
+export function addTerrainFilePath(gameJsonText: string, path: string): string {
+  const root = parseTree(gameJsonText);
+  const files = root === undefined ? undefined : findNodeAtLocation(root, ["files"]);
+  const lastProperty = files?.type === "object" ? files.children?.at(-1) : undefined;
+  if (lastProperty === undefined) return editAt(gameJsonText, ["files", "terrain"], path, false);
+  const lineStart = gameJsonText.lastIndexOf("\n", lastProperty.offset) + 1;
+  const indent = gameJsonText.slice(lineStart, lastProperty.offset);
+  const lineBreak = gameJsonText.includes("\r\n") ? "\r\n" : "\n";
+  const separator = indent.trim() === "" && lineStart > 0 ? `,${lineBreak}${indent}` : ", ";
+  const end = lastProperty.offset + lastProperty.length;
+  return `${gameJsonText.slice(0, end)}${separator}"terrain": ${JSON.stringify(path)}${gameJsonText.slice(end)}`;
 }

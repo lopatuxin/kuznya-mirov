@@ -9,7 +9,9 @@ import type { PlacementChange } from "./objectPlacement";
 import type { SceneSize } from "./sceneObjects";
 import { drawSelection, type CanvasRect } from "./selectionDrawing";
 import { fitSceneStage } from "./sceneStageLayout";
+import { resolveSceneToolAvailability, selectHandleModeTool, settleSelectedTool, type SelectedTool } from "./sceneTools";
 import type { SpaceSceneContext } from "./spaceSceneController";
+import type { TerrainGrid, TerrainWater } from "./terrainFile";
 import { useSpaceSceneInput } from "./useSpaceSceneInput";
 
 type ObjectGeometry = { position: readonly [number, number]; size: readonly [number, number] };
@@ -59,6 +61,23 @@ type SceneCanvasProps = {
   onMoveObject: (objectIndex: number, position: readonly [number, number], previousPosition: readonly [number, number]) => void;
   /** Отпускание после жеста ручки или переноса по земле в трёхмерной сцене: изменившиеся свойства объекта — одно действие. */
   onCommitPlacement: (objectIndex: number, changes: PlacementChange[]) => void;
+  /** Вода рельефа из файла — поля воды над сценой; `null` — воды нет. */
+  terrainWater: TerrainWater | null;
+  /** Отпускание после мазка кисти: высоты всей сетки — одно действие. */
+  onCommitTerrain: (grid: TerrainGrid) => void;
+  /** Галочка, уровень или цвет воды: новая вода или `null` — одно действие. */
+  onWaterChange: (water: TerrainWater | null) => void;
+  /** Мазок начался или кончился — пока он идёт, перезагрузка файлов ждёт. */
+  onStrokeActiveChange: (isActive: boolean) => void;
+  /** Размер и сила кисти — их держит страница редактора, а не окно проекта («Кисти рельефа», требование 2). */
+  brushFields: BrushFields;
+};
+
+export type BrushFields = {
+  size: number;
+  strength: number;
+  onSizeChange: (size: number) => void;
+  onStrengthChange: (strength: number) => void;
 };
 
 type DragState = {
@@ -72,7 +91,9 @@ type DragState = {
   lastPosition: readonly [number, number];
 };
 
+// Поле вокруг сцены; у трёхмерной сверху два ряда инструментов, поэтому поле шире.
 const STAGE_PADDING = 28;
+const SPACE_STAGE_PADDING = 60;
 
 /**
  * Сцена вписана в свою часть окна с сохранением пропорций («Редактор», требование 22) на одном
@@ -100,6 +121,11 @@ export function SceneCanvas({
   onSelect,
   onMoveObject,
   onCommitPlacement,
+  terrainWater,
+  onCommitTerrain,
+  onWaterChange,
+  onStrokeActiveChange,
+  brushFields,
 }: SceneCanvasProps): React.JSX.Element {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -119,8 +145,17 @@ export function SceneCanvas({
   const onMoveObjectRef = useRef(onMoveObject);
   onMoveObjectRef.current = onMoveObject;
   const dragRef = useRef<DragState | null>(null);
-  const [handleMode, setHandleMode] = useState<HandleMode>("translate");
-  const areHandlesAvailable = isThreeDimensionalScene && isSceneShown && canEditScene && !isGameInputActive;
+  const [selectedTool, setSelectedTool] = useState<SelectedTool>(selectHandleModeTool("translate"));
+  const { handleMode, brushKind } = selectedTool;
+  const { size: brushSize, strength: brushStrength } = brushFields;
+  const { areHandlesAvailable, areBrushesAvailable } = resolveSceneToolAvailability({
+    isThreeDimensionalScene,
+    isSceneShown,
+    canEditScene,
+    isGameInputActive,
+    isEditorCameraActive,
+  });
+  const selectHandleMode = (mode: HandleMode): void => setSelectedTool(selectHandleModeTool(mode));
   const spaceContext: SpaceSceneContext | null =
     engine !== null && isThreeDimensionalScene
       ? {
@@ -132,15 +167,24 @@ export function SceneCanvas({
           selectedIndex,
           selectedLabel,
           handleMode,
+          brush: areBrushesAvailable && brushKind !== null ? { kind: brushKind, size: brushSize, strength: brushStrength } : null,
           getObjectProperties,
           onSelect,
-          onHandleModeChange: setHandleMode,
+          onHandleModeChange: selectHandleMode,
           onCommitPlacement,
+          onCommitTerrain,
+          onStrokeActiveChange,
         }
       : null;
   const spaceScene = useSpaceSceneInput({ overlayCanvasRef, context: spaceContext, objectsVersion });
   const sceneWidth = sceneSize?.width ?? null;
   const sceneHeight = sceneSize?.height ?? null;
+
+  // «Запуск» и всё, что убирает кисти, — вместо кисти ручки «Перенос»; после «Стопа» остаются ручки.
+  useEffect(() => {
+    const settledTool = settleSelectedTool(selectedTool, areBrushesAvailable);
+    if (settledTool !== selectedTool) setSelectedTool(settledTool);
+  }, [areBrushesAvailable, selectedTool]);
 
   // Внешняя правка или другое действие поменяли объекты во время переноса — «Редактор», крайний
   // случай: перенос отменяется, мир движок уже собрал заново из показанного своей перезагрузкой.
@@ -213,7 +257,7 @@ export function SceneCanvas({
       fillsStageArea || sceneWidth === null || sceneHeight === null ? null : { width: sceneWidth, height: sceneHeight };
 
     function applyLayout(areaWidth: number, areaHeight: number): void {
-      const stageSize = fitSceneStage(areaWidth, areaHeight, knownSceneSize, STAGE_PADDING);
+      const stageSize = fitSceneStage(areaWidth, areaHeight, knownSceneSize, isThreeDimensionalScene ? SPACE_STAGE_PADDING : STAGE_PADDING);
       const pixelRatio = window.devicePixelRatio || 1;
       const layout = computeCanvasLayout(stageSize.width, stageSize.height, pixelRatio);
       if (!stage) return;
@@ -239,7 +283,7 @@ export function SceneCanvas({
     observer.observe(area);
 
     return () => observer.disconnect();
-  }, [canvasRef, engine, sceneWidth, sceneHeight, fillsStageArea, editorCameraStore]);
+  }, [canvasRef, engine, sceneWidth, sceneHeight, fillsStageArea, isThreeDimensionalScene, editorCameraStore]);
 
   useEffect(() => {
     if (!engine) return;
@@ -249,8 +293,10 @@ export function SceneCanvas({
     let frameHandle = 0;
     let stopped = false;
 
-    function frame(): void {
+    function frame(time: number): void {
       if (stopped) return;
+      // Мазок действует в каждом кадре страницы и до отрисовки — сцена сразу показывает новый рельеф.
+      if (isThreeDimensionalSceneRef.current) spaceScene.strokeFrame(time);
       activeEngine.draw();
       if (overlayCanvas && overlayContext) {
         overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
@@ -391,7 +437,21 @@ export function SceneCanvas({
           Сцена {sceneSize.width} × {sceneSize.height}
         </span>
       )}
-      {areHandlesAvailable && <HandleModeToolbar mode={handleMode} onChange={setHandleMode} />}
+      {areHandlesAvailable && (
+        <HandleModeToolbar
+          mode={handleMode}
+          brushKind={brushKind}
+          areBrushesAvailable={areBrushesAvailable}
+          brushSize={brushSize}
+          brushStrength={brushStrength}
+          water={terrainWater}
+          onChange={selectHandleMode}
+          onBrushChange={(kind) => setSelectedTool({ handleMode, brushKind: kind })}
+          onBrushSizeChange={brushFields.onSizeChange}
+          onBrushStrengthChange={brushFields.onStrengthChange}
+          onWaterChange={onWaterChange}
+        />
+      )}
     </div>
   );
 }

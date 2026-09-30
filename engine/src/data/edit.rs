@@ -5,12 +5,13 @@
 
 use serde_json::Value as Json;
 
+use crate::core::game::Game;
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::surface;
 use crate::core::value::{GridSpec, PropKind, Value};
 use crate::core::world::World;
 
-use super::load::{ImageDecl, parse_grid, parse_scalar_value};
+use super::load::{ImageDecl, parse_grid, parse_scalar_value, terrain_from_numbers};
 use crate::data::error::ErrorSink;
 
 /// «Редактор», требование 14: «не больше трёх знаков после запятой и без хвоста машинного
@@ -248,6 +249,57 @@ pub fn add_object(
 /// «Редактор», требование 43: removes a live object outright, freeing its number.
 pub fn delete_object(world: &mut World, id: u32) {
     world.delete(id);
+}
+
+/// «Редактор», «Вызовы движка», `set_terrain`: ставит рельеф в загруженной игре — `heights` строками
+/// сверху вниз, вода — уровень и цвет `#rrggbb`. Ошибка — текстом: чисел не столько, высота или
+/// уровень не число, цвет не цвет, сцена плоская или идёт партия.
+pub fn set_terrain(
+    game: &mut Game,
+    heights: &[f64],
+    water: Option<(f64, &str)>,
+) -> Result<(), String> {
+    if !game.scene.is_3d() {
+        return Err("рельеф есть только у трёхмерной сцены: у scene в game.json нет camera".into());
+    }
+    if game.session_active() {
+        return Err("идёт партия: рельеф правится вне партии".into());
+    }
+    game.set_terrain(terrain_from_numbers(&game.scene, heights, water)?);
+    Ok(())
+}
+
+/// «Редактор», «Вызовы движка», `terrain_heights`: рельеф сцены как его принимает `set_terrain`.
+pub struct TerrainHeights {
+    pub columns: usize,
+    pub rows: usize,
+    pub heights: Vec<f64>,
+    pub water: Option<(f64, String)>,
+}
+
+/// Нынешний рельеф; без файла — нули нужного размера и без воды. `None` в плоской сцене.
+pub fn terrain_heights(game: &Game) -> Option<TerrainHeights> {
+    if !game.scene.is_3d() {
+        return None;
+    }
+    let terrain = game.world.terrain();
+    let (columns, rows) = (
+        2 * game.scene.width as usize + 1,
+        2 * game.scene.height as usize + 1,
+    );
+    let heights = if terrain.heights().is_empty() {
+        vec![0.0; columns * rows]
+    } else {
+        terrain.heights().to_vec()
+    };
+    Some(TerrainHeights {
+        columns,
+        rows,
+        heights,
+        water: terrain
+            .water()
+            .map(|water| (water.level, format_hex_color(water.color))),
+    })
 }
 
 #[cfg(test)]

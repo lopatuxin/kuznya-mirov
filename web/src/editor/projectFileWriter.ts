@@ -26,7 +26,7 @@ async function writeListedFile(source: Extract<ProjectSource, { kind: "listed" }
 
 /**
  * Запись файла в папку с диска через её дескриптор — «Редактор», требования 3–4, 26:
- * `createWritable()` уже открытого разрешения на запись. Отозванное разрешение и любая другая
+ * `createWritable()` уже открытого разрешения на запись; новый файл создаётся. Отозванное разрешение и любая другая
  * ошибка записи гасятся в текст причины, а не бросаются наружу.
  */
 async function writeFolderFile(root: FileSystemDirectoryHandle, relativePath: string, text: string): Promise<FileWriteResult> {
@@ -40,7 +40,8 @@ async function writeFolderFile(root: FileSystemDirectoryHandle, relativePath: st
     for (const segment of segments.slice(0, -1)) {
       directory = await directory.getDirectoryHandle(segment);
     }
-    const fileHandle = await directory.getFileHandle(fileName);
+    // Файла рельефа, что редактор заводит первым мазком, ещё нет — «Кисти рельефа», требование 19.
+    const fileHandle = await directory.getFileHandle(fileName, { create: true });
     const writable = await fileHandle.createWritable();
     await writable.write(text);
     await writable.close();

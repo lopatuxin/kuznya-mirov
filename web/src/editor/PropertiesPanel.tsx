@@ -114,13 +114,13 @@ function EditableTextValue({ text, canEdit, onCommit }: EditableTextValueProps):
   );
 }
 
-type ColorPickerInputProps = { value: string; onCommit: (hex: string) => void };
+type ColorPickerInputProps = { value: string; onCommit: (hex: string) => void; isDisabled?: boolean };
 
 /**
  * Палитра браузера — «Редактор», требование 12: действие при закрытии палитры (`change`), не при
  * каждом движении внутри неё (`input`, который и слушает React `onChange` у обычных полей).
  */
-function ColorPickerInput({ value, onCommit }: ColorPickerInputProps): React.JSX.Element {
+export function ColorPickerInput({ value, onCommit, isDisabled = false }: ColorPickerInputProps): React.JSX.Element {
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -133,7 +133,7 @@ function ColorPickerInput({ value, onCommit }: ColorPickerInputProps): React.JSX
     return () => input.removeEventListener("change", handleChange);
   }, [onCommit]);
 
-  return <input ref={inputRef} type="color" className="property-color-picker" defaultValue={value} />;
+  return <input ref={inputRef} type="color" className="property-color-picker" defaultValue={value} disabled={isDisabled} />;
 }
 
 type PropertyValueControlProps = {

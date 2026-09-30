@@ -124,12 +124,25 @@ export function resolvePutTarget(requestUrl: string, directoryPath: string): Put
   return { status: "ok", filePath, createDirectory: isReplayFile };
 }
 
-/** Тело запроса целиком — раздача `games/` не подключает парсер тела, читает поток сама. */
-function readRequestBody(req: IncomingMessage): Promise<Buffer> {
+/** Предел записи файла проекта — как `client_max_body_size` в `deploy/nginx.conf`: рельеф сцены 256 × 256 клеток — около 1,6 МБ. */
+export const MAX_PUT_BODY_BYTES = 16 * 1024 * 1024;
+
+export class RequestBodyTooLargeError extends Error {}
+
+/**
+ * Тело запроса целиком — раздача `games/` не подключает парсер тела, читает поток сама. Тело больше
+ * `MAX_PUT_BODY_BYTES` дочитывается и отбрасывается, чтобы ответ 413 дошёл до клиента.
+ */
+export function readRequestBody(req: IncomingMessage): Promise<Buffer> {
   return new Promise((resolvePromise, reject) => {
     const chunks: Buffer[] = [];
-    req.on("data", (chunk: Buffer) => chunks.push(chunk));
-    req.on("end", () => resolvePromise(Buffer.concat(chunks)));
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size <= MAX_PUT_BODY_BYTES) chunks.push(chunk);
+      else chunks.length = 0;
+    });
+    req.on("end", () => (size > MAX_PUT_BODY_BYTES ? reject(new RequestBodyTooLargeError()) : resolvePromise(Buffer.concat(chunks))));
     req.on("error", reject);
   });
 }
@@ -185,8 +198,8 @@ function serveGamesFolder(): Plugin {
               res.statusCode = 204;
               res.end();
             })
-            .catch(() => {
-              res.statusCode = 500;
+            .catch((error: unknown) => {
+              res.statusCode = error instanceof RequestBodyTooLargeError ? 413 : 500;
               res.end();
             });
           return;
