@@ -1,4 +1,5 @@
-export type EditSnapshot = { sceneText: string; propertiesText: string };
+/** Текст файлов, которые правит редактор; `terrainText` — `null`, пока у проекта нет файла рельефа («Кисти рельефа», требование 19). */
+export type EditSnapshot = { sceneText: string; propertiesText: string; terrainText: string | null };
 export type SaveState = { status: "saved" } | { status: "unsaved"; reason: string };
 
 export type EditSessionState = {
@@ -18,6 +19,15 @@ export function createEditSessionState(initial: EditSnapshot): EditSessionState 
 /** Действие — требование 20: снимок «до» уходит в историю первым, дальше показан новый текст. */
 export function beginAction(state: EditSessionState, candidate: EditSnapshot): EditSessionState {
   return { ...state, history: [...state.history, state.displayed], displayed: candidate };
+}
+
+/**
+ * Первое изменение рельефа в проекте без файла рельефа — «Кисти рельефа», требование 19: файл
+ * заводится вместе с действием и остаётся после отмены, поэтому снимок «до» получает ровную землю
+ * (`emptyTerrainText`) вместо «файла нет».
+ */
+export function beginTerrainCreation(state: EditSessionState, candidate: EditSnapshot, emptyTerrainText: string): EditSessionState {
+  return beginAction({ ...state, displayed: { ...state.displayed, terrainText: emptyTerrainText } }, candidate);
 }
 
 /**
@@ -45,16 +55,17 @@ export function markUnsaved(state: EditSessionState, reason: string): EditSessio
  * Какие файлы отличаются от `diskTruth` и поэтому должны быть записаны — требование 2: следующее
  * успешное действие или отмена дописывают то, что не записалось раньше, вместе со своей правкой.
  */
-export function dirtyFiles(state: EditSessionState): { scene: boolean; properties: boolean } {
+export function dirtyFiles(state: EditSessionState): { scene: boolean; properties: boolean; terrain: boolean } {
   return {
     scene: state.displayed.sceneText !== state.diskTruth.sceneText,
     properties: state.displayed.propertiesText !== state.diskTruth.propertiesText,
+    terrain: state.displayed.terrainText !== state.diskTruth.terrainText,
   };
 }
 
 /**
  * Перезагрузка прочитала файлы с диска — требования 22–24. Прочитанное совпадает с `diskTruth` по
- * обоим файлам — не внешняя правка, состояние не меняется (несохранённая правка, если она есть,
+ * всем файлам — не внешняя правка, состояние не меняется (несохранённая правка, если она есть,
  * остаётся на экране; вызывающая сторона проверяет её заново). Отличается хотя бы один файл —
  * внешняя правка: в историю уходит показанное до неё, экран получает свежий текст по каждому
  * отличившемуся файлу, второй файл, если он не менялся, остаётся как был показан (несохранённая
@@ -74,13 +85,15 @@ export function isReloadStale(writeCountAtStart: number, currentWriteCount: numb
 export function applyExternalRead(state: EditSessionState, disk: EditSnapshot): EditSessionState {
   const sceneChanged = disk.sceneText !== state.diskTruth.sceneText;
   const propertiesChanged = disk.propertiesText !== state.diskTruth.propertiesText;
-  if (!sceneChanged && !propertiesChanged) return state;
+  const terrainChanged = disk.terrainText !== state.diskTruth.terrainText;
+  if (!sceneChanged && !propertiesChanged && !terrainChanged) return state;
   return {
     ...state,
     history: [...state.history, state.displayed],
     displayed: {
       sceneText: sceneChanged ? disk.sceneText : state.displayed.sceneText,
       propertiesText: propertiesChanged ? disk.propertiesText : state.displayed.propertiesText,
+      terrainText: terrainChanged ? disk.terrainText : state.displayed.terrainText,
     },
     diskTruth: disk,
   };

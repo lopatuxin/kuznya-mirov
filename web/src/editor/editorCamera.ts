@@ -1,8 +1,14 @@
 import type { Engine } from "engine";
 import type { Vec2 } from "./objectPlacement";
 
-/** То, что шлёт `editor_camera` и возвращает `fit_camera`; `target` — точка на земле в середине окна. */
-export type EditorCameraState = { target: [number, number]; yaw: number; pitch: number; distance: number };
+/** То, что возвращает `fit_camera`; `target` — точка вращения в середине окна: место на земле и её высота. */
+export type EditorCameraState = { target: [number, number, number]; yaw: number; pitch: number; distance: number };
+
+/**
+ * То, что шлёт `editor_camera`: `target` из двух чисел — высоту точки вращения движок берёт из рельефа
+ * под ней (автор сам ведёт камеру), из трёх — ровно такую («Кисти рельефа», требование 21).
+ */
+export type EditorCameraRequest = Omit<EditorCameraState, "target"> & { target: [number, number] | [number, number, number] };
 
 /** Вызовы движка, которыми пользуется камера редактора. */
 export type EditorCameraEngine = Pick<Engine, "editor_camera" | "fit_camera">;
@@ -38,9 +44,9 @@ export function orbitCamera(camera: EditorCameraState, deltaX: number, deltaY: n
 /**
  * Сдвиг Shift + средней кнопкой — «Редактор», требование 3: `grabbed` — место земли, за которое
  * взялась мышь, `under` — место земли под указателем сейчас при нынешней камере. Камера сдвигается
- * вместе со своей точкой на разницу, и `grabbed` встаёт под указатель.
+ * вместе со своей точкой на разницу, и `grabbed` встаёт под указатель; высота точки — из рельефа под ней.
  */
-export function panCamera(camera: EditorCameraState, grabbed: Vec2, under: Vec2): EditorCameraState {
+export function panCamera(camera: EditorCameraState, grabbed: Vec2, under: Vec2): EditorCameraRequest {
   return { ...camera, target: [camera.target[0] + grabbed[0] - under[0], camera.target[1] + grabbed[1] - under[1]] };
 }
 
@@ -72,8 +78,8 @@ export function zoomCamera(camera: EditorCameraState, clicks: number, maxDistanc
 export type EditorCameraStore = {
   /** Камера и самое дальнее расстояние; `null` — ещё не было успешной загрузки трёхмерной сцены. */
   current(): { camera: EditorCameraState; maxDistance: number } | null;
-  /** Ставит камеру и шлёт её движку. */
-  update(engine: EditorCameraEngine, camera: EditorCameraState): void;
+  /** Ставит камеру и шлёт её движку; высоту точки вращения, которую тот взял, запоминает. */
+  update(engine: EditorCameraEngine, camera: EditorCameraRequest): void;
   /** После `show_scene`: первая загрузка берёт у движка камеру на всю землю, дальше — прежняя камера. */
   restore(engine: EditorCameraEngine): void;
   /** Холст получил новый размер: камера, которую никто не трогал, снова подбирается на всю землю под это окно. */
@@ -98,9 +104,10 @@ export function createEditorCameraStore(): EditorCameraStore {
     current: () => state,
     update(engine, camera) {
       if (state === null) return;
-      state = { ...state, camera };
+      const height = engine.editor_camera(camera);
+      const target: [number, number, number] = [camera.target[0], camera.target[1], height ?? camera.target[2] ?? state.camera.target[2]];
+      state = { ...state, camera: { ...camera, target } };
       isGroundFit = false;
-      engine.editor_camera(camera);
     },
     restore(engine) {
       if (state === null) {
@@ -121,11 +128,11 @@ export function createEditorCameraStore(): EditorCameraStore {
 
 /**
  * `F` — «Редактор», требование 4: камера подходит к объекту, поворот и наклон прежние (их помнит
- * движок по последней `editor_camera`), расстояние не меньше двух клеток. Без объекта, его `position`
+ * движок по последней `editor_camera`), расстояние не меньше двух клеток, высоту точки вращения берёт рельеф под ней («Кисти рельефа», требование 21). Без объекта, его `position`
  * и `size` и в плоской сцене ничего не меняется.
  */
 export function focusCameraOnObject(store: EditorCameraStore, engine: EditorCameraEngine, objectId: number): void {
   const fitted = engine.fit_camera(objectId) as EditorCameraState | undefined;
   if (fitted === undefined) return;
-  store.update(engine, { ...fitted, distance: Math.max(MIN_DISTANCE, fitted.distance) });
+  store.update(engine, { ...fitted, target: [fitted.target[0], fitted.target[1]], distance: Math.max(MIN_DISTANCE, fitted.distance) });
 }

@@ -71,6 +71,16 @@ describe("writeProjectFile — папка с диска", () => {
     expect(written).toEqual(['{"objects":[]}']);
   });
 
+  it("нового файла ещё нет — его создаёт запись: файл рельефа заводится первым мазком", async () => {
+    const getFileHandle = vi.fn(async () => ({ createWritable: async () => ({ write: async () => {}, close: async () => {} }) }) as unknown as FileSystemFileHandle);
+    const handle = { getFileHandle, getDirectoryHandle: vi.fn() } as unknown as FileSystemDirectoryHandle;
+
+    const result = await writeProjectFile({ kind: "folder", handle, displayName: "проект" }, "terrain.json", "{}");
+
+    expect(result).toEqual({ ok: true });
+    expect(getFileHandle).toHaveBeenCalledWith("terrain.json", { create: true });
+  });
+
   it("отказ записи (например, отозванное разрешение) — причина текстом ошибки", async () => {
     const source = createFolderSource(async () => {
       throw new Error("NotAllowedError");

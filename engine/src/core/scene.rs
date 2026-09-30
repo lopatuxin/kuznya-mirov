@@ -602,6 +602,29 @@ pub fn pointer_hit(
     })
 }
 
+/// «Редактор», «Вызовы движка», `terrain_at`: место с высотой под точкой окна `window` камеры — где луч
+/// первым встретил рельеф в пределах сцены, минуя воду, настилы и объекты; ровная земля высоты 0, пока
+/// файла рельефа нет. `None`, если луч не идёт вниз или проходит мимо рельефа сцены.
+pub fn terrain_hit(
+    world: &World,
+    scene: &SceneConfig,
+    camera: &super::camera::Camera3d,
+    window: [f64; 2],
+) -> Option<super::math3::Vec3> {
+    let direction = camera.ray_direction(window);
+    if direction[2] >= 0.0 {
+        return None;
+    }
+    let t = world
+        .terrain()
+        .ray_hit(scene_extent(scene), camera.eye, direction)?;
+    Some([
+        camera.eye[0] + t * direction[0],
+        camera.eye[1] + t * direction[1],
+        camera.eye[2] + t * direction[2],
+    ])
+}
+
 /// Высота верхней поверхности в точке: верх самого высокого настила над ней, иначе рельеф.
 pub fn top_surface_height(world: &World, point: super::value::Vec2) -> f64 {
     surface::decks(world)

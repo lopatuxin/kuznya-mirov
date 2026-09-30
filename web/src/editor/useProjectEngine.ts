@@ -12,8 +12,11 @@ import { createRecordingProjectFileReader } from "./recordingProjectFileReader";
 import { createReloadDebouncer } from "./reloadDebouncer";
 import { createSerialQueue } from "./serialQueue";
 
-/** Текст `scene.json`/`properties.json`, который правка держит в памяти вместо прочитанного с диска. */
-export type EditedTexts = { sceneText?: string; propertiesText?: string };
+/**
+ * Тексты, которые правка держит в памяти вместо прочитанных с диска: `game.json` (первый мазок дописывает
+ * в него `files.terrain`), `scene.json`, `properties.json` и рельеф. `terrainText` `null` — файла рельефа нет.
+ */
+export type EditedTexts = { gameJsonText?: string; sceneText?: string; propertiesText?: string; terrainText?: string | null };
 
 export type ProjectEngineState = {
   engine: Engine | null;
@@ -46,6 +49,17 @@ export type ProjectEngineState = {
   setCachedText: (relativePath: string, text: string) => void;
   /** Сколько раз редактор записал файл — требование 24, сравнивается с меткой из `onFullReload`. */
   getWriteCount: () => number;
+  /** Файл по пути есть в проекте — имя нового файла рельефа не должно затереть чужой («Кисти рельефа», требование 19). */
+  isFilePresent: (relativePath: string) => Promise<boolean>;
+};
+
+const NO_EDITING_API = {
+  runEditedLoad: null,
+  getCachedText: () => undefined,
+  setCachedText: () => {},
+  getWriteCount: () => 0,
+  isFilePresent: () => Promise.resolve(false),
+  setReloadGateOpen: () => {},
 };
 
 function formatEngineBootError(error: unknown): string {
@@ -79,13 +93,9 @@ export function useProjectEngine(
   const [headerNotice, setHeaderNotice] = useState<string | null>(null);
   const [engineError, setEngineError] = useState<string | null>(null);
   const [hasQueuedReload, setHasQueuedReload] = useState(false);
-  const [editingApi, setEditingApi] = useState<Pick<ProjectEngineState, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount" | "setReloadGateOpen">>({
-    runEditedLoad: null,
-    getCachedText: () => undefined,
-    setCachedText: () => {},
-    getWriteCount: () => 0,
-    setReloadGateOpen: () => {},
-  });
+  const [editingApi, setEditingApi] = useState<
+    Pick<ProjectEngineState, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount" | "isFilePresent" | "setReloadGateOpen">
+  >(NO_EDITING_API);
 
   // Обёртка над последним `onFullReload`, чтобы её не пришлось класть в зависимости эффекта —
   // иначе новая инлайн-функция от вызывающей стороны на каждом рендере перезаводила бы движок.
@@ -209,20 +219,22 @@ export function useProjectEngine(
       }
 
       /**
-       * Загрузка по правке — «Редактор», требование 1: пути `scene.json`/`properties.json` берутся
-       * из последнего прочитанного `game.json` (как их назвал автор игры в `files`), сами тексты —
-       * из `edited`, остальное — из кэша настоящей загрузки, без сети и диска.
+       * Загрузка по правке — «Редактор», требование 1: пути `scene.json`/`properties.json`/рельефа берутся
+       * из `game.json` правки, а без него — из последнего прочитанного (как их назвал автор игры в `files`),
+       * сами тексты — из `edited`, остальное — из кэша настоящей загрузки, без сети и диска.
        */
       async function runEditedLoad(edited: EditedTexts): Promise<ProjectLoadResult> {
         return runQueued(async () => {
           if (cancelled || lastGameJsonText === null) return { status: "entry-missing" } as ProjectLoadResult;
-          const paths = parseProjectFilePaths(lastGameJsonText);
+          const gameJsonText = edited.gameJsonText ?? lastGameJsonText;
+          const paths = parseProjectFilePaths(gameJsonText);
           if (paths === null) return { status: "entry-missing" } as ProjectLoadResult;
           const overrides: Record<string, string> = {};
           if (edited.sceneText !== undefined) overrides[paths.scene] = edited.sceneText;
           if (edited.propertiesText !== undefined) overrides[paths.properties] = edited.propertiesText;
+          if (edited.terrainText !== undefined && edited.terrainText !== null && paths.terrain !== null) overrides[paths.terrain] = edited.terrainText;
           const overrideReader = createOverridingReader(cache.cachedReader, overrides);
-          const loadResult = await loadProject(engineInstance, overrideReader, lastGameJsonText, () => audioContext);
+          const loadResult = await loadProject(engineInstance, overrideReader, gameJsonText, () => audioContext);
           if (cancelled) return loadResult;
           if (loadResult.status === "ok") showScene();
           setResult(loadResult);
@@ -261,7 +273,15 @@ export function useProjectEngine(
       // ещё одну перезагрузку следом за идущей.
       disposeWatch = source.kind === "folder" ? watchFolderProject(source.handle, notifyChanged, setHeaderNotice) : () => {};
 
-      setEditingApi({ runEditedLoad, getCachedText: cache.getCachedText, setCachedText: cache.setCachedText, getWriteCount: cache.getWriteCount, setReloadGateOpen });
+      setEditingApi({
+        runEditedLoad,
+        getCachedText: cache.getCachedText,
+        setCachedText: cache.setCachedText,
+        getWriteCount: cache.getWriteCount,
+        // Мимо кэша и записи путей опроса: чужой файл, которого проект не читает, не должен попасть в опрос.
+        isFilePresent: async (relativePath) => (await baseReader.readText(relativePath)) !== null,
+        setReloadGateOpen,
+      });
 
       await debouncer.runNow();
     }
@@ -273,7 +293,7 @@ export function useProjectEngine(
       disposeWatch?.();
       disposePoll?.();
       disposeDebouncer?.();
-      setEditingApi({ runEditedLoad: null, getCachedText: () => undefined, setCachedText: () => {}, getWriteCount: () => 0, setReloadGateOpen: () => {} });
+      setEditingApi(NO_EDITING_API);
       setHasQueuedReload(false);
       setMemory(null);
       void activeQueueTail.finally(() => {

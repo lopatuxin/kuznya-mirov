@@ -1089,18 +1089,107 @@ body.is-resizing-panel {
   display: block;
 }
 
-/* Виды ручек — в поле над сценой: высота и отступ вместе меньше STAGE_PADDING, кнопки не наезжают на сцену. */
+/* Виды ручек, кисти и поля кисти — в поле над сценой, в два ряда: кнопки, под ними поля. Отступ, высота рядов
+   и промежуток вместе меньше SPACE_STAGE_PADDING, поэтому полоса не наезжает на сцену и не выходит за свою часть окна. */
 .scene-view__tools {
   position: absolute;
-  top: 2px;
+  top: 3px;
   left: 10px;
+  right: 10px;
   display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.scene-view__tool-row {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Группа инструментов — рамка с подписью слева: «Объект», «Рельеф», «Кисть», «Вода». Высота 26 px:
+   два ряда с промежутком и отступом сверху укладываются в STAGE_PADDING трёхмерной сцены. */
+.scene-view__panel {
+  flex: none;
+  display: flex;
+  align-items: center;
   gap: 2px;
+  height: 26px;
+  padding: 0 2px 0 0;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 7px;
+  background: var(--editor-surface);
+}
+
+.scene-view__panel--fields {
+  gap: 10px;
+  padding-right: 8px;
+}
+
+.scene-view__panel-caption {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  align-self: stretch;
+  margin-right: 2px;
+  padding: 0 8px;
+  border-right: 1px solid var(--editor-border-strong);
+  color: var(--editor-text-faint);
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  user-select: none;
+}
+
+.scene-view__panel-caption--toggle {
+  cursor: pointer;
+}
+
+.scene-view__panel-caption--toggle input {
+  margin: 0;
 }
 
 .scene-view__tool {
-  height: 24px;
-  padding: 0 8px;
+  justify-content: center;
+  width: 26px;
+  height: 22px;
+  padding: 0;
+  border-radius: 5px;
+}
+
+.scene-view__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--editor-text-muted);
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.scene-view__field-input {
+  width: 48px;
+  height: 22px;
+  padding: 0 5px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 5px;
+  background: var(--editor-bg);
+  color: var(--editor-text);
+  font: 12px var(--editor-font-mono);
+}
+
+.scene-view__field-input:focus {
+  border-color: var(--editor-accent-ring);
+  outline: none;
+}
+
+.scene-view__field-input:disabled {
+  opacity: 0.4;
 }
 
 .scene-view__tool--active,

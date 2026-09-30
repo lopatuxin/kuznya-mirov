@@ -8,16 +8,24 @@ import {
   wheelClicks,
   zoomCamera,
   type EditorCameraEngine,
+  type EditorCameraRequest,
   type EditorCameraState,
 } from "./editorCamera";
 
-const CAMERA: EditorCameraState = { target: [16, 12], yaw: 0, pitch: 55, distance: 40 };
+const CAMERA: EditorCameraState = { target: [16, 12, 0], yaw: 0, pitch: 55, distance: 40 };
 
-function fakeEngine(fitted: EditorCameraState | undefined): { engine: EditorCameraEngine; sent: EditorCameraState[]; fitCalls: unknown[] } {
-  const sent: EditorCameraState[] = [];
+/** `terrainHeight` — высота рельефа под точкой вращения: её движок берёт, когда `target` из двух чисел. */
+function fakeEngine(
+  fitted: EditorCameraState | undefined,
+  terrainHeight = 0,
+): { engine: EditorCameraEngine; sent: EditorCameraRequest[]; fitCalls: unknown[] } {
+  const sent: EditorCameraRequest[] = [];
   const fitCalls: unknown[] = [];
   const engine = {
-    editor_camera: (camera: EditorCameraState) => sent.push(camera),
+    editor_camera: (camera: EditorCameraRequest) => {
+      sent.push(camera);
+      return camera.target[2] ?? terrainHeight;
+    },
     fit_camera: (id?: number | null) => {
       fitCalls.push(id);
       return fitted;
@@ -169,6 +177,44 @@ describe("createEditorCameraStore", () => {
   });
 });
 
+describe("высота точки вращения", () => {
+  it("вращение и колесо шлют высоту точки ровно, какой она была", () => {
+    const store = createEditorCameraStore();
+    const { engine, sent } = fakeEngine({ ...CAMERA, target: [16, 12, 3.4] }, 9);
+    store.restore(engine);
+    sent.length = 0;
+
+    store.update(engine, orbitCamera(store.current()?.camera as EditorCameraState, 30, 10));
+    store.update(engine, zoomCamera(store.current()?.camera as EditorCameraState, -1, 120));
+
+    expect(sent.map((camera) => camera.target)).toEqual([[16, 12, 3.4], [16, 12, 3.4]]);
+    expect(store.current()?.camera.target).toEqual([16, 12, 3.4]);
+  });
+
+  it("сдвиг Shift шлёт два числа — высоту берёт рельеф под новой точкой, и страница её запоминает", () => {
+    const store = createEditorCameraStore();
+    const { engine, sent } = fakeEngine(CAMERA, 1.5);
+    store.restore(engine);
+    sent.length = 0;
+
+    store.update(engine, panCamera(store.current()?.camera as EditorCameraState, [10, 8], [12, 7]));
+
+    expect(sent[0]?.target).toEqual([14, 13]);
+    expect(store.current()?.camera.target).toEqual([14, 13, 1.5]);
+  });
+
+  it("перезагрузка файлов возвращает движку ту же высоту точки, даже если рельеф под ней сменился", () => {
+    const store = createEditorCameraStore();
+    const { engine } = fakeEngine({ ...CAMERA, target: [16, 12, 3.4] });
+    store.restore(engine);
+
+    const reloaded = fakeEngine(undefined, 0);
+    store.restore(reloaded.engine);
+
+    expect(reloaded.sent[0]?.target).toEqual([16, 12, 3.4]);
+  });
+});
+
 describe("focusCameraOnObject", () => {
   it("ставит камеру, что вернул движок, и запоминает её", () => {
     const store = createEditorCameraStore();
@@ -177,12 +223,12 @@ describe("focusCameraOnObject", () => {
     fitCalls.length = 0;
     sent.length = 0;
 
-    const objectCamera = { target: [6, 13] as [number, number], yaw: 20, pitch: 40, distance: 9 };
-    const focusEngine = fakeEngine(objectCamera);
+    const objectCamera: EditorCameraState = { target: [6, 13, 0.7], yaw: 20, pitch: 40, distance: 9 };
+    const focusEngine = fakeEngine(objectCamera, 2.5);
     focusCameraOnObject(store, focusEngine.engine, 12);
     expect(focusEngine.fitCalls).toEqual([12]);
-    expect(focusEngine.sent).toEqual([objectCamera]);
-    expect(store.current()?.camera).toEqual(objectCamera);
+    expect(focusEngine.sent).toEqual([{ ...objectCamera, target: [6, 13] }]);
+    expect(store.current()?.camera).toEqual({ ...objectCamera, target: [6, 13, 2.5] });
   });
 
   it("расстояние не меньше двух клеток — у маленького объекта ставится 2", () => {

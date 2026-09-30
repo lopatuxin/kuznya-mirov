@@ -2,12 +2,41 @@ import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildGamesFileResponse, isPathWithinDirectory, resolveGameFilePath, resolvePutTarget, writeGamesFileAtomically } from "./vite.config";
+import { Readable } from "node:stream";
+import type { IncomingMessage } from "node:http";
+import {
+  buildGamesFileResponse,
+  isPathWithinDirectory,
+  MAX_PUT_BODY_BYTES,
+  readRequestBody,
+  RequestBodyTooLargeError,
+  resolveGameFilePath,
+  resolvePutTarget,
+  writeGamesFileAtomically,
+} from "./vite.config";
 
 // Файл называется не vite.config.*, потому что vitest по умолчанию исключает из тестов любой
 // файл вида vite.config.* (чтобы не принять сам конфиг за тест) — под этот шаблон попал бы и
 // vite.config.test.ts.
 const gamesDir = resolve("/project/games");
+
+describe("readRequestBody", () => {
+  function requestOf(...chunks: Buffer[]): IncomingMessage {
+    return Readable.from(chunks) as unknown as IncomingMessage;
+  }
+
+  it("принимает тело до 16 МБ — рельеф сцены 256 × 256 клеток около 1,6 МБ", async () => {
+    const body = Buffer.alloc(2 * 1024 * 1024, "a");
+    expect((await readRequestBody(requestOf(body))).equals(body)).toBe(true);
+    expect(MAX_PUT_BODY_BYTES).toBe(16 * 1024 * 1024);
+  });
+
+  it("тело ровно в предел проходит, на байт больше — отказ", async () => {
+    const limit = Buffer.alloc(MAX_PUT_BODY_BYTES, "a");
+    expect((await readRequestBody(requestOf(limit))).length).toBe(MAX_PUT_BODY_BYTES);
+    await expect(readRequestBody(requestOf(limit, Buffer.from("a")))).rejects.toBeInstanceOf(RequestBodyTooLargeError);
+  });
+});
 
 describe("isPathWithinDirectory", () => {
   it("пропускает путь внутри каталога", () => {

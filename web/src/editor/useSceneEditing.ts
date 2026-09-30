@@ -28,9 +28,11 @@ import {
   setObjectPropertyValue,
   setObjectPropertyValues,
 } from "./sceneTextEditing";
-import { parseSceneObjects, resolveSelectionAfterReload } from "./sceneObjects";
+import { parseSceneObjects, resolveSelectionAfterReload, type SceneSize } from "./sceneObjects";
 import { createSerialQueue } from "./serialQueue";
 import type { ProjectSource } from "./projectSource";
+import { planTerrainEdit } from "./terrainEditing";
+import { terrainTextWithHeights, terrainTextWithWater, type TerrainGrid, type TerrainWater } from "./terrainFile";
 import { useProjectEngine } from "./useProjectEngine";
 
 export type SceneEditingState = {
@@ -46,6 +48,8 @@ export type SceneEditingState = {
   /** Текст `scene.json`/`properties.json`, показанный сейчас — может быть несохранённым (требование 2). `null` — правка недоступна. */
   sceneText: string | null;
   propertiesText: string | null;
+  /** Текст файла рельефа, показанный сейчас; `null` — у проекта нет файла рельефа. */
+  terrainText: string | null;
   saveState: SaveState;
   canUndo: boolean;
   selectedIndex: number | null;
@@ -54,6 +58,10 @@ export type SceneEditingState = {
   moveObject: (objectIndex: number, position: readonly [number, number]) => void;
   /** Ручки трёхмерной сцены: все изменившиеся свойства объекта — одна правка текста и одна отмена. */
   transformObject: (objectIndex: number, changes: PlacementChange[]) => void;
+  /** Кисти рельефа: мазок — высоты всей сетки, одно действие; первый мазок в проекте без рельефа заводит файл («Кисти рельефа», требования 18–19). */
+  paintTerrain: (grid: TerrainGrid) => void;
+  /** Вода рельефа: `null` — воды нет; каждое принятое значение — одно действие (требование 23). */
+  setTerrainWater: (water: TerrainWater | null) => void;
   setPropertyValue: (objectIndex: number, key: string, value: unknown) => void;
   removeProperty: (objectIndex: number, key: string) => void;
   addProperty: (objectIndex: number, key: string, value: unknown) => void;
@@ -64,6 +72,8 @@ export type SceneEditingState = {
 
 /** «Редактор», требование 2: строка «Не сохранено — в проекте ошибки» — сами ошибки уже видны в панели ниже. */
 const REJECTED_REASON = "в проекте ошибки";
+
+const GAME_JSON_PATH = "game.json";
 
 function shiftCopiedPosition(object: Record<string, unknown>): Record<string, unknown> {
   const position = object.position;
@@ -79,7 +89,9 @@ function shiftCopiedPosition(object: Record<string, unknown>): Record<string, un
 export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, source: ProjectSource): SceneEditingState {
   const [, forceRender] = useReducer((tick: number) => tick + 1, 0);
   const sessionRef = useRef<EditSessionState | null>(null);
+  // `game.json` показанный и лежащий на диске: первый мазок дописывает в него `files.terrain` раньше записи.
   const gameJsonTextRef = useRef<string | null>(null);
+  const diskGameJsonTextRef = useRef<string | null>(null);
   const [selectedIndex, setSelectedIndexState] = useState<number | null>(null);
 
   function updateSession(next: EditSessionState | null): void {
@@ -91,11 +103,12 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   // начинается после проверки и записи предыдущего, отмена и внешняя правка встают в ту же очередь.
   const actionQueue = useMemo(() => createSerialQueue(), [source]);
 
-  const engineApiRef = useRef<Pick<ReturnType<typeof useProjectEngine>, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount">>({
+  const engineApiRef = useRef<Pick<ReturnType<typeof useProjectEngine>, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount" | "isFilePresent">>({
     runEditedLoad: null,
     getCachedText: () => undefined,
     setCachedText: () => {},
     getWriteCount: () => 0,
+    isFilePresent: () => Promise.resolve(false),
   });
 
   /**
@@ -108,7 +121,12 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     const runEditedLoad = engineApiRef.current.runEditedLoad;
     if (runEditedLoad === null) return;
 
-    const result = await runEditedLoad({ sceneText: current.displayed.sceneText, propertiesText: current.displayed.propertiesText });
+    const result = await runEditedLoad({
+      gameJsonText: gameJsonTextRef.current ?? undefined,
+      sceneText: current.displayed.sceneText,
+      propertiesText: current.displayed.propertiesText,
+      terrainText: current.displayed.terrainText,
+    });
     const afterLoad = sessionRef.current;
     if (afterLoad === null) return;
 
@@ -118,18 +136,25 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     }
 
     const paths = parseProjectFilePaths(gameJsonTextRef.current);
-    const dirty = paths === null ? { scene: false, properties: false } : dirtyFiles(afterLoad);
+    const dirty = paths === null ? { scene: false, properties: false, terrain: false } : dirtyFiles(afterLoad);
     let failureReason: string | null = paths === null ? "не удалось определить пути файлов проекта" : null;
 
-    if (paths !== null && dirty.scene) {
-      const writeResult = await writeProjectFile(source, paths.scene, afterLoad.displayed.sceneText);
-      if (writeResult.ok) engineApiRef.current.setCachedText(paths.scene, afterLoad.displayed.sceneText);
-      else failureReason = writeResult.reason;
-    }
-    if (paths !== null && dirty.properties && failureReason === null) {
-      const writeResult = await writeProjectFile(source, paths.properties, afterLoad.displayed.propertiesText);
-      if (writeResult.ok) engineApiRef.current.setCachedText(paths.properties, afterLoad.displayed.propertiesText);
-      else failureReason = writeResult.reason;
+    // Рельеф раньше `game.json`: ключ `files.terrain` не должен указывать на файл, которого ещё нет.
+    const writes = [
+      { path: paths?.scene, text: afterLoad.displayed.sceneText, isDirty: dirty.scene },
+      { path: paths?.properties, text: afterLoad.displayed.propertiesText, isDirty: dirty.properties },
+      { path: paths?.terrain, text: afterLoad.displayed.terrainText, isDirty: dirty.terrain },
+      { path: GAME_JSON_PATH, text: gameJsonTextRef.current, isDirty: gameJsonTextRef.current !== diskGameJsonTextRef.current },
+    ];
+    for (const write of writes) {
+      if (!write.isDirty || failureReason !== null || write.path == null || write.text === null) continue;
+      const writeResult = await writeProjectFile(source, write.path, write.text);
+      if (!writeResult.ok) {
+        failureReason = writeResult.reason;
+        continue;
+      }
+      engineApiRef.current.setCachedText(write.path, write.text);
+      if (write.path === GAME_JSON_PATH) diskGameJsonTextRef.current = write.text;
     }
 
     const afterWrite = sessionRef.current;
@@ -144,7 +169,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       if (current === null) return;
       const candidate = build(current.displayed);
       if (candidate === null) return;
-      if (candidate.sceneText === current.displayed.sceneText && candidate.propertiesText === current.displayed.propertiesText) return;
+      const { sceneText, propertiesText, terrainText } = current.displayed;
+      if (candidate.sceneText === sceneText && candidate.propertiesText === propertiesText && candidate.terrainText === terrainText) return;
       updateSession(beginAction(current, candidate));
       await syncCurrent();
     });
@@ -164,18 +190,22 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       }
       if (result.status === "entry-missing") {
         gameJsonTextRef.current = null;
+        diskGameJsonTextRef.current = null;
         updateSession(null);
         return;
       }
-      gameJsonTextRef.current = result.gameJsonText;
+      // Показанный `game.json` может опережать диск (ключ рельефа, что ещё не записан): чужая правка `game.json` его заменяет, своя нет.
+      if (result.gameJsonText !== diskGameJsonTextRef.current) gameJsonTextRef.current = result.gameJsonText;
+      diskGameJsonTextRef.current = result.gameJsonText;
       const paths = parseProjectFilePaths(result.gameJsonText);
       const sceneText = result.sceneText;
       const propertiesText = paths === null ? null : (getCachedText(paths.properties) ?? null);
-      if (paths === null || sceneText === null || propertiesText === null) {
+      const terrainText = paths?.terrain == null ? null : (getCachedText(paths.terrain) ?? null);
+      if (paths === null || sceneText === null || propertiesText === null || (paths.terrain !== null && terrainText === null)) {
         updateSession(null);
         return;
       }
-      const disk: EditSnapshot = { sceneText, propertiesText };
+      const disk: EditSnapshot = { sceneText, propertiesText, terrainText };
       const current = sessionRef.current;
       if (current === null) {
         updateSession(createEditSessionState(disk));
@@ -195,6 +225,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       getCachedText: engineState.getCachedText,
       setCachedText: engineState.setCachedText,
       getWriteCount: engineState.getWriteCount,
+      isFilePresent: engineState.isFilePresent,
     };
   });
 
@@ -202,6 +233,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   useEffect(() => {
     sessionRef.current = null;
     gameJsonTextRef.current = null;
+    diskGameJsonTextRef.current = null;
     setSelectedIndexState(null);
     forceRender();
   }, [source]);
@@ -234,7 +266,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       if (object === undefined || object === null || typeof object !== "object" || Array.isArray(object)) return null;
       const current = (object as Record<string, unknown>).position;
       if (Array.isArray(current) && current[0] === position[0] && current[1] === position[1]) return null;
-      return { sceneText: setObjectPropertyValue(displayed.sceneText, objectIndex, "position", [position[0], position[1]]), propertiesText: displayed.propertiesText };
+      return { ...displayed, sceneText: setObjectPropertyValue(displayed.sceneText, objectIndex, "position", [position[0], position[1]]) };
     });
   }
 
@@ -243,8 +275,30 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       const object = parseSceneObjects(displayed.sceneText)[objectIndex];
       if (object === undefined || object === null || typeof object !== "object" || Array.isArray(object)) return null;
       const values = Object.fromEntries(changes.map((change) => [change.key, change.value]));
-      return { sceneText: setObjectPropertyValues(displayed.sceneText, objectIndex, values), propertiesText: displayed.propertiesText };
+      return { ...displayed, sceneText: setObjectPropertyValues(displayed.sceneText, objectIndex, values) };
     });
+  }
+
+  /** Действие с рельефом: проект без файла рельефа получает его первым действием («Кисти рельефа», требование 19). */
+  function dispatchTerrainEdit(build: (displayed: EditSnapshot, sceneSize: SceneSize) => string | null): void {
+    void actionQueue.run(async () => {
+      const current = sessionRef.current;
+      const gameJsonText = gameJsonTextRef.current;
+      if (current === null || gameJsonText === null) return;
+      const plan = await planTerrainEdit(current, gameJsonText, engineApiRef.current.isFilePresent, build);
+      if (plan === null) return;
+      gameJsonTextRef.current = plan.gameJsonText;
+      updateSession(plan.state);
+      await syncCurrent();
+    });
+  }
+
+  function paintTerrain(grid: TerrainGrid): void {
+    dispatchTerrainEdit((displayed) => terrainTextWithHeights(displayed.terrainText, grid));
+  }
+
+  function setTerrainWater(water: TerrainWater | null): void {
+    dispatchTerrainEdit((displayed, sceneSize) => terrainTextWithWater(displayed.terrainText, sceneSize, water));
   }
 
   function setPropertyValue(objectIndex: number, key: string, value: unknown): void {
@@ -252,20 +306,21 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       const objects = parseSceneObjects(displayed.sceneText);
       const object = objects[objectIndex] as Record<string, unknown> | undefined;
       if (object === undefined || JSON.stringify(object[key]) === JSON.stringify(value)) return null;
-      return { sceneText: setObjectPropertyValue(displayed.sceneText, objectIndex, key, value), propertiesText: displayed.propertiesText };
+      return { ...displayed, sceneText: setObjectPropertyValue(displayed.sceneText, objectIndex, key, value) };
     });
   }
 
   function removeProperty(objectIndex: number, key: string): void {
-    dispatchEdit((displayed) => ({ sceneText: removeObjectProperty(displayed.sceneText, objectIndex, key), propertiesText: displayed.propertiesText }));
+    dispatchEdit((displayed) => ({ ...displayed, sceneText: removeObjectProperty(displayed.sceneText, objectIndex, key) }));
   }
 
   function addProperty(objectIndex: number, key: string, value: unknown): void {
-    dispatchEdit((displayed) => ({ sceneText: addObjectProperty(displayed.sceneText, objectIndex, key, value), propertiesText: displayed.propertiesText }));
+    dispatchEdit((displayed) => ({ ...displayed, sceneText: addObjectProperty(displayed.sceneText, objectIndex, key, value) }));
   }
 
   function declareProperty(objectIndex: number, key: string, kind: PropertyKind, value: unknown): void {
     dispatchEdit((displayed) => ({
+      ...displayed,
       sceneText: addObjectProperty(displayed.sceneText, objectIndex, key, value),
       propertiesText: declarePropertyKind(displayed.propertiesText, key, kind),
     }));
@@ -279,7 +334,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       const object = objects[objectIndex];
       if (object === undefined) return;
       const copy = object !== null && typeof object === "object" && !Array.isArray(object) ? shiftCopiedPosition(object as Record<string, unknown>) : object;
-      const candidate: EditSnapshot = { sceneText: appendSceneObject(current.displayed.sceneText, objects.length, copy), propertiesText: current.displayed.propertiesText };
+      const candidate: EditSnapshot = { ...current.displayed, sceneText: appendSceneObject(current.displayed.sceneText, objects.length, copy) };
       updateSession(beginAction(current, candidate));
       setSelectedIndexState(objects.length);
       await syncCurrent();
@@ -292,7 +347,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       if (current === null) return;
       const objects = parseSceneObjects(current.displayed.sceneText);
       if (objects[objectIndex] === undefined) return;
-      const candidate: EditSnapshot = { sceneText: removeSceneObject(current.displayed.sceneText, objectIndex), propertiesText: current.displayed.propertiesText };
+      const candidate: EditSnapshot = { ...current.displayed, sceneText: removeSceneObject(current.displayed.sceneText, objectIndex) };
       updateSession(beginAction(current, candidate));
       setSelectedIndexState(null);
       await syncCurrent();
@@ -311,6 +366,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     setReloadGateOpen: engineState.setReloadGateOpen,
     sceneText: session?.displayed.sceneText ?? null,
     propertiesText: session?.displayed.propertiesText ?? null,
+    terrainText: session?.displayed.terrainText ?? null,
     saveState: session?.saveState ?? { status: "saved" },
     canUndo: (session?.history.length ?? 0) > 0,
     selectedIndex,
@@ -318,6 +374,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     undo,
     moveObject,
     transformObject,
+    paintTerrain,
+    setTerrainWater,
     setPropertyValue,
     removeProperty,
     addProperty,

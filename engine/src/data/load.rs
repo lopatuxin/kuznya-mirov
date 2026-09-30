@@ -1277,11 +1277,7 @@ fn parse_water(value: &Json, file: &str, errors: &mut ErrorSink) -> Option<Water
         .and_then(|v| expect_string(v, file, "water → color", errors))
         .and_then(|s| {
             parse_hex_color(&s).or_else(|| {
-                errors.push(
-                    file,
-                    "water → color",
-                    format!("цвет должен быть вида \"#rrggbb\", получено \"{s}\""),
-                );
+                errors.push(file, "water → color", not_a_water_color(&s));
                 None
             })
         });
@@ -1289,6 +1285,49 @@ fn parse_water(value: &Json, file: &str, errors: &mut ErrorSink) -> Option<Water
         level: level?,
         color: color?,
     })
+}
+
+fn not_a_water_color(s: &str) -> String {
+    format!("цвет должен быть вида \"#rrggbb\", получено \"{s}\"")
+}
+
+/// «Редактор», `set_terrain`: рельеф сцены из `heights` — строки сетки подряд сверху вниз — и воды
+/// `(уровень, цвет)`. Проверка чисел и цвета — как у файла рельефа, тексты — в том же виде.
+pub fn terrain_from_numbers(
+    scene: &SceneConfig,
+    heights: &[f64],
+    water: Option<(f64, &str)>,
+) -> Result<Terrain, String> {
+    let (want_rows, want_columns) = (2 * scene.height as usize + 1, 2 * scene.width as usize + 1);
+    if heights.len() != want_rows * want_columns {
+        return Err(format!(
+            "heights: {} чисел, а нужно {}: (2 × {} + 1) строк по (2 × {} + 1) чисел",
+            heights.len(),
+            want_rows * want_columns,
+            scene.height,
+            scene.width
+        ));
+    }
+    if let Some(index) = heights.iter().position(|h| !h.is_finite()) {
+        return Err(format!(
+            "heights[{}][{}]: ожидалось число, получено {}",
+            index / want_columns,
+            index % want_columns,
+            heights[index]
+        ));
+    }
+    let water = water
+        .map(|(level, color)| {
+            if !level.is_finite() {
+                return Err(format!("water → level: ожидалось число, получено {level}"));
+            }
+            parse_hex_color(color)
+                .map(|color| Water { level, color })
+                .ok_or_else(|| format!("water → color: {}", not_a_water_color(color)))
+        })
+        .transpose()?;
+    let rows: Vec<Vec<f64>> = heights.chunks(want_columns).map(<[f64]>::to_vec).collect();
+    Terrain::from_rows([scene.width, scene.height], &rows, water)
 }
 
 fn parse_properties_json(text: &str, file: &str, errors: &mut ErrorSink) -> PropertyTable {

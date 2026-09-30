@@ -9,10 +9,11 @@ import { ObjectList } from "./ObjectList";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
+import { readTerrainWater } from "./terrainFile";
 import { parseProjectImageNames } from "./projectFiles";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
-import { SceneCanvas } from "./SceneCanvas";
+import { SceneCanvas, type BrushFields } from "./SceneCanvas";
 import { fallbackDisplayName, type ProjectSource } from "./projectSource";
 import {
   buildObjectPropertiesView,
@@ -27,7 +28,7 @@ import { useBattleSession } from "./useBattleSession";
 import { useSceneEditing } from "./useSceneEditing";
 import { useStoredPanelWidth } from "./useStoredPanelWidth";
 
-type ProjectWindowProps = { source: ProjectSource; onBackToProjects: () => void };
+type ProjectWindowProps = { source: ProjectSource; onBackToProjects: () => void; brushFields: BrushFields };
 
 const PANEL_MIN_SHRUNK_WIDTH = 170;
 const SCENE_MIN_WIDTH = 320;
@@ -92,10 +93,10 @@ function isEditableElementFocused(): boolean {
  * панели автор растягивает мышью за их внутренний край. Партия, пауза и повтор («Редактор», фаза 10)
  * подменяют живыми данными из движка то, что вне них список и свойства берут из текста файлов.
  */
-export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps): React.JSX.Element {
+export function ProjectWindow({ source, onBackToProjects, brushFields }: ProjectWindowProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneEditing = useSceneEditing(canvasRef, source);
-  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, saveState, canUndo, selectedIndex, setSelectedIndex } = sceneEditing;
+  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, terrainText, saveState, canUndo, selectedIndex, setSelectedIndex } = sceneEditing;
   const [objectsWidth, setObjectsWidth] = useStoredPanelWidth("kuznya-editor.objects-width", 260);
   const [propertiesWidth, setPropertiesWidth] = useStoredPanelWidth("kuznya-editor.properties-width", 320);
   // Колбэк-реф вместо обычного — «Редактор», партия: элемент нужен движку звука сразу после
@@ -119,6 +120,7 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
   const isThreeDimensionalScene = useMemo(() => parseSceneIsThreeDimensional(gameJsonText), [gameJsonText]);
   const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
+  const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
   const selectedObject = selectedIndex !== null ? (objectSummaries[selectedIndex] ?? null) : null;
 
   const battle = useBattleSession({
@@ -167,6 +169,14 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
   shortcutStateRef.current = { selectedIndex, undo: sceneEditing.undo, copyObject: sceneEditing.copyObject, deleteObject: sceneEditing.deleteObject };
   const battleRef = useRef(battle);
   battleRef.current = battle;
+  // Мазок кисти держит перезагрузку файлов, пока кнопка нажата («Кисти рельефа», крайние случаи); партия держит её сама.
+  // Сочетания, которые пересобирают мир или начинают партию, до конца мазка не срабатывают: иначе мазок
+  // бросился бы, а его рельеф остался бы в движке без файла.
+  const isStrokeActiveRef = useRef(false);
+  const handleStrokeActiveChange = (isActive: boolean): void => {
+    isStrokeActiveRef.current = isActive;
+    if (battleRef.current.mode === "edit") sceneEditing.setReloadGateOpen(!isActive);
+  };
 
   // Ctrl+P/Ctrl+Shift+P/Ctrl+Alt+P — «Редактор», требование 1: перехватываются раньше остальных
   // сочетаний и раньше печати браузера, при любом фокусе — фаза перехвата на `window`. Дальше
@@ -176,6 +186,7 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
       if (!isBattleTransportShortcut(event)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
+      if (isStrokeActiveRef.current) return;
       battleRef.current.handleShortcut(event);
     }
     window.addEventListener("keydown", handleTransportShortcut, true);
@@ -225,7 +236,7 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
         }
         return;
       }
-      if (battleNow.mode === "replay") return;
+      if (battleNow.mode === "replay" || isStrokeActiveRef.current) return;
 
       if (isCtrlOnly && event.key.toLowerCase() === "z") {
         event.preventDefault();
@@ -308,6 +319,11 @@ export function ProjectWindow({ source, onBackToProjects }: ProjectWindowProps):
           onSelect={displayedOnSelect}
           onMoveObject={isLive ? battle.commitLiveMove : sceneEditing.moveObject}
           onCommitPlacement={isLive ? battle.commitLiveTransform : sceneEditing.transformObject}
+          terrainWater={terrainWater}
+          onCommitTerrain={sceneEditing.paintTerrain}
+          onWaterChange={sceneEditing.setTerrainWater}
+          onStrokeActiveChange={handleStrokeActiveChange}
+          brushFields={brushFields}
         />
         {!sceneAvailable && !isLive && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
       </main>

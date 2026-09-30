@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { createEditorCameraStore, type EditorCameraState } from "./editorCamera";
+import { createEditorCameraStore, type EditorCameraRequest, type EditorCameraState } from "./editorCamera";
 import type { PlacementChange } from "./objectPlacement";
 import {
   createSpaceSceneController,
@@ -8,8 +8,10 @@ import {
   type SpaceSceneContext,
   type SpaceSceneEngine,
 } from "./spaceSceneController";
+import type { BrushSettings } from "./terrainBrush";
+import type { TerrainGrid } from "./terrainFile";
 
-const START_CAMERA: EditorCameraState = { target: [16, 12], yaw: 0, pitch: 55, distance: 40 };
+const START_CAMERA: EditorCameraState = { target: [16, 12, 0], yaw: 0, pitch: 55, distance: 40 };
 const NO_KEYS: KeyInput = { code: "", ctrlKey: false, altKey: false, metaKey: false, shiftKey: false };
 
 /** Камера сверху без перспективы: 10 точек на клетку, начало сцены в (50, 50). */
@@ -18,7 +20,7 @@ function ground(x: number, y: number): [number, number] {
 }
 
 function pointer(x: number, y: number, extra: Partial<PointerInput> = {}): PointerInput {
-  return { pointerId: 1, button: 0, buttons: 1, x, y, ctrlKey: false, shiftKey: false, ...extra };
+  return { pointerId: 1, button: 0, buttons: 1, x, y, ctrlKey: false, shiftKey: false, timeStamp: 0, ...extra };
 }
 
 function release(x: number, y: number, button = 0): PointerInput {
@@ -37,7 +39,8 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const moves: [number, number, number, number | null | undefined][] = [];
   const restCalls: [number, number, number, number | null | undefined][] = [];
   const transforms: [number, Record<string, unknown>][] = [];
-  const cameras: EditorCameraState[] = [];
+  const cameras: EditorCameraRequest[] = [];
+  const terrainSets: { heights: Float64Array; water: unknown }[] = [];
   const fitCalls: unknown[] = [];
   const state = {
     pickedId: undefined as number | undefined,
@@ -48,10 +51,16 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     rest: (_id: number, _x: number, _y: number, _from: number | null | undefined): number => 0,
     /** Основание, на котором объект стоит в мире после `transform_object`; без значения — третье число `position`. */
     worldHeight: undefined as number | undefined,
+    /** Луч мимо рельефа сцены (небо) — `terrain_at` ничего не отдаёт. */
+    isSkyUnderPointer: false,
+    /** Рельеф сцены 12 × 12 клеток: точек 25 × 25, все на нуле. */
+    grid: { columns: 25, rows: 25, heights: new Float64Array(25 * 25) } as TerrainGrid,
+    water: null as unknown,
+    setTerrainError: undefined as string | undefined,
   };
   const engine = {
     object_at: () => state.pickedId,
-    object_rect: () => ({ corners: [] }),
+    object_rect: () => ({ corners: [[10, 10], [20, 10], [20, 20], [10, 20]] }),
     object_properties: (id: number) => {
       const properties = worldObjects[id];
       const position = properties?.position as number[] | undefined;
@@ -65,7 +74,17 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     screen_point: (x: number, y: number, z: number) => [x * 10 + 50, y * 10 + 50 - z * 10],
     move_object: (id: number, x: number, y: number, z?: number | null) => moves.push([id, x, y, z]),
     transform_object: (id: number, transform: Record<string, unknown>) => transforms.push([id, transform]),
-    editor_camera: (camera: EditorCameraState) => cameras.push(camera),
+    editor_camera: (camera: EditorCameraRequest) => {
+      cameras.push(camera);
+      return camera.target[2] ?? 0;
+    },
+    terrain_at: (x: number, y: number) => (state.isSkyUnderPointer ? undefined : [...ground(x, y), state.groundZ]),
+    terrain_height: () => 0,
+    terrain_heights: () => ({ ...state.grid, heights: Float64Array.from(state.grid.heights), water: state.water }),
+    set_terrain: (heights: Float64Array, water: unknown) => {
+      terrainSets.push({ heights: Float64Array.from(heights), water });
+      return state.setTerrainError;
+    },
     fit_camera: (id?: number | null) => {
       fitCalls.push(id);
       return state.fitted;
@@ -80,6 +99,8 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const commits: [number, PlacementChange[]][] = [];
   const selections: (number | null)[] = [];
   const modes: string[] = [];
+  const terrainCommits: Float64Array[] = [];
+  const strokeStates: boolean[] = [];
   const context: SpaceSceneContext = {
     engine,
     cameraStore,
@@ -89,14 +110,17 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     selectedIndex: 7,
     selectedLabel: "izba",
     handleMode: "translate",
+    brush: null,
     getObjectProperties: (id) => worldObjects[id] ?? null,
     onSelect: (index) => selections.push(index),
     onHandleModeChange: (mode) => modes.push(mode),
     onCommitPlacement: (index, changes) => commits.push([index, changes]),
+    onCommitTerrain: (grid) => terrainCommits.push(Float64Array.from(grid.heights)),
+    onStrokeActiveChange: (isActive) => strokeStates.push(isActive),
     ...overrides,
   };
   const controller = createSpaceSceneController(() => context);
-  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore };
+  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, terrainCommits, strokeStates, engine };
 }
 
 describe("выбор щелчком", () => {
@@ -489,7 +513,7 @@ describe("клавиши", () => {
 
   it("F подводит камеру к выбранному объекту", () => {
     const scene = setup();
-    scene.state.fitted = { target: [4, 5], yaw: 0, pitch: 55, distance: 9 };
+    scene.state.fitted = { target: [4, 5, 1], yaw: 0, pitch: 55, distance: 9 };
     expect(scene.controller.keyDown(key("KeyF"))).toBe(true);
     expect(scene.fitCalls).toEqual([7]);
     expect(scene.cameras).toEqual([{ target: [4, 5], yaw: 0, pitch: 55, distance: 9 }]);
@@ -519,5 +543,275 @@ describe("жест бросается извне", () => {
     scene.controller.abandonGesture();
     scene.controller.pointerUp(release(170, 120));
     expect(commit).not.toHaveBeenCalled();
+  });
+});
+
+const RAISE: BrushSettings = { kind: "raise", size: 4, strength: 50 };
+/** Точка сетки под (100, 100): клетка сцены (5, 5) — столбец 10, строка 10 сетки 25 × 25. */
+const CENTER = 10 * 25 + 10;
+
+/** Кадры страницы по 100 мс с `fromMs` по `toMs` включительно. */
+function runFrames(scene: ReturnType<typeof setup>, fromMs: number, toMs: number): void {
+  for (let time = fromMs; time <= toMs; time += 100) scene.controller.strokeFrame(time);
+}
+
+function isFlat(heights: Float64Array | undefined): boolean {
+  return heights !== undefined && Array.from(heights).every((height) => height === 0);
+}
+
+describe("мазок кисти рельефа", () => {
+  it("нажатие лепит, а не выбирает: объект не выбирается, выбор не снимается, ручка под указателем не берётся", () => {
+    const scene = setup({ brush: RAISE });
+    scene.state.pickedId = 9;
+    expect(scene.controller.pointerDown(pointer(150, 100))).toBe(true);
+    expect(scene.selections).toEqual([]);
+    expect(scene.strokeStates).toEqual([true]);
+  });
+
+  it("луч мимо рельефа: мазка нет, а повели на землю с нажатой кнопкой — рисовать не начинает", () => {
+    const scene = setup({ brush: RAISE });
+    scene.state.isSkyUnderPointer = true;
+    expect(scene.controller.pointerDown(pointer(100, 100))).toBe(false);
+    scene.state.isSkyUnderPointer = false;
+    scene.controller.pointerMove(pointer(100, 100));
+    runFrames(scene, 100, 500);
+    expect(scene.terrainSets).toEqual([]);
+    expect(scene.strokeStates).toEqual([]);
+  });
+
+  it("держишь на месте — холм растёт: за секунду кадрами по 0,1 середина поднимается на клетку, движок получает высоты в каждом кадре", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 1000);
+    expect(scene.terrainSets).toHaveLength(10);
+    expect(scene.terrainSets[9]?.heights[CENTER]).toBeCloseTo(1, 9);
+    expect(scene.terrainSets[9]?.heights[0]).toBe(0);
+  });
+
+  it("кадр дольше 0,1 секунды считается за 0,1", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.strokeFrame(5000);
+    expect(scene.terrainSets[0]?.heights[CENTER]).toBeCloseTo(0.1, 9);
+  });
+
+  it("Shift смотрится в каждом кадре: нажал посреди мазка — дальше опускает, отпустил — снова поднимает", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 200);
+    scene.controller.keyDown(key("ShiftLeft", { shiftKey: true }));
+    runFrames(scene, 300, 400);
+    expect(scene.terrainSets[3]?.heights[CENTER]).toBeCloseTo(0, 9);
+    scene.controller.keyUp(key("ShiftLeft"));
+    runFrames(scene, 500, 500);
+    expect(scene.terrainSets[4]?.heights[CENTER]).toBeCloseTo(0.1, 9);
+    scene.controller.pointerMove(pointer(100, 100, { shiftKey: true }));
+    runFrames(scene, 600, 600);
+    expect(scene.terrainSets[5]?.heights[CENTER]).toBeCloseTo(0, 9);
+  });
+
+  it("«Выровнять» ведёт к высоте рельефа в точке нажатия", () => {
+    const scene = setup({ brush: { kind: "level", size: 4, strength: 50 } });
+    scene.state.groundZ = 2;
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 500);
+    expect(scene.terrainSets[4]?.heights[CENTER]).toBeCloseTo(2 * (1 - Math.exp(-2.5)), 9);
+  });
+
+  it("быстрый увод указателя между кадрами — след сплошной, без пропусков", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.pointerMove(pointer(170, 100));
+    scene.controller.strokeFrame(100);
+    const row = scene.terrainSets[0]?.heights.slice(10 * 25 + 10, 10 * 25 + 25) as Float64Array;
+    expect(Array.from(row).every((height) => height > 0)).toBe(true);
+  });
+
+  it("отпускание — одно действие: высоты всей сетки уходят странице", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 1000);
+    scene.controller.pointerUp(release(100, 100));
+    expect(scene.terrainCommits).toHaveLength(1);
+    expect(scene.terrainCommits[0]?.[CENTER]).toBeCloseTo(1, 9);
+    expect(scene.strokeStates).toEqual([true, false]);
+  });
+
+  it("Esc без мазка снимает кисть и возвращает прежний вид ручек", () => {
+    const scene = setup({ brush: RAISE, handleMode: "rotate" });
+    expect(scene.controller.keyDown(key("Escape"))).toBe(true);
+    expect(scene.modes).toEqual(["rotate"]);
+  });
+
+  it("Esc без кисти и без жеста ничего не делает", () => {
+    const scene = setup();
+    expect(scene.controller.keyDown(key("Escape"))).toBe(false);
+    expect(scene.modes).toEqual([]);
+  });
+
+  it("нажали и отпустили, не держа, — не действие", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.pointerUp(release(100, 100));
+    expect(scene.terrainCommits).toEqual([]);
+    expect(scene.terrainSets).toEqual([]);
+    expect(scene.strokeStates).toEqual([true, false]);
+  });
+
+  it("изменение меньше сотой — не действие, рельеф возвращается как был", () => {
+    const scene = setup({ brush: { kind: "raise", size: 4, strength: 1 } });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.strokeFrame(1);
+    scene.controller.pointerUp(release(100, 100));
+    expect(scene.terrainCommits).toEqual([]);
+    expect(isFlat(scene.terrainSets.at(-1)?.heights)).toBe(true);
+  });
+
+  it("Esc посреди мазка возвращает рельеф до мазка: действия нет, отпускание потом ничего не пишет", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 500);
+    expect(scene.controller.keyDown(key("Escape"))).toBe(true);
+    expect(isFlat(scene.terrainSets.at(-1)?.heights)).toBe(true);
+    expect(scene.modes).toEqual([]);
+    scene.controller.pointerUp(release(100, 100));
+    expect(scene.terrainCommits).toEqual([]);
+    expect(scene.strokeStates).toEqual([true, false]);
+  });
+
+  it("сброс указателя браузером возвращает рельеф до мазка", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 300);
+    scene.controller.pointerCancel(pointer(100, 100));
+    expect(isFlat(scene.terrainSets.at(-1)?.heights)).toBe(true);
+    expect(scene.terrainCommits).toEqual([]);
+  });
+
+  it("указатель ушёл с холста с нажатой кнопкой — мазок не прерывается", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.pointerLeave();
+    runFrames(scene, 100, 200);
+    expect(scene.terrainSets).toHaveLength(2);
+    expect(scene.strokeStates).toEqual([true]);
+  });
+
+  it("указатель ушёл на небо — кадры ничего не меняют, вернулся — мазок продолжается с новой точки без пути через пустоту", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.state.isSkyUnderPointer = true;
+    runFrames(scene, 100, 200);
+    expect(scene.terrainSets).toEqual([]);
+    scene.state.isSkyUnderPointer = false;
+    scene.controller.pointerMove(pointer(60, 60));
+    scene.controller.strokeFrame(300);
+    const heights = scene.terrainSets[0]?.heights as Float64Array;
+    expect(heights[CENTER]).toBe(0);
+    expect(heights[1 * 25 + 1]).toBeGreaterThan(0);
+  });
+
+  it("W, E и R без мазка зовут смену вида ручек — страница снимет кисть; посреди мазка не переключают", () => {
+    const scene = setup({ brush: RAISE });
+    expect(scene.controller.keyDown(key("KeyW"))).toBe(true);
+    expect(scene.modes).toEqual(["translate"]);
+    scene.controller.pointerDown(pointer(100, 100));
+    expect(scene.controller.keyDown(key("KeyE"))).toBe(false);
+    expect(scene.modes).toEqual(["translate"]);
+  });
+
+  it("движок отказал в set_terrain — мазок бросается, страница узнаёт, действия нет", () => {
+    const scene = setup({ brush: RAISE });
+    scene.state.setTerrainError = "идёт партия";
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 300);
+    scene.controller.pointerUp(release(100, 100));
+    expect(scene.terrainSets).toHaveLength(1);
+    expect(scene.terrainCommits).toEqual([]);
+    expect(scene.strokeStates).toEqual([true, false]);
+  });
+
+  it("мазок бросается извне (партия пошла, файлы пересобраны) — рельеф не возвращается, действия нет", () => {
+    const scene = setup({ brush: RAISE });
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 200);
+    scene.controller.abandonGesture();
+    scene.controller.pointerUp(release(100, 100));
+    expect(scene.terrainSets).toHaveLength(2);
+    expect(scene.terrainCommits).toEqual([]);
+    expect(scene.strokeStates).toEqual([true, false]);
+  });
+
+  it("сцены под мазком не стало — страница всё равно узнаёт, что мазок кончился", () => {
+    const scene = setup({ brush: RAISE });
+    let current: SpaceSceneContext | null = scene.context;
+    const controller = createSpaceSceneController(() => current as SpaceSceneContext);
+    controller.pointerDown(pointer(100, 100));
+    current = null;
+    controller.abandonGesture();
+    expect(scene.strokeStates).toEqual([true, false]);
+  });
+
+  it("средняя кнопка и колесо ведут камеру и при кисти", () => {
+    const scene = setup({ brush: RAISE });
+    expect(scene.controller.pointerDown(pointer(100, 100, { button: 1, buttons: 4 }))).toBe(true);
+    scene.controller.pointerMove(pointer(150, 100, { button: -1, buttons: 4 }));
+    expect(scene.cameras).toHaveLength(1);
+    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0 })).toBe(true);
+    expect(scene.strokeStates).toEqual([]);
+  });
+});
+
+/** Холст, что записывает вызовы, — рисование трёхмерной сцены проверяется по тому, что она спросила у движка. */
+function recordingCanvasContext(): CanvasRenderingContext2D {
+  const target: Record<string, unknown> = { canvas: { width: 800, height: 600 } };
+  return new Proxy(target, {
+    get: (record, name: string) => (name in record ? record[name] : () => ({ width: 10 })),
+    set: (record, name: string, value: unknown) => {
+      record[name] = value;
+      return true;
+    },
+  }) as unknown as CanvasRenderingContext2D;
+}
+
+describe("круг кисти, рамка и ручки", () => {
+  it("круг — 64 точки на рельефе и метка в середине, идёт за указателем", () => {
+    const scene = setup({ brush: RAISE });
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    const terrainHeight = vi.spyOn(scene.engine, "terrain_height");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(screenPoint).not.toHaveBeenCalled();
+    scene.controller.pointerMove(pointer(100, 100, { buttons: 0 }));
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(terrainHeight).toHaveBeenCalledTimes(64);
+    expect(screenPoint).toHaveBeenCalledTimes(64 + 1);
+  });
+
+  it("указатель ушёл с холста — круга нет; луч мимо рельефа — тоже", () => {
+    const scene = setup({ brush: RAISE });
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    scene.controller.pointerMove(pointer(100, 100, { buttons: 0 }));
+    scene.controller.pointerLeave();
+    scene.controller.draw(recordingCanvasContext(), 1);
+    scene.controller.pointerMove(pointer(100, 100, { buttons: 0 }));
+    scene.state.isSkyUnderPointer = true;
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(screenPoint).not.toHaveBeenCalled();
+  });
+
+  it("при выбранной кисти рамка выбранного рисуется, ручки — нет", () => {
+    const scene = setup({ brush: RAISE });
+    const objectRect = vi.spyOn(scene.engine, "object_rect");
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(objectRect).toHaveBeenCalled();
+    expect(screenPoint).not.toHaveBeenCalled();
+  });
+
+  it("без кисти ручки рисуются", () => {
+    const scene = setup();
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(screenPoint).toHaveBeenCalled();
   });
 });

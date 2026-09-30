@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   addObjectProperty,
+  addTerrainFilePath,
   appendSceneObject,
   declarePropertyKind,
   formatSceneValue,
@@ -122,5 +124,33 @@ describe("declarePropertyKind", () => {
     const propertiesText = `{ "properties": {} }`;
     const result = declarePropertyKind(propertiesText, "hp", "flag");
     expect(result).toBe('{ "properties": {"hp": "flag"} }');
+  });
+});
+
+describe("addTerrainFilePath", () => {
+  const RPG_GAME_TEXT = readFileSync(new URL("../../../games/rpg/game.json", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const RPG_WITHOUT_TERRAIN = RPG_GAME_TEXT.replace('    "terrain": "terrain.json",\n', "");
+
+  it("дописывает ключ в конец files на своей строке с отступом соседа, остальной текст не меняется", () => {
+    const result = addTerrainFilePath(RPG_WITHOUT_TERRAIN, "terrain.json");
+    expect(JSON.parse(result).files.terrain).toBe("terrain.json");
+    expect(result.replace(',\n    "terrain": "terrain.json"', "")).toBe(RPG_WITHOUT_TERRAIN);
+    expect(result).toContain('    },\n    "terrain": "terrain.json"\n  }');
+  });
+
+  it("files в одну строку — ключ через запятую с пробелом", () => {
+    expect(addTerrainFilePath('{ "files": { "scene": "scene.json" } }', "terrain-2.json")).toBe(
+      '{ "files": { "scene": "scene.json", "terrain": "terrain-2.json" } }',
+    );
+  });
+
+  it("перенос строки Windows сохраняется", () => {
+    const result = addTerrainFilePath('{\r\n  "files": {\r\n    "scene": "scene.json"\r\n  }\r\n}', "terrain.json");
+    expect(result).toBe('{\r\n  "files": {\r\n    "scene": "scene.json",\r\n    "terrain": "terrain.json"\r\n  }\r\n}');
+  });
+
+  it("путь в подпапке — как у files.scene", () => {
+    const result = addTerrainFilePath('{ "files": { "scene": "world/scene.json" } }', "world/terrain.json");
+    expect(JSON.parse(result).files.terrain).toBe("world/terrain.json");
   });
 });

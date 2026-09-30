@@ -107,6 +107,11 @@ impl Terrain {
         self.water
     }
 
+    /// Высоты точек сетки строками сверху вниз; пусто у ровной земли без файла.
+    pub fn heights(&self) -> &[f64] {
+        &self.heights
+    }
+
     /// Вся земля на высоте 0.
     pub fn is_flat(&self) -> bool {
         self.flat
