@@ -265,7 +265,8 @@ pub fn set_terrain(
     if game.session_active() {
         return Err("идёт партия: рельеф правится вне партии".into());
     }
-    game.set_terrain(terrain_from_numbers(&game.scene, heights, water)?);
+    let covers = game.world.terrain().covers().to_vec();
+    game.set_terrain(terrain_from_numbers(&game.scene, heights, water)?.with_covers(covers));
     Ok(())
 }
 

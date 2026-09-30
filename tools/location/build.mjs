@@ -1,11 +1,14 @@
 // Строит рельеф локации по описанию из форм — горы, холмы, площадки, русла — и пишет файл рельефа
-// игры. Одно описание всегда даёт один и тот же файл: случайность только от `seed` описания.
+// игры, а по разделу `covers` — маски покрытий рядом с ним, в папке `terrain/`. Одно описание всегда
+// даёт одни и те же файлы: случайность только от `seed` описания.
 // Запуск: `node tools/location/build.mjs art/rpg/village/plan.json`.
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
+import { coverMasks } from "./covers.mjs";
 import { terrainText } from "./files.mjs";
+import { grayPng } from "./png.mjs";
 import { readPlan } from "./plan.mjs";
 import { Grid, applyChannel, applyHill, applyNoise, applyPad, applyRange, applySmooth } from "./terrain.mjs";
 
@@ -26,6 +29,12 @@ export function buildGrid(plan) {
   return grid;
 }
 
+/** Покрытия по описанию: слои для файла рельефа (нет `covers` — `undefined`) и маски слоёв. */
+export function buildCovers(plan, grid) {
+  const { covers } = readPlan(plan);
+  return { layers: covers, masks: covers ? coverMasks(grid, covers) : [] };
+}
+
 function main() {
   const [planPath] = process.argv.slice(2);
   if (!planPath) throw new Error("node tools/location/build.mjs <описание.json>");
@@ -36,8 +45,15 @@ function main() {
     throw new Error(`${planPath}: ${error.message}`);
   }
   const grid = buildGrid(plan);
+  const { layers, masks } = buildCovers(plan, grid);
   const target = resolve(dirname(planPath), plan.terrain);
-  writeFileSync(target, terrainText(grid, plan.water));
+  writeFileSync(target, terrainText(grid, plan.water, layers));
+  for (const { mask, width, height, pixels } of masks) {
+    const file = resolve(dirname(target), mask);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, grayPng(width, height, pixels));
+    console.log(`маска ${width} × ${height} → ${file}`);
+  }
   let low = Infinity;
   let high = -Infinity;
   for (const h of grid.h) {

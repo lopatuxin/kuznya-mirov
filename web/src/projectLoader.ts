@@ -1,6 +1,6 @@
 import type { Engine } from "engine";
 import { GAME_FILE_FETCH, fetchText } from "./gameOptions";
-import { buildImagePayload, fetchImageBytes, type ImageEntry } from "./images/imagePayload";
+import { buildImagePayload, fetchImageBytes, type ImageEntry, type ImageFileEntry } from "./images/imagePayload";
 import { probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import type { EngineError } from "./engineErrors";
 
@@ -24,7 +24,14 @@ type ReadEntryResult =
   | { ok: true; files: ReadEntryFiles; warnings: EngineError[] }
   | { ok: false; errors: EngineError[]; warnings: EngineError[] };
 
-type ReadTextsResult = { fonts: FontEntry[]; sounds: SoundEntry[]; music: MusicEntry[]; images: ImageEntry[] };
+type ReadTextsResult = {
+  fonts: FontEntry[];
+  sounds: SoundEntry[];
+  music: MusicEntry[];
+  images: ImageEntry[];
+  materials: ImageFileEntry[];
+  masks: ImageFileEntry[];
+};
 
 type LoadResult =
   | { ok: true; warnings: EngineError[] }
@@ -129,19 +136,23 @@ export async function loadProject(
     entryResult.files.terrain !== undefined ? reader.readText(entryResult.files.terrain) : Promise.resolve(undefined),
   ]);
 
-  const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText) as ReadTextsResult;
+  const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText, terrainText) as ReadTextsResult;
 
   const audioContext = createAudioContext();
 
-  const [fonts, loadedSounds, loadedMusic, loadedImages] = await Promise.all([
+  const [fonts, loadedSounds, loadedMusic, loadedImages, loadedMaterials, loadedMasks] = await Promise.all([
     fetchFonts(reader, needed.fonts),
     fetchSoundBytes(reader, needed.sounds),
     fetchMusicBytes(reader, needed.music),
     fetchImageBytes(needed.images, reader.readBinary),
+    fetchImageBytes(needed.materials, reader.readBinary),
+    fetchImageBytes(needed.masks, reader.readBinary),
   ]);
-  const [musicTracks, imagesPayload] = await Promise.all([
+  const [musicTracks, imagesPayload, materialMapsPayload, coverMasksPayload] = await Promise.all([
     readMusicVerdicts(audioContext, loadedMusic),
     buildImagePayload(loadedImages),
+    buildImagePayload(loadedMaterials),
+    buildImagePayload(loadedMasks),
   ]);
   const musicPayload: MusicVerdictEntry[] = musicTracks.map((track) => ({ index: track.index, verdict: track.verdict }));
 
@@ -157,6 +168,8 @@ export async function loadProject(
     codeText,
     tableTexts,
     terrainText,
+    materialMapsPayload,
+    coverMasksPayload,
   ) as LoadResult;
   // read_entry первым, load вторым — тот же порядок, в котором предупреждения собирает сам движок
   // при объединённой загрузке («Редактор», требование 15).

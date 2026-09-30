@@ -6,7 +6,7 @@ use crate::core::camera::{Camera3d, FOV_Y_DEGREES};
 use crate::core::game::Game;
 use crate::core::math3::{self, Mat4, Vec3};
 use crate::core::property;
-use crate::core::scene::{CellRange, SceneConfig};
+use crate::core::scene::{CellRange, LightConfig, SceneConfig};
 use crate::core::shapes::Body;
 use crate::core::value::Shape;
 use crate::data::load::ImageDecl;
@@ -45,6 +45,39 @@ pub struct Frame3d {
     /// Насколько темна тень, и единица глубины карты теней на клетку сцены.
     pub shadow: f32,
     pub depth_per_cell: f32,
+    /// Место камеры: от него считается блик.
+    pub eye: [f32; 3],
+    /// Цвет и сила солнца и неба в линейной яркости.
+    pub sun_light: [f32; 3],
+    pub sky_light: [f32; 3],
+}
+
+/// Оттенок цвета данных `srgb`: цвет в линейной яркости, поделённый на свою яркость (Rec. 709), так что
+/// яркость оттенка — единица. Чёрный цвет оттенка не имеет: источник не светит.
+fn light_tint(srgb: [f32; 3]) -> [f64; 3] {
+    let linear = srgb.map(|c| {
+        let c = f64::from(c);
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    });
+    let luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
+    if luminance <= 0.0 {
+        return [0.0; 3];
+    }
+    linear.map(|c| c / luminance)
+}
+
+/// Свет солнца и неба в линейной яркости: небо светит силой `1 − shadow`, солнце — `shadow / sin` высоты
+/// солнца. Так ровная земля на солнце получает свет 1, а в тени — `1 − shadow`.
+pub fn light_colors(light: &LightConfig) -> ([f32; 3], [f32; 3]) {
+    let sun_strength = light.shadow / light.direction()[2];
+    let sky_strength = 1.0 - light.shadow;
+    let sun = light_tint(light.sun_color).map(|c| (c * sun_strength) as f32);
+    let sky = light_tint(light.sky_color).map(|c| (c * sky_strength) as f32);
+    (sun, sky)
 }
 
 fn shape_draws(game: &Game) -> Vec<ShapeDraw> {
@@ -252,6 +285,7 @@ pub fn compose_frame3d(
     let toward_sun = game.scene.light.direction();
     let (light_view_proj, depth) =
         sun_projection(&game.scene, camera, (ground_low, ground_high), top);
+    let (sun_light, sky_light) = light_colors(&game.scene.light);
     Frame3d {
         shapes,
         ground,
@@ -266,6 +300,9 @@ pub fn compose_frame3d(
         ],
         shadow: game.scene.light.shadow as f32,
         depth_per_cell: (1.0 / depth.max(1e-6)) as f32,
+        eye: camera.eye.map(|c| c as f32),
+        sun_light,
+        sky_light,
     }
 }
 

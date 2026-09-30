@@ -3,6 +3,7 @@ use wgpu::util::DeviceExt;
 
 use super::atlas::{self, ATLAS_SIZE};
 use super::gpu3d;
+use super::materials::Relief;
 use crate::core::screens::{Align, FontId};
 
 #[repr(C)]
@@ -190,6 +191,9 @@ pub struct Renderer {
     /// «Трёхмерная сцена»: ресурсы создаются при первом её кадре; сброшены, когда атлас получил новую
     /// текстуру.
     scene3d: Option<gpu3d::Scene3d>,
+    /// «Свет и материалы»: материалы и маски покрытий игры; без них — пустые текстуры.
+    materials: gpu3d::MaterialGpu,
+    material_options: gpu3d::MaterialOptions,
 }
 
 impl Renderer {
@@ -228,6 +232,14 @@ impl Renderer {
         let backend = match adapter.get_info().backend {
             wgpu::Backend::BrowserWebGpu => GpuBackend::WebGpu,
             _ => GpuBackend::WebGl2,
+        };
+
+        let material_options = gpu3d::MaterialOptions {
+            webgl2: backend == GpuBackend::WebGl2,
+            anisotropic: adapter
+                .get_downlevel_capabilities()
+                .flags
+                .contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING),
         };
 
         let (device, queue) = adapter
@@ -513,6 +525,8 @@ impl Renderer {
             None,
         );
 
+        let materials = gpu3d::MaterialGpu::new(&device, &queue, material_options, None);
+
         Ok(Renderer {
             _instance: instance,
             surface,
@@ -549,6 +563,8 @@ impl Renderer {
             scene_cells,
             device_pixel_ratio: 1.0,
             scene3d: None,
+            materials,
+            material_options,
         })
     }
 
@@ -682,6 +698,15 @@ impl Renderer {
         );
         self.atlas_texture = texture;
         self.atlas_layers = layers;
+        self.scene3d = None;
+    }
+
+    /// «Свет и материалы»: отправляет на видеокарту материалы и маски покрытий игры и заменяет ими
+    /// прежние; без `relief` — пустые текстуры. Байты остаются у вызывающего: сюда они не копятся.
+    /// Ресурсы трёхмерной сцены пересоздаются, как при новом атласе: их раскладка ссылается на текстуры.
+    pub fn set_relief(&mut self, relief: Option<&Relief<'_>>) {
+        self.materials =
+            gpu3d::MaterialGpu::new(&self.device, &self.queue, self.material_options, relief);
         self.scene3d = None;
     }
 
@@ -952,6 +977,7 @@ impl Renderer {
                 self.config.format,
                 &atlas_view,
                 &self.linear_sampler,
+                &self.materials,
                 size,
             )
         });

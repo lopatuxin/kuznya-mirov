@@ -24,11 +24,23 @@ pub struct Water {
 /// Выпуклый многоугольник на плоскости `x`, `y` против часовой стрелки (в математическом смысле).
 pub type Polygon = Vec<Vec2>;
 
+/// Больше слоёв покрытий рельефа не бывает.
+pub const MAX_COVERS: usize = 8;
+
+/// Слой покрытия: материал по номеру в `files.materials` и маска по номеру в списке масок файла
+/// рельефа; у нижнего слоя маски нет.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cover {
+    pub material: usize,
+    pub mask: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Terrain {
     scene: [u32; 2],
     heights: Vec<f64>,
     water: Option<Water>,
+    covers: Vec<Cover>,
     flat: bool,
     blocked: OnceLock<Vec<Polygon>>,
 }
@@ -38,6 +50,7 @@ static FLAT: Terrain = Terrain {
     scene: [0, 0],
     heights: Vec::new(),
     water: None,
+    covers: Vec::new(),
     flat: true,
     blocked: OnceLock::new(),
 };
@@ -74,8 +87,21 @@ impl Terrain {
             flat: heights.iter().all(|&h| h == 0.0),
             heights,
             water,
+            covers: Vec::new(),
             blocked: OnceLock::new(),
         })
+    }
+
+    /// Тот же рельеф под покрытиями `covers`: мазок кисти и правка воды меняют высоты, покрытия
+    /// остаются.
+    pub fn with_covers(mut self, covers: Vec<Cover>) -> Terrain {
+        self.covers = covers;
+        self
+    }
+
+    /// Слои покрытий снизу вверх; пусто, пока файл рельефа не назвал их.
+    pub fn covers(&self) -> &[Cover] {
+        &self.covers
     }
 
     /// Точек по ширине (`2 × ширина + 1`); 0 у ровной земли без файла.

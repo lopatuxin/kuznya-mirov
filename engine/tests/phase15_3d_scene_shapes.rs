@@ -202,6 +202,7 @@ fn the_sun_comes_from_the_named_side_at_the_named_height() {
             sun_from,
             sun_height,
             shadow: 0.4,
+            ..LightConfig::default()
         }
         .direction()
     };
@@ -1687,8 +1688,8 @@ fn to_webgl2_glsl(
     let mut slots = [0u8; 3];
     for &binding in bindings {
         let kind = match binding {
-            0 => 0,
-            1 | 3 => 1,
+            0 | 5 => 0,
+            1 | 3 | 6..=8 => 1,
             _ => 2,
         };
         binding_map.insert(naga::ResourceBinding { group: 0, binding }, slots[kind]);
@@ -1727,9 +1728,13 @@ fn to_webgl2_glsl(
 #[test]
 fn the_three_dimensional_shaders_validate_and_translate_to_glsl_es_300() {
     let (module, info) = parse_and_validate(include_str!("../shaders/scene3d.wgsl"));
-    let all = [0, 1, 2, 3, 4];
+    let all = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     for (stage, entry, bindings) in [
         (naga::ShaderStage::Vertex, "vs_shadow", &[0][..]),
+        (naga::ShaderStage::Vertex, "vs_shadow_terrain", &[0][..]),
+        (naga::ShaderStage::Vertex, "vs_terrain", &[0][..]),
+        (naga::ShaderStage::Fragment, "fs_terrain", &all[..]),
+        (naga::ShaderStage::Fragment, "fs_water", &all[..]),
         (naga::ShaderStage::Vertex, "vs_shape", &[0][..]),
         (naga::ShaderStage::Fragment, "fs_shape", &all[..]),
         (naga::ShaderStage::Vertex, "vs_ground", &[0][..]),
@@ -1751,6 +1756,26 @@ fn the_three_dimensional_shaders_validate_and_translate_to_glsl_es_300() {
         "карта теней — выборка сравнением"
     );
     assert!(fragment.contains("sampler2DArray"), "атлас — массив листов");
+
+    // Фаза 19: рельеф читает материалы тремя массивами — цвет, нормаль с шероховатостью, маски — выборкой
+    // с явными производными или уровнем, вместе с тенью это пять текстур.
+    let terrain = to_webgl2_glsl(
+        &module,
+        &info,
+        naga::ShaderStage::Fragment,
+        "fs_terrain",
+        &all,
+    );
+    assert_eq!(terrain.matches("uniform highp sampler2DArray").count(), 3);
+    assert!(
+        terrain.contains("textureGrad"),
+        "карты материалов — с явными производными"
+    );
+    assert!(terrain.contains("textureLod"), "маски — с явным уровнем");
+    assert!(
+        terrain.contains("sampler2DShadow"),
+        "тень — выборка сравнением"
+    );
 }
 
 #[test]

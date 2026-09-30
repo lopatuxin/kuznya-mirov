@@ -1,24 +1,49 @@
-// «Трёхмерная сцена»: рельеф с водой, фигуры, плитки и плоские объекты на земле и карта теней от
-// солнца. Проходы: тени (`vs_shadow` — фигуры, `vs_shadow_terrain` — рельеф; только глубина от
-// солнца), затем рельеф и вода (`vs_terrain`, `fs_terrain`), фигуры (`vs_shape`, `fs_shape`) и
-// плитки с плоскими объектами (`vs_ground`, `fs_ground`), которые лежат на рельефе и верху настилов.
-// Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным проходом без глубины.
+// «Трёхмерная сцена», «Свет и материалы»: рельеф с водой и покрытиями, фигуры, плитки и плоские
+// объекты на земле и карта теней от солнца. Проходы: тени (`vs_shadow` — фигуры, `vs_shadow_terrain`
+// — рельеф; только глубина от солнца), затем рельеф (`vs_terrain`, `fs_terrain`), вода (`fs_water`),
+// фигуры (`vs_shape`, `fs_shape`) и плитки с плоскими объектами (`vs_ground`, `fs_ground`), которые
+// лежат на рельефе и верху настилов. Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным
+// проходом без глубины.
+//
+// Свет считается в линейной яркости, кадр сводится к экрану кривой Khronos PBR Neutral и кодируется в
+// sRGB в конце каждого фрагментного шейдера.
 //
 // Ловушки WebGL2: одна текстура — одна выборка, поэтому атлас читается тем же способом, что в
 // `rect.wgsl` (точка и линейная выборка, выбор через `select`), а карта теней — только выборкой
-// сравнением.
+// сравнением. Выборки внутри ветвлений — только с явным уровнем или производными, а сами производные
+// (`dpdx`, `dpdy`) считаются до всех ветвлений.
 
 struct Globals3d {
     view_proj: mat4x4<f32>,
     light_view_proj: mat4x4<f32>,
     // xyz — направление от земли к солнцу, w — синус высоты солнца.
     sun: vec4<f32>,
-    // x — насколько темна тень; y — единица глубины карты теней на клетку сцены; z — сдвиг точки
-    // вдоль нормали при выборке тени, в клетках.
+    // y — единица глубины карты теней на клетку сцены; z — сдвиг точки вдоль нормали при выборке
+    // тени, в клетках.
     shade: vec4<f32>,
+    // Место камеры: от него считается блик.
+    eye: vec4<f32>,
+    // Цвет и сила солнца и неба в линейной яркости.
+    sun_light: vec4<f32>,
+    sky_light: vec4<f32>,
+};
+
+struct Covers {
+    // x — число слоёв, yz — размер сцены в клетках.
+    head: vec4<f32>,
+    // По слою снизу вверх: x — слой массивов материалов, y — карт материала на клетку сцены.
+    layers: array<vec4<f32>, 8>,
 };
 
 const ATLAS_SIZE: f32 = 2048.0;
+const PI: f32 = 3.14159265;
+
+// Маска не меньше этого — слой лежит целиком.
+const SOLID_MASK: f32 = 0.99;
+// Ширина полосы, на которой слой проступает по высоте своих камней.
+const COVER_BAND: f32 = 0.25;
+// Проекции склона с весом меньше этого не читаются.
+const MIN_PROJECTION: f32 = 0.03;
 
 @group(0) @binding(0)
 var<uniform> globals: Globals3d;
@@ -30,10 +55,59 @@ var atlas_sampler_linear: sampler;
 var shadow_map: texture_depth_2d;
 @group(0) @binding(4)
 var shadow_sampler: sampler_comparison;
+@group(0) @binding(5)
+var<uniform> covers: Covers;
+// Цвет в sRGB, в прозрачности высота.
+@group(0) @binding(6)
+var material_color: texture_2d_array<f32>;
+// Нормаль `xy`, шероховатость, затенение.
+@group(0) @binding(7)
+var material_data: texture_2d_array<f32>;
+// Маски покрытий по четыре в слой.
+@group(0) @binding(8)
+var cover_masks: texture_2d_array<f32>;
+@group(0) @binding(9)
+var material_sampler: sampler;
 
-// Освещённость точки: `(1 − shadow) + shadow × освещено × min(1, max(0, cos угла к солнцу) / sin
-// высоты солнца)`. Сравнение всегда выполняется, а вне карты его результат отбрасывает `select`:
-// выборка не терпит ветвления.
+// --- Цвет и кривая яркости ------------------------------------------------------------------
+
+fn srgb_to_linear(c: vec3<f32>) -> vec3<f32> {
+    let high = pow((c + vec3<f32>(0.055)) / 1.055, vec3<f32>(2.4));
+    return select(high, c / 12.92, c <= vec3<f32>(0.04045));
+}
+
+fn linear_to_srgb(c: vec3<f32>) -> vec3<f32> {
+    let x = clamp(c, vec3<f32>(0.0), vec3<f32>(1.0));
+    let high = 1.055 * pow(x, vec3<f32>(1.0 / 2.4)) - vec3<f32>(0.055);
+    return select(high, x * 12.92, x <= vec3<f32>(0.0031308));
+}
+
+// Khronos PBR Neutral Tone Mapper: цвета ниже 0,76 почти не меняются, яркие сжимаются плавно и
+// теряют насыщенность.
+fn tone_map(color: vec3<f32>) -> vec3<f32> {
+    let start_compression = 0.76;
+    let desaturation = 0.15;
+    let x = min(color.r, min(color.g, color.b));
+    let offset = select(0.04, x - 6.25 * x * x, x < 0.08);
+    let shifted = color - vec3<f32>(offset);
+    let peak = max(shifted.r, max(shifted.g, shifted.b));
+    let d = 1.0 - start_compression;
+    let new_peak = 1.0 - d * d / (peak + d - start_compression);
+    let scaled = shifted * (new_peak / peak);
+    let g = 1.0 - 1.0 / (desaturation * (peak - new_peak) + 1.0);
+    let compressed = mix(scaled, vec3<f32>(new_peak), g);
+    return select(compressed, shifted, peak < start_compression);
+}
+
+// Кадр на экран: кривая яркости, затем sRGB.
+fn finish(color: vec3<f32>) -> vec3<f32> {
+    return linear_to_srgb(tone_map(color));
+}
+
+// --- Свет -----------------------------------------------------------------------------------
+
+// Видит ли точку солнце: 1 — да, 0 — тень. Сравнение всегда выполняется, а вне карты его результат
+// отбрасывает `select`: выборка не терпит ветвления.
 fn shadow_lit(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     let facing = clamp(dot(normal, globals.sun.xyz), 0.15, 1.0);
     let tan_angle = sqrt(1.0 - facing * facing) / facing;
@@ -47,10 +121,279 @@ fn shadow_lit(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     return select(1.0, lit, inside);
 }
 
-fn lighting(world: vec3<f32>, normal: vec3<f32>) -> f32 {
-    let strength = globals.shade.x;
-    let facing = min(1.0, max(0.0, dot(normal, globals.sun.xyz)) / globals.sun.w);
-    return (1.0 - strength) + strength * shadow_lit(world, normal) * facing;
+// Поверхность цвета `albedo` (линейная яркость) в точке `world` с нормалью `normal`: свет солнца по
+// косинусу и по тени, свет неба сверху сильнее, чем сбоку, и только там, куда он доходит (`ao`),
+// блик солнца — модель GGX, геометрия Смита — Шлика, отражение по Шлику с F0 = 0,04.
+fn shade(
+    albedo: vec3<f32>,
+    world: vec3<f32>,
+    normal: vec3<f32>,
+    roughness: f32,
+    ao: f32,
+    visible: f32,
+) -> vec3<f32> {
+    let to_sun = globals.sun.xyz;
+    let n_l = max(dot(normal, to_sun), 0.0);
+    let sun = globals.sun_light.rgb * (n_l * visible);
+    let sky = globals.sky_light.rgb * ((1.0 + normal.z) * 0.5 * ao);
+
+    let to_eye = normalize(globals.eye.xyz - world);
+    let half_way = normalize(to_sun + to_eye);
+    let n_v = max(dot(normal, to_eye), 0.0);
+    let n_h = max(dot(normal, half_way), 0.0);
+    let v_h = max(dot(to_eye, half_way), 0.0);
+    let alpha = max(roughness * roughness, 0.002);
+    let alpha2 = alpha * alpha;
+    let denominator = n_h * n_h * (alpha2 - 1.0) + 1.0;
+    let distribution = alpha2 / (PI * denominator * denominator);
+    let k = alpha * 0.5;
+    let visibility = 0.25 / ((n_l * (1.0 - k) + k) * (n_v * (1.0 - k) + k));
+    let fresnel = 0.04 + 0.96 * pow(clamp(1.0 - v_h, 0.0, 1.0), 5.0);
+    // `sun_light` — освещённость, уже делённая на π (рассеянный свет — `albedo × sun` без 1/π), поэтому
+    // блик GGX, как в glTF, умножается на π обратно.
+    let glint = globals.sun_light.rgb * (PI * distribution * visibility * fresnel * n_l * visible);
+
+    return albedo * (sun + sky) + glint;
+}
+
+// Ровная матовая поверхность: шероховатость 1, без карты мелкого рельефа.
+fn shade_matte(albedo: vec3<f32>, world: vec3<f32>, normal: vec3<f32>, visible: f32) -> vec3<f32> {
+    return shade(albedo, world, normal, 1.0, 1.0, visible);
+}
+
+// --- Материалы: hex-tiling ------------------------------------------------------------------
+
+struct MapSample {
+    color: vec3<f32>,
+    height: f32,
+    // Наклон нормали в осях картинки: x — вправо, y — вверх по картинке.
+    tilt: vec2<f32>,
+    roughness: f32,
+    ao: f32,
+};
+
+fn hash_u32(value: u32) -> u32 {
+    var h = value;
+    h = (h ^ (h >> 16u)) * 0x7feb352du;
+    h = (h ^ (h >> 15u)) * 0x846ca68bu;
+    return h ^ (h >> 16u);
+}
+
+// Три случайных числа от 0 до 1 у вершины шестиугольной сетки: сдвиг и доля оборота.
+fn cell_random(cell: vec2<i32>) -> vec3<f32> {
+    let a = hash_u32(bitcast<u32>(cell.x) + 0x9e3779b9u);
+    let b = hash_u32(a ^ bitcast<u32>(cell.y));
+    let c = hash_u32(b + 0x85ebca6bu);
+    let d = hash_u32(c ^ 0xc2b2ae35u);
+    return vec3<f32>(f32(b >> 8u), f32(c >> 8u), f32(d >> 8u)) / 16777216.0;
+}
+
+fn hex_center(vertex: vec2<i32>) -> vec2<f32> {
+    let v = vec2<f32>(vertex);
+    return vec2<f32>(v.x + 0.5 * v.y, v.y / 1.15470054) / (2.0 * sqrt(3.0));
+}
+
+// Mikkelsen, «Practical Real-Time Hex-Tiling»: точка `st` лежит в треугольнике сетки; вес каждой из
+// трёх его вершин — доля пути к ней.
+struct HexGrid {
+    v1: vec2<i32>,
+    v2: vec2<i32>,
+    v3: vec2<i32>,
+    weights: vec3<f32>,
+};
+
+fn hex_grid(st: vec2<f32>) -> HexGrid {
+    let scaled = st * (2.0 * sqrt(3.0));
+    let skewed = vec2<f32>(scaled.x - 0.57735027 * scaled.y, 1.15470054 * scaled.y);
+    let base = vec2<i32>(floor(skewed));
+    let f = fract(skewed);
+    let z = 1.0 - f.x - f.y;
+    let upper = z <= 0.0;
+    let s = select(0, 1, upper);
+    let sf = f32(s);
+    let direction = 2.0 * sf - 1.0;
+    var grid: HexGrid;
+    grid.weights = vec3<f32>(-z * direction, sf - f.y * direction, sf - f.x * direction);
+    grid.v1 = base + vec2<i32>(s, s);
+    grid.v2 = base + vec2<i32>(s, 1 - s);
+    grid.v3 = base + vec2<i32>(1 - s, s);
+    return grid;
+}
+
+// Одна ячейка: своя случайная точка карты и свой поворот; нормаль поворачивается вместе с ячейкой.
+fn hex_cell(
+    material: i32,
+    vertex: vec2<i32>,
+    st: vec2<f32>,
+    dx: vec2<f32>,
+    dy: vec2<f32>,
+) -> MapSample {
+    let random = cell_random(vertex);
+    let angle = (random.z * 2.0 - 1.0) * PI;
+    let c = cos(angle);
+    let s = sin(angle);
+    let rotation = mat2x2<f32>(c, s, -s, c);
+    let center = hex_center(vertex);
+    let uv = rotation * (st - center) + center + random.xy;
+    let color = textureSampleGrad(material_color, material_sampler, uv, material, rotation * dx, rotation * dy);
+    let data = textureSampleGrad(material_data, material_sampler, uv, material, rotation * dx, rotation * dy);
+    var out: MapSample;
+    out.color = color.rgb;
+    out.height = color.a;
+    out.tilt = rotation * (data.xy * 2.0 - 1.0);
+    out.roughness = data.z;
+    out.ao = data.w;
+    return out;
+}
+
+// Карты материала `material` в точке `st` (в картах), без видимого повтора.
+fn hex_sample(material: i32, st: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> MapSample {
+    let grid = hex_grid(st);
+    var w = pow(max(grid.weights, vec3<f32>(0.0)), vec3<f32>(7.0));
+    w = w / (w.x + w.y + w.z);
+    let a = hex_cell(material, grid.v1, st, dx, dy);
+    let b = hex_cell(material, grid.v2, st, dx, dy);
+    let c = hex_cell(material, grid.v3, st, dx, dy);
+    var out: MapSample;
+    out.color = a.color * w.x + b.color * w.y + c.color * w.z;
+    out.height = a.height * w.x + b.height * w.y + c.height * w.z;
+    out.tilt = a.tilt * w.x + b.tilt * w.y + c.tilt * w.z;
+    out.roughness = a.roughness * w.x + b.roughness * w.y + c.roughness * w.z;
+    out.ao = a.ao * w.x + b.ao * w.y + c.ao * w.z;
+    return out;
+}
+
+// --- Покрытия рельефа -----------------------------------------------------------------------
+
+struct Surface {
+    albedo: vec3<f32>,
+    height: f32,
+    normal: vec3<f32>,
+    roughness: f32,
+    ao: f32,
+};
+
+fn mix_surface(low: Surface, high: Surface, t: f32) -> Surface {
+    var out: Surface;
+    out.albedo = mix(low.albedo, high.albedo, t);
+    out.height = mix(low.height, high.height, t);
+    out.normal = normalize(mix(low.normal, high.normal, t));
+    out.roughness = mix(low.roughness, high.roughness, t);
+    out.ao = mix(low.ao, high.ao, t);
+    return out;
+}
+
+// Нормаль в осях картинки по её наклону: `z` восстановлена.
+fn tangent_normal(tilt: vec2<f32>) -> vec3<f32> {
+    let flat_part = dot(tilt, tilt);
+    let z = sqrt(max(1.0 - flat_part, 0.0));
+    return vec3<f32>(tilt, z);
+}
+
+// Материал слоя `layer` в точке `world` на земле с нормалью `n`. Картинка проецируется сверху и с двух
+// боков, чтобы на стене камни были того же размера, что на ровном месте; веса — по нормали земли, с
+// резкой границей, и проекции с малым весом не читаются. Нормали сводятся по способу whiteout (Ben
+// Golus, «Normal Mapping for a Triplanar Shader»).
+fn layer_surface(
+    layer: i32,
+    world: vec3<f32>,
+    n: vec3<f32>,
+    ddx: vec3<f32>,
+    ddy: vec3<f32>,
+) -> Surface {
+    let entry = covers.layers[layer];
+    let material = i32(entry.x + 0.5);
+    let scale = entry.y;
+
+    var w = pow(abs(n), vec3<f32>(8.0));
+    w = w / (w.x + w.y + w.z);
+    w = select(w, vec3<f32>(0.0), w < vec3<f32>(MIN_PROJECTION));
+    w = w / (w.x + w.y + w.z);
+
+    var out: Surface;
+    out.albedo = vec3<f32>(0.0);
+    out.height = 0.0;
+    out.normal = vec3<f32>(0.0);
+    out.roughness = 0.0;
+    out.ao = 0.0;
+
+    // Сверху: картинка вправо по x, вверх по картинке — к дальнему краю сцены, то есть против y.
+    if (w.z > 0.0) {
+        let s = hex_sample(material, world.xy * scale, ddx.xy * scale, ddy.xy * scale);
+        let t = tangent_normal(s.tilt);
+        let blended = vec3<f32>(t.x + n.x, -t.y + n.y, abs(t.z) * n.z);
+        out.albedo += s.color * w.z;
+        out.height += s.height * w.z;
+        out.normal += normalize(blended) * w.z;
+        out.roughness += s.roughness * w.z;
+        out.ao += s.ao * w.z;
+    }
+    // Сбоку, лицом вдоль x: картинка вправо по y, вверх по z.
+    if (w.x > 0.0) {
+        let st = vec2<f32>(world.y, -world.z) * scale;
+        let s = hex_sample(material, st, vec2<f32>(ddx.y, -ddx.z) * scale, vec2<f32>(ddy.y, -ddy.z) * scale);
+        let t = tangent_normal(s.tilt);
+        let blended = vec3<f32>(abs(t.z) * n.x, t.x + n.y, t.y + n.z);
+        out.albedo += s.color * w.x;
+        out.height += s.height * w.x;
+        out.normal += normalize(blended) * w.x;
+        out.roughness += s.roughness * w.x;
+        out.ao += s.ao * w.x;
+    }
+    // Сбоку, лицом вдоль y: картинка вправо по x, вверх по z.
+    if (w.y > 0.0) {
+        let st = vec2<f32>(world.x, -world.z) * scale;
+        let s = hex_sample(material, st, vec2<f32>(ddx.x, -ddx.z) * scale, vec2<f32>(ddy.x, -ddy.z) * scale);
+        let t = tangent_normal(s.tilt);
+        let blended = vec3<f32>(t.x + n.x, abs(t.z) * n.y, t.y + n.z);
+        out.albedo += s.color * w.y;
+        out.height += s.height * w.y;
+        out.normal += normalize(blended) * w.y;
+        out.roughness += s.roughness * w.y;
+        out.ao += s.ao * w.y;
+    }
+    out.normal = normalize(out.normal);
+    return out;
+}
+
+// Доля слоя поверх нижних: при сером крае маски проступают верхушки его камней, при белом он закрывает
+// нижний целиком. Маска 0 — слоя нет, маска 1 — слой лежит целиком.
+fn cover_weight(mask: f32, height: f32) -> f32 {
+    return clamp((height + mask * (1.0 + COVER_BAND) - 1.0) / COVER_BAND, 0.0, 1.0);
+}
+
+// Земля с покрытиями в точке `world`: слои ниже самого верхнего слоя с маской 1 и слои с маской 0
+// не читаются.
+fn cover_surface(world: vec3<f32>, n: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>) -> Surface {
+    let count = i32(covers.head.x + 0.5);
+    let uv = world.xy / covers.head.yz;
+    var masks = array<f32, 8>(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    let first = textureSampleLevel(cover_masks, atlas_sampler_linear, uv, 0, 0.0);
+    masks[1] = first.x;
+    masks[2] = first.y;
+    masks[3] = first.z;
+    masks[4] = first.w;
+    if (count > 5) {
+        let second = textureSampleLevel(cover_masks, atlas_sampler_linear, uv, 1, 0.0);
+        masks[5] = second.x;
+        masks[6] = second.y;
+        masks[7] = second.z;
+    }
+    var start = 0;
+    for (var k = 1; k < count; k++) {
+        masks[k] = clamp(masks[k] / SOLID_MASK, 0.0, 1.0);
+        if (masks[k] >= 1.0) {
+            start = k;
+        }
+    }
+    var surface = layer_surface(start, world, n, ddx, ddy);
+    for (var k = start + 1; k < count; k++) {
+        if (masks[k] > 0.0) {
+            let top = layer_surface(k, world, n, ddx, ddy);
+            surface = mix_surface(surface, top, cover_weight(masks[k], top.height));
+        }
+    }
+    return surface;
 }
 
 // --- Рельеф и вода --------------------------------------------------------------------------
@@ -83,10 +426,26 @@ fn vs_terrain(vertex: TerrainVertex) -> TerrainOutput {
     return out;
 }
 
+// Земля: без покрытий залита цветом сцены и освещена как матовая поверхность.
 @fragment
 fn fs_terrain(in: TerrainOutput) -> @location(0) vec4<f32> {
     let normal = normalize(in.normal);
-    return vec4<f32>(in.color * lighting(in.world, normal), 1.0);
+    let ddx = dpdx(in.world);
+    let ddy = dpdy(in.world);
+    let visible = shadow_lit(in.world, normal);
+    if (covers.head.x < 0.5) {
+        return vec4<f32>(finish(shade_matte(srgb_to_linear(in.color), in.world, normal, visible)), 1.0);
+    }
+    let surface = cover_surface(in.world, normal, ddx, ddy);
+    let color = shade(surface.albedo, in.world, surface.normal, surface.roughness, surface.ao, visible);
+    return vec4<f32>(finish(color), 1.0);
+}
+
+@fragment
+fn fs_water(in: TerrainOutput) -> @location(0) vec4<f32> {
+    let normal = normalize(in.normal);
+    let visible = shadow_lit(in.world, normal);
+    return vec4<f32>(finish(shade_matte(srgb_to_linear(in.color), in.world, normal, visible)), 1.0);
 }
 
 // --- Фигуры ---------------------------------------------------------------------------------
@@ -160,7 +519,8 @@ fn vs_shape(vertex: ShapeVertex, instance: ShapeInstance) -> ShapeOutput {
 @fragment
 fn fs_shape(in: ShapeOutput) -> @location(0) vec4<f32> {
     let normal = normalize(in.normal);
-    return vec4<f32>(in.color * lighting(in.world, normal), 1.0);
+    let visible = shadow_lit(in.world, normal);
+    return vec4<f32>(finish(shade_matte(srgb_to_linear(in.color), in.world, normal, visible)), 1.0);
 }
 
 // --- Плитки и плоские объекты на земле ------------------------------------------------------
@@ -204,6 +564,8 @@ fn vs_ground(vertex: GroundVertex) -> GroundOutput {
     return out;
 }
 
+// Цвет картинки уже умножен на прозрачность: свет считается по цвету без неё, затем цвет умножается
+// снова.
 @fragment
 fn fs_ground(in: GroundOutput) -> @location(0) vec4<f32> {
     let clamped = clamp(in.uv_px, in.uv_min, in.uv_max);
@@ -212,6 +574,9 @@ fn fs_ground(in: GroundOutput) -> @location(0) vec4<f32> {
     let linear = textureSample(atlas_texture, atlas_sampler_linear, uv, in.atlas_layer);
     let sampled = select(nearest, linear, in.smooth_sample > 0.5);
     let base = in.color * sampled;
-    let light = lighting(in.world, normalize(in.normal));
-    return vec4<f32>(base.rgb * light, base.a);
+    let normal = normalize(in.normal);
+    let visible = shadow_lit(in.world, normal);
+    let straight = base.rgb / max(base.a, 0.0001);
+    let lit = finish(shade_matte(srgb_to_linear(straight), in.world, normal, visible));
+    return vec4<f32>(lit * base.a, base.a);
 }

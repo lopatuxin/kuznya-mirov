@@ -3334,8 +3334,8 @@ fn to_webgl2_glsl(
     let mut slots = [0u8; 3];
     for &binding in bindings {
         let kind = match binding {
-            0 => 0,
-            1 | 3 => 1,
+            0 | 5 => 0,
+            1 | 3 | 6..=8 => 1,
             _ => 2,
         };
         binding_map.insert(naga::ResourceBinding { group: 0, binding }, slots[kind]);
@@ -3375,7 +3375,7 @@ fn to_webgl2_glsl(
 fn the_terrain_shaders_validate_translate_to_glsl_es_300_and_light_the_ground_like_the_shapes() {
     let source = include_str!("../shaders/scene3d.wgsl");
     let (module, info) = parse_and_validate(source);
-    let all = [0, 1, 2, 3, 4];
+    let all = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
     for (stage, entry, bindings) in [
         (naga::ShaderStage::Vertex, "vs_shadow_terrain", &[0][..]),
         (naga::ShaderStage::Vertex, "vs_terrain", &[0][..]),
@@ -3401,19 +3401,22 @@ fn the_terrain_shaders_validate_translate_to_glsl_es_300_and_light_the_ground_li
         "тень рельефа — выборка сравнением"
     );
     assert!(
-        !terrain.contains("sampler2DArray"),
+        !terrain.contains("_group_0_binding_1_fs"),
         "рельеф атлас не читает: одна текстура — одна выборка"
     );
-    for entry in ["fs_terrain", "fs_ground", "fs_shape"] {
+    for entry in ["fs_terrain", "fs_water", "fs_ground", "fs_shape"] {
         let body = source
             .split_once(&format!("fn {entry}("))
             .and_then(|(_, rest)| rest.split_once("\n}"))
             .map(|(body, _)| body)
             .unwrap_or_else(|| panic!("{entry} не найден"));
         assert!(
-            body.contains("lighting(in.world, normalize(in.normal))")
-                || body.contains("lighting(in.world, normal)"),
+            body.contains("shade(") || body.contains("shade_matte("),
             "{entry}: земля и фигуры освещаются одной функцией с нормалью поверхности"
+        );
+        assert!(
+            body.contains("finish("),
+            "{entry}: кадр сводится к экрану в конце шейдера"
         );
     }
 }

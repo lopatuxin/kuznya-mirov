@@ -5,8 +5,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
-import { buildGrid } from "./build.mjs";
+import { buildCovers, buildGrid } from "./build.mjs";
 import { hundredths, terrainText } from "./files.mjs";
+import { decodeGrayPng } from "./pngDecoder.mjs";
 import { Grid } from "./terrain.mjs";
 
 const BUILD = fileURLToPath(new URL("./build.mjs", import.meta.url));
@@ -126,6 +127,24 @@ describe("build.mjs", () => {
     }
   });
 
+  it("с covers пишет маски слоёв в terrain/ рядом с файлом рельефа, рельеф — с покрытиями", () => {
+    const dir = mkdtempSync(join(tmpdir(), "location-"));
+    try {
+      const description = plan({ covers: [{ material: "grass" }, { material: "rock", rule: "slope", from: 30, full: 38 }] });
+      const result = run(dir, description);
+      assert.equal(result.status, 0, result.stderr);
+      const grid = buildGrid(description);
+      const { layers, masks } = buildCovers(description, grid);
+      assert.equal(readFileSync(join(dir, "terrain.json"), "utf8"), terrainText(grid, description.water, layers));
+      const written = decodeGrayPng(readFileSync(join(dir, "terrain", "rock.png")));
+      assert.deepEqual([written.width, written.height], [64, 48]);
+      assert.deepEqual(written.pixels, masks[0].pixels);
+      assert.equal(existsSync(join(dir, "terrain", "grass.png")), false, "у первого слоя маски нет");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it("при ошибке описания или сломанном JSON файл не пишется и сообщение называет, что не так", () => {
     const dir = mkdtempSync(join(tmpdir(), "location-"));
     try {
@@ -138,6 +157,29 @@ describe("build.mjs", () => {
       assert.equal(existsSync(join(dir, "terrain.json")), false);
     } finally {
       rmSync(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("деревня ролевой игры", () => {
+  const planPath = fileURLToPath(new URL("../../art/rpg/village/plan.json", import.meta.url));
+  const gameDir = fileURLToPath(new URL("../../games/rpg/", import.meta.url));
+  const village = JSON.parse(readFileSync(planPath, "utf8"));
+  const grid = buildGrid(village);
+  const { layers, masks } = buildCovers(village, grid);
+
+  it("маски — у каждого слоя, кроме первого, 512 × 384, четыре точки на клетку сцены", () => {
+    assert.equal(masks.length, layers.length - 1);
+    for (const { width, height, pixels } of masks) {
+      assert.deepEqual([width, height, pixels.length], [512, 384, 512 * 384]);
+    }
+  });
+
+  it("файлы в games/rpg — то, что строит описание: рельеф и маски те же", () => {
+    const committed = readFileSync(join(gameDir, "terrain.json"), "utf8").replaceAll("\r\n", "\n");
+    assert.equal(committed, terrainText(grid, village.water, layers));
+    for (const { mask, pixels } of masks) {
+      assert.deepEqual(decodeGrayPng(readFileSync(join(gameDir, mask))).pixels, pixels, mask);
     }
   });
 });

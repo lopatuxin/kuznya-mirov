@@ -6,8 +6,11 @@ export type TerrainWater = { level: number; color: string };
 /** Сетка высот сцены строками сверху вниз: точка `(column, row)` лежит в месте сцены `(column / 2, row / 2)`. */
 export type TerrainGrid = { columns: number; rows: number; heights: Float64Array };
 
-/** Что лежит в файле рельефа: сетка высот и вода, если она есть. */
-export type TerrainContent = TerrainGrid & { water: TerrainWater | null };
+/** Слой покрытия из `covers` файла рельефа: материал и маска, у первого слоя маски нет. */
+export type TerrainCoverLayer = { material: string; mask?: string };
+
+/** Что лежит в файле рельефа: сетка высот, вода и покрытия, если они есть. Покрытия редактор не правит, только переносит. */
+export type TerrainContent = TerrainGrid & { water: TerrainWater | null; covers: TerrainCoverLayer[] | null };
 
 /** «Рельеф», требование 23: вода, которую включает галочка, — земля высоты 0 остаётся сушей. */
 export const DEFAULT_WATER: TerrainWater = { level: -0.5, color: "#3f7fd0" };
@@ -30,14 +33,25 @@ function lineBreakOf(text: string | null): string {
 }
 
 /**
- * Текст файла рельефа — «Кисти рельефа», требование 18: `water` первой строкой, если вода есть,
- * затем `heights` — по строке сетки на строку файла, числа через запятую с пробелом, как лежит
- * `games/rpg/terrain.json`.
+ * Текст файла рельефа — «Кисти рельефа», требование 18, и «Свет и материалы», требование 27: `water`
+ * первой строкой, если вода есть, затем `covers` — по слою на строку, если они есть, затем `heights` —
+ * по строке сетки на строку файла, числа через запятую с пробелом, как лежит `games/rpg/terrain.json`.
+ * Тот же вид пишет построитель локации (`tools/location/files.mjs`).
  */
 export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): string {
   const lines: string[] = ["{"];
   if (content.water !== null) {
     lines.push(`  "water": { "level": ${formatNumber(content.water.level)}, "color": ${JSON.stringify(content.water.color)} },`);
+  }
+  const { covers } = content;
+  if (covers !== null) {
+    lines.push('  "covers": [');
+    covers.forEach(({ material, mask }, index) => {
+      const fields = [`"material": ${JSON.stringify(material)}`];
+      if (mask !== undefined) fields.push(`"mask": ${JSON.stringify(mask)}`);
+      lines.push(`    { ${fields.join(", ")} }${index + 1 < covers.length ? "," : ""}`);
+    });
+    lines.push("  ],");
   }
   lines.push('  "heights": [');
   for (let row = 0; row < content.rows; row += 1) {
@@ -54,7 +68,19 @@ function isTerrainWater(value: unknown): value is TerrainWater {
   return typeof water.level === "number" && typeof water.color === "string";
 }
 
-/** Файл рельефа как сетка и вода; текст, что не разбирается, — `null` (проверять его — дело движка). */
+function isCoverLayer(value: unknown): value is TerrainCoverLayer {
+  if (value === null || typeof value !== "object") return false;
+  const layer = value as { material?: unknown; mask?: unknown };
+  return typeof layer.material === "string" && (layer.mask === undefined || typeof layer.mask === "string");
+}
+
+/** Слои `covers` как они лежат в файле; не список — `null`, слой не из `material` и `mask` пропускается: проверять их — дело движка. */
+function parseCovers(value: unknown): TerrainCoverLayer[] | null {
+  if (!Array.isArray(value)) return null;
+  return value.filter(isCoverLayer).map(({ material, mask }) => (mask === undefined ? { material } : { material, mask }));
+}
+
+/** Файл рельефа как сетка, вода и покрытия; текст, что не разбирается, — `null` (проверять его — дело движка). */
 export function parseTerrainText(text: string): TerrainContent | null {
   let parsed: unknown;
   try {
@@ -62,12 +88,18 @@ export function parseTerrainText(text: string): TerrainContent | null {
   } catch {
     return null;
   }
-  const file = parsed as { heights?: unknown; water?: unknown } | null;
+  const file = parsed as { heights?: unknown; water?: unknown; covers?: unknown } | null;
   const rows = file?.heights;
   if (!Array.isArray(rows) || rows.length === 0 || !rows.every((row) => Array.isArray(row) && row.length === rows[0].length)) return null;
   if (!rows.every((row: unknown[]) => row.every((height) => typeof height === "number"))) return null;
   const water = isTerrainWater(file?.water) ? file.water : null;
-  return { columns: rows[0].length, rows: rows.length, heights: Float64Array.from((rows as number[][]).flat()), water: water === null ? null : { level: water.level, color: water.color } };
+  return {
+    columns: rows[0].length,
+    rows: rows.length,
+    heights: Float64Array.from((rows as number[][]).flat()),
+    water: water === null ? null : { level: water.level, color: water.color },
+    covers: parseCovers(file?.covers),
+  };
 }
 
 /** Вода из файла рельефа: файла нет или в нём нет `water` — `null`. */
@@ -82,17 +114,18 @@ export function flatTerrainGrid(sceneSize: SceneSize): TerrainGrid {
   return { columns, rows, heights: new Float64Array(columns * rows) };
 }
 
-/** Текст рельефа после мазка: высоты — из сетки, вода и перенос строки — как были. */
+/** Текст рельефа после мазка: высоты — из сетки, вода, покрытия и перенос строки — как были. */
 export function terrainTextWithHeights(previousText: string | null, grid: TerrainGrid): string {
-  return formatTerrainText({ ...grid, water: readTerrainWater(previousText) }, lineBreakOf(previousText));
+  const previous = previousText === null ? null : parseTerrainText(previousText);
+  return formatTerrainText({ ...grid, water: previous?.water ?? null, covers: previous?.covers ?? null }, lineBreakOf(previousText));
 }
 
 /**
- * Текст рельефа после правки воды: высоты — как в файле, без файла — ровная земля. Файл, что не
- * разбирается, — `null`: править нечего.
+ * Текст рельефа после правки воды: высоты и покрытия — как в файле, без файла — ровная земля без
+ * покрытий. Файл, что не разбирается, — `null`: править нечего.
  */
 export function terrainTextWithWater(previousText: string | null, sceneSize: SceneSize, water: TerrainWater | null): string | null {
-  const previous = previousText === null ? { ...flatTerrainGrid(sceneSize), water: null } : parseTerrainText(previousText);
+  const previous = previousText === null ? { ...flatTerrainGrid(sceneSize), water: null, covers: null } : parseTerrainText(previousText);
   return previous === null ? null : formatTerrainText({ ...previous, water }, lineBreakOf(previousText));
 }
 

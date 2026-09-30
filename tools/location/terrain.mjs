@@ -53,7 +53,7 @@ export class Grid {
 
 // Сумма масштабов шума почти всегда лежит в ±0,5: растянутая вдвое и обрезанная, она доходит до ±1,
 // и `warp` и `irregular` задают настоящий размах отрогов и края холма.
-function spread(value) {
+export function spread(value) {
   return Math.max(-1, Math.min(1, value * 2));
 }
 

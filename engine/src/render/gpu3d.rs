@@ -9,13 +9,16 @@ use wgpu::util::DeviceExt;
 use crate::core::shapes::{self, MeshVertex};
 use crate::core::value::Shape;
 
+use super::atlas::webgl2_safe_layer_count;
+use super::materials::{self, COVER_TABLE_LEN, Relief};
 use super::relief::TerrainMesh;
 
 /// Карта теней — предел `downlevel_webgl2_defaults`.
 const SHADOW_SIZE: u32 = 2048;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
-/// Общие данные кадра: камера, солнце, тень. Раскладка — как `Globals3d` в `scene3d.wgsl`.
+/// Общие данные кадра: камера, солнце, тень, место камеры, свет солнца и неба. Раскладка — как
+/// `Globals3d` в `scene3d.wgsl`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct Globals3d {
@@ -23,6 +26,9 @@ pub struct Globals3d {
     pub light_view_proj: [[f32; 4]; 4],
     pub sun: [f32; 4],
     pub shade: [f32; 4],
+    pub eye: [f32; 4],
+    pub sun_light: [f32; 4],
+    pub sky_light: [f32; 4],
 }
 
 /// Одна фигура кадра: `placement` — середина на земле и косинус с синусом поворота, `dims` —
@@ -51,7 +57,7 @@ pub struct GroundVertex {
 }
 
 // Раскладки, которые читает `scene3d.wgsl`: уникальный размер в байтах и смещения атрибутов ниже.
-const _: () = assert!(std::mem::size_of::<Globals3d>() == 160);
+const _: () = assert!(std::mem::size_of::<Globals3d>() == 208);
 const _: () = assert!(std::mem::size_of::<ShapeInstance>() == 48);
 const _: () = assert!(std::mem::size_of::<GroundVertex>() == 72);
 
@@ -81,6 +87,7 @@ pub struct Scene3d {
     shadow_pipeline: wgpu::RenderPipeline,
     terrain_shadow_pipeline: wgpu::RenderPipeline,
     terrain_pipeline: wgpu::RenderPipeline,
+    water_pipeline: wgpu::RenderPipeline,
     shape_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
     meshes: [MeshBuffers; 4],
@@ -93,6 +100,174 @@ pub struct Scene3d {
     /// Сколько фигур каждого вида лежит в `shape_buffer`, подряд по видам.
     shape_counts: [u32; 4],
     ground_count: u32,
+}
+
+/// Что видеокарта умеет и как рисует, от чего зависят текстуры материалов.
+#[derive(Debug, Clone, Copy)]
+pub struct MaterialOptions {
+    /// Рисует WebGL2: число слоёв массивов идёт через `webgl2_safe_layer_count`.
+    pub webgl2: bool,
+    /// Видеокарта умеет анизотропную выборку (`DownlevelFlags::ANISOTROPIC_FILTERING`).
+    pub anisotropic: bool,
+}
+
+/// Материалы и маски покрытий на видеокарте: два массива текстур материалов со ступенями уменьшения,
+/// массив масок по четыре в слой и таблица слоёв. Байты, из которых они собраны, остаются у
+/// вызывающего и здесь не держатся.
+pub struct MaterialGpu {
+    covers: wgpu::Buffer,
+    colors: wgpu::TextureView,
+    data: wgpu::TextureView,
+    masks: wgpu::TextureView,
+    sampler: wgpu::Sampler,
+}
+
+fn array_texture(
+    device: &wgpu::Device,
+    label: &str,
+    format: wgpu::TextureFormat,
+    side: [u32; 2],
+    mips: u32,
+    layers: u32,
+) -> wgpu::Texture {
+    device.create_texture(&wgpu::TextureDescriptor {
+        label: Some(label),
+        size: wgpu::Extent3d {
+            width: side[0],
+            height: side[1],
+            depth_or_array_layers: layers,
+        },
+        mip_level_count: mips,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    })
+}
+
+fn write_layer(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    layer: u32,
+    mip: u32,
+    side: [u32; 2],
+    bytes: &[u8],
+) {
+    queue.write_texture(
+        wgpu::TexelCopyTextureInfo {
+            texture,
+            mip_level: mip,
+            origin: wgpu::Origin3d {
+                x: 0,
+                y: 0,
+                z: layer,
+            },
+            aspect: wgpu::TextureAspect::All,
+        },
+        bytes,
+        wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(side[0] * 4),
+            rows_per_image: Some(side[1]),
+        },
+        wgpu::Extent3d {
+            width: side[0],
+            height: side[1],
+            depth_or_array_layers: 1,
+        },
+    );
+}
+
+fn array_view(texture: &wgpu::Texture) -> wgpu::TextureView {
+    texture.create_view(&wgpu::TextureViewDescriptor {
+        dimension: Some(wgpu::TextureViewDimension::D2Array),
+        ..Default::default()
+    })
+}
+
+impl MaterialGpu {
+    /// Собирает текстуры из `relief` и отправляет их на видеокарту материал за материалом; без
+    /// `relief` — пустые текстуры безопасного размера, которые шейдер не читает.
+    pub fn new(
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        options: MaterialOptions,
+        relief: Option<&Relief<'_>>,
+    ) -> MaterialGpu {
+        let safe_layers = |needed: usize| {
+            let needed = needed as u32;
+            if options.webgl2 {
+                webgl2_safe_layer_count(needed)
+            } else {
+                needed.max(1)
+            }
+        };
+        let side = relief.map_or(1, |relief| relief.side);
+        let mips = materials::level_count(side);
+        let material_layers = safe_layers(relief.map_or(0, |relief| relief.materials.len()));
+        let colors = array_texture(
+            device,
+            "material_color",
+            wgpu::TextureFormat::Rgba8UnormSrgb,
+            [side; 2],
+            mips as u32,
+            material_layers,
+        );
+        let data = array_texture(
+            device,
+            "material_data",
+            wgpu::TextureFormat::Rgba8Unorm,
+            [side; 2],
+            mips as u32,
+            material_layers,
+        );
+        for (layer, maps) in relief.iter().flat_map(|r| &r.materials).enumerate() {
+            let packed = materials::pack_material(maps);
+            for (mip, (color, normals)) in packed.color.iter().zip(&packed.data).enumerate() {
+                let level = [materials::level_side(side, mip); 2];
+                write_layer(queue, &colors, layer as u32, mip as u32, level, color);
+                write_layer(queue, &data, layer as u32, mip as u32, level, normals);
+            }
+        }
+
+        let packed_masks = materials::pack_masks(relief.map_or(&[][..], |relief| &relief.masks));
+        let mask_side = [packed_masks.width, packed_masks.height];
+        let masks = array_texture(
+            device,
+            "cover_masks",
+            wgpu::TextureFormat::Rgba8Unorm,
+            mask_side,
+            1,
+            safe_layers(packed_masks.layers.len()),
+        );
+        for (layer, bytes) in packed_masks.layers.iter().enumerate() {
+            write_layer(queue, &masks, layer as u32, 0, mask_side, bytes);
+        }
+
+        let table = relief.map_or([[0.0; 4]; COVER_TABLE_LEN], |relief| relief.table);
+        MaterialGpu {
+            covers: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("cover_table"),
+                contents: bytemuck::cast_slice(&table),
+                usage: wgpu::BufferUsages::UNIFORM,
+            }),
+            colors: array_view(&colors),
+            data: array_view(&data),
+            masks: array_view(&masks),
+            sampler: device.create_sampler(&wgpu::SamplerDescriptor {
+                label: Some("material_sampler"),
+                address_mode_u: wgpu::AddressMode::Repeat,
+                address_mode_v: wgpu::AddressMode::Repeat,
+                address_mode_w: wgpu::AddressMode::Repeat,
+                mag_filter: wgpu::FilterMode::Linear,
+                min_filter: wgpu::FilterMode::Linear,
+                mipmap_filter: wgpu::MipmapFilterMode::Linear,
+                anisotropy_clamp: if options.anisotropic { 16 } else { 1 },
+                ..Default::default()
+            }),
+        }
+    }
 }
 
 struct TerrainBuffer {
@@ -271,15 +446,28 @@ fn layout_entry(
     }
 }
 
+fn array_layout_entry(binding: u32) -> wgpu::BindGroupLayoutEntry {
+    layout_entry(
+        binding,
+        wgpu::ShaderStages::FRAGMENT,
+        wgpu::BindingType::Texture {
+            sample_type: wgpu::TextureSampleType::Float { filterable: true },
+            view_dimension: wgpu::TextureViewDimension::D2Array,
+            multisampled: false,
+        },
+    )
+}
+
 impl Scene3d {
-    /// Собирает ресурсы: карту теней, буфер глубины под `surface_size`, сетки фигур, три конвейера
-    /// и две раскладки — теневая видит только общие данные (карта теней в ней — цель записи, а не
-    /// текстура), основная — общие данные, атлас, его выборку и тень со сравнением.
+    /// Собирает ресурсы: карту теней, буфер глубины под `surface_size`, сетки фигур, конвейеры и две
+    /// раскладки — теневая видит только общие данные (карта теней в ней — цель записи, а не
+    /// текстура), основная — общие данные, атлас, его выборку, тень со сравнением и материалы.
     pub fn new(
         device: &wgpu::Device,
         color_format: wgpu::TextureFormat,
         atlas_view: &wgpu::TextureView,
         atlas_sampler: &wgpu::Sampler,
+        materials: &MaterialGpu,
         surface_size: [u32; 2],
     ) -> Scene3d {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -355,6 +543,23 @@ impl Scene3d {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
                 ),
+                layout_entry(
+                    5,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Buffer {
+                        ty: wgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                ),
+                array_layout_entry(6),
+                array_layout_entry(7),
+                array_layout_entry(8),
+                layout_entry(
+                    9,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+                ),
             ],
         });
 
@@ -389,6 +594,26 @@ impl Scene3d {
                 wgpu::BindGroupEntry {
                     binding: 4,
                     resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 5,
+                    resource: materials.covers.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 6,
+                    resource: wgpu::BindingResource::TextureView(&materials.colors),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 7,
+                    resource: wgpu::BindingResource::TextureView(&materials.data),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 8,
+                    resource: wgpu::BindingResource::TextureView(&materials.masks),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 9,
+                    resource: wgpu::BindingResource::Sampler(&materials.sampler),
                 },
             ],
         });
@@ -476,27 +701,31 @@ impl Scene3d {
                 multiview_mask: None,
                 cache: None,
             });
-        let terrain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("terrain_pipeline"),
-            layout: Some(&main_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_terrain"),
-                buffers: &terrain_buffers,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_terrain"),
-                targets: &shape_targets,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let terrain_surface_pipeline = |label: &str, fragment_entry: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&main_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_terrain"),
+                    buffers: &terrain_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment_entry),
+                    targets: &shape_targets,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let terrain_pipeline = terrain_surface_pipeline("terrain_pipeline", "fs_terrain");
+        let water_pipeline = terrain_surface_pipeline("water_pipeline", "fs_water");
         let shape_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("shape_pipeline"),
             layout: Some(&main_pipeline_layout),
@@ -563,6 +792,7 @@ impl Scene3d {
             shadow_pipeline,
             terrain_shadow_pipeline,
             terrain_pipeline,
+            water_pipeline,
             shape_pipeline,
             ground_pipeline,
             meshes: Shape::ALL.map(|shape| make_mesh_buffers(device, shape)),
@@ -756,9 +986,13 @@ impl Scene3d {
         });
         pass.set_bind_group(0, &self.main_bind_group, &[]);
         if let Some(terrain) = &self.terrain {
-            pass.set_pipeline(&self.terrain_pipeline);
             pass.set_vertex_buffer(0, terrain.buffer.slice(..));
-            pass.draw(0..terrain.total, 0..1);
+            pass.set_pipeline(&self.terrain_pipeline);
+            pass.draw(0..terrain.land, 0..1);
+            if terrain.total > terrain.land {
+                pass.set_pipeline(&self.water_pipeline);
+                pass.draw(terrain.land..terrain.total, 0..1);
+            }
         }
         pass.set_pipeline(&self.shape_pipeline);
         self.draw_shapes(&mut pass);

@@ -2,10 +2,11 @@
 // и имени и говорит, что не так, — описание пишется руками, и опечатка в ключе не должна молча
 // давать другой рельеф.
 
-import { path } from "./curve.mjs";
-import { derivedSeed } from "./random.mjs";
+import { isNumber, isPoint, readLine } from "./curve.mjs";
+import { readCovers } from "./covers.mjs";
+import { derivedSeed, nameHash } from "./random.mjs";
 
-const TOP_KEYS = ["size", "seed", "terrain", "water", "operations"];
+const TOP_KEYS = ["size", "seed", "terrain", "water", "operations", "covers"];
 
 // Для каждой операции: обязательные и необязательные ключи, кроме `op` и `name`. `sharp` — у операций
 // с линией или многоугольником.
@@ -20,28 +21,12 @@ const OPERATIONS = {
 
 const MAX_PASSES = 50;
 
-function isNumber(value) {
-  return typeof value === "number" && Number.isFinite(value);
-}
-
-function isPoint(value) {
-  return Array.isArray(value) && value.length === 2 && value.every(isNumber);
-}
-
-// Имя операции в число для её зерна: неровности операции зависят от её имени, а не от места в
-// описании, и вставка новой операции не меняет соседей.
-function nameHash(name) {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193) >>> 0;
-  return h;
-}
-
-/** Проверяет описание и возвращает размер, воду, путь файла и операции с кривыми и зёрнами. */
+/** Проверяет описание и возвращает размер, воду, путь файла, операции с кривыми и зёрнами и покрытия. */
 export function readPlan(plan) {
   if (plan === null || typeof plan !== "object" || Array.isArray(plan)) throw new Error("описание должно быть объектом JSON");
   const extra = Object.keys(plan).filter((key) => !TOP_KEYS.includes(key));
   if (extra.length > 0) throw new Error(`неизвестный ключ описания «${extra[0]}»`);
-  const { size, seed, terrain, water, operations } = plan;
+  const { size, seed, terrain, water, operations, covers } = plan;
   if (!Array.isArray(size) || size.length !== 2 || !size.every((n) => Number.isInteger(n) && n > 0)) {
     throw new Error("size — два целых числа больше нуля: ширина и высота сцены в клетках");
   }
@@ -54,19 +39,21 @@ export function readPlan(plan) {
     }
   }
   if (!Array.isArray(operations)) throw new Error("operations — список операций");
-  const names = new Set();
+  const named = new Map();
+  const read = operations.map((op, index) => {
+    const operation = readOperation(op, index, seed);
+    if (op.name !== undefined) {
+      if (named.has(op.name)) throw new Error(`операция ${index + 1} «${op.name}»: это имя уже есть у другой операции`);
+      named.set(op.name, operation);
+    }
+    return operation;
+  });
   return {
     size,
     water,
     terrain,
-    operations: operations.map((op, index) => {
-      const read = readOperation(op, index, seed);
-      if (op.name !== undefined) {
-        if (names.has(op.name)) throw new Error(`операция ${index + 1} «${op.name}»: это имя уже есть у другой операции`);
-        names.add(op.name);
-      }
-      return read;
-    }),
+    operations: read,
+    covers: covers === undefined ? undefined : readCovers(covers, { seed, water, named }),
   };
 }
 
@@ -105,24 +92,7 @@ function readOperation(op, index, seed) {
     }
     return derivedSeed(seed, op.name === undefined ? index : nameHash(op.name));
   };
-  const points = (key, closed) => {
-    const value = op[key];
-    const least = closed ? 3 : 2;
-    if (!Array.isArray(value) || value.length < least || !value.every(isPoint)) {
-      fail(`«${key}» — список не меньше ${least} точек [x, y]`);
-    }
-    const line = path(value, { closed, sharp: op.sharp === true });
-    if (line.segments.length === 0) fail(`«${key}» — все точки совпадают`);
-    if (closed) {
-      const pts = line.points;
-      const area = pts.reduce((sum, p, i) => {
-        const q = pts[(i + 1) % pts.length];
-        return sum + p[0] * q[1] - q[0] * p[1];
-      }, 0);
-      if (Math.abs(area) < 1e-9) fail(`«${key}» — многоугольник без площади: точки на одной прямой`);
-    }
-    return line;
-  };
+  const points = (key, closed) => readLine(op[key], key, { closed, sharp: op.sharp === true }, fail);
 
   switch (op.op) {
     case "noise":

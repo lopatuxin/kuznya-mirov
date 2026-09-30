@@ -137,3 +137,33 @@ export class Path {
 export function path(points, { closed = false, sharp = false } = {}) {
   return new Path(smooth(points, { closed, sharp }), closed);
 }
+
+export function isNumber(value) {
+  return typeof value === "number" && Number.isFinite(value);
+}
+
+export function isPoint(value) {
+  return Array.isArray(value) && value.length === 2 && value.every(isNumber);
+}
+
+/**
+ * Линия или многоугольник из списка точек описания. Не подошло — `fail(сообщение)` с ключом `key`;
+ * `fail` бросает ошибку с местом, где искать, — операцией или покрытием.
+ */
+export function readLine(value, key, { closed, sharp }, fail) {
+  const least = closed ? 3 : 2;
+  if (!Array.isArray(value) || value.length < least || !value.every(isPoint)) {
+    fail(`«${key}» — список не меньше ${least} точек [x, y]`);
+  }
+  const line = path(value, { closed, sharp });
+  if (line.segments.length === 0) fail(`«${key}» — все точки совпадают`);
+  if (closed) {
+    const pts = line.points;
+    const area = pts.reduce((sum, p, i) => {
+      const q = pts[(i + 1) % pts.length];
+      return sum + p[0] * q[1] - q[0] * p[1];
+    }, 0);
+    if (Math.abs(area) < 1e-9) fail(`«${key}» — многоугольник без площади: точки на одной прямой`);
+  }
+  return line;
+}
