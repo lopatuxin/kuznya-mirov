@@ -3062,20 +3062,28 @@ fn a_ground_tile_is_the_eight_triangles_of_its_cell_with_the_picture_stretched_o
     let terrain = game.world.terrain();
     for (index, tile) in tiles.iter().enumerate() {
         let cell = [tile.position[0] as usize, tile.position[1] as usize];
-        let mut corners = Vec::new();
+        let (mut corners, mut normals) = (Vec::new(), Vec::new());
         for dy in 0..2 {
             for dx in 0..2 {
                 for which in 0..2 {
-                    corners.extend(terrain.triangle(2 * cell[0] + dx, 2 * cell[1] + dy, which));
+                    let (column, row) = (2 * cell[0] + dx, 2 * cell[1] + dy);
+                    corners.extend(terrain.triangle(column, row, which));
+                    normals.extend(terrain.triangle_normals(column, row, which));
                 }
             }
         }
-        for (vertex, corner) in frame.surface[index * 24..(index + 1) * 24]
+        for ((vertex, corner), normal) in frame.surface[index * 24..(index + 1) * 24]
             .iter()
             .zip(&corners)
+            .zip(&normals)
         {
             let expected = [corner[0] as f32, corner[1] as f32, corner[2] as f32];
             assert_eq!(vertex.position, expected, "клетка {cell:?}");
+            assert_eq!(
+                vertex.normal,
+                normal.map(|c| c as f32),
+                "свет — по нормали точки сетки"
+            );
             let unit = [corner[0] - cell[0] as f64, corner[1] - cell[1] as f64];
             assert_eq!(
                 vertex.uv,
@@ -3129,7 +3137,11 @@ fn a_flat_object_on_a_slope_follows_the_triangles_of_the_terrain_without_gaps() 
                 "{turn}: вершина ({x}, {y}) на высоте {z}, а земля {}",
                 terrain.height_at(x, y)
             );
-            assert!(vertex.normal[2] > 0.0);
+            let ground = terrain.normal_at(x, y);
+            assert!(
+                (0..3).all(|axis| (f64::from(vertex.normal[axis]) - ground[axis]).abs() < 1e-4),
+                "{turn}: свет как у земли в ({x}, {y})"
+            );
         }
     }
 }

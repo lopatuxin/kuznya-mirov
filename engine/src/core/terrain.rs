@@ -6,7 +6,7 @@
 use std::sync::OnceLock;
 
 use super::footprint::Footprint;
-use super::math3::Vec3;
+use super::math3::{self, Vec3};
 use super::value::Vec2;
 
 /// Тангенс самого крутого склона, по которому идут: 45°.
@@ -257,21 +257,67 @@ impl Terrain {
         points
     }
 
-    /// Вершины треугольника: квадрат `(column, row)`, `which` — 0 над диагональю (точки левая верхняя,
-    /// правая верхняя, правая нижняя), 1 под ней (левая верхняя, правая нижняя, левая нижняя).
+    /// Сдвиги точек треугольника от левой верхней точки квадрата: `which` — 0 над диагональю (точки
+    /// левая верхняя, правая верхняя, правая нижняя), 1 под ней (левая верхняя, правая нижняя, левая
+    /// нижняя).
+    fn corner_offsets(which: usize) -> [(usize, usize); 3] {
+        if which == 0 {
+            [(0, 0), (1, 0), (1, 1)]
+        } else {
+            [(0, 0), (1, 1), (0, 1)]
+        }
+    }
+
+    /// Вершины треугольника `which` квадрата `(column, row)`.
     pub fn triangle(&self, column: usize, row: usize, which: usize) -> [[f64; 3]; 3] {
-        let vertex = |dc: usize, dr: usize| {
+        Terrain::corner_offsets(which).map(|(dc, dr)| {
             [
                 (column + dc) as f64 / 2.0,
                 (row + dr) as f64 / 2.0,
                 self.point_height(column + dc, row + dr),
             ]
-        };
-        if which == 0 {
-            [vertex(0, 0), vertex(1, 0), vertex(1, 1)]
-        } else {
-            [vertex(0, 0), vertex(1, 1), vertex(0, 1)]
+        })
+    }
+
+    /// Нормали освещения вершин треугольника `which` квадрата `(column, row)` в порядке `triangle`.
+    pub fn triangle_normals(&self, column: usize, row: usize, which: usize) -> [Vec3; 3] {
+        Terrain::corner_offsets(which).map(|(dc, dr)| self.point_normal(column + dc, row + dr))
+    }
+
+    /// Нормаль освещения точки сетки `(column, row)` по наклону между её соседями слева и справа,
+    /// сверху и снизу, на краю сцены — между точкой и соседом внутри. У соседних треугольников в общей
+    /// точке она одна, поэтому свет по склону меняется плавно, а не скачком на ребре.
+    fn point_normal(&self, column: usize, row: usize) -> Vec3 {
+        let (left, right) = (
+            column.saturating_sub(1),
+            (column + 1).min(self.columns() - 1),
+        );
+        let (top, bottom) = (row.saturating_sub(1), (row + 1).min(self.rows() - 1));
+        let along_x = (self.point_height(right, row) - self.point_height(left, row)) * 2.0
+            / (right - left) as f64;
+        let along_y = (self.point_height(column, bottom) - self.point_height(column, top)) * 2.0
+            / (bottom - top) as f64;
+        math3::normalize([-along_x, -along_y, 1.0])
+    }
+
+    /// Нормаль освещения в месте сцены: нормали точек треугольника, смешанные так же, как высоты в
+    /// `height_at`; без файла высот — вверх.
+    pub fn normal_at(&self, x: f64, y: f64) -> Vec3 {
+        if self.heights.is_empty() {
+            return [0.0, 0.0, 1.0];
         }
+        let [x, y] = self.clamp_point(x, y);
+        let (column, row, u, v) = self.locate(x, y);
+        let n = |dc: usize, dr: usize| self.point_normal(column + dc, row + dr);
+        let parts = if u >= v {
+            [(n(0, 0), 1.0 - u), (n(1, 0), u - v), (n(1, 1), v)]
+        } else {
+            [(n(0, 0), 1.0 - v), (n(0, 1), v - u), (n(1, 1), u)]
+        };
+        let sum = parts.iter().fold([0.0; 3], |sum, &(normal, weight)| {
+            math3::add(sum, math3::scale(normal, weight))
+        });
+        math3::normalize(sum)
     }
 
     /// Квадратов сетки по ширине и по высоте (`2 × размер`); 0, пока рельефа нет.
@@ -283,7 +329,8 @@ impl Terrain {
         }
     }
 
-    /// Единичная нормаль треугольника, смотрящая вверх: `x` вправо, `y` к игроку, `z` вверх.
+    /// Единичная нормаль треугольника, смотрящая вверх: `x` вправо, `y` к игроку, `z` вверх. По ней
+    /// считается крутизна склона для ходьбы; свет берёт нормали точек (`point_normal`).
     pub fn normal(triangle: &[[f64; 3]; 3]) -> Vec3 {
         let (ex, ey) = (
             [
@@ -297,9 +344,9 @@ impl Terrain {
                 triangle[2][2] - triangle[0][2],
             ],
         );
-        let mut normal = super::math3::normalize(super::math3::cross(ex, ey));
+        let mut normal = math3::normalize(math3::cross(ex, ey));
         if normal[2] < 0.0 {
-            normal = super::math3::scale(normal, -1.0);
+            normal = math3::scale(normal, -1.0);
         }
         normal
     }
@@ -613,6 +660,48 @@ mod tests {
         assert_eq!(
             terrain.ray_hit([2.0, 1.0], [5.0, 0.5, 10.0], [0.0, 0.0, -1.0]),
             None
+        );
+    }
+
+    #[test]
+    fn on_an_even_ramp_the_light_normal_of_every_point_is_the_normal_of_the_triangles() {
+        let terrain = ramp();
+        let along = Terrain::normal(&terrain.triangle(0, 0, 0));
+        for row in 0..terrain.rows() {
+            for column in 0..terrain.columns() {
+                let normal = terrain.point_normal(column, row);
+                assert!(
+                    (0..3).all(|axis| (normal[axis] - along[axis]).abs() < 1e-12),
+                    "точка ({column}, {row}): {normal:?} против {along:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn across_a_ridge_the_light_normal_changes_smoothly_while_the_triangle_normal_jumps() {
+        // Сцена 2×1 клетки: гребень вдоль x = 1, по обе стороны склоны в разные стороны.
+        let row = vec![0.0, 0.5, 1.0, 0.5, 0.0];
+        let terrain = Terrain::from_rows([2, 1], &vec![row; 3], None).expect("размеры сходятся");
+        let (left, right) = (
+            Terrain::normal(&terrain.triangle(1, 0, 0)),
+            Terrain::normal(&terrain.triangle(2, 0, 1)),
+        );
+        assert!(left[0] < -0.5 && right[0] > 0.5, "{left:?} {right:?}");
+        let (before, after) = (terrain.normal_at(0.999, 0.6), terrain.normal_at(1.001, 0.6));
+        assert!(
+            (0..3).all(|axis| (before[axis] - after[axis]).abs() < 1e-2),
+            "{before:?} {after:?}"
+        );
+        assert_eq!(
+            terrain.normal_at(1.0, 0.5),
+            [0.0, 0.0, 1.0],
+            "на гребне — вверх"
+        );
+        let (at_point, of_point) = (terrain.normal_at(0.5, 0.5), terrain.point_normal(1, 1));
+        assert!(
+            (0..3).all(|axis| (at_point[axis] - of_point[axis]).abs() < 1e-12),
+            "в точке сетки — её нормаль: {at_point:?} {of_point:?}"
         );
     }
 

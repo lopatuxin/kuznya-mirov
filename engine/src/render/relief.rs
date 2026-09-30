@@ -17,7 +17,7 @@ static NEXT_MESH: AtomicU64 = AtomicU64::new(1);
 
 const UP: Vec3 = [0.0, 0.0, 1.0];
 
-/// Вершина поверхности рельефа или воды: место, нормаль треугольника и цвет.
+/// Вершина поверхности рельефа или воды: место, нормаль освещения и цвет.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainVertex {
     pub position: [f32; 3],
@@ -27,7 +27,8 @@ pub struct TerrainVertex {
 
 /// Сетка рельефа: треугольники земли, залитые фоном сцены, затем, если в файле есть вода, её гладь
 /// только над землёй ниже уровня воды: под землёй воды нет, иначе она просвечивает под краем
-/// сцены, у которой нет боковой стенки. Плоские треугольники — вершины у каждого свои, с нормалью треугольника.
+/// сцены, у которой нет боковой стенки. Вершины у каждого треугольника свои; у земли нормаль — своей
+/// точки сетки, одна у всех треугольников в этой точке, так что свет по склону идёт плавно.
 #[derive(Debug, Clone)]
 pub struct TerrainMesh {
     /// Один на каждую построенную сетку: видеокарта перезаписывает буфер, только когда номер сменился.
@@ -54,11 +55,13 @@ impl TerrainMesh {
             for column in 0..columns {
                 for which in 0..2 {
                     let triangle = terrain.triangle(column, row, which);
-                    let normal = to_f32(Terrain::normal(&triangle));
-                    vertices.extend(triangle.map(|corner| TerrainVertex {
-                        position: to_f32(corner),
-                        normal,
-                        color,
+                    let normals = terrain.triangle_normals(column, row, which);
+                    vertices.extend(triangle.into_iter().zip(normals).map(|(corner, normal)| {
+                        TerrainVertex {
+                            position: to_f32(corner),
+                            normal: to_f32(normal),
+                            color,
+                        }
                     }));
                 }
             }
@@ -254,8 +257,8 @@ fn push_tile(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>)
             }
             for which in 0..2 {
                 let triangle = terrain.triangle(column, row, which);
-                let normal = Terrain::normal(&triangle);
-                for corner in triangle {
+                let normals = terrain.triangle_normals(column, row, which);
+                for (corner, normal) in triangle.into_iter().zip(normals) {
                     out.push(paint.vertex(
                         corner,
                         normal,
@@ -268,7 +271,8 @@ fn push_tile(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>)
 }
 
 /// Плоский объект на рельефе: его прямоугольник, обрезанный по треугольникам рельефа под ним, с
-/// высотами вершин по плоскости каждого треугольника. Часть за краем сцены не рисуется.
+/// высотами вершин по плоскости каждого треугольника и нормалями освещения земли в этих местах. Часть
+/// за краем сцены не рисуется.
 fn push_on_terrain(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>) {
     let quad = paint.corners();
     let squares = terrain.squares();
@@ -292,9 +296,9 @@ fn push_on_terrain(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVe
                 if piece.len() < 3 {
                     continue;
                 }
-                let normal = Terrain::normal(&triangle);
                 let vertex = |point: Vec2| {
                     let position = [point[0], point[1], plane_height(&triangle, point)];
+                    let normal = terrain.normal_at(point[0], point[1]);
                     paint.vertex(position, normal, paint.unit_of(point))
                 };
                 for at in 1..piece.len() - 1 {
