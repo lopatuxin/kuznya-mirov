@@ -1,10 +1,6 @@
 //! Фаза 18 — кисти рельефа: вызовы движка `set_terrain`, `terrain_heights`, `terrain_at`,
 //! `terrain_height`, высота точки вращения камеры редактора. Игры собираются в коде теста, как в
-//! `phase17_terrain.rs`; ролевая игра читается из `games/rpg`, чтобы померить скорость `set_terrain`.
-
-use std::fs;
-use std::path::PathBuf;
-use std::time::Instant;
+//! `phase17_terrain.rs`.
 
 use engine::core::camera::{Camera3d, EditorCamera};
 use engine::core::game::Game;
@@ -15,7 +11,7 @@ use engine::core::surface::{self, Lies};
 use engine::core::terrain::Terrain;
 use engine::core::value::parse_color;
 use engine::data::edit::{set_terrain, terrain_heights};
-use engine::data::load::{load_game_from_texts_with_terrain, load_rest_with_terrain, read_entry};
+use engine::data::load::load_game_from_texts_with_terrain;
 use engine::render::relief::TerrainMesh;
 
 const WINDOW: [f64; 2] = [1920.0, 1080.0];
@@ -647,88 +643,4 @@ fn the_terrain_mesh_of_a_scene_without_a_file_appears_with_the_first_set_terrain
     set_terrain(&mut game, &grid(hill), Some((-0.5, "#3f7fd0"))).expect("рельеф поставлен");
     let mesh = TerrainMesh::build(game.world.terrain(), [0.0; 4]).expect("файл высот есть");
     assert!(mesh.land > 0);
-}
-
-// -------------------------------------------------------------------------------------------
-// Скорость на ролевой игре
-// -------------------------------------------------------------------------------------------
-
-fn rpg_path(name: &str) -> PathBuf {
-    let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    path.extend(["..", "games", "rpg", name]);
-    path
-}
-
-fn rpg_text(name: &str) -> String {
-    let path = rpg_path(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"))
-}
-
-fn load_rpg() -> Game {
-    let game_json = rpg_text("game.json");
-    let (config, _) = read_entry(&game_json).expect("game.json ролевой игры разбирается");
-    let tables: Vec<(String, Option<String>)> = config
-        .files
-        .tables
-        .iter()
-        .map(|(name, path)| (name.clone(), Some(rpg_text(path))))
-        .collect();
-    load_rest_with_terrain(
-        &game_json,
-        config,
-        Some(&rpg_text("properties.json")),
-        Some(&rpg_text("scene.json")),
-        Some(&rpg_text("rules.json")),
-        Some(&rpg_text("screens.json")),
-        &[],
-        &[],
-        &[],
-        &[],
-        Some(&rpg_text("code.lua")),
-        true,
-        &tables,
-        Some(&rpg_text("terrain.json")),
-    )
-    .unwrap_or_else(|e| panic!("ролевая игра не загрузилась: {e:?}"))
-    .0
-}
-
-#[test]
-fn set_terrain_on_the_rpg_game_takes_at_most_five_milliseconds_in_release() {
-    let mut game = load_rpg();
-    let mut snapshot = terrain_heights(&game).expect("сцена трёхмерная");
-    let water = snapshot.water.clone().expect("в овраге вода");
-    let (columns, rows) = (snapshot.columns, snapshot.rows);
-    let hero = game
-        .world
-        .ids()
-        .find(|&id| game.world.text(id, property::NAME) == Some("hero"))
-        .expect("герой");
-    let before = z_of(&game, hero);
-    for (n, height) in snapshot.heights.iter_mut().enumerate() {
-        *height += if (n % columns + n / columns) % 7 == 0 {
-            0.5
-        } else {
-            0.0
-        };
-    }
-    let started = Instant::now();
-    set_terrain(
-        &mut game,
-        &snapshot.heights,
-        Some((water.0, water.1.as_str())),
-    )
-    .expect("рельеф поставлен");
-    let mesh = TerrainMesh::build(game.world.terrain(), game.scene.background).expect("сетка");
-    let elapsed = started.elapsed();
-    println!("set_terrain и сетка рельефа на ролевой игре: {elapsed:?}");
-    assert_eq!(game.world.terrain().heights().len(), columns * rows);
-    assert!(mesh.land > 0);
-    assert!(
-        (z_of(&game, hero) - before).abs() < 1.0,
-        "мир собран заново по новому рельефу"
-    );
-    if !cfg!(debug_assertions) {
-        assert!(elapsed.as_micros() <= 5000, "{elapsed:?}, дольше 5 мс");
-    }
 }

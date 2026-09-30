@@ -1,8 +1,8 @@
 {
   "name": "Ролевая игра",
   "scene": {
-    "width": 32,
-    "height": 24,
+    "width": 128,
+    "height": 96,
     "background": "#4f8a3c",
     "view_height": 12,
     "camera": { "pitch": 55 },
