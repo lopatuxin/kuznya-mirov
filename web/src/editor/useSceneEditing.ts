@@ -68,7 +68,7 @@ const REJECTED_REASON = "в проекте ошибки";
 function shiftCopiedPosition(object: Record<string, unknown>): Record<string, unknown> {
   const position = object.position;
   if (!Array.isArray(position) || typeof position[0] !== "number" || typeof position[1] !== "number") return object;
-  return { ...object, position: [position[0] + 1, position[1]] };
+  return { ...object, position: [position[0] + 1, position[1], ...position.slice(2)] };
 }
 
 /**

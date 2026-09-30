@@ -358,6 +358,8 @@ pub struct RectPaint {
     pub flip_x: bool,
     /// Поворот на земле в трёхмерной сцене; `Turn::NONE` в плоской.
     pub turn: Turn,
+    /// Объект, чей это прямоугольник; `None` у плитки земли.
+    pub object: Option<u32>,
 }
 
 /// «Картинки» → «Кадры»: the world's own frame is picked by steps taken (`elapsed_steps`, frozen
@@ -459,6 +461,7 @@ pub fn compose_world_paints(
                 smooth,
                 flip_x,
                 turn,
+                object: Some(id),
             }
         })
         .collect()
@@ -575,6 +578,7 @@ pub fn compose_ground_paints(
                     smooth: images[layer.image].smooth,
                     flip_x: false,
                     turn: Turn::NONE,
+                    object: None,
                 });
             }
         }

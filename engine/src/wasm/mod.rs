@@ -10,7 +10,7 @@ use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
-use crate::core::scene::{CellRange, GroundLayer, ObjectTransform};
+use crate::core::scene::{CellRange, GroundLayer, ObjectTransform, pointer_hit};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
 use crate::core::world_elements;
@@ -19,9 +19,11 @@ use crate::data::error::GameError;
 use crate::data::load::{self, GameConfig, ImageDecl, ImageVerdict, MusicVerdict, NeededMedia};
 use crate::data::session::{self, PlaySession};
 use crate::render::atlas::{self, AtlasRect};
+use crate::render::relief::TerrainMesh;
 use crate::render::scene3d::{self, Frame3d};
 use crate::render::{
-    DrawRect, Globals3d, GroundRect, Renderer, Scene3dFrame, ShapeInstance, TextDraw, WorldTextDraw,
+    DrawRect, Globals3d, GroundVertex, Renderer, Scene3dFrame, ShapeInstance, TextDraw,
+    WorldTextDraw,
 };
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
@@ -88,6 +90,10 @@ fn js_entry_ok(config: &GameConfig, warnings: &[GameError]) -> JsValue {
     // остальными текстами, движок этот путь так же, как остальные, не читает сам.
     if let Some(code) = &config.files.code {
         set(&files, "code", &JsValue::from_str(code));
+    }
+    // «Рельеф»: путь файла высот — страница читает его во втором заходе вместе с таблицами.
+    if let Some(terrain) = &config.files.terrain {
+        set(&files, "terrain", &JsValue::from_str(terrain));
     }
     let fonts = Array::new();
     for (name, path) in &config.files.fonts {
@@ -562,6 +568,14 @@ fn js_point(point: [f64; 2]) -> JsValue {
     pair.into()
 }
 
+fn js_point3(point: Vec3) -> JsValue {
+    let triple = Array::new();
+    for coordinate in point {
+        triple.push(&JsValue::from_f64(coordinate));
+    }
+    triple.into()
+}
+
 fn js_editor_camera(camera: &EditorCamera) -> JsValue {
     let obj = Object::new();
     set(&obj, "target", &js_point(camera.target));
@@ -587,8 +601,21 @@ fn js_finite_pair(object: &JsValue, key: &str) -> Option<[f64; 2]> {
     Some([value(0)?, value(1)?])
 }
 
-/// `transform_object`'s `{position, size, height?, rotation?}`; `None` when `position` or `size` is
-/// not a pair of numbers, or a named `height`/`rotation` is not a finite number.
+/// «Рельеф»: `[x, y]` или `[x, y, z]` под `key` — место и, если названа, высота основания.
+fn js_place(object: &JsValue, key: &str) -> Option<([f64; 2], Option<f64>)> {
+    let place = Reflect::get(object, &JsValue::from_str(key)).ok()?;
+    let place = place.dyn_into::<Array>().ok()?;
+    let value = |index| place.get(index).as_f64().filter(|v| v.is_finite());
+    match place.length() {
+        2 => Some(([value(0)?, value(1)?], None)),
+        3 => Some(([value(0)?, value(1)?], Some(value(2)?))),
+        _ => None,
+    }
+}
+
+/// `transform_object`'s `{position, size, height?, rotation?}`, `position` — `[x, y]` или `[x, y, z]`;
+/// `None` when `position` or `size` is not a pair of numbers, or a named `height`/`rotation` is not a
+/// finite number.
 fn parse_transform(t: &JsValue) -> Option<ObjectTransform> {
     let optional = |key: &str| -> Option<Option<f64>> {
         match Reflect::get(t, &JsValue::from_str(key)) {
@@ -596,8 +623,10 @@ fn parse_transform(t: &JsValue) -> Option<ObjectTransform> {
             _ => js_finite(t, key).map(Some),
         }
     };
+    let (position, z) = js_place(t, "position")?;
     Some(ObjectTransform {
-        position: js_finite_pair(t, "position")?,
+        position,
+        z,
         size: js_finite_pair(t, "size")?,
         height: optional("height")?,
         rotation: optional("rotation")?,
@@ -672,23 +701,26 @@ enum View {
     Space(Camera3d),
 }
 
-/// «Курсор в мире», «Трёхмерная сцена» → «Мышь», требования 21, 23: точка сцены под курсором в
-/// окне и, в трёхмерной сцене, место камеры, от которого щелчок идёт лучом. В трёхмерной сцене
-/// точка земли не прижата к краю сцены: прижимает её шаг там, где она идёт как место сцены.
-fn pointer_at(
-    game: &Game,
-    view: &View,
-    window: [f32; 2],
-) -> (crate::core::value::Vec2, Option<Vec3>) {
+/// «Курсор в мире», «Трёхмерная сцена» → «Мышь», требования 21, 23: точка под курсором в окне (в
+/// трёхмерной сцене — с высотой) и место камеры, от которого щелчок идёт лучом. В трёхмерной сцене
+/// точка не прижата к краю сцены: прижимает её шаг там, где она идёт как место сцены. Над горизонтом
+/// камеры редактора — её точка на земле.
+fn pointer_at(game: &Game, view: &View, window: [f32; 2]) -> (Vec3, Option<Vec3>) {
     match view {
-        View::Flat { scale, offset } => (
-            game.scene.window_to_scene_frame(window, *scale, *offset),
-            None,
-        ),
-        View::Space(camera) => (
-            camera.ground_point([window[0] as f64, window[1] as f64]),
-            Some(camera.eye),
-        ),
+        View::Flat { scale, offset } => {
+            let cell = game.scene.window_to_scene_frame(window, *scale, *offset);
+            ([cell[0], cell[1], 0.0], None)
+        }
+        View::Space(camera) => {
+            let point = pointer_hit(
+                &game.world,
+                &game.scene,
+                camera,
+                [window[0] as f64, window[1] as f64],
+            )
+            .unwrap_or([camera.target[0], camera.target[1], camera.target_z]);
+            (point, Some(camera.eye))
+        }
     }
 }
 
@@ -711,20 +743,13 @@ fn recompute_cursor_after_step(
         return;
     };
     let view = frame_for(game, battle_view, viewport);
-    let (cell, eye) = pointer_at(game, &view, last_mouse_window_pos);
-    if game.cursor_current() == Some(cell) && game.cursor_eye() == eye {
+    let (point, eye) = pointer_at(game, &view, last_mouse_window_pos);
+    if game.cursor_point() == Some(point) && game.cursor_eye() == eye {
         return;
     }
-    set_pointer(game, cell, eye);
+    game.set_cursor_point(point, eye);
     if let Some(session) = session {
-        session.record_cursor(game, cell);
-    }
-}
-
-fn set_pointer(game: &mut Game, cell: crate::core::value::Vec2, eye: Option<Vec3>) {
-    match eye {
-        Some(eye) => game.set_cursor_ray(cell, eye),
-        None => game.set_cursor_cell(cell),
+        session.record_cursor(game);
     }
 }
 
@@ -932,9 +957,9 @@ fn compose_world_elements(
     (rects, texts)
 }
 
-/// «Трёхмерная сцена»: кадр мира в данные для видеокарты — фигуры по видам, плоские прямоугольники
-/// на земле, камера, солнце.
-fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundRect>, [Vec<ShapeInstance>; 4]) {
+/// «Трёхмерная сцена»: кадр мира в данные для видеокарты — фигуры по видам, вершины плиток и
+/// плоских объектов на земле, камера, солнце.
+fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundVertex>, [Vec<ShapeInstance>; 4]) {
     let globals = Globals3d {
         view_proj: frame.view_proj,
         light_view_proj: frame.light_view_proj,
@@ -942,24 +967,16 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundRect>, [Vec<ShapeIn
         shade: [frame.shadow, frame.depth_per_cell, 0.02, 0.0],
     };
     let ground = frame
-        .ground
+        .surface
         .iter()
-        .map(|paint| GroundRect {
-            position: paint.position,
-            size: paint.size,
-            color: paint.color,
-            atlas_pos: [paint.atlas_rect.x as f32, paint.atlas_rect.y as f32],
-            atlas_size: [paint.atlas_rect.w as f32, paint.atlas_rect.h as f32],
-            atlas_layer: paint.atlas_rect.sheet as f32,
-            smooth: paint.smooth as u8 as f32,
-            flip_x: paint.flip_x as u8 as f32,
-            _padding: 0.0,
-            turn: [
-                paint.turn.pivot[0],
-                paint.turn.pivot[1],
-                paint.turn.sin,
-                paint.turn.cos,
-            ],
+        .map(|vertex| GroundVertex {
+            position: vertex.position,
+            normal: vertex.normal,
+            uv: vertex.uv,
+            color: vertex.color,
+            uv_min: vertex.uv_min,
+            uv_max: vertex.uv_max,
+            sheet: [vertex.layer, vertex.smooth],
         })
         .collect();
     let mut shapes: [Vec<ShapeInstance>; 4] = Default::default();
@@ -968,7 +985,8 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundRect>, [Vec<ShapeIn
         shapes[shape.shape as usize].push(ShapeInstance {
             placement: [shape.center[0], shape.center[1], shape.cos, shape.sin],
             dims: [shape.size[0], shape.size[1], shape.height, shape.cap_height],
-            color: [shape.color[0], shape.color[1], shape.color[2], 1.0],
+            color: shape.color,
+            base: shape.base,
         });
     }
     (globals, ground, shapes)
@@ -983,6 +1001,7 @@ fn render_world(
     config: Option<&ScreensConfig>,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
+    terrain: Option<&TerrainMesh>,
     view: &View,
     viewport: [f32; 2],
     ui_instances: &[DrawRect],
@@ -1024,6 +1043,7 @@ fn render_world(
             let (globals, ground, shapes) = gpu_frame_parts(&frame);
             let parts = Scene3dFrame {
                 globals,
+                terrain,
                 ground: &ground,
                 shapes: [&shapes[0], &shapes[1], &shapes[2], &shapes[3]],
             };
@@ -1053,6 +1073,9 @@ pub struct Engine {
     images: Vec<ImageDecl>,
     /// Where `load()`'s atlas build put each declared image's whole strip — parallel to `images`.
     atlas_rects: Vec<AtlasRect>,
+    /// «Рельеф» → «Вид»: сетка рельефа и воды, построенная при загрузке; `None`, пока в сцене нет файла
+    /// высот.
+    terrain_mesh: Option<TerrainMesh>,
     /// «Код игры» → требование 20: `files.rules` of the loaded game — a code error names the rule
     /// that called the function as `rules.json → rules[N]`, and the core only knows `rules[N]`.
     rules_path: String,
@@ -1101,6 +1124,7 @@ impl Engine {
             pending_config: load::PendingConfig::default(),
             images: Vec::new(),
             atlas_rects: Vec::new(),
+            terrain_mesh: None,
             rules_path: String::new(),
             ui_clock: UiClock::new(),
             last_ui_elapsed_steps: 0.0,
@@ -1160,7 +1184,8 @@ impl Engine {
     /// `read_texts()`'s `sounds` — `music` — `[{index, verdict: "ok"|"missing"|"rejected"}]`, one
     /// per `read_texts()`'s `music`, the executor's (browser's) answer to "can you decompress this
     /// track" — and `tables` — `[{name, text: string|null}]`, one per `read_entry()`'s own
-    /// `files.tables` («Таблицы данных», требование 25). Runs the full prestart check and, on
+    /// `files.tables` («Таблицы данных», требование 25) — and `terrain`, the text of `files.terrain`
+    /// if `read_entry()` named one («Рельеф», требование 47). Runs the full prestart check and, on
     /// success, the game is ready to run starting from the next `tick`. Returns `{ok:true,
     /// warnings:[...]}` on success or `{ok:false, errors:[...], warnings:[...]}` on failure —
     /// warnings never stop the game from starting, but the page still needs to see them either way.
@@ -1177,6 +1202,7 @@ impl Engine {
         images: JsValue,
         code_json: Option<String>,
         tables: JsValue,
+        terrain: Option<String>,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -1204,7 +1230,7 @@ impl Engine {
         let music_verdicts = parse_music_verdicts(&music, &config.files.music);
         let image_verdicts = parse_image_verdicts(&images, &image_table);
         let table_texts = parse_table_texts(&tables);
-        match load::load_rest_with_tables(
+        match load::load_rest_with_terrain(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -1218,6 +1244,7 @@ impl Engine {
             code_json.as_deref(),
             false,
             &table_texts,
+            terrain.as_deref(),
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -1291,6 +1318,7 @@ impl Engine {
                 }
                 self.screen_state = Some(ScreenState::new(screens_config.start_screen));
                 self.screens_config = Some(screens_config);
+                self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
                 self.game = Some(game);
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
@@ -1314,6 +1342,7 @@ impl Engine {
     fn clear_game(&mut self) {
         self.game = None;
         self.screens_config = None;
+        self.terrain_mesh = None;
         self.screen_state = None;
         self.images = Vec::new();
         self.atlas_rects = Vec::new();
@@ -1407,6 +1436,7 @@ impl Engine {
             self.screens_config.as_ref(),
             &self.images,
             &self.atlas_rects,
+            self.terrain_mesh.as_ref(),
             &view,
             viewport,
             &ui_instances,
@@ -1489,16 +1519,37 @@ impl Engine {
     /// the next `show_scene` rebuilds the world from the scene as it was. Does nothing without a
     /// loaded game, without that object, or without its own `position`. See
     /// `core::scene::move_object`.
-    pub fn move_object(&mut self, id: u32, x: f32, y: f32) {
+    pub fn move_object(&mut self, id: u32, x: f32, y: f32, z: Option<f64>) {
         if let Some(game) = self.game.as_mut() {
             // «Камера», требование 6: перенос мышью в плоской сцене двигает камеру без отставания,
             // не только на следующем шаге; в трёхмерной камера игры стоит, требование 18.
-            game.move_object(id, [x as f64, y as f64]);
+            // «Рельеф»: с `z` основание встаёт ровно на него, без — объект садится на поверхность.
+            game.move_object(id, [x as f64, y as f64], z.filter(|z| z.is_finite()));
+        }
+    }
+
+    /// «Рельеф», «Вызовы движка»: основание, на которое встал бы объект `id`, сдвинутый на место
+    /// `(x, y)` (`position`, левый верхний угол): с `from` — как после сдвига с этого основания
+    /// (настил — на нынешнем), без `from` — как объект без `z` в данных. Прямоугольник — нынешние
+    /// `size` и `rotation` объекта. `undefined` в плоской сцене, без объекта или его `position` и `size`.
+    pub fn rest_height(&self, id: u32, x: f64, y: f64, from: Option<f64>) -> JsValue {
+        let Some(game) = self.game.as_ref() else {
+            return JsValue::UNDEFINED;
+        };
+        match crate::core::surface::rest_height_at(
+            &game.world,
+            id,
+            [x, y],
+            from.filter(|from| from.is_finite()),
+        ) {
+            Some(z) => JsValue::from_f64(z),
+            None => JsValue::UNDEFINED,
         }
     }
 
     /// «Редактор», «Вызовы движка»: ставит объекту `id` значения ручек в собранном мире —
-    /// `t = {position: [x, y], size: [w, d], height?, rotation?}`, не названное не меняется.
+    /// `t = {position: [x, y] или [x, y, z], size: [w, d], height?, rotation?}`, не названное не
+    /// меняется; без третьего числа объект садится на поверхность, с ним основание встаёт ровно.
     /// Файлы, разобранная сцена и камера игры не меняются. Ничего не делает без игры, без объекта
     /// или при значении не из чисел.
     pub fn transform_object(&mut self, id: u32, t: JsValue) {
@@ -1530,16 +1581,17 @@ impl Engine {
         }
     }
 
-    /// «Редактор», «Вызовы движка»: место на земле под точкой холста `(x, y)` камерой, которой
-    /// сцена видна сейчас, без прижатия к краю сцены — `[x, y]`; `undefined` в плоской сцене или
-    /// если луч не идёт к земле.
+    /// «Редактор», «Вызовы движка»: место под точкой холста `(x, y)` камерой, которой сцена видна
+    /// сейчас, — `[x, y, z]`: где луч первым встретил рельеф в пределах сцены, воду или верх настила;
+    /// мимо сцены — пересечение с плоскостью высоты 0 без прижатия к краю. `undefined` в плоской
+    /// сцене или если луч не идёт вниз.
     pub fn ground_at(&self, x: f32, y: f32) -> JsValue {
-        match self.frame() {
-            Some(View::Space(camera)) => match camera.ground_hit([x as f64, y as f64]) {
-                Some(ground) => js_point(ground),
-                None => JsValue::UNDEFINED,
-            },
-            _ => JsValue::UNDEFINED,
+        let (Some(game), Some(View::Space(camera))) = (self.game.as_ref(), self.frame()) else {
+            return JsValue::UNDEFINED;
+        };
+        match pointer_hit(&game.world, &game.scene, &camera, [x as f64, y as f64]) {
+            Some(point) => js_point3(point),
+            None => JsValue::UNDEFINED,
         }
     }
 
@@ -1586,10 +1638,10 @@ impl Engine {
             return;
         };
         if let Some(game) = self.game.as_mut() {
-            let (cell, eye) = pointer_at(game, &view, [x, y]);
-            set_pointer(game, cell, eye);
+            let (point, eye) = pointer_at(game, &view, [x, y]);
+            game.set_cursor_point(point, eye);
             if let Some(session) = self.session.as_mut() {
-                session.record_cursor(game, cell);
+                session.record_cursor(game);
             }
         }
     }
@@ -1706,6 +1758,7 @@ impl Engine {
             Some(config),
             &self.images,
             &self.atlas_rects,
+            self.terrain_mesh.as_ref(),
             &view,
             viewport,
             &ui_instances,

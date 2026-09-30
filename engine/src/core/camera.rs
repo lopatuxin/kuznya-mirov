@@ -5,7 +5,8 @@
 use super::math3::{self, Mat4, Vec3};
 use super::property;
 use super::scene::{self, SceneConfig, letterbox};
-use super::shapes::Body;
+use super::surface;
+use super::terrain::Terrain;
 use super::value::Vec2;
 use super::world::World;
 
@@ -27,6 +28,64 @@ pub fn followed_center(world: &World) -> Option<Vec2> {
     let p = world.vec2(id, property::POSITION)?;
     let s = world.vec2(id, property::SIZE)?;
     Some([p[0] + s[0] / 2.0, p[1] + s[1] / 2.0])
+}
+
+/// «Рельеф» → «Камера»: середина объекта камеры и высота его основания.
+pub fn followed_point(world: &World) -> Option<(Vec2, f64)> {
+    let id = camera_object(world)?;
+    Some((followed_center(world)?, world.base_z(id)))
+}
+
+/// Шагов, за которые камера игры проходит скачок основания на ступеньке: 0,2 секунды.
+pub const STEP_CLIMB_STEPS: f64 = 12.0;
+
+/// «Рельеф» → «Камера», требование 24: высота, на которой камера игры держит взгляд. Основание объекта
+/// растёт вместе со склоном без отставания; скачок за шаг больше, чем сдвиг объекта по плоскости, —
+/// ступенька, и камера проходит её равномерно за `STEP_CLIMB_STEPS`; новый скачок во время прохода
+/// добавляется к остатку, и остаток снова проходится за столько же шагов.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct CameraHeight {
+    known: bool,
+    object_z: f64,
+    remaining: f64,
+    rate: f64,
+}
+
+impl CameraHeight {
+    /// Камера сразу стоит на объекте на высоте `z`.
+    pub fn snap(&mut self, z: f64) {
+        *self = CameraHeight {
+            known: true,
+            object_z: z,
+            remaining: 0.0,
+            rate: 0.0,
+        };
+    }
+
+    /// Один шаг: основание объекта теперь на `z`, середина сдвинулась по плоскости на `moved`.
+    pub fn step(&mut self, z: f64, moved: f64) {
+        if !self.known {
+            self.snap(z);
+            return;
+        }
+        let jump = z - self.object_z;
+        if jump.abs() > moved + 1e-9 {
+            self.remaining += jump;
+            self.rate = self.remaining / STEP_CLIMB_STEPS;
+        }
+        self.object_z = z;
+        let consumed = if self.remaining.abs() <= self.rate.abs() {
+            self.remaining
+        } else {
+            self.rate
+        };
+        self.remaining -= consumed;
+    }
+
+    /// Высота, на которой камера держит взгляд.
+    pub fn z(&self) -> f64 {
+        self.object_z - self.remaining
+    }
 }
 
 /// «Камера», требование 3–4, 118–120: масштаб и сдвиг (тем же видом, что и `letterbox`) для
@@ -103,6 +162,8 @@ pub struct Camera3d {
     pub eye: Vec3,
     /// Точка земли в середине окна.
     pub target: Vec2,
+    /// Высота этой точки; глаз стоит выше неё на `view_distance · sin(pitch)`.
+    pub target_z: f64,
     /// Поворот вокруг вертикали по часовой стрелке, если смотреть сверху, в градусах; 0 — вглубь
     /// сцены, как у камеры игры.
     pub yaw: f64,
@@ -152,10 +213,20 @@ impl Camera3d {
                 distance * sin_pitch,
             ],
             target,
+            target_z: 0.0,
             yaw,
             pitch,
             view_height,
             viewport,
+        }
+    }
+
+    /// Та же камера, смотрящая на точку на высоте `z`.
+    pub fn raised(self, z: f64) -> Camera3d {
+        Camera3d {
+            eye: [self.eye[0], self.eye[1], self.eye[2] - self.target_z + z],
+            target_z: z,
+            ..self
         }
     }
 
@@ -363,15 +434,26 @@ impl EditorCamera {
     }
 }
 
-/// Наименьшее расстояние, с которого камера с точкой `target` под `yaw` и `pitch` видит в окне
-/// все `points`.
-fn fit_distance(points: &[Vec3], target: Vec2, yaw: f64, pitch: f64, viewport: [f64; 2]) -> f64 {
+/// Наименьшее расстояние, с которого камера с точкой `target` на высоте `target_z` под `yaw` и
+/// `pitch` видит в окне все `points`.
+fn fit_distance(
+    points: &[Vec3],
+    target: Vec2,
+    target_z: f64,
+    yaw: f64,
+    pitch: f64,
+    viewport: [f64; 2],
+) -> f64 {
     let base = Camera3d::orbiting(target, yaw, pitch, 1.0, viewport);
     let (forward, up, right) = (base.forward(), base.up(), base.right());
     let tan = tan_half_fov();
     let aspect = viewport[0] / viewport[1].max(1.0);
     points.iter().fold(0.0_f64, |distance, point| {
-        let q = [point[0] - target[0], point[1] - target[1], point[2]];
+        let q = [
+            point[0] - target[0],
+            point[1] - target[1],
+            point[2] - target_z,
+        ];
         let ahead = math3::dot(q, forward);
         distance
             .max(math3::dot(q, right).abs() / (tan * aspect) - ahead)
@@ -380,30 +462,44 @@ fn fit_distance(points: &[Vec3], target: Vec2, yaw: f64, pitch: f64, viewport: [
 }
 
 /// «Редактор», «Сцена», требование 5: камера редактора при открытии проекта — наклон `pitch` игры,
-/// без поворота, смотрит на середину сцены с такого расстояния, чтобы вся земля поместилась в
-/// окно. `None` в плоской сцене.
-pub fn fit_ground(scene: &SceneConfig, viewport: [f64; 2]) -> Option<EditorCamera> {
+/// без поворота, смотрит на середину сцены с такого расстояния, чтобы вся земля с холмами и ямами
+/// поместилась в окно. `None` в плоской сцене.
+pub fn fit_ground(
+    scene: &SceneConfig,
+    terrain: &Terrain,
+    viewport: [f64; 2],
+) -> Option<EditorCamera> {
     let pitch = scene.camera?.pitch;
     let (width, height) = (scene.width as f64, scene.height as f64);
-    let corners = [
+    let mut points = vec![
         [0.0, 0.0, 0.0],
         [width, 0.0, 0.0],
         [width, height, 0.0],
         [0.0, height, 0.0],
     ];
+    for row in 0..terrain.rows() {
+        for column in 0..terrain.columns() {
+            points.push([
+                column as f64 / 2.0,
+                row as f64 / 2.0,
+                terrain.point_height(column, row),
+            ]);
+        }
+    }
     let target = [width / 2.0, height / 2.0];
+    let target_z = terrain.height_at(target[0], target[1]);
     Some(EditorCamera {
         target,
         yaw: 0.0,
         pitch,
-        distance: fit_distance(&corners, target, 0.0, pitch, viewport),
+        distance: fit_distance(&points, target, target_z, 0.0, pitch, viewport),
     })
 }
 
 /// «Редактор», «Сцена», требование 4: камера, что смотрит на середину объекта на земле под тем же
-/// `yaw` и `pitch` и стоит так близко, чтобы объём объекта — прямоугольник на земле и `height` над
-/// ним, у плоского объекта только прямоугольник — был виден целиком. `None` без объекта или его
-/// `position` и `size`.
+/// `yaw` и `pitch` и стоит так близко, чтобы объём объекта — прямоугольник на высоте его основания и
+/// `height` над ним, у плоского объекта только прямоугольник — был виден целиком. `None` без
+/// объекта или его `position` и `size`.
 pub fn fit_object(
     world: &World,
     id: u32,
@@ -412,24 +508,56 @@ pub fn fit_object(
     viewport: [f64; 2],
 ) -> Option<EditorCamera> {
     let footprint = scene::ground_footprint(world, id)?;
-    let height = Body::of_object(world, id).map_or(0.0, |body| body.height.max(0.0));
+    let (base, top) = (world.base_z(id), surface::volume_top(world, id));
     let points: Vec<Vec3> = footprint
         .corners()
         .iter()
-        .flat_map(|corner| [[corner[0], corner[1], 0.0], [corner[0], corner[1], height]])
+        .flat_map(|corner| [[corner[0], corner[1], base], [corner[0], corner[1], top]])
         .collect();
     let target = footprint.center();
+    let target_z = world.terrain().height_at(target[0], target[1]);
     Some(EditorCamera {
         target,
         yaw,
         pitch,
-        distance: fit_distance(&points, target, yaw, pitch, viewport),
+        distance: fit_distance(&points, target, target_z, yaw, pitch, viewport),
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Скачок основания за шаг больше сдвига — ступенька: камера проходит её за 12 равных шагов, а
+    /// новый скачок во время прохода прибавляется к остатку, и остаток снова идёт 12 шагов.
+    #[test]
+    fn a_step_is_walked_evenly_and_a_second_step_joins_the_remainder() {
+        let mut height = CameraHeight::default();
+        height.snap(0.0);
+        height.step(0.3, 0.05);
+        assert!((height.z() - 0.025).abs() < 1e-12, "{}", height.z());
+        for _ in 0..5 {
+            height.step(0.3, 0.05);
+        }
+        assert!((height.z() - 0.15).abs() < 1e-12, "{}", height.z());
+        height.step(0.6, 0.05);
+        let rate = (0.15 + 0.3) / STEP_CLIMB_STEPS;
+        assert!((height.z() - (0.15 + rate)).abs() < 1e-12, "{}", height.z());
+        for _ in 0..11 {
+            height.step(0.6, 0.05);
+        }
+        assert!((height.z() - 0.6).abs() < 1e-12, "{}", height.z());
+    }
+
+    #[test]
+    fn a_slope_is_followed_without_lag() {
+        let mut height = CameraHeight::default();
+        height.snap(0.0);
+        for k in 1..=10 {
+            height.step(0.04 * k as f64, 0.05);
+            assert!((height.z() - 0.04 * k as f64).abs() < 1e-12);
+        }
+    }
     use crate::core::property::PropertyTable;
 
     fn scene(width: u32, height: u32, view_height: Option<f64>) -> SceneConfig {
@@ -647,7 +775,7 @@ mod tests {
     fn the_editor_camera_fits_the_whole_ground_and_touches_the_canvas() {
         for viewport in [[1200.0, 700.0], [500.0, 900.0]] {
             let scene = scene_3d(32, 24);
-            let camera = fit_ground(&scene, viewport)
+            let camera = fit_ground(&scene, Terrain::flat(), viewport)
                 .expect("трёхмерная сцена")
                 .camera(viewport);
             let mut extreme = 0.0_f64;

@@ -1,8 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { computeRotation, computeScale, computeTranslate, scaleFactorAlong, scaleFactorUniform } from "./handleMath";
+import { computeHeight, computeRotation, computeScale, computeTranslate, scaleFactorAlong, scaleFactorUniform } from "./handleMath";
+import type { SpaceProjection } from "./handleGeometry";
 import { placementCenter, type ObjectPlacement } from "./objectPlacement";
+import { createVerticalGrab, type VerticalGrab } from "./verticalGrab";
 
-const BOX: ObjectPlacement = { position: [6, 12], size: [3, 2], height: 2.5, rotation: null, hasShape: true };
+const BOX: ObjectPlacement = { position: [6, 12], z: null, size: [3, 2], height: 2.5, rotation: null, hasShape: true };
 
 describe("computeTranslate", () => {
   it("по стрелке меняется только её координата", () => {
@@ -17,6 +19,34 @@ describe("computeTranslate", () => {
   it("с Ctrl — до целой клетки", () => {
     expect(computeTranslate([3.4, 4], [0.3, 1.2], "free", true)).toEqual([4, 5]);
     expect(computeTranslate([3.4, 4.4], [0.3, 1.2], "x", true)).toEqual([4, 4.4]);
+  });
+});
+
+describe("computeHeight", () => {
+  // Параллельная проекция: 10 точек на клетку, вверх по экрану — вверх по высоте, `slope` — вбок на клетку высоты.
+  const parallel = (slope: [number, number]): SpaceProjection => ({
+    screenPoint: (x, y, z) => [x * 10 + 50 + z * slope[0], y * 10 + 50 + z * slope[1]],
+  });
+  const grabOf = (slope: [number, number]): VerticalGrab => createVerticalGrab(parallel(slope), [4, 5], 1) as VerticalGrab;
+  const upright = grabOf([0, -10]);
+
+  it("основание растёт на столько клеток, на сколько указатель ушёл вверх вдоль вертикали, до сотой", () => {
+    expect(computeHeight(1, upright, [90, 50], [90, 18.7], false)).toBe(4.13);
+    expect(computeHeight(1, upright, [90, 50], [90, 80], false)).toBe(-2);
+  });
+
+  it("вбок вертикаль не двигается; наклонная вертикаль берёт проекцию сдвига", () => {
+    expect(computeHeight(2, upright, [90, 50], [200, 50], false)).toBe(2);
+    expect(computeHeight(0, grabOf([6, -8]), [0, 0], [6, -8], false)).toBe(1);
+  });
+
+  it("с Ctrl — до целой клетки", () => {
+    expect(computeHeight(0.2, upright, [90, 50], [90, 21], true)).toBe(3);
+    expect(computeHeight(0.2, upright, [90, 50], [90, 46], true)).toBe(1);
+  });
+
+  it("вертикаль нулевой длины на экране (взгляд строго вниз) хвата не даёт", () => {
+    expect(createVerticalGrab(parallel([0, 0]), [4, 5], 1)).toBeUndefined();
   });
 });
 
@@ -98,7 +128,7 @@ describe("computeScale", () => {
   });
 
   it("у плоского объекта на земле высоты нет: общая ручка меняет только размер", () => {
-    const flat: ObjectPlacement = { position: [1, 1], size: [4, 1], height: null, rotation: null, hasShape: false };
+    const flat: ObjectPlacement = { position: [1, 1], z: null, size: [4, 1], height: null, rotation: null, hasShape: false };
     const scaled = computeScale(flat, "uniform", 2, false);
     expect(scaled.size).toEqual([8, 2]);
     expect(scaled.height).toBe(null);

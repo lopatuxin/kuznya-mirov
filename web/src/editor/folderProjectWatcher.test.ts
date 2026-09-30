@@ -6,6 +6,10 @@ describe("hasProjectFileChange", () => {
     expect(hasProjectFileChange([["scene.json"]])).toBe(true);
   });
 
+  it("правка terrain.json — правка проекта («Рельеф», требование 47)", () => {
+    expect(hasProjectFileChange([["terrain.json"]])).toBe(true);
+  });
+
   it("появление replays/ и файла записи в ней — не правка проекта (требование 36)", () => {
     expect(hasProjectFileChange([["replays"], ["replays", "2026-03-04-09-05-07.json"]])).toBe(false);
   });

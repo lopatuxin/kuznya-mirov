@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use super::code::{CodeError, Runner as CodeRunner};
 use super::footprint::Footprint;
@@ -16,7 +16,9 @@ use super::rules::{
 };
 use super::scene::{self, SceneConfig};
 use super::sound::SoundMarks;
+use super::surface::{self, Pillar};
 use super::value::{Rotation, Value, Vec2};
+use super::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
 use super::world::World;
 
 /// «Код игры»: что `["run", "<функция>"]` требует на месте вызова — исполнитель на партию и то,
@@ -116,6 +118,13 @@ fn footprint_of(world: &World, id: u32) -> Option<Footprint> {
     })
 }
 
+/// Место объекта на земле вместе с его столбом по высоте.
+type Placed = (u32, Footprint, Pillar);
+
+fn placed_of(world: &World, id: u32) -> Option<Placed> {
+    footprint_of(world, id).map(|place| (id, place, surface::pillar(world, id)))
+}
+
 /// «Формат игры» / «Мышь в мире», требование 18: an object's own midpoint clamped so it never
 /// leaves the scene, centered under a point — shared by `apply_follow_mouse` and by a `"cursor"`
 /// record onto `position`.
@@ -123,15 +132,28 @@ fn fit_center_in_scene(point: f64, len: f64, scene_len: u32) -> f64 {
     (point - len / 2.0).clamp(0.0, (scene_len as f64 - len).max(0.0))
 }
 
+/// «Рельеф», требование 26: точка под курсором, прижатая к сцене, и её высота. Внутри сцены — высота
+/// самой точки; за краем сцены — верхняя поверхность в прижатой точке.
+fn clamped_cursor(world: &World, scene: &SceneConfig, cursor: Vec3) -> (Vec2, f64) {
+    let point = scene.clamp_point([cursor[0], cursor[1]]);
+    if point == [cursor[0], cursor[1]] {
+        (point, cursor[2])
+    } else {
+        (point, scene::top_surface_height(world, point))
+    }
+}
+
 /// «Мышь в мире», требования 17–18: resolves one record's value — a plain constant, or `"cursor"`
 /// (`EditValue::Cursor`), the point under the cursor when this press/release/click arrived.
 /// `None` — either the point isn't known yet (требование, «Крайние случаи»: мышь ещё не
 /// двигалась) — this one record is skipped, the rest of the same key/`on_click` still apply. A
 /// `Cursor` record only ever names a `Vec2` property — checked at load time — so `prop`'s kind is
-/// assumed `Vec2` here without checking again.
+/// assumed `Vec2` here without checking again. «Рельеф», требование 27: в трёхмерной сцене
+/// `walk_to` получает точку с высотой, а середина объекта встаёт под курсор, основание — ровно на
+/// высоту точки.
 fn resolve_edit_value(
     value: &EditValue,
-    cursor: Option<Vec2>,
+    cursor: Option<Vec3>,
     prop: PropertyId,
     world: &World,
     id: u32,
@@ -141,19 +163,31 @@ fn resolve_edit_value(
         EditValue::Const(v) => Some(v.clone()),
         EditValue::Cursor => {
             let cursor = cursor?;
-            let point = if scene.is_3d() {
-                scene.clamp_point(cursor)
-            } else {
-                cursor
-            };
-            if prop == property::POSITION {
-                let size = world.vec2(id, property::SIZE)?;
-                Some(Value::Vec2([
-                    fit_center_in_scene(point[0], size[0], scene.width),
-                    fit_center_in_scene(point[1], size[1], scene.height),
-                ]))
-            } else {
-                Some(Value::Vec2(point))
+            if !scene.is_3d() {
+                let point = [cursor[0], cursor[1]];
+                return Some(Value::Vec2(match prop {
+                    property::POSITION => {
+                        let size = world.vec2(id, property::SIZE)?;
+                        [
+                            fit_center_in_scene(point[0], size[0], scene.width),
+                            fit_center_in_scene(point[1], size[1], scene.height),
+                        ]
+                    }
+                    _ => point,
+                }));
+            }
+            let (point, z) = clamped_cursor(world, scene, cursor);
+            match prop {
+                property::POSITION => {
+                    let size = world.vec2(id, property::SIZE)?;
+                    Some(Value::Vec3([
+                        fit_center_in_scene(point[0], size[0], scene.width),
+                        fit_center_in_scene(point[1], size[1], scene.height),
+                        z,
+                    ]))
+                }
+                property::WALK_TO => Some(Value::Vec3([point[0], point[1], z])),
+                _ => Some(Value::Vec2(point)),
             }
         }
     }
@@ -163,11 +197,11 @@ fn resolve_edit_value(
 /// contains `point` gets its own records applied — «keys, потом on_click» (требование 20) is
 /// already the caller's own ordering, this only runs once, after every key edit of the same
 /// batch.
-fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec2, eye: Option<Vec3>) {
+fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec3, eye: Option<Vec3>) {
     let target = if scene.is_3d() {
-        scene::on_click_target_ray(world, scene, eye, point)
+        scene::on_click_target_ray_at(world, scene, eye, point)
     } else {
-        scene::on_click_target(world, scene, point)
+        scene::on_click_target(world, scene, [point[0], point[1]])
     };
     let Some(id) = target else {
         return;
@@ -194,7 +228,7 @@ fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec2, eye: Opti
 pub fn apply_input(
     world: &mut World,
     events: &[KeyEvent],
-    cursor: Option<Vec2>,
+    cursor: Option<Vec3>,
     eye: Option<Vec3>,
     scene: &SceneConfig,
 ) {
@@ -234,8 +268,13 @@ pub fn apply_input(
 /// `None` — the cursor hasn't moved since the previous step, or has never moved at all — leaves
 /// every `follow_mouse` object untouched. Never marks a move for `after_move_of`, same as a key's
 /// own `position` write.
-pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec2>, scene: &SceneConfig) {
+pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec3>, scene: &SceneConfig) {
     let Some(cursor) = cursor else { return };
+    let height = if scene.is_3d() {
+        Some(clamped_cursor(world, scene, cursor).1)
+    } else {
+        None
+    };
     for id in world.ids().collect::<Vec<_>>() {
         let Some(axis) = world.follow_mouse(id, property::FOLLOW_MOUSE) else {
             continue;
@@ -253,7 +292,12 @@ pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec2>, scene: &Scene
         if axis.affects_y() {
             new_pos[1] = fit_center_in_scene(cursor[1], size[1], scene.height);
         }
-        world.set_vec2(id, property::POSITION, new_pos);
+        match height {
+            Some(z) if axis.affects_x() && axis.affects_y() => {
+                world.set_position_exact(id, new_pos, z);
+            }
+            _ => world.set_vec2(id, property::POSITION, new_pos),
+        }
     }
 }
 
@@ -404,6 +448,7 @@ fn selected_group(world: &World, group: &Selector, deleted: &[u32]) -> Vec<u32> 
 struct GroupState {
     id: u32,
     position: Vec2,
+    z: f64,
     size: Vec2,
     rotation: Option<Rotation>,
 }
@@ -415,6 +460,7 @@ fn snapshot_group(world: &World, ids: &[u32]) -> Vec<GroupState> {
             position: world
                 .vec2(id, property::POSITION)
                 .expect("selected_group filtered"),
+            z: world.base_z(id),
             size: world
                 .vec2(id, property::SIZE)
                 .expect("selected_group filtered"),
@@ -425,12 +471,12 @@ fn snapshot_group(world: &World, ids: &[u32]) -> Vec<GroupState> {
 
 fn restore_group(world: &mut World, snapshot: &[GroupState]) {
     for s in snapshot {
-        world.set_vec2(s.id, property::POSITION, s.position);
         world.set_vec2(s.id, property::SIZE, s.size);
         match s.rotation {
             Some(r) => world.set_rotation(s.id, property::ROTATION, r),
             None => world.clear_property(s.id, property::ROTATION),
         }
+        world.set_position_exact(s.id, s.position, s.z);
     }
 }
 
@@ -447,9 +493,9 @@ fn group_overlaps_blocker(
     deleted: &[u32],
     grid: &mut SpatialGrid,
 ) -> bool {
-    let mut objects: Vec<(u32, Footprint)> = group
+    let mut objects: Vec<Placed> = group
         .iter()
-        .filter_map(|&id| footprint_of(world, id).map(|f| (id, f)))
+        .filter_map(|&id| placed_of(world, id))
         .collect();
     let group_len = objects.len();
     for id in world.ids() {
@@ -457,9 +503,9 @@ fn group_overlaps_blocker(
             continue;
         }
         if selector_matches(blocked_by, world, id)
-            && let Some(f) = footprint_of(world, id)
+            && let Some(placed) = placed_of(world, id)
         {
-            objects.push((id, f));
+            objects.push(placed);
         }
     }
     if objects.len() == group_len {
@@ -472,20 +518,23 @@ fn group_overlaps_blocker(
 
 /// Пары мест, что строго пересекаются: сначала по охватывающим прямоугольникам через
 /// `SpatialGrid` (как искала прежняя плоская сцена), затем — только когда среди мест есть
-/// повёрнутое — точно, по разделяющим осям. Без поворотов ответ тот же, что давал один `Rect::overlap`.
-fn overlapping_pairs(objects: &[(u32, Footprint)], grid: &mut SpatialGrid) -> Vec<(u32, u32)> {
-    let boxes: Vec<(u32, Rect)> = objects.iter().map(|(id, f)| (*id, f.aabb())).collect();
+/// повёрнутое или у столба есть высота — точно: по разделяющим осям и по столбам. «Рельеф»,
+/// требование 14: объекты задевают друг друга, если пересекаются и прямоугольники, и столбы.
+/// Без поворотов и высот ответ тот же, что давал один `Rect::overlap`.
+fn overlapping_pairs(objects: &[Placed], grid: &mut SpatialGrid) -> Vec<(u32, u32)> {
+    let boxes: Vec<(u32, Rect)> = objects.iter().map(|(id, f, _)| (*id, f.aabb())).collect();
     let cell_size = largest_dimension(&boxes).max(1e-3);
     let mut pairs = grid.find_pairs(cell_size, &boxes);
-    if objects.iter().any(|(_, f)| f.is_oriented()) {
-        let place = |id: u32| {
-            objects
-                .iter()
-                .find(|(other, _)| *other == id)
-                .map(|(_, f)| *f)
-        };
-        pairs.retain(|&(a, b)| match (place(a), place(b)) {
-            (Some(fa), Some(fb)) => fa.overlaps(&fb),
+    if objects
+        .iter()
+        .any(|(_, f, p)| f.is_oriented() || *p != Pillar::ANY)
+    {
+        let by_id: HashMap<u32, (Footprint, Pillar)> = objects
+            .iter()
+            .map(|&(id, place, pillar)| (id, (place, pillar)))
+            .collect();
+        pairs.retain(|&(a, b)| match (by_id.get(&a), by_id.get(&b)) {
+            (Some((fa, pa)), Some((fb, pb))) => fa.overlaps(fb) && pa.overlaps(pb),
             _ => false,
         });
     }
@@ -615,12 +664,15 @@ fn execute_turn(
             new_center[0] - new_size[0] / 2.0,
             new_center[1] - new_size[1] / 2.0,
         ];
+        let from_z = world.base_z(id);
         world.set_vec2(id, property::POSITION, new_pos);
         world.set_vec2(id, property::SIZE, new_size);
         let current = world
             .rotation(id, property::ROTATION)
             .unwrap_or(Rotation::from_quarters(0));
         world.set_rotation(id, property::ROTATION, current.turned(dir));
+        world.set_base_z(id, from_z);
+        surface::seat_after_shift(world, id);
     }
     let blocked = spec
         .blocked_by
@@ -765,31 +817,49 @@ fn apply_walk_rule(
         if speed <= 0.0 {
             continue;
         }
-        let obstacles: Vec<(u32, Footprint)> = match avoid {
-            None => Vec::new(),
-            Some(sel) => world
-                .ids()
-                .filter(|&oid| oid != id)
-                .filter(|&oid| selector_matches(sel, world, oid))
-                .filter_map(|oid| footprint_of(world, oid).map(|f| (oid, f)))
-                .collect(),
-        };
         let rotation = world
             .three_d()
             .then(|| world.rotation(id, property::ROTATION))
             .flatten();
         let budget = speed / 60.0;
-        let (new_center, arrived) = pathfind::advance(
-            id,
-            center_from,
-            size,
-            rotation,
-            target,
-            obstacles,
-            (scene.width as f64, scene.height as f64),
-            budget,
-            walk_paths,
-        );
+        let scene_size = (scene.width as f64, scene.height as f64);
+        let (new_center, arrived) = if surface::walks_on_surfaces(world) {
+            walk_on_surfaces(
+                world,
+                id,
+                avoid,
+                center_from,
+                size,
+                rotation,
+                target,
+                scene_size,
+                budget,
+                walk_paths,
+            )
+        } else {
+            let walker_pillar = surface::pillar(world, id);
+            let obstacles: Vec<(u32, Footprint)> = match avoid {
+                None => Vec::new(),
+                Some(sel) => world
+                    .ids()
+                    .filter(|&oid| oid != id)
+                    .filter(|&oid| selector_matches(sel, world, oid))
+                    .filter(|&oid| surface::pillar(world, oid).overlaps(&walker_pillar))
+                    .filter_map(|oid| footprint_of(world, oid).map(|f| (oid, f)))
+                    .collect(),
+            };
+            pathfind::advance(
+                id,
+                center_from,
+                size,
+                rotation,
+                target,
+                obstacles,
+                scene_size,
+                budget,
+                walk_paths,
+            )
+        };
         if new_center != center_from {
             world.set_vec2(
                 id,
@@ -810,6 +880,124 @@ fn apply_walk_rule(
             rule: format!("rules[{rule_index}]"),
             objects: moved_objects,
         });
+    }
+}
+
+/// «Рельеф» → «Ходьба»: земля, настилы и объекты `avoid` для идущего `id`.
+fn walk_surfaces<'a>(world: &'a World, id: u32, avoid: &Option<Selector>) -> Surfaces<'a> {
+    let decks = surface::decks(world)
+        .map(|(deck_id, place, top)| Deck {
+            id: deck_id,
+            place,
+            bottom: world.base_z(deck_id),
+            top,
+        })
+        .collect();
+    let blockers = match avoid {
+        None => Vec::new(),
+        Some(sel) => world
+            .ids()
+            .filter(|&oid| oid != id)
+            .filter(|&oid| selector_matches(sel, world, oid))
+            .filter_map(|oid| {
+                Some(Blocker {
+                    id: oid,
+                    place: footprint_of(world, oid)?,
+                    pillar: surface::pillar(world, oid),
+                })
+            })
+            .collect(),
+    };
+    Surfaces {
+        terrain: world.terrain(),
+        decks,
+        blockers,
+    }
+}
+
+fn surface_walker(
+    world: &World,
+    id: u32,
+    center: Vec2,
+    size: Vec2,
+    rotation: Option<Rotation>,
+) -> Walker {
+    Walker {
+        id,
+        center,
+        size,
+        rotation,
+        height: surface::body_height(world, id),
+        z: world.base_z(id),
+    }
+}
+
+/// «Рельеф» → «Ходьба», требования 15–22: один шаг идущего по рельефу и настилам.
+#[allow(clippy::too_many_arguments)]
+fn walk_on_surfaces(
+    world: &World,
+    id: u32,
+    avoid: &Option<Selector>,
+    center: Vec2,
+    size: Vec2,
+    rotation: Option<Rotation>,
+    target: Vec2,
+    scene_size: (f64, f64),
+    budget: f64,
+    walk_paths: &mut WalkCaches,
+) -> (Vec2, bool) {
+    let surfaces = walk_surfaces(world, id, avoid);
+    let walker = surface_walker(world, id, center, size, rotation);
+    let named_z = world.walk_to_z(id);
+    let goal = Goal {
+        point: target,
+        named_z,
+        wanted_z: named_z.unwrap_or_else(|| scene::top_surface_height(world, target)),
+    };
+    walk3d::advance(&walker, &goal, &surfaces, scene_size, budget, walk_paths)
+}
+
+/// «Рельеф» → «Ходьба», нефункциональные требования: при сборке мира готовит идущим по рельефу и
+/// настилам всё, что не зависит от цели, — непроходимые места, стены настилов, узлы и видимость, — чтобы
+/// первый же путь не платил за это. Идущие — те, кого выбирает `for` правила `walk`; сеть у идущих с одним
+/// телом общая, поэтому готовится один раз на тело.
+pub fn prepare_walkers(
+    world: &World,
+    rules: &[Rule],
+    scene: &SceneConfig,
+    walk_paths: &mut WalkCaches,
+) {
+    if !surface::walks_on_surfaces(world) {
+        return;
+    }
+    let scene_size = (scene.width as f64, scene.height as f64);
+    let mut bodies: Vec<(Vec2, Option<Rotation>, f64)> = Vec::new();
+    for rule in rules {
+        let Rule::Walk { for_, avoid } = rule else {
+            continue;
+        };
+        for id in world.ids().filter(|&id| selector_matches(for_, world, id)) {
+            let (Some(position), Some(size)) = (
+                world.vec2(id, property::POSITION),
+                world.vec2(id, property::SIZE),
+            ) else {
+                continue;
+            };
+            let center = [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0];
+            let rotation = world.rotation(id, property::ROTATION);
+            let body = (size, rotation, surface::body_height(world, id));
+            if bodies.contains(&body) {
+                continue;
+            }
+            bodies.push(body);
+            let walker = surface_walker(world, id, center, size, rotation);
+            walk3d::prepare(
+                &walk_surfaces(world, id, avoid),
+                &walker,
+                scene_size,
+                walk_paths,
+            );
+        }
     }
 }
 
@@ -869,10 +1057,10 @@ pub fn apply_stage4(
 
 /// Stage 5: uniform grid over `collides` objects, sized to the largest of them.
 pub fn find_collision_pairs(world: &World, grid: &mut SpatialGrid) -> Vec<(u32, u32)> {
-    let objects: Vec<(u32, Footprint)> = world
+    let objects: Vec<Placed> = world
         .ids()
         .filter(|&id| world.flag(id, property::COLLIDES))
-        .filter_map(|id| footprint_of(world, id).map(|f| (id, f)))
+        .filter_map(|id| placed_of(world, id))
         .collect();
     overlapping_pairs(&objects, grid)
 }
@@ -1234,8 +1422,19 @@ pub fn apply_collide_rules(
     Ok(())
 }
 
+/// «Рельеф», требования 8, 12: как созданный объект встаёт на поверхность, когда у него нет `z` в
+/// данных.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SeatRule {
+    /// Как объект без `z` в данных: на верх самого высокого настила под ним или на рельеф.
+    Fresh,
+    /// `at_parent`: так, будто сдвинулся с этого основания родителя.
+    From(f64),
+}
+
 pub struct PendingCreate {
     pub position: Vec2,
+    pub seat: SeatRule,
     pub props: Vec<(PropertyId, Value)>,
     /// «Редактор», требование 44: which `spawn` rule (`rules[N]`) queued this create — filled in
     /// by `queue_create_and_delete_rules`'s own caller loop, empty when no report is being built.
@@ -1244,9 +1443,57 @@ pub struct PendingCreate {
 
 struct PendingState {
     deleted: HashSet<u32>,
-    world_occupied: Vec<(u32, Footprint)>,
-    create_occupied: Vec<Footprint>,
+    world_occupied: Vec<Placed>,
+    create_occupied: Vec<(Footprint, Pillar)>,
     creates: Vec<PendingCreate>,
+}
+
+/// Каким будет создаваемый объект для `random_cell`: его место и столб на высоте клетки.
+struct Newcomer {
+    size: Vec2,
+    rotation: Option<Rotation>,
+    height: f64,
+    flat: bool,
+}
+
+impl Newcomer {
+    fn of(props: &[(PropertyId, Value)]) -> Newcomer {
+        let find = |prop: PropertyId| props.iter().find(|(p, _)| *p == prop).map(|(_, v)| v);
+        let size = match find(property::SIZE) {
+            Some(Value::Vec2(s)) => *s,
+            _ => [1.0, 1.0],
+        };
+        let rotation = match find(property::ROTATION) {
+            Some(Value::Rotation(r)) => Some(*r),
+            _ => None,
+        };
+        let height = match find(property::HEIGHT) {
+            Some(Value::Number(h)) => *h,
+            _ => 1.0,
+        };
+        let flat = find(property::SHAPE).is_none()
+            && (find(property::IMAGE).is_some() || find(property::COLOR).is_some());
+        Newcomer {
+            size,
+            rotation,
+            height,
+            flat,
+        }
+    }
+
+    /// Столб нового объекта, вставшего на клетку `(x, y)`.
+    fn pillar_at(&self, world: &World, cell: Vec2, from: Option<f64>) -> Pillar {
+        if !world.three_d() {
+            return Pillar::ANY;
+        }
+        let place = Footprint::rotated(cell, self.size, self.rotation);
+        let z = surface::rest_height(world, None, &place, from);
+        Pillar {
+            low: z,
+            high: if self.flat { z } else { z + self.height },
+            closed: self.flat,
+        }
+    }
 }
 
 impl PendingState {
@@ -1276,13 +1523,27 @@ impl PendingState {
         (live + pending) as u32
     }
 
-    fn free_cell(&self, scene: &SceneConfig, rng: &mut Rng) -> Option<(u32, u32)> {
+    fn free_cell(
+        &self,
+        world: &World,
+        scene: &SceneConfig,
+        rng: &mut Rng,
+        newcomer: &Newcomer,
+    ) -> Option<(u32, u32)> {
         let mut free = Vec::new();
         for x in 0..scene.width {
             for y in 0..scene.height {
-                let cell = Footprint::flat([x as f64, y as f64], [1.0, 1.0]);
-                let occupied = self.world_occupied.iter().any(|(_, f)| f.overlaps(&cell))
-                    || self.create_occupied.iter().any(|f| f.overlaps(&cell));
+                let corner = [x as f64, y as f64];
+                let cell = Footprint::flat(corner, [1.0, 1.0]);
+                let pillar = newcomer.pillar_at(world, corner, None);
+                let occupied = self
+                    .world_occupied
+                    .iter()
+                    .any(|(_, f, p)| f.overlaps(&cell) && p.overlaps(&pillar))
+                    || self
+                        .create_occupied
+                        .iter()
+                        .any(|(f, p)| f.overlaps(&cell) && p.overlaps(&pillar));
                 if !occupied {
                     free.push((x, y));
                 }
@@ -1297,7 +1558,7 @@ impl PendingState {
 
     fn queue_delete(&mut self, id: u32) {
         self.deleted.insert(id);
-        self.world_occupied.retain(|&(oid, _)| oid != id);
+        self.world_occupied.retain(|&(oid, _, _)| oid != id);
     }
 
     fn resolve_template(
@@ -1323,31 +1584,42 @@ impl PendingState {
 
     /// The `where` anchor point, before any `pick_one` cell offset — «Создание по форме»,
     /// требования 19, 21: `random_cell`'s freedom check only ever looks at this one point, never
-    /// at the rest of a `pick_one` shape.
+    /// at the rest of a `pick_one` shape. «Рельеф», требование 12: вместе с тем, как объект встанет
+    /// на поверхность; `template` — поля, по которым видно, какой у него будет столб.
     fn where_position(
         &mut self,
         place: SpawnPlace,
         parent: Option<u32>,
+        template: &[(PropertyId, TemplateValue)],
         ctx: &SpawnContext,
         rng: &mut Rng,
         random_cell_exhausted: &mut bool,
-    ) -> Option<Vec2> {
+    ) -> Option<(Vec2, SeatRule)> {
         match place {
-            SpawnPlace::AtParent => parent.and_then(|p| ctx.pre_move_positions[p as usize]),
+            SpawnPlace::AtParent => {
+                let parent = parent?;
+                let position = ctx.pre_move_positions[parent as usize]?;
+                Some((position, SeatRule::From(ctx.pre_move_z[parent as usize])))
+            }
             SpawnPlace::RandomCell => {
-                let Some((x, y)) = self.free_cell(ctx.scene, rng) else {
+                let fields = self
+                    .resolve_template(template, parent, ctx.world, ctx.properties)
+                    .unwrap_or_default();
+                let newcomer = Newcomer::of(&fields);
+                let Some((x, y)) = self.free_cell(ctx.world, ctx.scene, rng, &newcomer) else {
                     *random_cell_exhausted = true;
                     return None;
                 };
-                Some([x as f64, y as f64])
+                Some(([x as f64, y as f64], SeatRule::Fresh))
             }
-            SpawnPlace::Cell(at) => Some(at),
+            SpawnPlace::Cell(at) => Some((at, SeatRule::Fresh)),
         }
     }
 
     fn place_one(
         &mut self,
         position: Vec2,
+        seat: SeatRule,
         template: &[(PropertyId, TemplateValue)],
         parent: Option<u32>,
         ctx: &SpawnContext,
@@ -1376,10 +1648,16 @@ impl PendingState {
             } else {
                 Footprint::flat(position, size)
             };
-            self.create_occupied.push(footprint);
+            let from = match seat {
+                SeatRule::Fresh => None,
+                SeatRule::From(z) => Some(z),
+            };
+            let pillar = Newcomer::of(&props).pillar_at(ctx.world, position, from);
+            self.create_occupied.push((footprint, pillar));
         }
         self.creates.push(PendingCreate {
             position,
+            seat,
             props,
             rule: String::new(),
         });
@@ -1418,26 +1696,31 @@ impl PendingState {
     ) -> bool {
         match pick_one {
             None => {
-                let Some(position) =
-                    self.where_position(place, parent, ctx, rng, random_cell_exhausted)
+                let Some((position, seat)) =
+                    self.where_position(place, parent, template, ctx, rng, random_cell_exhausted)
                 else {
                     return false;
                 };
-                self.place_one(position, template, parent, ctx)
+                self.place_one(position, seat, template, parent, ctx)
             }
             Some(variants) => {
                 let variant = &variants[rng.next_below(variants.len() as u32) as usize];
-                let Some(anchor) =
-                    self.where_position(place, parent, ctx, rng, random_cell_exhausted)
-                else {
+                let variant_fields = Self::layer_fields(template, &variant.fields);
+                let Some((anchor, seat)) = self.where_position(
+                    place,
+                    parent,
+                    &variant_fields,
+                    ctx,
+                    rng,
+                    random_cell_exhausted,
+                ) else {
                     return false;
                 };
-                let variant_fields = Self::layer_fields(template, &variant.fields);
                 let mut any = false;
                 for cell in &variant.cells {
                     let position = [anchor[0] + cell.at[0], anchor[1] + cell.at[1]];
                     let fields = Self::layer_fields(&variant_fields, &cell.fields);
-                    any |= self.place_one(position, &fields, parent, ctx);
+                    any |= self.place_one(position, seat, &fields, parent, ctx);
                 }
                 any
             }
@@ -1450,6 +1733,7 @@ struct SpawnContext<'a> {
     properties: &'a PropertyTable,
     scene: &'a SceneConfig,
     pre_move_positions: &'a [Option<Vec2>],
+    pre_move_z: &'a [f64],
 }
 
 /// «Код игры»: applies whatever `delete(obj)` calls a `do`-action's code just queued to `pending`
@@ -1496,6 +1780,7 @@ pub fn queue_create_and_delete_rules(
     already_deleted: &[u32],
     moved: &mut [bool],
     pre_move_positions: &[Option<Vec2>],
+    pre_move_z: &[f64],
     rng: &mut Rng,
     outcome: &mut Option<Outcome>,
     random_cell_exhausted: &mut bool,
@@ -1510,7 +1795,7 @@ pub fn queue_create_and_delete_rules(
             .ids()
             .filter(|id| !already_deleted.contains(id))
             .filter(|&id| world.flag(id, property::COLLIDES))
-            .filter_map(|id| footprint_of(world, id).map(|f| (id, f)))
+            .filter_map(|id| placed_of(world, id))
             .collect(),
         create_occupied: Vec::new(),
         creates: Vec::new(),
@@ -1655,6 +1940,7 @@ pub fn queue_create_and_delete_rules(
                     properties,
                     scene,
                     pre_move_positions,
+                    pre_move_z,
                 };
                 let count_fn = |of: &Selector| pending.count_selector(of, world);
                 match &when.parent_of {

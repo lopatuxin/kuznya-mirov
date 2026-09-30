@@ -15,6 +15,7 @@ use crate::core::screens::{
     ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement, WorldElementKind,
     WorldTextPart,
 };
+use crate::core::terrain::{Terrain, Water};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
 use crate::core::value::{
     FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2, parse_color,
@@ -220,6 +221,43 @@ fn parse_vec2(value: &Json, file: &str, path: &str, errors: &mut ErrorSink) -> O
     Some([x, y])
 }
 
+const HEIGHT_OF_PLACE_IN_FLAT_SCENE: &str =
+    "третье число есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+/// «Рельеф», требования 6, 38: `position` и `walk_to` — `[x, y]` или, в трёхмерной сцене,
+/// `[x, y, z]`, где `z` — высота основания; любое число, но не больше трёх.
+fn parse_place(
+    value: &Json,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Value> {
+    let arr = expect_array(value, file, path, errors)?;
+    match arr.len() {
+        2 => parse_vec2(value, file, path, errors).map(Value::Vec2),
+        3 if properties.three_d() => {
+            let x = expect_number(&arr[0], file, &join(path, "[0]"), errors)?;
+            let y = expect_number(&arr[1], file, &join(path, "[1]"), errors)?;
+            let z = expect_number(&arr[2], file, &join(path, "[2]"), errors)?;
+            Some(Value::Vec3([x, y, z]))
+        }
+        3 => {
+            errors.push(file, path, HEIGHT_OF_PLACE_IN_FLAT_SCENE);
+            None
+        }
+        n => {
+            let expected = if properties.three_d() {
+                "пара или тройка чисел"
+            } else {
+                "пара чисел"
+            };
+            errors.push(file, path, format!("ожидалась {expected}, элементов: {n}"));
+            None
+        }
+    }
+}
+
 /// Parses one scalar value against the kind declared for `prop`. Time values are converted to
 /// steps right here, so nothing downstream ever sees seconds again. `prop` itself (not just its
 /// kind) matters once: `size` may not be negative, everything else with the same kind can be.
@@ -234,14 +272,20 @@ pub(crate) fn parse_scalar_value(
 ) -> Option<Value> {
     let kind = properties.kind(prop);
     match kind {
-        PropKind::Flag => value.as_bool().map(Value::Flag).or_else(|| {
-            errors.push(
-                file,
-                path,
-                format!("ожидался признак (true), получено {}", kind_name(value)),
-            );
-            None
-        }),
+        PropKind::Flag => {
+            if prop == property::DECK && !properties.three_d() {
+                errors.push(file, path, DECK_IN_FLAT_SCENE);
+                return None;
+            }
+            value.as_bool().map(Value::Flag).or_else(|| {
+                errors.push(
+                    file,
+                    path,
+                    format!("ожидался признак (true), получено {}", kind_name(value)),
+                );
+                None
+            })
+        }
         PropKind::Number => {
             let n = expect_number(value, file, path, errors)?;
             if prop == property::OPACITY && !validate_opacity_range(n, file, path, errors) {
@@ -328,6 +372,9 @@ pub(crate) fn parse_scalar_value(
                     None
                 }
             }
+        }
+        PropKind::Vec2 if prop == property::POSITION || prop == property::WALK_TO => {
+            parse_place(value, properties, file, path, errors)
         }
         PropKind::Vec2 => {
             let v = parse_vec2(value, file, path, errors)?;
@@ -707,6 +754,28 @@ fn validate_opacity_range(n: f64, file: &str, path: &str, errors: &mut ErrorSink
 const SHAPE_IN_FLAT_SCENE: &str =
     "shape есть только в трёхмерной сцене: у scene в game.json нет camera";
 
+const DECK_IN_FLAT_SCENE: &str =
+    "deck есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+/// «Рельеф», требование 38: настил — только объект с `position` и `size`. `check_position` — как у
+/// `validate_follow_mouse_shape`.
+fn validate_deck_shape(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if !shape.contains(&property::DECK) {
+        return;
+    }
+    let missing_size = !shape.contains(&property::SIZE);
+    let missing_position = check_position && !shape.contains(&property::POSITION);
+    if missing_size || missing_position {
+        errors.push(file, path, "deck разрешён только объекту с position и size");
+    }
+}
+
 /// «Трёхмерная сцена», требование 30: `height` есть только в трёхмерной сцене — везде, где его можно
 /// записать: объект, шаблон, клавиша, `on_click`, `add`/`set` правил.
 fn height_fits_the_scene(
@@ -948,6 +1017,7 @@ fn parse_scene_object(
     validate_image_fill(&shape, file, &path, errors);
     validate_follow_mouse_shape(&shape, true, file, &path, errors);
     validate_shape_fill(&shape, true, file, &path, errors);
+    validate_deck_shape(&shape, true, file, &path, errors);
 
     Some(ParsedObject {
         path,
@@ -1119,6 +1189,106 @@ fn parse_ground_layer(
         return None;
     }
     Some(GroundLayer { image, cells })
+}
+
+/// «Рельеф», требования 1, 38: `heights` — `2 × высота + 1` строк по `2 × ширина + 1` чисел; `water`
+/// необязательна, но с `level` и `color`.
+fn parse_terrain(
+    text: &str,
+    file: &str,
+    scene: &SceneConfig,
+    errors: &mut ErrorSink,
+) -> Option<Terrain> {
+    let root = parse_json_or_error(file, text, errors)?;
+    let obj = expect_object(&root, file, "", errors)?;
+    reject_unknown_keys(obj, &["heights", "water"], file, "", errors);
+    let rows = require_field(obj, "heights", file, "", errors)
+        .and_then(|v| parse_heights(v, file, scene, errors));
+    let water = match obj.get("water") {
+        None => Some(None),
+        Some(v) => parse_water(v, file, errors).map(Some),
+    };
+    Terrain::from_rows([scene.width, scene.height], &rows?, water?)
+        .map_err(|message| errors.push(file, "heights", message))
+        .ok()
+}
+
+fn parse_heights(
+    value: &Json,
+    file: &str,
+    scene: &SceneConfig,
+    errors: &mut ErrorSink,
+) -> Option<Vec<Vec<f64>>> {
+    let rows_json = expect_array(value, file, "heights", errors)?;
+    let (want_rows, want_columns) = (2 * scene.height as usize + 1, 2 * scene.width as usize + 1);
+    if rows_json.len() != want_rows {
+        errors.push(
+            file,
+            "heights",
+            format!(
+                "heights: {} строк, а высота сцены {} клеток: нужно 2 × {} + 1 = {want_rows}",
+                rows_json.len(),
+                scene.height,
+                scene.height
+            ),
+        );
+        return None;
+    }
+    let mut ok = true;
+    let mut rows = Vec::with_capacity(want_rows);
+    for (r, row_json) in rows_json.iter().enumerate() {
+        let row_path = format!("heights[{r}]");
+        let Some(row_arr) = expect_array(row_json, file, &row_path, errors) else {
+            ok = false;
+            continue;
+        };
+        if row_arr.len() != want_columns {
+            errors.push(
+                file,
+                &row_path,
+                format!(
+                    "heights[{r}]: {} чисел, а ширина сцены {} клеток: нужно 2 × {} + 1 = {want_columns}",
+                    row_arr.len(),
+                    scene.width,
+                    scene.width
+                ),
+            );
+            ok = false;
+            continue;
+        }
+        let mut row = Vec::with_capacity(want_columns);
+        for (c, cell) in row_arr.iter().enumerate() {
+            match expect_number(cell, file, &format!("{row_path}[{c}]"), errors) {
+                Some(n) => row.push(n),
+                None => ok = false,
+            }
+        }
+        rows.push(row);
+    }
+    ok.then_some(rows)
+}
+
+fn parse_water(value: &Json, file: &str, errors: &mut ErrorSink) -> Option<Water> {
+    let obj = expect_object(value, file, "water", errors)?;
+    reject_unknown_keys(obj, &["level", "color"], file, "water", errors);
+    let level = require_field(obj, "level", file, "water", errors)
+        .and_then(|v| expect_number(v, file, "water → level", errors));
+    let color = require_field(obj, "color", file, "water", errors)
+        .and_then(|v| expect_string(v, file, "water → color", errors))
+        .and_then(|s| {
+            parse_hex_color(&s).or_else(|| {
+                errors.push(
+                    file,
+                    "water → color",
+                    format!("цвет должен быть вида \"#rrggbb\", получено \"{s}\""),
+                );
+                None
+            })
+        });
+    Some(Water {
+        level: level?,
+        color: color?,
+    })
 }
 
 fn parse_properties_json(text: &str, file: &str, errors: &mut ErrorSink) -> PropertyTable {
@@ -1372,6 +1542,9 @@ pub struct FilePaths {
     /// разбирается позже, вместе с остальными текстами второго захода (`parse_and_validate_tables`).
     /// Пусто, если `files.tables` не объявлена.
     pub tables: Vec<(String, String)>,
+    /// `files.terrain` — «Рельеф»: необязательный путь к файлу высот земли трёхмерной сцены. `None`
+    /// — земля ровная на высоте 0.
+    pub terrain: Option<String>,
 }
 
 /// One `files.images` entry — «Картинки» → «Таблица картинок»: `frames`/`frame_time` default to
@@ -1638,6 +1811,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "music",
                 "code",
                 "tables",
+                "terrain",
             ],
             "game.json",
             "files",
@@ -1686,8 +1860,13 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             }
             None => Vec::new(),
         };
+        // «Рельеф»: необязателен — нет ключа, нет и файла высот, земля ровная.
+        let terrain = f
+            .get("terrain")
+            .and_then(|v| expect_string(v, "game.json", "files → terrain", errors));
         (
             properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables,
+            terrain,
         )
     });
 
@@ -1703,8 +1882,26 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
     let scene = scene?;
     let max_objects = max_objects?;
     let random_seed = random_seed?;
-    let (properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables) =
-        files?;
+    let (
+        properties,
+        scene_path,
+        rules,
+        screens,
+        fonts,
+        sounds,
+        music,
+        images,
+        code,
+        tables,
+        terrain,
+    ) = files?;
+    if terrain.is_some() && scene.camera.is_none() {
+        errors.push(
+            "game.json",
+            "files → terrain",
+            "files.terrain есть только в трёхмерной сцене: у scene в game.json нет camera",
+        );
+    }
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
@@ -1732,6 +1929,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             images,
             code,
             tables,
+            terrain,
         },
         start_screen,
         win_screen,
@@ -3207,6 +3405,7 @@ fn parse_template(
     validate_image_fill(&shape, file, path, errors);
     validate_follow_mouse_shape(&shape, false, file, path, errors);
     validate_shape_fill(&shape, false, file, path, errors);
+    validate_deck_shape(&shape, false, file, path, errors);
     (template, broken_properties)
 }
 
@@ -4836,12 +5035,17 @@ fn validate_objects_within_scene(
     errors: &mut ErrorSink,
 ) {
     for obj in scene {
-        let (Some(Value::Vec2(pos)), Some(Value::Vec2(size))) = (
-            find_value(&obj.values, property::POSITION),
+        let (Some(pos), Some(Value::Vec2(size))) = (
+            find_value(&obj.values, property::POSITION).and_then(|v| match v {
+                Value::Vec2(xy) => Some([xy[0], xy[1]]),
+                Value::Vec3(xyz) => Some([xyz[0], xyz[1]]),
+                _ => None,
+            }),
             find_value(&obj.values, property::SIZE),
         ) else {
             continue;
         };
+        let pos = &pos;
         // «Трёхмерная сцена», требование 15: повёрнутый прямоугольник — сам, не охватывающий его.
         let rotation = match find_value(&obj.values, property::ROTATION) {
             Some(Value::Rotation(r)) if config.is_3d() => Some(*r),
@@ -7454,6 +7658,43 @@ pub fn load_rest(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest_with_tables(
     game_json: &str,
+    config: GameConfig,
+    properties_json: Option<&str>,
+    scene_json: Option<&str>,
+    rules_json: Option<&str>,
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
+    skip_media_validation: bool,
+    table_texts: &[(String, Option<String>)],
+) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
+    load_rest_with_terrain(
+        game_json,
+        config,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        font_bytes,
+        sound_bytes,
+        music_verdicts,
+        image_data,
+        code_json,
+        skip_media_validation,
+        table_texts,
+        None,
+    )
+}
+
+/// Same as `load_rest_with_tables`, additionally accepting the text of `files.terrain` —
+/// «Рельеф», требование 47: файл высот читается тем же заходом, что таблицы данных. `None` — файла
+/// нет на месте; без `files.terrain` в `game.json` текст не нужен.
+#[allow(clippy::too_many_arguments)]
+pub fn load_rest_with_terrain(
+    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -7466,6 +7707,7 @@ pub fn load_rest_with_tables(
     code_json: Option<&str>,
     skip_media_validation: bool,
     table_texts: &[(String, Option<String>)],
+    terrain_text: Option<&str>,
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -7482,6 +7724,19 @@ pub fn load_rest_with_tables(
     };
     properties.set_three_d(config.scene.is_3d());
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
+    match (&config.files.terrain, terrain_text) {
+        (Some(path), Some(text)) if config.scene.is_3d() => {
+            if let Some(terrain) = parse_terrain(text, path, &config.scene, &mut errors) {
+                properties.set_terrain(terrain);
+            }
+        }
+        (Some(path), None) => errors.push(
+            path,
+            "",
+            "файл не найден; ожидался JSON-файл, названный в game.json → files → terrain",
+        ),
+        _ => {}
+    }
 
     let ParsedSceneFile {
         objects: scene_objects,
@@ -7754,6 +8009,9 @@ pub fn load_rest_with_tables(
     if let Some(text) = screens_json {
         errors.fill_locations(&config.files.screens, text);
     }
+    if let (Some(path), Some(text)) = (&config.files.terrain, terrain_text) {
+        errors.fill_locations(path, text);
+    }
 
     let (errs, warnings) = errors.into_parts();
     if !errs.is_empty() {
@@ -7901,8 +8159,33 @@ pub fn load_game_from_texts_with_tables(
     code_json: Option<&str>,
     tables: &[(String, Option<String>)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
+    load_game_from_texts_with_terrain(
+        game_json,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        code_json,
+        tables,
+        None,
+    )
+}
+
+/// Same as `load_game_from_texts_with_tables`, additionally passing the text of `files.terrain` —
+/// for tests that exercise «Рельеф» without the wasm layer's three-round handshake.
+#[allow(clippy::too_many_arguments)]
+pub fn load_game_from_texts_with_terrain(
+    game_json: &str,
+    properties_json: &str,
+    scene_json: &str,
+    rules_json: &str,
+    screens_json: &str,
+    code_json: Option<&str>,
+    tables: &[(String, Option<String>)],
+    terrain_json: Option<&str>,
+) -> Result<(Game, ScreensConfig, Vec<GameError>), LoadFailure> {
     let (config, entry_warnings) = read_entry(game_json)?;
-    match load_rest_with_tables(
+    match load_rest_with_terrain(
         game_json,
         config,
         Some(properties_json),
@@ -7916,6 +8199,7 @@ pub fn load_game_from_texts_with_tables(
         code_json,
         false,
         tables,
+        terrain_json,
     ) {
         Ok((game, screens, warnings, _images)) => {
             let mut all_warnings = entry_warnings;

@@ -1,0 +1,21 @@
+{
+  "start": "location",
+  "input": [
+    { "step": 1, "cursor": [12.75, 14.34, 0], "eye": [12.75, 24.34, 12.5] },
+    { "step": 1, "press": "MouseLeft" }
+  ],
+  "steps": 210,
+  "checks": [
+    { "step": 60, "object": "hero", "property": "position", "equals": [6.065494968, 20.228566308, 0] },
+    { "step": 70, "camera_z": 0.05 },
+    { "step": 80, "camera_z": 0.3 },
+    { "step": 100, "object": "hero", "property": "position", "equals": [8.214166643, 19.515221962, 0.3] },
+    { "step": 150, "object": "hero", "property": "position", "equals": [10.206376033, 16.842730081, 0.3] },
+    { "step": 190, "object": "hero", "property": "position", "equals": [11.838940225, 14.736141588, 0] },
+    { "step": 190, "camera_z": 0.05 },
+    { "step": 200, "camera_z": 0 },
+    { "step": 203, "count": { "has": ["hero", "walk_to"] }, "equals": 1 },
+    { "step": 204, "object": "hero", "property": "position", "equals": [12.45, 14.04, 0] },
+    { "step": 204, "count": { "has": ["hero"], "without": ["walk_to"] }, "equals": 1 }
+  ]
+}

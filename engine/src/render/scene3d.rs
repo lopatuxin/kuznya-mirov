@@ -1,17 +1,18 @@
-//! «Трёхмерная сцена» → «Отрисовка»: что рисовать в кадре трёхмерной сцены — список фигур, список
-//! плоских прямоугольников на земле (земля из плиток и плоские объекты, по `layer`), матрицы камеры
-//! и солнца. Ни видеокарты, ни браузера: `wasm::mod` переводит это в данные для `render::gpu`.
+//! «Трёхмерная сцена» → «Отрисовка»: что рисовать в кадре трёхмерной сцены — список фигур, плитки
+//! земли и плоские объекты, разложенные по рельефу треугольниками, матрицы камеры и солнца. Ни
+//! видеокарты, ни браузера: `wasm::mod` переводит это в данные для `render::gpu`.
 
-use crate::core::camera::Camera3d;
+use crate::core::camera::{Camera3d, FOV_Y_DEGREES};
 use crate::core::game::Game;
 use crate::core::math3::{self, Mat4, Vec3};
 use crate::core::property;
-use crate::core::scene::SceneConfig;
+use crate::core::scene::{CellRange, SceneConfig};
 use crate::core::shapes::Body;
 use crate::core::value::Shape;
 use crate::data::load::ImageDecl;
 
 use super::atlas::{self, AtlasRect, RectPaint};
+use super::relief::{self, SurfaceVertex};
 
 /// Одна фигура кадра: место, размеры, поворот и цвет — всё, что вершинному шейдеру нужно поверх
 /// сетки единичной фигуры.
@@ -19,6 +20,8 @@ use super::atlas::{self, AtlasRect, RectPaint};
 pub struct ShapeDraw {
     pub shape: Shape,
     pub center: [f32; 2],
+    /// Высота основания над нулём сцены.
+    pub base: f32,
     pub size: [f32; 2],
     pub height: f32,
     pub cap_height: f32,
@@ -33,6 +36,8 @@ pub struct Frame3d {
     pub shapes: Vec<ShapeDraw>,
     /// Плитки земли, затем плоские объекты в порядке рисования.
     pub ground: Vec<RectPaint>,
+    /// Те же плитки и плоские объекты треугольниками на рельефе и на верху настилов.
+    pub surface: Vec<SurfaceVertex>,
     pub view_proj: Mat4,
     pub light_view_proj: Mat4,
     /// Направление от земли к солнцу и синус его высоты.
@@ -52,6 +57,7 @@ fn shape_draws(game: &Game) -> Vec<ShapeDraw> {
             solid.then(|| ShapeDraw {
                 shape: body.shape,
                 center: [body.center[0] as f32, body.center[1] as f32],
+                base: body.base as f32,
                 size: [body.size[0] as f32, body.size[1] as f32],
                 height: body.height as f32,
                 cap_height: body.cap_height() as f32,
@@ -63,11 +69,82 @@ fn shape_draws(game: &Game) -> Vec<ShapeDraw> {
         .collect()
 }
 
-/// Клетки сцены, которых касается видимая земля; пустой диапазон, если из сцены не видно ничего.
-fn visible_cells(scene: &SceneConfig, camera: &Camera3d) -> crate::core::scene::CellRange {
-    match camera.visible_ground(scene) {
-        Some([low, high]) => scene.cell_range_covering(low, high),
-        None => crate::core::scene::CellRange {
+/// Прямоугольник по осям `[низ, верх]`, охватывающий видимую камерой землю сцены на любой высоте от
+/// `low` до `high`; `None`, если ничего не видно. Видимое — выпуклый многогранник: сцена на этих
+/// высотах, обрезанная четырьмя боковыми плоскостями взгляда; охват берётся по его вершинам, то
+/// есть по тройкам плоскостей. Срезы на краях диапазона его не охватывают: у камеры ниже холма
+/// срез на высоте холма пуст, а ближе всего к камере видна земля посередине.
+fn visible_bounds(
+    scene: &SceneConfig,
+    camera: &Camera3d,
+    low: f64,
+    high: f64,
+) -> Option<[[f64; 2]; 2]> {
+    let tan_y = (FOV_Y_DEGREES.to_radians() / 2.0).tan();
+    let tan_x = tan_y * camera.viewport[0] / camera.viewport[1].max(1.0);
+    let (forward, up, right) = (camera.forward(), camera.up(), camera.right());
+    let inward = |axis: Vec3, sign: f64, tan: f64| {
+        math3::add(math3::scale(axis, sign), math3::scale(forward, tan))
+    };
+    let mut planes: Vec<(Vec3, f64)> = [
+        inward(right, 1.0, tan_x),
+        inward(right, -1.0, tan_x),
+        inward(up, 1.0, tan_y),
+        inward(up, -1.0, tan_y),
+    ]
+    .into_iter()
+    .map(|normal| (normal, -math3::dot(normal, camera.eye)))
+    .collect();
+    planes.extend([
+        ([1.0, 0.0, 0.0], 0.0),
+        ([-1.0, 0.0, 0.0], f64::from(scene.width)),
+        ([0.0, 1.0, 0.0], 0.0),
+        ([0.0, -1.0, 0.0], f64::from(scene.height)),
+        ([0.0, 0.0, 1.0], -low),
+        ([0.0, 0.0, -1.0], high),
+    ]);
+
+    const TOLERANCE: f64 = 1e-7;
+    let mut bounds: Option<[[f64; 2]; 2]> = None;
+    for i in 0..planes.len() {
+        for j in i + 1..planes.len() {
+            for k in j + 1..planes.len() {
+                let ((a, da), (b, db), (c, dc)) = (planes[i], planes[j], planes[k]);
+                let det = math3::dot(a, math3::cross(b, c));
+                if det.abs() < 1e-9 {
+                    continue;
+                }
+                let sum = math3::add(
+                    math3::add(
+                        math3::scale(math3::cross(b, c), -da),
+                        math3::scale(math3::cross(c, a), -db),
+                    ),
+                    math3::scale(math3::cross(a, b), -dc),
+                );
+                let vertex = math3::scale(sum, 1.0 / det);
+                if planes
+                    .iter()
+                    .any(|&(normal, offset)| math3::dot(normal, vertex) + offset < -TOLERANCE)
+                {
+                    continue;
+                }
+                let [lo, hi] = bounds.unwrap_or([[vertex[0], vertex[1]]; 2]);
+                bounds = Some([
+                    [lo[0].min(vertex[0]), lo[1].min(vertex[1])],
+                    [hi[0].max(vertex[0]), hi[1].max(vertex[1])],
+                ]);
+            }
+        }
+    }
+    bounds
+}
+
+/// Клетки сцены, которых касается видимая земля на любой высоте от `low` до `high`; пустой
+/// диапазон, если из сцены не видно ничего.
+fn visible_cells(scene: &SceneConfig, camera: &Camera3d, low: f64, high: f64) -> CellRange {
+    match visible_bounds(scene, camera, low, high) {
+        Some([floor, ceiling]) => scene.cell_range_covering(floor, ceiling),
+        None => CellRange {
             x0: 0,
             y0: 0,
             x1: 0,
@@ -77,14 +154,21 @@ fn visible_cells(scene: &SceneConfig, camera: &Camera3d) -> crate::core::scene::
 }
 
 /// «Свет и тени»: прямоугольная проекция от солнца, охватывающая видимую землю (в пределах сцены)
-/// и всё, что над ней поднимают фигуры. Возвращает матрицу и глубину, которую она покрывает.
-fn sun_projection(scene: &SceneConfig, camera: &Camera3d, tallest: f64) -> (Mat4, f64) {
+/// с высотами от `ground.0` до `ground.1` и всё, что над ней поднимает самая высокая точка мира
+/// `top` — фигуры и холмы. Возвращает матрицу и глубину, которую она покрывает.
+fn sun_projection(
+    scene: &SceneConfig,
+    camera: &Camera3d,
+    ground: (f64, f64),
+    top: f64,
+) -> (Mat4, f64) {
     let toward_sun = scene.light.direction();
     let forward = math3::scale(toward_sun, -1.0);
     let right = math3::normalize(math3::cross(forward, [0.0, -1.0, 0.0]));
     let up = math3::cross(right, forward);
 
-    let range = visible_cells(scene, camera);
+    let (floor, ceiling) = (ground.0, ground.1.max(top));
+    let range = visible_cells(scene, camera, floor, ceiling);
     let corners = [
         [range.x0 as f64, range.y0 as f64],
         [range.x1 as f64, range.y0 as f64],
@@ -93,21 +177,25 @@ fn sun_projection(scene: &SceneConfig, camera: &Camera3d, tallest: f64) -> (Mat4
     ];
     let mut low = [f64::INFINITY; 3];
     let mut high = [f64::NEG_INFINITY; 3];
-    // Вершина самой высокой фигуры, чья тень падает на угол, — на луче от угла к солнцу: сдвиг вдоль
+    // Вершина самого высокого тела, чья тень падает на угол, — на луче от угла к солнцу: сдвиг вдоль
     // него не меняет положения в плоскости света, но приближает к солнцу.
-    let reach = tallest / toward_sun[2];
     for corner in corners {
-        for lift in [0.0, reach] {
-            let ground: Vec3 = [corner[0], corner[1], 0.0];
-            let point = math3::add(ground, math3::scale(toward_sun, lift));
-            let light_space = [
-                math3::dot(point, right),
-                math3::dot(point, up),
-                math3::dot(point, forward),
-            ];
-            for axis in 0..3 {
-                low[axis] = low[axis].min(light_space[axis]);
-                high[axis] = high[axis].max(light_space[axis]);
+        for level in [floor, ceiling] {
+            let reach = (top - level).max(0.0) / toward_sun[2];
+            for lift in [0.0, reach] {
+                let point = math3::add(
+                    [corner[0], corner[1], level],
+                    math3::scale(toward_sun, lift),
+                );
+                let light_space = [
+                    math3::dot(point, right),
+                    math3::dot(point, up),
+                    math3::dot(point, forward),
+                ];
+                for axis in 0..3 {
+                    low[axis] = low[axis].min(light_space[axis]);
+                    high[axis] = high[axis].max(light_space[axis]);
+                }
             }
         }
     }
@@ -135,11 +223,19 @@ pub fn compose_frame3d(
     atlas_rects: &[AtlasRect],
 ) -> Frame3d {
     let shapes = shape_draws(game);
-    let tallest = shapes.iter().map(|s| s.height as f64).fold(0.0, f64::max);
+    let terrain = game.world.terrain();
+    let (land_low, land_high) = terrain.height_range();
+    let level = terrain.water().map(|water| water.level);
+    let ground_low = level.map_or(land_low, |level| land_low.min(level));
+    let ground_high = level.map_or(land_high, |level| land_high.max(level));
+    let top = shapes
+        .iter()
+        .map(|s| f64::from(s.base + s.height))
+        .fold(ground_high, f64::max);
 
     let mut ground = atlas::compose_ground_paints(
         &game.ground,
-        visible_cells(&game.scene, camera),
+        visible_cells(&game.scene, camera, land_low, land_high),
         images,
         atlas_rects,
     );
@@ -151,12 +247,15 @@ pub fn compose_frame3d(
         images,
         atlas_rects,
     ));
+    let surface = relief::surface_triangles(&game.world, &ground);
 
     let toward_sun = game.scene.light.direction();
-    let (light_view_proj, depth) = sun_projection(&game.scene, camera, tallest);
+    let (light_view_proj, depth) =
+        sun_projection(&game.scene, camera, (ground_low, ground_high), top);
     Frame3d {
         shapes,
         ground,
+        surface,
         view_proj: camera.view_proj(),
         light_view_proj,
         sun: [
@@ -194,10 +293,10 @@ mod tests {
         let scene = scene();
         let camera = Camera3d::looking_at([16.0, 12.0], 55.0, 12.0, [1920.0, 1080.0]);
         let tallest = 4.2;
-        let (matrix, depth) = sun_projection(&scene, &camera, tallest);
+        let (matrix, depth) = sun_projection(&scene, &camera, (0.0, 0.0), tallest);
         assert!(depth > 0.0);
         let toward_sun = scene.light.direction();
-        let range = visible_cells(&scene, &camera);
+        let range = visible_cells(&scene, &camera, 0.0, 0.0);
         for ground_x in [
             range.x0 as f64 + 0.5,
             (range.x0 + range.x1) as f64 / 2.0,

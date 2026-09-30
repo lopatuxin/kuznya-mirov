@@ -17,6 +17,7 @@ type ReadEntryFiles = {
   fonts: FontEntry[];
   tables: TableEntry[];
   code?: string;
+  terrain?: string;
 };
 
 type ReadEntryResult =
@@ -116,13 +117,16 @@ export async function loadProject(
     return { status: "rejected", errors: entryResult.errors, warnings: entryResult.warnings, gameJsonText, sceneText: null };
   }
 
-  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts] = await Promise.all([
+  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText] = await Promise.all([
     reader.readText(entryResult.files.properties),
     reader.readText(entryResult.files.scene),
     reader.readText(entryResult.files.rules),
     reader.readText(entryResult.files.screens),
     entryResult.files.code !== undefined ? reader.readText(entryResult.files.code) : Promise.resolve(null),
     fetchTableTexts(reader, entryResult.files.tables),
+    // «Рельеф», требование 47: файл высот читается вместе с остальными; без `files.terrain` движку уходит
+    // `undefined`, а не `null` — `null` он читает как «файл назван, но не найден».
+    entryResult.files.terrain !== undefined ? reader.readText(entryResult.files.terrain) : Promise.resolve(undefined),
   ]);
 
   const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText) as ReadTextsResult;
@@ -152,6 +156,7 @@ export async function loadProject(
     imagesPayload,
     codeText,
     tableTexts,
+    terrainText,
   ) as LoadResult;
   // read_entry первым, load вторым — тот же порядок, в котором предупреждения собирает сам движок
   // при объединённой загрузке («Редактор», требование 15).

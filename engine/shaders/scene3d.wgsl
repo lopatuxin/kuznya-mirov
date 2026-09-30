@@ -1,7 +1,8 @@
-// «Трёхмерная сцена»: фигуры, земля с плоскими объектами и карта теней от солнца. Три прохода:
-// тени (`vs_shadow` — только глубина от солнца), затем земля и плоские объекты (`vs_ground`,
-// `fs_ground`), затем фигуры (`vs_shape`, `fs_shape`). Надписи, полоски и интерфейс рисует
-// `rect.wgsl` отдельным проходом без глубины.
+// «Трёхмерная сцена»: рельеф с водой, фигуры, плитки и плоские объекты на земле и карта теней от
+// солнца. Проходы: тени (`vs_shadow` — фигуры, `vs_shadow_terrain` — рельеф; только глубина от
+// солнца), затем рельеф и вода (`vs_terrain`, `fs_terrain`), фигуры (`vs_shape`, `fs_shape`) и
+// плитки с плоскими объектами (`vs_ground`, `fs_ground`), которые лежат на рельефе и верху настилов.
+// Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным проходом без глубины.
 //
 // Ловушки WebGL2: одна текстура — одна выборка, поэтому атлас читается тем же способом, что в
 // `rect.wgsl` (точка и линейная выборка, выбор через `select`), а карта теней — только выборкой
@@ -52,6 +53,42 @@ fn lighting(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     return (1.0 - strength) + strength * shadow_lit(world, normal) * facing;
 }
 
+// --- Рельеф и вода --------------------------------------------------------------------------
+
+struct TerrainVertex {
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec3<f32>,
+};
+
+@vertex
+fn vs_shadow_terrain(vertex: TerrainVertex) -> @builtin(position) vec4<f32> {
+    return globals.light_view_proj * vec4<f32>(vertex.position, 1.0);
+}
+
+struct TerrainOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec3<f32>,
+};
+
+@vertex
+fn vs_terrain(vertex: TerrainVertex) -> TerrainOutput {
+    var out: TerrainOutput;
+    out.clip_position = globals.view_proj * vec4<f32>(vertex.position, 1.0);
+    out.world = vertex.position;
+    out.normal = vertex.normal;
+    out.color = vertex.color;
+    return out;
+}
+
+@fragment
+fn fs_terrain(in: TerrainOutput) -> @location(0) vec4<f32> {
+    let normal = normalize(in.normal);
+    return vec4<f32>(in.color * lighting(in.world, normal), 1.0);
+}
+
 // --- Фигуры ---------------------------------------------------------------------------------
 
 struct ShapeVertex {
@@ -67,7 +104,8 @@ struct ShapeInstance {
     @location(3) placement: vec4<f32>,
     // Ширина, глубина, высота и высота полушария капсулы.
     @location(4) dims: vec4<f32>,
-    @location(5) color: vec4<f32>,
+    // rgb — цвет, w — высота основания над нулём сцены.
+    @location(5) tint: vec4<f32>,
 };
 
 fn shape_world(vertex: ShapeVertex, instance: ShapeInstance) -> vec3<f32> {
@@ -81,7 +119,7 @@ fn shape_world(vertex: ShapeVertex, instance: ShapeInstance) -> vec3<f32> {
     return vec3<f32>(
         instance.placement.x + c * local.x - s * local.y,
         instance.placement.y + s * local.x + c * local.y,
-        local.z,
+        instance.tint.w + local.z,
     );
 }
 
@@ -115,7 +153,7 @@ fn vs_shape(vertex: ShapeVertex, instance: ShapeInstance) -> ShapeOutput {
     out.clip_position = globals.view_proj * vec4<f32>(world, 1.0);
     out.world = world;
     out.normal = shape_normal(vertex, instance);
-    out.color = instance.color.rgb;
+    out.color = instance.tint.rgb;
     return out;
 }
 
@@ -125,24 +163,18 @@ fn fs_shape(in: ShapeOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(in.color * lighting(in.world, normal), 1.0);
 }
 
-// --- Земля и плоские объекты ----------------------------------------------------------------
+// --- Плитки и плоские объекты на земле ------------------------------------------------------
 
 struct GroundVertex {
-    @location(0) unit: vec2<f32>,
-};
-
-struct GroundInstance {
-    @location(1) position: vec2<f32>,
-    @location(2) size: vec2<f32>,
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    // Точка в листе атласа, в пикселях, как у `rect.wgsl`.
+    @location(2) uv_px: vec2<f32>,
     @location(3) color: vec4<f32>,
-    // В пикселях листа атласа, как у `rect.wgsl`.
-    @location(4) atlas_pos: vec2<f32>,
-    @location(5) atlas_size: vec2<f32>,
-    @location(6) atlas_layer: f32,
-    @location(7) smooth_flag: f32,
-    @location(8) flip_x: f32,
-    // Середина поворота на земле и синус с косинусом угла.
-    @location(9) turn: vec4<f32>,
+    @location(4) uv_min: vec2<f32>,
+    @location(5) uv_max: vec2<f32>,
+    // x — лист атласа, y — признак сглаживания.
+    @location(6) sheet: vec2<f32>,
 };
 
 struct GroundOutput {
@@ -154,32 +186,21 @@ struct GroundOutput {
     @location(4) @interpolate(flat) atlas_layer: i32,
     @location(5) @interpolate(flat) smooth_sample: f32,
     @location(6) world: vec3<f32>,
+    @location(7) normal: vec3<f32>,
 };
 
 @vertex
-fn vs_ground(vertex: GroundVertex, instance: GroundInstance) -> GroundOutput {
-    let corner = instance.position + vertex.unit * instance.size;
-    let offset = corner - instance.turn.xy;
-    let s = instance.turn.z;
-    let c = instance.turn.w;
-    let ground = instance.turn.xy + vec2<f32>(c * offset.x - s * offset.y, s * offset.x + c * offset.y);
-    let world = vec3<f32>(ground, 0.0);
-
-    var sample_unit = vertex.unit;
-    if (instance.flip_x > 0.5) {
-        sample_unit = vec2<f32>(1.0 - sample_unit.x, sample_unit.y);
-    }
-    let sample_px = instance.atlas_pos + sample_unit * instance.atlas_size;
-
+fn vs_ground(vertex: GroundVertex) -> GroundOutput {
     var out: GroundOutput;
-    out.clip_position = globals.view_proj * vec4<f32>(world, 1.0);
-    out.color = vec4<f32>(instance.color.rgb * instance.color.a, instance.color.a);
-    out.uv_px = sample_px;
-    out.uv_min = instance.atlas_pos + vec2<f32>(0.5, 0.5);
-    out.uv_max = max(instance.atlas_pos + instance.atlas_size - vec2<f32>(0.5, 0.5), out.uv_min);
-    out.atlas_layer = i32(instance.atlas_layer + 0.5);
-    out.smooth_sample = instance.smooth_flag;
-    out.world = world;
+    out.clip_position = globals.view_proj * vec4<f32>(vertex.position, 1.0);
+    out.color = vertex.color;
+    out.uv_px = vertex.uv_px;
+    out.uv_min = vertex.uv_min;
+    out.uv_max = vertex.uv_max;
+    out.atlas_layer = i32(vertex.sheet.x + 0.5);
+    out.smooth_sample = vertex.sheet.y;
+    out.world = vertex.position;
+    out.normal = vertex.normal;
     return out;
 }
 
@@ -191,6 +212,6 @@ fn fs_ground(in: GroundOutput) -> @location(0) vec4<f32> {
     let linear = textureSample(atlas_texture, atlas_sampler_linear, uv, in.atlas_layer);
     let sampled = select(nearest, linear, in.smooth_sample > 0.5);
     let base = in.color * sampled;
-    let light = lighting(in.world, vec3<f32>(0.0, 0.0, 1.0));
+    let light = lighting(in.world, normalize(in.normal));
     return vec4<f32>(base.rgb * light, base.a);
 }

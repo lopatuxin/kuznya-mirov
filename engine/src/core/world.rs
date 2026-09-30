@@ -1,5 +1,9 @@
+use std::sync::Arc;
+
 use super::keys::{KeyEdit, KeyTable};
-use super::property::{PropertyId, PropertyTable};
+use super::property::{self, PropertyId, PropertyTable};
+use super::surface;
+use super::terrain::Terrain;
 use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Shape, Value, Vec2};
 
 #[derive(Debug, Clone)]
@@ -116,6 +120,12 @@ pub struct World {
     /// «Трёхмерная сцена»: мир трёхмерной игры — `rotation` поворачивает и место на земле, а не только
     /// вид (`core::footprint`). Берётся из таблицы свойств, по которой мир строится.
     three_d: bool,
+    /// «Рельеф»: земля трёхмерной сцены; `None` — ровная на высоте 0. Берётся из таблицы свойств.
+    terrain: Option<Arc<Terrain>>,
+    /// «Рельеф»: высота основания `z` каждого объекта — третье число `position` живого мира.
+    base_z: Vec<f64>,
+    /// «Рельеф»: третье число `walk_to`, если оно задано.
+    walk_to_z: Vec<Option<f64>>,
 }
 
 impl World {
@@ -131,6 +141,9 @@ impl World {
             grid_counter: Vec::new(),
             generation: Vec::new(),
             three_d: properties.three_d(),
+            terrain: properties.terrain().cloned(),
+            base_z: Vec::new(),
+            walk_to_z: Vec::new(),
         }
     }
 
@@ -138,16 +151,54 @@ impl World {
         self.three_d
     }
 
+    /// «Рельеф»: земля этого мира; без файла рельефа — ровная на высоте 0.
+    pub fn terrain(&self) -> &Terrain {
+        match &self.terrain {
+            Some(terrain) => terrain,
+            None => Terrain::flat(),
+        }
+    }
+
+    /// Высота основания объекта; 0, пока ничего не ставило её.
+    pub fn base_z(&self, id: u32) -> f64 {
+        self.base_z.get(id as usize).copied().unwrap_or(0.0)
+    }
+
+    /// Ставит основание ровно на `z`, ничего не пересаживая.
+    pub fn set_base_z(&mut self, id: u32, z: f64) {
+        if let Some(slot) = self.base_z.get_mut(id as usize) {
+            *slot = z;
+        }
+    }
+
+    pub fn walk_to_z(&self, id: u32) -> Option<f64> {
+        self.walk_to_z.get(id as usize).copied().flatten()
+    }
+
+    /// Третье число пары: высота основания у `position` трёхмерного мира, высота цели у `walk_to`,
+    /// если задана; у остальных пар его нет.
+    pub fn placed_z(&self, id: u32, prop: PropertyId) -> Option<f64> {
+        match prop {
+            property::POSITION if self.three_d => Some(self.base_z(id)),
+            property::WALK_TO => self.walk_to_z(id),
+            _ => None,
+        }
+    }
+
     pub fn create(&mut self) -> u32 {
         if let Some(id) = self.free_list.pop() {
             self.alive[id as usize] = true;
             self.generation[id as usize] += 1;
+            self.base_z[id as usize] = 0.0;
+            self.walk_to_z[id as usize] = None;
             return id;
         }
         let id = self.alive.len() as u32;
         self.alive.push(true);
         self.grid_counter.push(0);
         self.generation.push(0);
+        self.base_z.push(0.0);
+        self.walk_to_z.push(None);
         for column in &mut self.columns {
             column.push_empty();
         }
@@ -166,6 +217,9 @@ impl World {
     /// per-property accessor here.
     pub fn clear_property(&mut self, id: u32, prop: PropertyId) {
         self.columns[prop as usize].clear(id as usize);
+        if prop == property::WALK_TO {
+            self.walk_to_z[id as usize] = None;
+        }
     }
 
     /// «Редактор», требование 32: a number past `slot_count` — a stale replay `delete`, or one
@@ -179,6 +233,8 @@ impl World {
         for column in &mut self.columns {
             column.clear(idx);
         }
+        self.base_z[idx] = 0.0;
+        self.walk_to_z[idx] = None;
         self.free_list.push(id);
     }
 
@@ -222,10 +278,38 @@ impl World {
         }
     }
 
+    /// Пишет пару. В трёхмерном мире `position`, у которого сменились `x` или `y`, сразу пересаживает
+    /// объект на поверхность под новым местом (`surface::seat_after_shift`), а `walk_to` без третьего
+    /// числа забывает прежнее.
     pub fn set_vec2(&mut self, id: u32, prop: PropertyId, value: Vec2) {
+        let previous = self.vec2(id, prop);
         if let Column::Vec2(v) = &mut self.columns[prop as usize] {
             v[id as usize] = Some(value);
         }
+        if !self.three_d {
+            return;
+        }
+        if prop == property::WALK_TO {
+            self.walk_to_z[id as usize] = None;
+        } else if prop == property::POSITION && previous.is_some_and(|old| old != value) {
+            surface::seat_after_shift(self, id);
+        }
+    }
+
+    /// Ставит `position` вместе с высотой основания ровно на `z`: объект держит её, пока не сдвинется.
+    pub fn set_position_exact(&mut self, id: u32, position: Vec2, z: f64) {
+        if let Column::Vec2(v) = &mut self.columns[property::POSITION as usize] {
+            v[id as usize] = Some(position);
+        }
+        self.base_z[id as usize] = z;
+    }
+
+    /// Ставит `walk_to` вместе с высотой; без `z` — точка на верхней поверхности.
+    pub fn set_walk_to(&mut self, id: u32, target: Vec2, z: Option<f64>) {
+        if let Column::Vec2(v) = &mut self.columns[property::WALK_TO as usize] {
+            v[id as usize] = Some(target);
+        }
+        self.walk_to_z[id as usize] = z;
     }
 
     pub fn number_like(&self, id: u32, prop: PropertyId) -> Option<f64> {
@@ -412,9 +496,17 @@ impl World {
         }
     }
 
+    /// В трёхмерном мире смена `rotation` сразу пересаживает объект, как сдвиг; объект без `rotation`
+    /// стоял с нулевым поворотом.
     pub fn set_rotation(&mut self, id: u32, prop: PropertyId, value: Rotation) {
+        let mut turned = false;
         if let Column::Rotation(v) = &mut self.columns[prop as usize] {
+            let old = v[id as usize].unwrap_or(Rotation::from_quarters(0));
+            turned = old != value;
             v[id as usize] = Some(value);
+        }
+        if turned && self.three_d && prop == property::ROTATION {
+            surface::seat_after_shift(self, id);
         }
     }
 
@@ -474,6 +566,11 @@ impl World {
             Value::Time(t) => self.set_time(id, prop, *t),
             Value::Timer(t) => self.set_timer(id, prop, *t),
             Value::Vec2(v) => self.set_vec2(id, prop, *v),
+            Value::Vec3([x, y, z]) => match prop {
+                property::POSITION => self.set_position_exact(id, [*x, *y], *z),
+                property::WALK_TO => self.set_walk_to(id, [*x, *y], Some(*z)),
+                _ => self.set_vec2(id, prop, [*x, *y]),
+            },
             Value::Color(c) => self.set_color(id, prop, *c),
             Value::Layer(l) => self.set_layer(id, prop, *l),
             Value::Text(s) => self.set_text(id, prop, s.clone()),
@@ -490,7 +587,10 @@ impl World {
             PropKind::Number => self.number_like(id, prop).map(Value::Number),
             PropKind::Time => self.time(id, prop).map(Value::Time),
             PropKind::Timer => self.timer(id, prop).map(Value::Timer),
-            PropKind::Vec2 => self.vec2(id, prop).map(Value::Vec2),
+            PropKind::Vec2 => self.vec2(id, prop).map(|xy| match self.placed_z(id, prop) {
+                Some(z) => Value::Vec3([xy[0], xy[1], z]),
+                None => Value::Vec2(xy),
+            }),
             PropKind::Color => self.color(id, prop).map(Value::Color),
             PropKind::Layer => self.layer(id, prop).map(Value::Layer),
             PropKind::Text => self.text(id, prop).map(|s| Value::Text(s.to_string())),

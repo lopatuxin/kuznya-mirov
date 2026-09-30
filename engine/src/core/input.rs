@@ -19,11 +19,12 @@ pub struct KeyEvent {
 /// one gets this; the rest see `StepInput::empty()`, so a stuck spacebar does not fire five times.
 /// `cursor` — «Курсор в мире», требование 26: the world-cursor position in scene coordinates, but
 /// only when it changed since the previous step took one; `None` otherwise, including a burst's
-/// later catch-up steps, exactly like `events`.
+/// later catch-up steps, exactly like `events`. «Рельеф», требование 27: третье число — высота точки
+/// (в плоской сцене 0).
 #[derive(Debug, Clone, Default)]
 pub struct StepInput {
     pub events: Vec<KeyEvent>,
-    pub cursor: Option<super::value::Vec2>,
+    pub cursor: Option<super::math3::Vec3>,
 }
 
 impl StepInput {

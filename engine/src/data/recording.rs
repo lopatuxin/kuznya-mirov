@@ -32,9 +32,10 @@ pub enum ReplayEdit {
 pub enum ReplayEventKind {
     KeyDown(String),
     KeyUp(String),
-    /// Точка земли под курсором и, в трёхмерной игре, место камеры `eye` (клетки сцены и высота),
-    /// от которого щелчок идёт лучом через эту точку.
-    Cursor([f64; 2], Option<[f64; 3]>),
+    /// Точка под курсором с высотой и, в трёхмерной игре, место камеры `eye` (клетки сцены и
+    /// высота), от которого щелчок идёт лучом через эту точку. Запись с двумя числами точки читается
+    /// с высотой 0.
+    Cursor([f64; 3], Option<[f64; 3]>),
     Command(ReplayCommand),
     Edit(ReplayEdit),
 }
@@ -148,14 +149,20 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
     } else if let Some(v) = obj.get("cursor") {
         let arr = v
             .as_array()
-            .filter(|a| a.len() == 2)
-            .ok_or_else(|| format!("events[{index}].cursor должен быть парой чисел"))?;
+            .filter(|a| matches!(a.len(), 2 | 3))
+            .ok_or_else(|| format!("events[{index}].cursor должен быть парой или тройкой чисел"))?;
         let x = arr[0]
             .as_f64()
             .ok_or_else(|| format!("events[{index}].cursor[0] должен быть числом"))?;
         let y = arr[1]
             .as_f64()
             .ok_or_else(|| format!("events[{index}].cursor[1] должен быть числом"))?;
+        let z = match arr.get(2) {
+            None => 0.0,
+            Some(z) => z
+                .as_f64()
+                .ok_or_else(|| format!("events[{index}].cursor[2] должен быть числом"))?,
+        };
         let eye = match obj.get("eye") {
             None => None,
             Some(v) => {
@@ -172,7 +179,7 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
                 Some(eye)
             }
         };
-        ReplayEventKind::Cursor([x, y], eye)
+        ReplayEventKind::Cursor([x, y, z], eye)
     } else if let Some(v) = obj.get("set") {
         let arr = v.as_array().filter(|a| a.len() == 3).ok_or_else(|| {
             format!("events[{index}].set должен быть [номер, свойство, значение]")
@@ -211,8 +218,12 @@ fn event_to_json(event: &ReplayEvent) -> Json {
         ReplayEventKind::KeyUp(code) => {
             map.insert("key_up".to_string(), Json::String(code.clone()));
         }
-        ReplayEventKind::Cursor([x, y], eye) => {
-            map.insert("cursor".to_string(), serde_json::json!([x, y]));
+        ReplayEventKind::Cursor([x, y, z], eye) => {
+            let point = match eye {
+                Some(_) => serde_json::json!([x, y, z]),
+                None => serde_json::json!([x, y]),
+            };
+            map.insert("cursor".to_string(), point);
             if let Some(eye) = eye {
                 map.insert("eye".to_string(), serde_json::json!(eye));
             }
@@ -330,11 +341,11 @@ mod tests {
                 },
                 ReplayEvent {
                     step: 20,
-                    kind: ReplayEventKind::Cursor([15.0, 22.5], None),
+                    kind: ReplayEventKind::Cursor([15.0, 22.5, 0.0], None),
                 },
                 ReplayEvent {
                     step: 20,
-                    kind: ReplayEventKind::Cursor([15.0, 22.5], Some([16.0, 26.9, 12.8])),
+                    kind: ReplayEventKind::Cursor([15.0, 22.5, 3.0], Some([16.0, 26.9, 12.8])),
                 },
                 ReplayEvent {
                     step: 300,
@@ -369,12 +380,12 @@ mod tests {
     fn the_camera_position_rides_next_to_the_cursor_point_in_the_same_event() {
         let event = ReplayEvent {
             step: 20,
-            kind: ReplayEventKind::Cursor([15.0, 22.5], Some([16.0, 26.9, 12.8])),
+            kind: ReplayEventKind::Cursor([15.0, 22.5, 3.0], Some([16.0, 26.9, 12.8])),
         };
         let line = serde_json::to_string(&event_to_json(&event)).expect("serializes");
         assert_eq!(
             line,
-            r#"{"cursor":[15.0,22.5],"eye":[16.0,26.9,12.8],"step":20}"#
+            r#"{"cursor":[15.0,22.5,3.0],"eye":[16.0,26.9,12.8],"step":20}"#
         );
         let bad = r#"{"format": 1, "steps": 1, "events": [{"step": 0, "cursor": [1, 2], "eye": [1, 2]}]}"#;
         assert!(parse(bad).unwrap_err().contains("eye"));
