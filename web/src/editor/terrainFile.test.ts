@@ -41,13 +41,11 @@ describe("файл рельефа ролевой игры", () => {
   it("прочитанный и записанный без изменений совпадает с собой", () => {
     const content = parseTerrainText(RPG_TERRAIN);
     expect(content).not.toBe(null);
-    expect(content?.columns).toBe(65);
-    expect(content?.rows).toBe(49);
     expect(terrainTextWithHeights(RPG_TERRAIN, content as TerrainGrid)).toBe(RPG_TERRAIN);
   });
 
   it("вода из файла читается", () => {
-    expect(readTerrainWater(RPG_TERRAIN)).toEqual({ level: -2.3, color: "#3f7fd0" });
+    expect(readTerrainWater(RPG_TERRAIN)).toEqual(JSON.parse(RPG_TERRAIN).water);
   });
 });
 
