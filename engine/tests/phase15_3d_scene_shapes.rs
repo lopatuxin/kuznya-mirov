@@ -1287,7 +1287,7 @@ fn the_unclamped_point_is_recorded_and_replays_the_same_edge_click() {
     let mut state = ScreenState::new(config.start_screen);
     let mut session = PlaySession::begin_live(&mut game, &config, &mut state);
     game.set_cursor_ray(ground, eye);
-    session.record_cursor(&game, ground);
+    session.record_cursor(&game);
     let recorded = recording::parse(&session.recording_text(&game)).expect("запись разбирается");
     let ReplayEventKind::Cursor(cell, Some(recorded_eye)) = recorded.events[0].kind else {
         panic!("{:?}", recorded.events[0].kind);
@@ -1310,7 +1310,7 @@ fn the_unclamped_point_is_recorded_and_replays_the_same_edge_click() {
         );
         assert_eq!(
             replayed.world.vec2(0, property::WALK_TO),
-            Some(replayed.scene.clamp_point(cell)),
+            Some(replayed.scene.clamp_point([cell[0], cell[1]])),
             "{viewport:?}"
         );
     }
@@ -1424,7 +1424,7 @@ fn a_live_session_records_the_camera_position_next_to_the_pointer() {
     let mut session = PlaySession::begin_live(&mut game, &config, &mut state);
     let (eye, cell) = ray_through(&game, [11.0, 10.5, 1.5]);
     game.set_cursor_ray(cell, eye);
-    session.record_cursor(&game, cell);
+    session.record_cursor(&game);
     let text = session.recording_text(&game);
     assert!(text.contains(r#""eye":["#), "{text}");
     let recorded = recording::parse(&text).expect("запись разбирается");
@@ -1433,7 +1433,7 @@ fn a_live_session_records_the_camera_position_next_to_the_pointer() {
     };
     let close = |a: &[f64], b: &[f64]| a.iter().zip(b).all(|(x, y)| (x - y).abs() < 1e-9);
     assert!(
-        close(&read_cell, &cell) && close(&read_eye, &eye),
+        close(&read_cell[..2], &cell) && close(&read_eye, &eye),
         "{read_cell:?} {read_eye:?}"
     );
 }

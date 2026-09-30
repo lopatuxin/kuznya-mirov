@@ -34,17 +34,36 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     7: { position: [3, 4], size: [2, 2], height: 2, shape: "box", color: "#8a8f94" },
     ...objects,
   };
-  const moves: [number, number, number][] = [];
+  const moves: [number, number, number, number | null | undefined][] = [];
+  const restCalls: [number, number, number, number | null | undefined][] = [];
   const transforms: [number, Record<string, unknown>][] = [];
   const cameras: EditorCameraState[] = [];
   const fitCalls: unknown[] = [];
-  const state = { pickedId: undefined as number | undefined, fitted: START_CAMERA as EditorCameraState | undefined };
+  const state = {
+    pickedId: undefined as number | undefined,
+    fitted: START_CAMERA as EditorCameraState | undefined,
+    /** Высота земли под указателем. */
+    groundZ: 0,
+    /** Высота, на которую движок посадил бы объект: `from` `undefined` — как без `z` в данных. */
+    rest: (_id: number, _x: number, _y: number, _from: number | null | undefined): number => 0,
+    /** Основание, на котором объект стоит в мире после `transform_object`; без значения — третье число `position`. */
+    worldHeight: undefined as number | undefined,
+  };
   const engine = {
     object_at: () => state.pickedId,
     object_rect: () => ({ corners: [] }),
-    ground_at: (x: number, y: number) => ground(x, y),
+    object_properties: (id: number) => {
+      const properties = worldObjects[id];
+      const position = properties?.position as number[] | undefined;
+      return properties === undefined || position === undefined ? undefined : { ...properties, position: [position[0], position[1], state.worldHeight ?? position[2] ?? 0] };
+    },
+    ground_at: (x: number, y: number) => [...ground(x, y), state.groundZ],
+    rest_height: (id: number, x: number, y: number, from?: number | null) => {
+      restCalls.push([id, x, y, from]);
+      return state.rest(id, x, y, from);
+    },
     screen_point: (x: number, y: number, z: number) => [x * 10 + 50, y * 10 + 50 - z * 10],
-    move_object: (id: number, x: number, y: number) => moves.push([id, x, y]),
+    move_object: (id: number, x: number, y: number, z?: number | null) => moves.push([id, x, y, z]),
     transform_object: (id: number, transform: Record<string, unknown>) => transforms.push([id, transform]),
     editor_camera: (camera: EditorCameraState) => cameras.push(camera),
     fit_camera: (id?: number | null) => {
@@ -77,7 +96,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     ...overrides,
   };
   const controller = createSpaceSceneController(() => context);
-  return { controller, context, moves, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore };
+  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore };
 }
 
 describe("выбор щелчком", () => {
@@ -120,7 +139,7 @@ describe("перенос ручкой", () => {
     const scene = setup();
     expect(scene.controller.pointerDown(pointer(150, 100))).toBe(true);
     scene.controller.pointerMove(pointer(170, 120));
-    expect(scene.moves).toEqual([[7, 5, 4]]);
+    expect(scene.moves).toEqual([[7, 5, 4, 0]]);
     scene.controller.pointerUp(release(170, 120));
     expect(scene.commits).toEqual([[7, [{ key: "position", value: [5, 4], previous: [3, 4] }]]]);
   });
@@ -129,12 +148,12 @@ describe("перенос ручкой", () => {
     const free = setup();
     free.controller.pointerDown(pointer(92, 102));
     free.controller.pointerMove(pointer(95, 113));
-    expect(free.moves.at(-1)).toEqual([7, 3.3, 5.1]);
+    expect(free.moves.at(-1)).toEqual([7, 3.3, 5.1, 0]);
 
     const snapped = setup();
     snapped.controller.pointerDown(pointer(92, 102));
     snapped.controller.pointerMove(pointer(95, 120, { ctrlKey: true }));
-    expect(snapped.moves.at(-1)).toEqual([7, 3, 6]);
+    expect(snapped.moves.at(-1)).toEqual([7, 3, 6, 0]);
   });
 
   it("Esc отменяет перенос: объект возвращается как был, действия нет", () => {
@@ -142,7 +161,7 @@ describe("перенос ручкой", () => {
     scene.controller.pointerDown(pointer(150, 100));
     scene.controller.pointerMove(pointer(170, 120));
     expect(scene.controller.keyDown(key("Escape"))).toBe(true);
-    expect(scene.moves.at(-1)).toEqual([7, 3, 4]);
+    expect(scene.moves.at(-1)).toEqual([7, 3, 4, 0]);
     scene.controller.pointerUp(release(170, 120));
     expect(scene.commits).toEqual([]);
   });
@@ -163,7 +182,7 @@ describe("перенос самого объекта", () => {
     scene.controller.pointerMove(pointer(103, 102));
     expect(scene.moves).toEqual([]);
     scene.controller.pointerMove(pointer(120, 100));
-    expect(scene.moves).toEqual([[7, 5, 4]]);
+    expect(scene.moves).toEqual([[7, 5, 4, 0]]);
     scene.controller.pointerUp(release(120, 100));
     expect(scene.commits).toEqual([[7, [{ key: "position", value: [5, 4], previous: [3, 4] }]]]);
   });
@@ -173,7 +192,7 @@ describe("перенос самого объекта", () => {
     scene.state.pickedId = 7;
     scene.controller.pointerDown(pointer(120, 100));
     scene.controller.pointerMove(pointer(140, 100));
-    expect(scene.moves).toEqual([[7, 5, 4]]);
+    expect(scene.moves).toEqual([[7, 5, 4, 0]]);
     expect(scene.transforms).toEqual([]);
   });
 
@@ -246,6 +265,162 @@ describe("масштаб ручкой", () => {
     scene.state.pickedId = undefined;
     expect(scene.controller.pointerDown(pointer(90, 10))).toBe(false);
     expect(scene.selections).toEqual([null]);
+  });
+});
+
+/**
+ * Мост над оврагом: за `x = 6` верх моста на 0,3, под ним берег на −2, а слева плато на 0. Настил
+ * встречает только объект, что стоял не ниже его верха минус 0,4.
+ */
+function bridgeTerrain(_id: number, x: number, _y: number, from: number | null | undefined): number {
+  if (x < 6) return 0;
+  return from === undefined || from === null || from + 0.4 >= 0.3 ? 0.3 : -2;
+}
+
+describe("перенос по рельефу", () => {
+  it("за тело — по высоте точки под указателем: на мост — два числа, под мост — три", () => {
+    const onBridge = setup({ selectedIndex: null });
+    onBridge.state.rest = bridgeTerrain;
+    onBridge.state.pickedId = 7;
+    onBridge.controller.pointerDown(pointer(100, 100));
+    onBridge.state.groundZ = 0.3;
+    onBridge.controller.pointerMove(pointer(400, 100));
+    expect(onBridge.moves.at(-1)).toEqual([7, 33, 4, 0.3]);
+    expect(onBridge.restCalls.at(-1)).toEqual([7, 33, 4, 0.3]);
+    onBridge.controller.pointerUp(release(400, 100));
+    expect(onBridge.commits).toEqual([[7, [{ key: "position", value: [33, 4], previous: [3, 4] }]]]);
+
+    const underBridge = setup({ selectedIndex: null });
+    underBridge.state.rest = bridgeTerrain;
+    underBridge.state.pickedId = 7;
+    underBridge.controller.pointerDown(pointer(100, 100));
+    underBridge.state.groundZ = -2;
+    underBridge.controller.pointerMove(pointer(400, 100));
+    expect(underBridge.moves.at(-1)).toEqual([7, 33, 4, -2]);
+    underBridge.controller.pointerUp(release(400, 100));
+    expect(underBridge.commits).toEqual([[7, [{ key: "position", value: [33, 4, -2], previous: [3, 4] }]]]);
+  });
+
+  it("стрелка x садит от высоты начала жеста, а не от точки под указателем", () => {
+    const scene = setup({}, { 7: { position: [3, 4, -2], size: [2, 2], height: 2, shape: "box" } });
+    scene.state.rest = bridgeTerrain;
+    expect(scene.controller.pointerDown(pointer(150, 120))).toBe(true);
+    scene.state.groundZ = 0.3;
+    scene.controller.pointerMove(pointer(400, 120));
+    expect(scene.moves.at(-1)).toEqual([7, 28, 4, -2]);
+    expect(scene.restCalls.at(-1)).toEqual([7, 28, 4, -2]);
+    scene.controller.pointerUp(release(400, 120));
+    expect(scene.commits).toEqual([[7, [{ key: "position", value: [28, 4, -2], previous: [3, 4, -2] }]]]);
+  });
+
+  it("на паузе партии перенос пишет всегда три числа, даже когда высота совпала с посадкой", () => {
+    const scene = setup({ isEditorCameraActive: false, selectedIndex: null }, { 7: { position: [3, 4, 0], size: [2, 2], height: 2, shape: "box" } });
+    scene.state.pickedId = 7;
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.pointerMove(pointer(120, 100));
+    scene.controller.pointerUp(release(120, 100));
+    expect(scene.commits).toEqual([[7, [{ key: "position", value: [5, 4, 0], previous: [3, 4, 0] }]]]);
+  });
+
+  it("ручки стоят на высоте основания: нажатие на середину, поднятую на 2 клетки, берёт ручку", () => {
+    const scene = setup({}, { 7: { position: [3, 4, 2], size: [2, 2], height: 2, shape: "box" } });
+    scene.state.pickedId = undefined;
+    expect(scene.controller.pointerDown(pointer(90, 80))).toBe(true);
+    expect(scene.selections).toEqual([]);
+    scene.controller.pointerUp(release(90, 80));
+    expect(scene.controller.pointerDown(pointer(60, 110))).toBe(false);
+  });
+
+  it("без `z` в файле ручки стоят на высоте, на которую объект садится", () => {
+    const scene = setup();
+    scene.state.rest = () => 2;
+    expect(scene.controller.pointerDown(pointer(90, 80))).toBe(true);
+  });
+});
+
+describe("вертикальная стрелка", () => {
+  it("поднимает основание на столько клеток, на сколько ушёл указатель, до сотой; пишет три числа", () => {
+    const scene = setup();
+    expect(scene.controller.pointerDown(pointer(90, 50))).toBe(true);
+    scene.controller.pointerMove(pointer(90, 18.7));
+    expect(scene.moves.at(-1)).toEqual([7, 3, 4, 3.13]);
+    scene.controller.pointerUp(release(90, 18.7));
+    expect(scene.commits).toEqual([[7, [{ key: "position", value: [3, 4, 3.13], previous: [3, 4] }]]]);
+  });
+
+  it("с Ctrl — до целой клетки", () => {
+    const scene = setup();
+    scene.controller.pointerDown(pointer(90, 50));
+    scene.controller.pointerMove(pointer(90, 18.7, { ctrlKey: true }));
+    expect(scene.moves.at(-1)).toEqual([7, 3, 4, 3]);
+  });
+
+  it("меняет только z: место и остальные свойства не в правке", () => {
+    const scene = setup();
+    scene.controller.pointerDown(pointer(90, 50));
+    scene.controller.pointerMove(pointer(70, 30));
+    scene.controller.pointerUp(release(70, 30));
+    expect(scene.commits[0]?.[1].map((change) => change.key)).toEqual(["position"]);
+    expect(scene.moves.every(([, x, y]) => x === 3 && y === 4)).toBe(true);
+  });
+
+  it("вернули на высоту посадки — пишутся два числа, третье убирается", () => {
+    const scene = setup({}, { 7: { position: [3, 4, 2], size: [2, 2], height: 2, shape: "box" } });
+    expect(scene.controller.pointerDown(pointer(90, 40))).toBe(true);
+    scene.controller.pointerMove(pointer(90, 60));
+    expect(scene.moves.at(-1)).toEqual([7, 3, 4, 0]);
+    scene.controller.pointerUp(release(90, 60));
+    expect(scene.commits).toEqual([[7, [{ key: "position", value: [3, 4], previous: [3, 4, 2] }]]]);
+  });
+
+  it("есть и у плоского объекта, и у настила", () => {
+    const flat = setup({}, { 7: { position: [3, 4], size: [2, 2], image: "grass" } });
+    expect(flat.controller.pointerDown(pointer(90, 50))).toBe(true);
+    const deck = setup({}, { 7: { position: [3, 4], size: [2, 2], deck: true, shape: "box", height: 0.3 } });
+    expect(deck.controller.pointerDown(pointer(90, 50))).toBe(true);
+  });
+
+  it("отпускание без движения и Esc не пишут действие; Esc возвращает основание ровно", () => {
+    const scene = setup({}, { 7: { position: [3, 4, 2], size: [2, 2], height: 2, shape: "box" } });
+    scene.controller.pointerDown(pointer(90, 40));
+    scene.controller.pointerUp(release(90, 40));
+    expect(scene.commits).toEqual([]);
+
+    scene.controller.pointerDown(pointer(90, 40));
+    scene.controller.pointerMove(pointer(90, 10));
+    expect(scene.controller.keyDown(key("Escape"))).toBe(true);
+    expect(scene.moves.at(-1)).toEqual([7, 3, 4, 2]);
+    scene.controller.pointerUp(release(90, 10));
+    expect(scene.commits).toEqual([]);
+  });
+
+  it("в масштабе зелёная ручка — высота фигуры, а не основание", () => {
+    const scene = setup({ handleMode: "scale" });
+    scene.controller.pointerDown(pointer(90, 10));
+    scene.controller.pointerMove(pointer(90, -35));
+    expect(scene.transforms.at(-1)?.[1]).toEqual({ position: [3, 4], size: [2, 2], height: 3 });
+    expect(scene.moves).toEqual([]);
+  });
+});
+
+describe("поворот и масштаб не задают высоту", () => {
+  it("объект садит движок сам: position из двух чисел, а поднятое посадкой основание не пишется", () => {
+    const scene = setup({ handleMode: "rotate" });
+    scene.controller.pointerDown(pointer(170, 100));
+    scene.state.rest = () => 0.5;
+    scene.state.worldHeight = 0.5;
+    scene.controller.pointerMove(pointer(90 + 80 * Math.cos(0.3), 100 + 80 * Math.sin(0.3)));
+    expect(scene.transforms.at(-1)?.[1]).toMatchObject({ position: [3, 4] });
+    scene.controller.pointerUp(release(170, 124));
+    expect(scene.commits[0]?.[1].map((change) => change.key)).toEqual(["rotation"]);
+  });
+
+  it("Esc возвращает основание ровно: position из трёх чисел", () => {
+    const scene = setup({ handleMode: "rotate" }, { 7: { position: [3, 4, 1], size: [2, 2], height: 2, shape: "box" } });
+    scene.controller.pointerDown(pointer(170, 90));
+    scene.controller.pointerMove(pointer(170, 130));
+    scene.controller.keyDown(key("Escape"));
+    expect(scene.transforms.at(-1)?.[1]).toMatchObject({ position: [3, 4, 1], rotation: 0 });
   });
 });
 

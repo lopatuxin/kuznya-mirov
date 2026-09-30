@@ -153,8 +153,9 @@ fn screen_rectangle(world: &World, id: u32, camera: &Camera3d) -> Option<([f32; 
                 f64::NEG_INFINITY,
                 f64::NEG_INFINITY,
             ];
+            let base = world.base_z(id);
             for corner in footprint.corners() {
-                let point = camera.project([corner[0], corner[1], 0.0])?;
+                let point = camera.project([corner[0], corner[1], base])?;
                 rect = [
                     rect[0].min(point[0]),
                     rect[1].min(point[1]),

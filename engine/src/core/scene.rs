@@ -1,4 +1,5 @@
 use super::property;
+use super::surface::{self, Lies};
 use super::value::ImageId;
 use super::world::World;
 
@@ -268,19 +269,25 @@ pub fn object_rect_frame(
 /// «Редактор», требование 30: moves an already-loaded object to `position`, in the world alone —
 /// the scene it was built from and the files on disk stay untouched, so the next `show_scene`
 /// rebuilds the world from the unchanged file. Does nothing without that object or without its
-/// own `position` property.
-pub fn move_object(world: &mut World, id: u32, position: super::value::Vec2) {
+/// own `position` property. «Рельеф»: в трёхмерной сцене с `z` основание встаёт ровно на него, без
+/// — объект садится на поверхность под новым местом, как после сдвига.
+pub fn move_object(world: &mut World, id: u32, position: super::value::Vec2, z: Option<f64>) {
     if id as usize >= world.slot_count() || !world.has(id, property::POSITION) {
         return;
     }
-    world.set_vec2(id, property::POSITION, position);
+    match z.filter(|_| world.three_d()) {
+        Some(z) => world.set_position_exact(id, position, z),
+        None => world.set_vec2(id, property::POSITION, position),
+    }
 }
 
 /// «Редактор», «Вызовы движка»: то, что `transform_object` ставит объекту в собранном мире —
-/// `position` и `size` всегда, `height` и `rotation`, только если названы.
+/// `position` и `size` всегда, `height` и `rotation`, только если названы. `z` — высота основания:
+/// с ней основание встаёт ровно, без неё объект садится на поверхность, как после сдвига.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ObjectTransform {
     pub position: super::value::Vec2,
+    pub z: Option<f64>,
     pub size: super::value::Vec2,
     pub height: Option<f64>,
     pub rotation: Option<f64>,
@@ -295,16 +302,29 @@ pub fn transform_object(world: &mut World, id: u32, transform: ObjectTransform) 
     {
         return;
     }
-    world.set_vec2(id, property::POSITION, transform.position);
+    let previous = world.vec2(id, property::POSITION);
+    let previous_z = world.base_z(id);
     world.set_vec2(id, property::SIZE, transform.size);
     if let Some(height) = transform.height {
         world.set_number(id, property::HEIGHT, height);
     }
+    let previous_rotation = world.rotation(id, property::ROTATION);
     if let Some(rotation) = transform
         .rotation
         .and_then(super::value::Rotation::from_degrees)
     {
         world.set_rotation(id, property::ROTATION, rotation);
+    }
+    world.set_position_exact(id, transform.position, previous_z);
+    if !world.three_d() {
+        return;
+    }
+    let shifted = previous != Some(transform.position)
+        || world.rotation(id, property::ROTATION) != previous_rotation;
+    match transform.z {
+        Some(z) => world.set_base_z(id, z),
+        None if shifted => surface::seat_after_shift(world, id),
+        None => {}
     }
 }
 
@@ -324,19 +344,20 @@ pub fn ground_footprint(world: &World, id: u32) -> Option<super::footprint::Foot
 }
 
 /// «Редактор», требование 19 трёхмерной сцены: четыре угла повёрнутого прямоугольника объекта на
-/// земле в точках окна камеры, по кругу, в порядке `Footprint::corners`. `None` без объекта, его
-/// `position` и `size` или если угол за камерой.
+/// высоте его основания в точках окна камеры, по кругу, в порядке `Footprint::corners`. `None` без
+/// объекта, его `position` и `size` или если угол за камерой.
 pub fn object_screen_corners(
     world: &World,
     id: u32,
     camera: &super::camera::Camera3d,
 ) -> Option<[[f64; 2]; 4]> {
     let mut corners = [[0.0; 2]; 4];
+    let base = world.base_z(id);
     for (slot, corner) in corners
         .iter_mut()
         .zip(ground_footprint(world, id)?.corners())
     {
-        *slot = camera.project([corner[0], corner[1], 0.0])?;
+        *slot = camera.project([corner[0], corner[1], base])?;
     }
     Some(corners)
 }
@@ -405,9 +426,20 @@ pub fn on_click_target_ray(
     eye: Option<super::math3::Vec3>,
     point: super::value::Vec2,
 ) -> Option<u32> {
+    on_click_target_ray_at(world, scene, eye, [point[0], point[1], 0.0])
+}
+
+/// То же для точки под курсором с высотой: луч идёт от глаза через `point`. «Рельеф»: рельеф и вода,
+/// что луч встретил раньше объекта, его заслоняют.
+pub fn on_click_target_ray_at(
+    world: &World,
+    scene: &SceneConfig,
+    eye: Option<super::math3::Vec3>,
+    point: super::math3::Vec3,
+) -> Option<u32> {
     let (origin, direction) = match eye {
-        Some(eye) => super::shapes::ray_through_ground(eye, point),
-        None => ([point[0], point[1], 1000.0], [0.0, 0.0, -1.0]),
+        Some(eye) => super::shapes::ray_through_point(eye, point),
+        None => ([point[0], point[1], point[2] + 1000.0], [0.0, 0.0, -1.0]),
     };
     nearest_along_ray(world, scene, origin, direction, |id| {
         world.has(id, property::ON_CLICK)
@@ -446,13 +478,17 @@ fn nearest_along_ray(
     pickable: impl Fn(u32) -> bool,
 ) -> Option<u32> {
     let mut best: Option<(f64, u32)> = None;
+    let blocked_from = first_blocker(world, scene, origin, direction);
     for id in world.ids() {
         if !pickable(id) {
             continue;
         }
-        let Some(distance) = ray_distance(world, id, origin, direction) else {
+        let Some(distance) = ray_distance(world, scene, id, origin, direction) else {
             continue;
         };
+        if distance > blocked_from + RAY_TIE {
+            continue;
+        }
         let replace = match best {
             None => true,
             Some((best_distance, best_id)) => {
@@ -471,9 +507,11 @@ fn nearest_along_ray(
 /// Равная дальность для `nearest_along_ray`: плоские объекты на одной земле.
 const RAY_TIE: f64 = 1e-9;
 
-/// Расстояние вдоль луча до объекта: до объёма фигуры или до её прямоугольника на земле.
+/// Расстояние вдоль луча до объекта: до объёма фигуры или до поверхности, на которой лежит плоский
+/// объект, — рельефа или верха настила — в пределах его прямоугольника.
 fn ray_distance(
     world: &World,
+    scene: &SceneConfig,
     id: u32,
     origin: super::math3::Vec3,
     direction: super::math3::Vec3,
@@ -485,9 +523,94 @@ fn ray_distance(
     if direction[2] >= 0.0 {
         return None;
     }
-    let t = -origin[2] / direction[2];
+    let terrain = world.terrain();
+    let t = match surface::lies_on(world, id)? {
+        Lies::Deck { top } => (top - origin[2]) / direction[2],
+        Lies::Terrain { .. } if terrain.squares()[0] == 0 => -origin[2] / direction[2],
+        Lies::Terrain { .. } => terrain.ray_hit(scene_extent(scene), origin, direction)?,
+    };
+    if t < 0.0 {
+        return None;
+    }
     let ground = [origin[0] + t * direction[0], origin[1] + t * direction[1]];
     footprint.contains(ground).then_some(t)
+}
+
+fn scene_extent(scene: &SceneConfig) -> super::value::Vec2 {
+    [scene.width as f64, scene.height as f64]
+}
+
+/// «Рельеф»: расстояние вдоль луча до первого, что заслоняет объекты, — рельефа в пределах сцены
+/// или воды; бесконечность, если ничего.
+fn first_blocker(
+    world: &World,
+    scene: &SceneConfig,
+    origin: super::math3::Vec3,
+    direction: super::math3::Vec3,
+) -> f64 {
+    let terrain = world.terrain();
+    [
+        terrain.ray_hit(scene_extent(scene), origin, direction),
+        terrain.water_hit(origin, direction),
+    ]
+    .into_iter()
+    .flatten()
+    .fold(f64::INFINITY, f64::min)
+}
+
+/// «Трёхмерная сцена» → «Мышь и надписи», требование 26: место с высотой, где луч первым встретил
+/// рельеф в пределах сцены, воду или верх настила. Настил встречает луч только своим верхом: луч,
+/// прошедший под верхом моста, попадает в берег под ним.
+pub fn surface_hit(
+    world: &World,
+    scene: &SceneConfig,
+    origin: super::math3::Vec3,
+    direction: super::math3::Vec3,
+) -> Option<super::math3::Vec3> {
+    let mut nearest = first_blocker(world, scene, origin, direction);
+    if direction[2] < 0.0 {
+        for (_, place, top) in surface::decks(world) {
+            let t = (top - origin[2]) / direction[2];
+            let (x, y) = (origin[0] + t * direction[0], origin[1] + t * direction[1]);
+            if t >= 0.0 && t < nearest && place.contains([x, y]) {
+                nearest = t;
+            }
+        }
+    }
+    nearest.is_finite().then(|| {
+        [
+            origin[0] + nearest * direction[0],
+            origin[1] + nearest * direction[1],
+            origin[2] + nearest * direction[2],
+        ]
+    })
+}
+
+/// «Рельеф» → «Мышь», требование 26: место с высотой под точкой окна `window` камеры — где луч первым
+/// встретил рельеф в пределах сцены, воду или верх настила; мимо сцены — пересечение с плоскостью
+/// высоты 0 без прижатия к краю. `None`, если луч не идёт вниз.
+pub fn pointer_hit(
+    world: &World,
+    scene: &SceneConfig,
+    camera: &super::camera::Camera3d,
+    window: [f64; 2],
+) -> Option<super::math3::Vec3> {
+    surface_hit(world, scene, camera.eye, camera.ray_direction(window)).or_else(|| {
+        camera
+            .ground_hit(window)
+            .map(|ground| [ground[0], ground[1], 0.0])
+    })
+}
+
+/// Высота верхней поверхности в точке: верх самого высокого настила над ней, иначе рельеф.
+pub fn top_surface_height(world: &World, point: super::value::Vec2) -> f64 {
+    surface::decks(world)
+        .filter(|(_, place, _)| place.contains(point))
+        .map(|(_, _, top)| top)
+        .fold(None, |best: Option<f64>, top| {
+            Some(best.map_or(top, |b| b.max(top)))
+        })
+        .unwrap_or_else(|| world.terrain().height_at(point[0], point[1]))
 }
 
 /// «Мышь в мире», требование 19: the topmost live object with `on_click` whose rectangle
@@ -632,7 +755,7 @@ mod tests {
         let other = world.create();
         world.set_vec2(other, property::POSITION, [4.0, 4.0]);
 
-        move_object(&mut world, moved, [5.37, 7.0]);
+        move_object(&mut world, moved, [5.37, 7.0], None);
 
         assert_eq!(world.vec2(moved, property::POSITION), Some([5.37, 7.0]));
         assert_eq!(world.vec2(moved, property::SIZE), Some([1.0, 1.0]));
@@ -654,10 +777,10 @@ mod tests {
         let mut world = World::new(&table);
         let bare = world.create();
 
-        move_object(&mut world, bare, [5.0, 5.0]);
+        move_object(&mut world, bare, [5.0, 5.0], None);
         assert_eq!(world.vec2(bare, property::POSITION), None);
 
-        move_object(&mut world, 99, [5.0, 5.0]);
+        move_object(&mut world, 99, [5.0, 5.0], None);
         assert_eq!(world.slot_count(), 1, "no slot created for a missing id");
     }
 

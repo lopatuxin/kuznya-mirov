@@ -477,7 +477,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
       const properties = engine.object_properties(id) as Record<string, unknown> | undefined;
       if (properties === undefined) return;
       const position = properties.position;
-      const shifted = Array.isArray(position) && typeof position[0] === "number" && typeof position[1] === "number" ? { ...properties, position: [position[0] + 1, position[1]] } : properties;
+      const shifted = Array.isArray(position) && typeof position[0] === "number" && typeof position[1] === "number" ? { ...properties, position: [position[0] + 1, position[1], ...position.slice(2)] } : properties;
       const result = engine.add_object(shifted) as EngineAddObjectResult;
       if (!result.ok) return;
       // Не `refreshSnapshot` + `setLiveSelectedId` по очереди: второй читает `snapshot.worldObjects`

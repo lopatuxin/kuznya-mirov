@@ -1,13 +1,15 @@
-//! «Трёхмерная сцена» → «Отрисовка»: видеокарта для фигур, земли и теней. Три прохода одного кадра
-//! (`encode`): карта теней 2048 × 2048 от солнца, затем земля с плоскими объектами и фигуры с
-//! буфером глубины и тенью. Надписи, полоски и интерфейс рисует прежний проход без глубины —
-//! его собирает `super::gpu`. Ресурсы создаются при первом кадре трёхмерной сцены, так что плоская
-//! игра их не платит вовсе.
+//! «Трёхмерная сцена» → «Отрисовка»: видеокарта для рельефа, фигур, земли и теней. Проходы одного
+//! кадра (`encode`): карта теней 2048 × 2048 от солнца (фигуры и рельеф), затем рельеф с водой,
+//! фигуры и плитки с плоскими объектами на земле — с буфером глубины и тенью. Надписи, полоски и
+//! интерфейс рисует прежний проход без глубины — его собирает `super::gpu`. Ресурсы создаются при
+//! первом кадре трёхмерной сцены, так что плоская игра их не платит вовсе.
 
 use wgpu::util::DeviceExt;
 
 use crate::core::shapes::{self, MeshVertex};
 use crate::core::value::Shape;
+
+use super::relief::TerrainMesh;
 
 /// Карта теней — предел `downlevel_webgl2_defaults`.
 const SHADOW_SIZE: u32 = 2048;
@@ -24,41 +26,42 @@ pub struct Globals3d {
 }
 
 /// Одна фигура кадра: `placement` — середина на земле и косинус с синусом поворота, `dims` —
-/// ширина, глубина, высота и высота полушария капсулы.
+/// ширина, глубина, высота и высота полушария капсулы, `base` — высота основания над нулём сцены.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 pub struct ShapeInstance {
     pub placement: [f32; 4],
     pub dims: [f32; 4],
-    pub color: [f32; 4],
+    pub color: [f32; 3],
+    pub base: f32,
 }
 
-/// Один прямоугольник на земле: то же, что `DrawRect`, только вместо четвертей поворота — поворот
-/// на любой угол вокруг `turn.xy` (`turn.z` — синус, `turn.w` — косинус).
+/// Вершина треугольника плитки или плоского объекта на земле — те же поля, что у
+/// `super::relief::SurfaceVertex`.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct GroundRect {
-    pub position: [f32; 2],
-    pub size: [f32; 2],
+pub struct GroundVertex {
+    pub position: [f32; 3],
+    pub normal: [f32; 3],
+    pub uv: [f32; 2],
     pub color: [f32; 4],
-    pub atlas_pos: [f32; 2],
-    pub atlas_size: [f32; 2],
-    pub atlas_layer: f32,
-    pub smooth: f32,
-    pub flip_x: f32,
-    pub _padding: f32,
-    pub turn: [f32; 4],
+    pub uv_min: [f32; 2],
+    pub uv_max: [f32; 2],
+    pub sheet: [f32; 2],
 }
 
-// Раскладки, которые читает `scene3d.wgsl`: уникальный размер в байтах и смещения атрибутов выше.
+// Раскладки, которые читает `scene3d.wgsl`: уникальный размер в байтах и смещения атрибутов ниже.
 const _: () = assert!(std::mem::size_of::<Globals3d>() == 160);
 const _: () = assert!(std::mem::size_of::<ShapeInstance>() == 48);
-const _: () = assert!(std::mem::size_of::<GroundRect>() == 80);
+const _: () = assert!(std::mem::size_of::<GroundVertex>() == 72);
 
-/// Кадр трёхмерной сцены для видеокарты; `shapes` — по видам фигур в порядке `Shape::ALL`.
+/// Кадр трёхмерной сцены для видеокарты; `shapes` — по видам фигур в порядке `Shape::ALL`. `terrain` —
+/// сетка рельефа сцены, если в ней есть файл высот; буфер пересоздаётся, только когда сменился её
+/// номер.
 pub struct Scene3dFrame<'a> {
     pub globals: Globals3d,
-    pub ground: &'a [GroundRect],
+    pub terrain: Option<&'a TerrainMesh>,
+    pub ground: &'a [GroundVertex],
     pub shapes: [&'a [ShapeInstance]; 4],
 }
 
@@ -76,6 +79,8 @@ pub struct Scene3d {
     shadow_bind_group: wgpu::BindGroup,
     main_bind_group: wgpu::BindGroup,
     shadow_pipeline: wgpu::RenderPipeline,
+    terrain_shadow_pipeline: wgpu::RenderPipeline,
+    terrain_pipeline: wgpu::RenderPipeline,
     shape_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
     meshes: [MeshBuffers; 4],
@@ -83,9 +88,19 @@ pub struct Scene3d {
     shape_capacity: usize,
     ground_buffer: wgpu::Buffer,
     ground_capacity: usize,
+    /// Сетка рельефа и воды и номер той сетки, что лежит в буфере.
+    terrain: Option<TerrainBuffer>,
     /// Сколько фигур каждого вида лежит в `shape_buffer`, подряд по видам.
     shape_counts: [u32; 4],
     ground_count: u32,
+}
+
+struct TerrainBuffer {
+    id: u64,
+    buffer: wgpu::Buffer,
+    /// Вершин земли, затем воды.
+    land: u32,
+    total: u32,
 }
 
 fn depth_texture_view(
@@ -184,57 +199,62 @@ const SHAPE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     },
 ];
 
-const GROUND_QUAD_ATTRIBUTES: [wgpu::VertexAttribute; 1] = [wgpu::VertexAttribute {
-    format: wgpu::VertexFormat::Float32x2,
-    offset: 0,
-    shader_location: 0,
-}];
-
-const GROUND_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 9] = [
+const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
+        format: wgpu::VertexFormat::Float32x3,
         offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 12,
+        shader_location: 1,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 24,
+        shader_location: 2,
+    },
+];
+
+/// Байт на вершину сетки рельефа: место, нормаль и цвет.
+const TERRAIN_STRIDE: u64 = 36;
+
+const GROUND_ATTRIBUTES: [wgpu::VertexAttribute; 7] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x3,
+        offset: 12,
         shader_location: 1,
     },
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
-        offset: 8,
+        offset: 24,
         shader_location: 2,
     },
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x4,
-        offset: 16,
+        offset: 32,
         shader_location: 3,
     },
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
-        offset: 32,
+        offset: 48,
         shader_location: 4,
     },
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x2,
-        offset: 40,
+        offset: 56,
         shader_location: 5,
     },
     wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
-        offset: 48,
-        shader_location: 6,
-    },
-    wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
-        offset: 52,
-        shader_location: 7,
-    },
-    wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32,
-        offset: 56,
-        shader_location: 8,
-    },
-    wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x4,
+        format: wgpu::VertexFormat::Float32x2,
         offset: 64,
-        shader_location: 9,
+        shader_location: 6,
     },
 ];
 
@@ -397,18 +417,16 @@ impl Scene3d {
                 attributes: &SHAPE_INSTANCE_ATTRIBUTES,
             },
         ];
-        let ground_buffers = [
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<[f32; 2]>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Vertex,
-                attributes: &GROUND_QUAD_ATTRIBUTES,
-            },
-            wgpu::VertexBufferLayout {
-                array_stride: std::mem::size_of::<GroundRect>() as wgpu::BufferAddress,
-                step_mode: wgpu::VertexStepMode::Instance,
-                attributes: &GROUND_INSTANCE_ATTRIBUTES,
-            },
-        ];
+        let terrain_buffers = [wgpu::VertexBufferLayout {
+            array_stride: TERRAIN_STRIDE,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &TERRAIN_ATTRIBUTES,
+        }];
+        let ground_buffers = [wgpu::VertexBufferLayout {
+            array_stride: std::mem::size_of::<GroundVertex>() as wgpu::BufferAddress,
+            step_mode: wgpu::VertexStepMode::Vertex,
+            attributes: &GROUND_ATTRIBUTES,
+        }];
         let depth_state = |write: bool, compare: wgpu::CompareFunction| wgpu::DepthStencilState {
             format: DEPTH_FORMAT,
             depth_write_enabled: Some(write),
@@ -441,6 +459,44 @@ impl Scene3d {
             cache: None,
         });
         let shape_targets = color_target(wgpu::BlendState::REPLACE);
+        let terrain_shadow_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("terrain_shadow_pipeline"),
+                layout: Some(&shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_shadow_terrain"),
+                    buffers: &terrain_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+        let terrain_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("terrain_pipeline"),
+            layout: Some(&main_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_terrain"),
+                buffers: &terrain_buffers,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_terrain"),
+                targets: &shape_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         let shape_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("shape_pipeline"),
             layout: Some(&main_pipeline_layout),
@@ -462,6 +518,16 @@ impl Scene3d {
             multiview_mask: None,
             cache: None,
         });
+        // Плитки и плоские объекты лежат на поверхности рельефа или настила: без сдвига к камере
+        // их глубина спорила бы с глубиной поверхности под ними.
+        let ground_depth = wgpu::DepthStencilState {
+            bias: wgpu::DepthBiasState {
+                constant: -2,
+                slope_scale: -2.0,
+                clamp: 0.0,
+            },
+            ..depth_state(false, wgpu::CompareFunction::LessEqual)
+        };
         let ground_targets = color_target(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let ground_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ground_pipeline"),
@@ -479,14 +545,14 @@ impl Scene3d {
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
             primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_state(false, wgpu::CompareFunction::Always)),
+            depth_stencil: Some(ground_depth),
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
 
         let shape_capacity = 256;
-        let ground_capacity = 1024;
+        let ground_capacity = 8192;
         Scene3d {
             shadow_view,
             depth_view,
@@ -495,6 +561,8 @@ impl Scene3d {
             shadow_bind_group,
             main_bind_group,
             shadow_pipeline,
+            terrain_shadow_pipeline,
+            terrain_pipeline,
             shape_pipeline,
             ground_pipeline,
             meshes: Shape::ALL.map(|shape| make_mesh_buffers(device, shape)),
@@ -504,12 +572,13 @@ impl Scene3d {
                 shape_capacity,
             ),
             shape_capacity,
-            ground_buffer: make_instance_buffer::<GroundRect>(
+            ground_buffer: make_instance_buffer::<GroundVertex>(
                 device,
-                "ground_instances",
+                "ground_vertices",
                 ground_capacity,
             ),
             ground_capacity,
+            terrain: None,
             shape_counts: [0; 4],
             ground_count: 0,
         }
@@ -554,9 +623,9 @@ impl Scene3d {
 
         if frame.ground.len() > self.ground_capacity {
             self.ground_capacity = frame.ground.len().next_power_of_two();
-            self.ground_buffer = make_instance_buffer::<GroundRect>(
+            self.ground_buffer = make_instance_buffer::<GroundVertex>(
                 device,
-                "ground_instances",
+                "ground_vertices",
                 self.ground_capacity,
             );
         }
@@ -564,6 +633,34 @@ impl Scene3d {
         if !frame.ground.is_empty() {
             queue.write_buffer(&self.ground_buffer, 0, bytemuck::cast_slice(frame.ground));
         }
+
+        self.sync_terrain(device, frame.terrain);
+    }
+
+    /// Держит в буфере сетку `mesh`: пишет её заново, только когда сменился номер.
+    fn sync_terrain(&mut self, device: &wgpu::Device, mesh: Option<&TerrainMesh>) {
+        let Some(mesh) = mesh else {
+            self.terrain = None;
+            return;
+        };
+        if self.terrain.as_ref().is_some_and(|held| held.id == mesh.id) {
+            return;
+        }
+        let floats: Vec<f32> = mesh
+            .vertices
+            .iter()
+            .flat_map(|v| v.position.into_iter().chain(v.normal).chain(v.color))
+            .collect();
+        self.terrain = Some(TerrainBuffer {
+            id: mesh.id,
+            buffer: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("terrain_vertices"),
+                contents: bytemuck::cast_slice(&floats),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            land: mesh.land as u32,
+            total: mesh.vertices.len() as u32,
+        });
     }
 
     /// Рисует фигуры каждого вида одной командой: сетка вида и его экземпляры подряд в буфере.
@@ -581,12 +678,12 @@ impl Scene3d {
         }
     }
 
-    /// Проход теней и основной проход: земля с плоскими объектами, затем фигуры. Цвет очищается
+    /// Проход теней (фигуры и рельеф) и основной проход: рельеф с водой, фигуры, затем плитки и
+    /// плоские объекты — они лежат на поверхностях, которые уже записали глубину. Цвет очищается
     /// фоном сцены; следующий за ними проход интерфейса берёт цвет как есть.
     pub fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
-        quad_buffer: &wgpu::Buffer,
         color_view: &wgpu::TextureView,
         background: [f32; 4],
     ) {
@@ -609,6 +706,11 @@ impl Scene3d {
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
             self.draw_shapes(&mut pass);
+            if let Some(terrain) = &self.terrain {
+                pass.set_pipeline(&self.terrain_shadow_pipeline);
+                pass.set_vertex_buffer(0, terrain.buffer.slice(..));
+                pass.draw(0..terrain.land, 0..1);
+            }
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -639,15 +741,18 @@ impl Scene3d {
             occlusion_query_set: None,
             multiview_mask: None,
         });
-        if self.ground_count > 0 {
-            pass.set_pipeline(&self.ground_pipeline);
-            pass.set_bind_group(0, &self.main_bind_group, &[]);
-            pass.set_vertex_buffer(0, quad_buffer.slice(..));
-            pass.set_vertex_buffer(1, self.ground_buffer.slice(..));
-            pass.draw(0..6, 0..self.ground_count);
+        pass.set_bind_group(0, &self.main_bind_group, &[]);
+        if let Some(terrain) = &self.terrain {
+            pass.set_pipeline(&self.terrain_pipeline);
+            pass.set_vertex_buffer(0, terrain.buffer.slice(..));
+            pass.draw(0..terrain.total, 0..1);
         }
         pass.set_pipeline(&self.shape_pipeline);
-        pass.set_bind_group(0, &self.main_bind_group, &[]);
         self.draw_shapes(&mut pass);
+        if self.ground_count > 0 {
+            pass.set_pipeline(&self.ground_pipeline);
+            pass.set_vertex_buffer(0, self.ground_buffer.slice(..));
+            pass.draw(0..self.ground_count, 0..1);
+        }
     }
 }

@@ -194,6 +194,8 @@ pub struct Body {
     /// Ширина вдоль `x` фигуры, глубина вдоль её `y`.
     pub size: Vec2,
     pub height: f64,
+    /// Высота основания фигуры над нулём сцены.
+    pub base: f64,
     pub sin: f64,
     pub cos: f64,
 }
@@ -214,6 +216,7 @@ impl Body {
             center: [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0],
             size,
             height,
+            base: world.base_z(id),
             sin,
             cos,
         })
@@ -234,7 +237,9 @@ impl Body {
         let local = [
             vertex.position[0] as f64 * self.size[0],
             vertex.position[1] as f64 * self.size[1],
-            vertex.position[2] as f64 * self.height + vertex.cap[0] as f64 * self.cap_height(),
+            self.base
+                + vertex.position[2] as f64 * self.height
+                + vertex.cap[0] as f64 * self.cap_height(),
         ];
         self.to_world(local)
     }
@@ -252,7 +257,7 @@ impl Body {
         [
             self.cos * dx + self.sin * dy,
             -self.sin * dx + self.cos * dy,
-            world[2],
+            world[2] - self.base,
         ]
     }
 
@@ -428,10 +433,14 @@ fn hit_ellipsoid(
     )
 }
 
-/// Луч от глаза камеры через точку земли под курсором: начало и единичное направление.
+/// Луч от глаза камеры через точку под курсором на высоте `point[2]`: начало и единичное направление.
+pub fn ray_through_point(eye: Vec3, point: Vec3) -> (Vec3, Vec3) {
+    (eye, math3::normalize(math3::sub(point, eye)))
+}
+
+/// Луч от глаза камеры через точку земли высоты 0 под курсором.
 pub fn ray_through_ground(eye: Vec3, point: Vec2) -> (Vec3, Vec3) {
-    let target = [point[0], point[1], 0.0];
-    (eye, math3::normalize(math3::sub(target, eye)))
+    ray_through_point(eye, [point[0], point[1], 0.0])
 }
 
 #[cfg(test)]
@@ -445,6 +454,7 @@ mod tests {
             center: [10.0, 10.0],
             size,
             height,
+            base: 0.0,
             sin,
             cos,
         }

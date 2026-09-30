@@ -1,4 +1,5 @@
 import { effectiveHeight, normalizeRotation, placementCenter, type ObjectPlacement, type Vec2 } from "./objectPlacement";
+import { raisedAtPointer, type VerticalGrab } from "./verticalGrab";
 
 /** Наименьший размер объекта при масштабе — «Редактор», требование 13. */
 const MIN_SCALED_SIZE = 0.1;
@@ -27,6 +28,20 @@ export function computeTranslate(startPosition: Vec2, delta: Vec2, axis: Transla
   const x = axis === "y" ? startPosition[0] : round(startPosition[0] + delta[0]);
   const y = axis === "x" ? startPosition[1] : round(startPosition[1] + delta[1]);
   return [x, y];
+}
+
+/**
+ * Вертикальная стрелка — «Рельеф», требование 42: основание поднимается на столько клеток, на
+ * сколько поднялась точка вертикали через середину объекта, ближайшая к лучу указателя (`raisedAtPointer`
+ * — от указателя в начале жеста до указателя сейчас). Свободно высота округляется до сотой клетки, с
+ * Ctrl — до целой. Если у одного из указателей такой точки нет перед камерой, высота не меняется.
+ */
+export function computeHeight(startHeight: number, grab: VerticalGrab, pointerStart: Vec2, pointerNow: Vec2, snapToWholeCells: boolean): number {
+  const raisedAtStart = raisedAtPointer(grab, pointerStart);
+  const raisedNow = raisedAtPointer(grab, pointerNow);
+  if (raisedAtStart === undefined || raisedNow === undefined) return startHeight;
+  const height = startHeight + raisedNow - raisedAtStart;
+  return snapToWholeCells ? Math.round(height) : roundToHundredth(height);
 }
 
 /** Направление на месте `point` от `center` на земле, в градусах: по часовой стрелке, если смотреть сверху, растёт. */

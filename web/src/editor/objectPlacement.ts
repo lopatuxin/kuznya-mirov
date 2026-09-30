@@ -3,10 +3,13 @@ export type Vec2 = readonly [number, number];
 /**
  * Место объекта трёхмерной сцены, как его правят ручки: `position` и `size` в клетках, `height` и
  * `rotation` в файле могут отсутствовать (`null`), `hasShape` — у объекта есть `shape`, то есть у
- * него есть высота; плоский объект на земле высоты не имеет («Редактор», требование 13).
+ * него есть высота; плоский объект на земле высоты не имеет («Редактор», требование 13). `z` — третье
+ * число `position`, высота основания, как записана; `null`, если `position` из двух чисел и объект
+ * садится на поверхность сам («Рельеф», требование 6).
  */
 export type ObjectPlacement = {
   position: Vec2;
+  z: number | null;
   size: Vec2;
   height: number | null;
   rotation: number | null;
@@ -37,6 +40,7 @@ export function readObjectPlacement(properties: Record<string, unknown> | null |
   if (position === null || size === null) return null;
   return {
     position,
+    z: readNumber((properties.position as unknown[])[2]),
     size,
     height: readNumber(properties.height),
     rotation: readNumber(properties.rotation),
@@ -65,15 +69,21 @@ function isSameVec2(first: Vec2, second: Vec2): boolean {
   return first[0] === second[0] && first[1] === second[1];
 }
 
+/** `position` в виде файла — «Рельеф», требование 44: два числа, а с высотой основания — три. */
+function positionValue(position: Vec2, z: number | null): number[] {
+  return z === null ? [position[0], position[1]] : [position[0], position[1], z];
+}
+
 /**
  * Свойства, которые жест изменил, — по порядку `position`, `size`, `height`, `rotation`; `previous` —
  * записанное в файле до жеста, `undefined`, если свойства не было (отмена тогда его убирает).
- * Высота и поворот, которых не было в файле, считаются нетронутыми, пока равны умолчанию.
+ * Высота и поворот, которых не было в файле, считаются нетронутыми, пока равны умолчанию. `position`
+ * изменился и когда сменилось только третье число: появилось, исчезло или стало другим.
  */
 export function diffPlacements(start: ObjectPlacement, end: ObjectPlacement): PlacementChange[] {
   const changes: PlacementChange[] = [];
-  if (!isSameVec2(start.position, end.position)) {
-    changes.push({ key: "position", value: [end.position[0], end.position[1]], previous: [start.position[0], start.position[1]] });
+  if (!isSameVec2(start.position, end.position) || start.z !== end.z) {
+    changes.push({ key: "position", value: positionValue(end.position, end.z), previous: positionValue(start.position, start.z) });
   }
   if (!isSameVec2(start.size, end.size)) {
     changes.push({ key: "size", value: [end.size[0], end.size[1]], previous: [start.size[0], start.size[1]] });

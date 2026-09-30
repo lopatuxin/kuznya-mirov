@@ -141,7 +141,19 @@ impl Footprint {
         if let (Footprint::Aligned(a), Footprint::Aligned(b)) = (self, other) {
             return a.overlap(b).is_some();
         }
-        self.penetrations(other).is_some()
+        self.penetrations(other, TOUCH_EPS).is_some()
+    }
+
+    /// Пересечение глубже `depth` по каждой оси: касание краем и наложение тоньше `depth` не считаются,
+    /// поэтому стоящий впритык идущий не перескакивает с «задевает» на «не задевает» от погрешности
+    /// дробных чисел.
+    pub fn overlaps_deeper_than(&self, other: &Footprint, depth: f64) -> bool {
+        if let (Footprint::Aligned(a), Footprint::Aligned(b)) = (self, other) {
+            return a
+                .overlap(b)
+                .is_some_and(|(ox, oy)| ox > depth && oy > depth);
+        }
+        self.penetrations(other, depth.max(TOUCH_EPS)).is_some()
     }
 
     /// Между прямоугольниками есть зазор: по одной из осей обоих проекции не пересекаются;
@@ -163,7 +175,7 @@ impl Footprint {
     /// со стороны середины `self`. `None`, когда они не пересекаются. Единичная нормаль смотрит
     /// от `other` к `self`.
     pub fn push_out(&self, other: &Footprint) -> Option<(Vec2, f64)> {
-        let candidates = self.penetrations(other)?;
+        let candidates = self.penetrations(other, TOUCH_EPS)?;
         candidates
             .into_iter()
             .fold(None, |best: Option<(Vec2, f64)>, candidate| match best {
@@ -174,7 +186,7 @@ impl Footprint {
 
     /// По каждой из четырёх осей — единичная нормаль от `other` к `self` и глубина, на которую
     /// нужно вытолкнуть `self` по ней; `None`, если хоть по одной оси прямоугольники разошлись.
-    fn penetrations(&self, other: &Footprint) -> Option<[(Vec2, f64); 4]> {
+    fn penetrations(&self, other: &Footprint, min_depth: f64) -> Option<[(Vec2, f64); 4]> {
         let mut result = [([0.0, 0.0], 0.0); 4];
         let (own, foreign) = (self.axes(), other.axes());
         let axes = [own[0], own[1], foreign[0], foreign[1]];
@@ -184,7 +196,7 @@ impl Footprint {
             let (min_a, max_a) = project(&corners_a, axis);
             let (min_b, max_b) = project(&corners_b, axis);
             let overlap = max_a.min(max_b) - min_a.max(min_b);
-            if overlap <= TOUCH_EPS {
+            if overlap <= min_depth {
                 return None;
             }
             let toward_self = (ca[0] - cb[0]) * axis[0] + (ca[1] - cb[1]) * axis[1] >= 0.0;
@@ -252,6 +264,24 @@ mod tests {
         let sliver = Footprint::rotated([2.0_f64.sqrt() - 0.001, 4.0], [2.0, 2.0], rotation(45.0));
         assert!(!touching.overlaps(&wall));
         assert!(sliver.overlaps(&wall));
+    }
+
+    #[test]
+    fn an_overlap_shallower_than_the_depth_is_no_overlap_for_aligned_and_turned_rectangles() {
+        let deck = Footprint::flat([0.0, 0.0], [4.0, 4.0]);
+        let touching = Footprint::flat([4.0, 1.0], [1.0, 1.0]);
+        let hair = Footprint::flat([4.0 - 1e-7, 1.0], [1.0, 1.0]);
+        let deep = Footprint::flat([4.0 - 0.01, 1.0], [1.0, 1.0]);
+        assert!(!deck.overlaps_deeper_than(&touching, 1e-5));
+        assert!(deck.overlaps(&hair), "прежнее правило: волосок — наложение");
+        assert!(!deck.overlaps_deeper_than(&hair, 1e-5));
+        assert!(deck.overlaps_deeper_than(&deep, 1e-5));
+        let half_diagonal = 2.0_f64.sqrt() / 2.0;
+        let diamond_with_left_tip_at = |tip: f64| {
+            Footprint::rotated([tip + half_diagonal - 0.5, 1.5], [1.0, 1.0], rotation(45.0))
+        };
+        assert!(!deck.overlaps_deeper_than(&diamond_with_left_tip_at(4.0 - 1e-7), 1e-5));
+        assert!(deck.overlaps_deeper_than(&diamond_with_left_tip_at(4.0 - 0.05), 1e-5));
     }
 
     #[test]

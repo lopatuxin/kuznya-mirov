@@ -1,4 +1,4 @@
-use super::camera::{self, Camera3d, EditorCamera};
+use super::camera::{self, Camera3d, CameraHeight, EditorCamera};
 use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
@@ -11,6 +11,7 @@ use super::rules::{Outcome, RuleSet};
 use super::scene::{GroundLayer, ObjectSpec, SceneConfig};
 use super::sound::SoundWindow;
 use super::step;
+use super::surface;
 use super::value::{Value, Vec2};
 use super::world::World;
 
@@ -71,13 +72,13 @@ pub struct Game {
     /// «Курсор в мире»: the world cursor's current scene-coordinate position, updated every time
     /// the page reports a mouse move (live screen or not — требование 26: сдвиги на паузе
     /// копятся). `None` until the cursor has moved at least once.
-    cursor_current: Option<Vec2>,
+    cursor_current: Option<Vec3>,
     /// «Трёхмерная сцена», требование 23: где стояла камера, когда курсор пришёл в `cursor_current` —
     /// щелчок идёт лучом от неё через эту точку земли. `None` — плоская сцена или курсор без камеры.
     cursor_eye: Option<Vec3>,
     /// The position the most recent step actually took — compared against `cursor_current` at
     /// `take_input_snapshot` time to decide whether *this* step gets a cursor at all.
-    cursor_last_step: Option<Vec2>,
+    cursor_last_step: Option<Vec3>,
 
     /// «Редактор»: whether a play/replay session is open — `Game::begin_session` sets it,
     /// `Game::end_session` clears it. Gates the report/message-log bookkeeping below so the plain
@@ -103,6 +104,8 @@ pub struct Game {
     /// такого объекта нет; сбрасывается при сборке мира (`new_game_with_values`, `show_scene`,
     /// `reset_for_play`), а не при каждом шаге.
     camera_last: Option<Vec2>,
+    /// «Рельеф» → «Камера», требование 24: высота, на которой камера игры держит взгляд.
+    camera_height: CameraHeight,
     /// «Ходьба», требование 28: запомненные пути идущих объектов — вне мира, сброшены там же, где
     /// `camera_last`.
     walk_paths: WalkCaches,
@@ -116,12 +119,20 @@ pub struct Game {
 /// here ever deletes one, so `scene_objects[n]` always lands in slot `n`), its `values`/`grid`/
 /// `keys` written — with no other new-game side effect (no rng, step counter, input, code).
 /// Shared by `new_game_with_values`, `show_scene` and `data::load::load_rest`'s own initial world.
+/// «Рельеф», требование 8: сначала встают настилы, потом остальные объекты; тот, у кого в данных
+/// есть третье число `position`, стоит на нём ровно.
 pub(crate) fn world_from_scene(properties: &PropertyTable, scene_objects: &[ObjectSpec]) -> World {
     let mut world = World::new(properties);
+    let mut seated_by_data = Vec::with_capacity(scene_objects.len());
     for spec in scene_objects {
         let id = world.create();
-        for (prop, value) in &spec.values {
-            world.set_value(id, *prop, value);
+        seated_by_data.push(
+            spec.values.iter().any(|(prop, value)| {
+                *prop == property::POSITION && matches!(value, Value::Vec3(_))
+            }),
+        );
+        for (prop, value) in placed_last(&spec.values) {
+            world.set_value(id, prop, value);
         }
         if let Some(grid) = &spec.grid {
             world.set_grid(id, property::GRID, *grid);
@@ -134,7 +145,38 @@ pub(crate) fn world_from_scene(properties: &PropertyTable, scene_objects: &[Obje
             world.set_on_click(id, property::ON_CLICK, on_click.clone());
         }
     }
+    if world.three_d() {
+        seat_scene(&mut world, &seated_by_data);
+    }
     world
+}
+
+/// Значения объекта, `position` последним: пока места нет, ни поворот, ни размер объект не пересаживают.
+pub(crate) fn placed_last(
+    values: &[(PropertyId, Value)],
+) -> impl Iterator<Item = (PropertyId, &Value)> {
+    values
+        .iter()
+        .filter(|(prop, _)| *prop != property::POSITION)
+        .chain(
+            values
+                .iter()
+                .filter(|(prop, _)| *prop == property::POSITION),
+        )
+        .map(|(prop, value)| (*prop, value))
+}
+
+/// «Рельеф», требование 8: настилы без `z` в данных — низом на самую высокую точку рельефа под ними,
+/// потом остальные объекты без `z` — на верх самого высокого настила под ними или на рельеф.
+fn seat_scene(world: &mut World, seated_by_data: &[bool]) {
+    let ids: Vec<u32> = world.ids().collect();
+    for deck in [true, false] {
+        for &id in &ids {
+            if world.flag(id, property::DECK) == deck && !seated_by_data[id as usize] {
+                surface::seat_fresh(world, id);
+            }
+        }
+    }
 }
 
 impl Game {
@@ -194,6 +236,7 @@ impl Game {
             last_report: None,
             world_exists: start_is_live,
             camera_last: None,
+            camera_height: CameraHeight::default(),
             walk_paths: WalkCaches::new(),
             editor_camera: None,
         };
@@ -206,6 +249,7 @@ impl Game {
             game.load_code();
         }
         game.update_camera();
+        game.prepare_walking();
         game
     }
 
@@ -481,15 +525,44 @@ impl Game {
     /// remembered walk path goes with it, since both describe a world that no longer exists.
     fn reset_camera_and_walk(&mut self) {
         self.camera_last = None;
-        self.walk_paths.clear();
+        self.camera_height = CameraHeight::default();
+        self.walk_paths.clear_paths();
+        if self.scene.is_3d() {
+            self.update_camera();
+            self.prepare_walking();
+        }
+    }
+
+    /// «Рельеф» → «Ходьба», нефункциональные требования: идущим по рельефу и настилам готовится всё, что
+    /// не зависит от цели, при сборке мира, а не на первом пути.
+    fn prepare_walking(&mut self) {
+        step::prepare_walkers(
+            &self.world,
+            &self.rules.rules,
+            &self.scene,
+            &mut self.walk_paths,
+        );
     }
 
     /// «Камера», требования 5–7: recomputes the camera's own followed point from the world right
-    /// now — sticky when no `camera_follows` object exists. Called after every step and after the
-    /// editor's own live-world edits, «без отставания».
+    /// now — sticky when no `camera_follows` object exists. Called after the editor's own live-world
+    /// edits, «без отставания»: камера сразу стоит на объекте, без плавного прохода по высоте.
     pub fn update_camera(&mut self) {
-        if let Some(center) = camera::followed_center(&self.world) {
+        if let Some((center, z)) = camera::followed_point(&self.world) {
             self.camera_last = Some(center);
+            self.camera_height.snap(z);
+        }
+    }
+
+    /// «Рельеф» → «Камера», требование 24: то же после шага, но скачок основания на ступеньке камера
+    /// проходит за 12 шагов, а не сразу.
+    fn step_camera(&mut self) {
+        if let Some((center, z)) = camera::followed_point(&self.world) {
+            let moved = self.camera_last.map_or(0.0, |previous| {
+                ((center[0] - previous[0]).powi(2) + (center[1] - previous[1]).powi(2)).sqrt()
+            });
+            self.camera_last = Some(center);
+            self.camera_height.step(z, moved);
         }
     }
 
@@ -504,7 +577,10 @@ impl Game {
             self.scene.height as f64 / 2.0,
         ]);
         let center = camera::clamp_center_3d(&self.scene, pitch, view_height, viewport, center);
-        Some(Camera3d::looking_at(center, pitch, view_height, viewport))
+        Some(
+            Camera3d::looking_at(center, pitch, view_height, viewport)
+                .raised(self.camera_height.z()),
+        )
     }
 
     /// «Камера», требование 4: the scale/offset «Мир на экране» draws and picks the world by
@@ -520,8 +596,8 @@ impl Game {
     /// «Редактор», «Правка сцены», требование 18: ставит объект `id` на `position` в живом мире.
     /// Камера игры встаёт на объект без отставания только в плоской сцене: в трёхмерной ручку или
     /// объект тянут под указателем, и камера, ушедшая вслед за объектом, увела бы землю из-под него.
-    pub fn move_object(&mut self, id: u32, position: Vec2) {
-        super::scene::move_object(&mut self.world, id, position);
+    pub fn move_object(&mut self, id: u32, position: Vec2, z: Option<f64>) {
+        super::scene::move_object(&mut self.world, id, position, z);
         if !self.scene.is_3d() {
             self.update_camera();
         }
@@ -537,13 +613,19 @@ impl Game {
     /// плоской сцене.
     fn current_editor_camera(&self, viewport: [f64; 2]) -> Option<EditorCamera> {
         self.editor_camera
-            .or_else(|| camera::fit_ground(&self.scene, viewport))
+            .or_else(|| camera::fit_ground(&self.scene, self.world.terrain(), viewport))
     }
 
-    /// «Редактор», «Сцена», требование 1: камера, которой трёхмерная сцена видна вне партии.
+    /// «Редактор», «Сцена», требование 1: камера, которой трёхмерная сцена видна вне партии. Она
+    /// вращается вокруг точки на рельефе: высоту точки `target` берёт рельеф под ней.
     pub fn editor_camera_3d(&self, viewport: [f32; 2]) -> Option<Camera3d> {
         let viewport = [viewport[0] as f64, viewport[1] as f64];
-        Some(self.current_editor_camera(viewport)?.camera(viewport))
+        let editor = self.current_editor_camera(viewport)?;
+        let pivot = self
+            .world
+            .terrain()
+            .height_at(editor.target[0], editor.target[1]);
+        Some(editor.camera(viewport).raised(pivot))
     }
 
     /// «Редактор», «Вызовы движка», `fit_camera`: без номера — камера, что видит всю землю под
@@ -552,7 +634,7 @@ impl Game {
     pub fn fit_camera(&self, id: Option<u32>, viewport: [f32; 2]) -> Option<EditorCamera> {
         let viewport = [viewport[0] as f64, viewport[1] as f64];
         let Some(id) = id else {
-            return camera::fit_ground(&self.scene, viewport);
+            return camera::fit_ground(&self.scene, self.world.terrain(), viewport);
         };
         let current = self.current_editor_camera(viewport)?;
         camera::fit_object(&self.world, id, current.yaw, current.pitch, viewport)
@@ -651,15 +733,20 @@ impl Game {
     /// записанному вводу», требование 31: a replay's own `cursor` is given in scene cells
     /// directly, bypassing the window-pixel translation that has its own, separate tests.
     pub fn set_cursor_cell(&mut self, cell: Vec2) {
-        self.cursor_current = Some(cell);
-        self.cursor_eye = None;
+        self.set_cursor_point([cell[0], cell[1], 0.0], None);
     }
 
     /// «Трёхмерная сцена», требование 23: то же, с местом камеры в клетках сцены и высоте — щелчок
-    /// идёт лучом от неё через `cell`.
+    /// идёт лучом от неё через `cell` на высоте 0.
     pub fn set_cursor_ray(&mut self, cell: Vec2, eye: Vec3) {
-        self.cursor_current = Some(cell);
-        self.cursor_eye = Some(eye);
+        self.set_cursor_point([cell[0], cell[1], 0.0], Some(eye));
+    }
+
+    /// «Рельеф», требования 27, 29: точка под курсором с высотой и, в трёхмерной сцене, место камеры,
+    /// от которого щелчок идёт лучом через эту точку.
+    pub fn set_cursor_point(&mut self, point: Vec3, eye: Option<Vec3>) {
+        self.cursor_current = Some(point);
+        self.cursor_eye = eye;
     }
 
     pub fn cursor_eye(&self) -> Option<Vec3> {
@@ -669,6 +756,11 @@ impl Game {
     /// «Редактор», требование 27: the world cursor's current scene-cell position, for the session
     /// layer's own recording — `None` before the cursor has ever moved.
     pub fn cursor_current(&self) -> Option<Vec2> {
+        self.cursor_current.map(|point| [point[0], point[1]])
+    }
+
+    /// «Рельеф», требование 29: то же с высотой точки.
+    pub fn cursor_point(&self) -> Option<Vec3> {
         self.cursor_current
     }
 
@@ -724,6 +816,9 @@ impl Game {
 
         let pre_move_positions: Vec<Option<Vec2>> = (0..self.world.slot_count() as u32)
             .map(|id| self.world.vec2(id, property::POSITION))
+            .collect();
+        let pre_move_z: Vec<f64> = (0..self.world.slot_count() as u32)
+            .map(|id| self.world.base_z(id))
             .collect();
 
         for moved in self.moved.iter_mut() {
@@ -820,6 +915,7 @@ impl Game {
             &already_deleted,
             &mut self.moved,
             &pre_move_positions,
+            &pre_move_z,
             &mut self.rng,
             &mut outcome_flag,
             &mut random_cell_exhausted,
@@ -865,9 +961,22 @@ impl Game {
                 continue;
             }
             let id = self.world.create();
-            self.world.set_vec2(id, property::POSITION, create.position);
-            for (prop, value) in &create.props {
-                self.world.set_value(id, *prop, value);
+            let mut seated_by_data = false;
+            for (prop, value) in placed_last(&create.props) {
+                seated_by_data |= prop == property::POSITION && matches!(value, Value::Vec3(_));
+                self.world.set_value(id, prop, value);
+            }
+            if create
+                .props
+                .iter()
+                .all(|(prop, _)| *prop != property::POSITION)
+            {
+                self.world.set_vec2(id, property::POSITION, create.position);
+            }
+            match create.seat {
+                _ if seated_by_data => {}
+                step::SeatRule::Fresh => surface::seat_fresh(&mut self.world, id),
+                step::SeatRule::From(z) => surface::seat_from(&mut self.world, id, z),
             }
             if let Some(spec) = self.world.grid(id, property::GRID) {
                 self.world.set_grid_counter(id, spec.interval_steps);
@@ -890,7 +999,7 @@ impl Game {
         }
         // «Камера», требование 6: без отставания — сразу после последнего шага, здесь, а не при
         // следующей отрисовке.
-        self.update_camera();
+        self.step_camera();
         self.last_report = report.map(|b| b.finish(self.session_step));
     }
 }

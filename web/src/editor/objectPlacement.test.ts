@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { diffPlacements, normalizeRotation, readObjectPlacement, type ObjectPlacement } from "./objectPlacement";
 
-const WALL: ObjectPlacement = { position: [3, 4], size: [5, 0.5], height: 2, rotation: -90, hasShape: true };
+const WALL: ObjectPlacement = { position: [3, 4], z: null, size: [5, 0.5], height: 2, rotation: -90, hasShape: true };
 
 describe("readObjectPlacement", () => {
   it("читает место, размер, высоту, поворот и признак фигуры из свойств в виде файла", () => {
@@ -11,11 +11,17 @@ describe("readObjectPlacement", () => {
   it("высоты и поворота может не быть, плоский объект без shape", () => {
     expect(readObjectPlacement({ position: [1, 2], size: [4, 1], image: "grass" })).toEqual({
       position: [1, 2],
+      z: null,
       size: [4, 1],
       height: null,
       rotation: null,
       hasShape: false,
     });
+  });
+
+  it("третье число position — высота основания («Рельеф», требование 6)", () => {
+    expect(readObjectPlacement({ position: [3, 4, -2.1], size: [5, 0.5], shape: "box" })?.z).toBe(-2.1);
+    expect(readObjectPlacement({ position: [3, 4], size: [5, 0.5], shape: "box" })?.z).toBe(null);
   });
 
   it("без position или size, с нечисловым значением или без свойств — ничего", () => {
@@ -65,8 +71,16 @@ describe("diffPlacements", () => {
     expect(diffPlacements(bare, { ...bare, height: 1, rotation: 0 })).toEqual([]);
   });
 
+  it("третье число position: появилось, исчезло или стало другим — position изменился и при том же месте", () => {
+    expect(diffPlacements(WALL, { ...WALL, z: 0.3 })).toEqual([{ key: "position", value: [3, 4, 0.3], previous: [3, 4] }]);
+    const risen: ObjectPlacement = { ...WALL, z: 2 };
+    expect(diffPlacements(risen, { ...risen, z: null })).toEqual([{ key: "position", value: [3, 4], previous: [3, 4, 2] }]);
+    expect(diffPlacements(risen, { ...risen, position: [4, 4], z: 3 })).toEqual([{ key: "position", value: [4, 4, 3], previous: [3, 4, 2] }]);
+    expect(diffPlacements(risen, { ...risen })).toEqual([]);
+  });
+
   it("у плоского объекта высота не пишется", () => {
-    const flat: ObjectPlacement = { position: [1, 1], size: [4, 1], height: null, rotation: null, hasShape: false };
+    const flat: ObjectPlacement = { position: [1, 1], z: null, size: [4, 1], height: null, rotation: null, hasShape: false };
     expect(diffPlacements(flat, { ...flat, size: [8, 2] })).toEqual([{ key: "size", value: [8, 2], previous: [4, 1] }]);
   });
 });

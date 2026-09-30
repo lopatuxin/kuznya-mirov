@@ -27,6 +27,7 @@ describe("suggestPropertyNames", () => {
   it("даёт свойства движка и автора, которых нет у объекта", () => {
     const suggestions = suggestPropertyNames(["position", "size", "score"], { score: "number", hp: "flag" });
     expect(suggestions).toContain("collides");
+    expect(suggestions).toContain("deck");
     expect(suggestions).toContain("hp");
     expect(suggestions).not.toContain("position");
     expect(suggestions).not.toContain("score");

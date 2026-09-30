@@ -1,5 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 
+use super::terrain::Terrain;
 use super::value::PropKind;
 
 pub type PropertyId = u16;
@@ -27,6 +29,8 @@ pub const ON_CLICK: PropertyId = 17;
 pub const FLIP_X: PropertyId = 18;
 pub const SHAPE: PropertyId = 19;
 pub const HEIGHT: PropertyId = 20;
+/// «Рельеф»: настил — мост, помост, ступень лестницы.
+pub const DECK: PropertyId = 21;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -50,6 +54,7 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("flip_x", PropKind::Flag),
     ("shape", PropKind::Shape),
     ("height", PropKind::Number),
+    ("deck", PropKind::Flag),
 ];
 
 #[derive(Debug, Clone)]
@@ -67,6 +72,9 @@ pub struct PropertyTable {
     /// `rotation` и можно ли `shape`/`height`, — таблицу свойств видят все места, что читают и
     /// пишут значения (файлы, правка на ходу, код), поэтому знать это ей.
     three_d: bool,
+    /// «Рельеф»: земля трёхмерной сцены — та же таблица, что знает про `three_d`, отдаёт её каждому
+    /// миру, который строится по этим свойствам.
+    terrain: Option<Arc<Terrain>>,
 }
 
 impl PropertyTable {
@@ -75,6 +83,7 @@ impl PropertyTable {
             defs: Vec::with_capacity(BUILTINS.len()),
             by_name: HashMap::with_capacity(BUILTINS.len()),
             three_d: false,
+            terrain: None,
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -110,6 +119,14 @@ impl PropertyTable {
 
     pub fn three_d(&self) -> bool {
         self.three_d
+    }
+
+    pub fn set_terrain(&mut self, terrain: Terrain) {
+        self.terrain = Some(Arc::new(terrain));
+    }
+
+    pub fn terrain(&self) -> Option<&Arc<Terrain>> {
+        self.terrain.as_ref()
     }
 
     pub fn resolve(&self, name: &str) -> Option<PropertyId> {
@@ -164,6 +181,8 @@ mod tests {
         assert_eq!(table.kind(SHAPE), PropKind::Shape);
         assert_eq!(table.resolve("height"), Some(HEIGHT));
         assert_eq!(table.kind(HEIGHT), PropKind::Number);
+        assert_eq!(table.resolve("deck"), Some(DECK));
+        assert_eq!(table.kind(DECK), PropKind::Flag);
     }
 
     #[test]

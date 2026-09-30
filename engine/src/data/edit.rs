@@ -6,6 +6,7 @@
 use serde_json::Value as Json;
 
 use crate::core::property::{self, PropertyId, PropertyTable};
+use crate::core::surface;
 use crate::core::value::{GridSpec, PropKind, Value};
 use crate::core::world::World;
 
@@ -47,6 +48,7 @@ pub fn value_to_json(value: &Value, images: &[ImageDecl]) -> Json {
         Value::Time(steps) => json_number(*steps as f64 / 60.0),
         Value::Timer(steps) => json_number(*steps as f64 / 60.0),
         Value::Vec2(v) => Json::Array(vec![json_number(v[0]), json_number(v[1])]),
+        Value::Vec3(v) => Json::Array(v.iter().map(|&n| json_number(n)).collect()),
         Value::Color(c) => Json::String(format_hex_color(*c)),
         Value::Layer(l) => Json::Number((*l).into()),
         Value::Text(s) => Json::String(s.clone()),
@@ -227,8 +229,14 @@ pub fn add_object(
         ));
     }
     let id = world.create();
-    for (prop, value) in &values {
-        world.set_value(id, *prop, value);
+    for (prop, value) in crate::core::game::placed_last(&values) {
+        world.set_value(id, prop, value);
+    }
+    let seated_by_data = values
+        .iter()
+        .any(|(prop, value)| *prop == property::POSITION && matches!(value, Value::Vec3(_)));
+    if !seated_by_data {
+        surface::seat_fresh(world, id);
     }
     if let Some(spec) = grid {
         world.set_grid(id, property::GRID, spec);

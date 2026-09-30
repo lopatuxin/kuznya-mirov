@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineError } from "./engineErrors";
+import { createRecordingProjectFileReader } from "./editor/recordingProjectFileReader";
 import { loadProject, type ProjectFileReader, type ProjectLoadEngine } from "./projectLoader";
 
 const NO_WARNINGS: EngineError[] = [];
@@ -114,6 +115,7 @@ describe("loadProject", () => {
       [expect.objectContaining({ index: 9 })],
       files["code.lua"],
       [{ name: "enemies", text: files["tables/enemies.json"] }],
+      undefined,
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -162,7 +164,63 @@ describe("loadProject", () => {
       [],
       null,
       [{ name: "enemies", text: null }],
+      undefined,
     );
+  });
+
+  describe("файл рельефа files.terrain", () => {
+    const files: Record<string, string> = {
+      "game.json": "{}",
+      "properties.json": "{}",
+      "scene.json": '{"objects":[]}',
+      "rules.json": "{}",
+      "screens.json": "{}",
+      "terrain.json": '{"heights":[[0]]}',
+    };
+
+    function createEngine(terrainPath: string | undefined): { engine: ProjectLoadEngine; load: ReturnType<typeof vi.fn> } {
+      const load = vi.fn(() => ({ ok: true, warnings: NO_WARNINGS }));
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], terrain: terrainPath },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [] })),
+        load,
+      };
+      return { engine, load };
+    }
+
+    it("читается вторым проходом тем же читателем, что остальные файлы, и уходит в load последним аргументом", async () => {
+      const { engine, load } = createEngine("terrain.json");
+      const recording = createRecordingProjectFileReader(createReader(files));
+
+      await loadProject(engine, recording.reader, "{}", stubAudioContext);
+
+      // Путь прошёл через читателя — значит, его же опрашивает редактор, и правка terrain.json перезагружает проект.
+      expect(recording.getReadPaths()).toContain("terrain.json");
+      expect(load.mock.calls[0]?.[10]).toBe(files["terrain.json"]);
+    });
+
+    it("без files.terrain в load идёт undefined, и файл не читается", async () => {
+      const { engine, load } = createEngine(undefined);
+      const readText = vi.fn(async () => null);
+
+      await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
+
+      expect(load.mock.calls[0]).toHaveLength(11);
+      expect(load.mock.calls[0]?.[10]).toBeUndefined();
+      expect(readText).not.toHaveBeenCalledWith("terrain.json");
+    });
+
+    it("файл назван, но не читается — в load идёт null: движок назовёт ошибку", async () => {
+      const { engine, load } = createEngine("terrain.json");
+
+      await loadProject(engine, createReader({}), "{}", stubAudioContext);
+
+      expect(load.mock.calls[0]?.[10]).toBeNull();
+    });
   });
 
   it("отдаёт rejected с текстом сцены, когда read_entry прошёл, а load отказал", async () => {

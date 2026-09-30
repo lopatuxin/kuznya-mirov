@@ -1,19 +1,24 @@
-//! Ролевая игра `games/rpg` — деревня из фигур («Фаза-15», «Трёхмерная сцена»). Игра грузится из
-//! настоящих файлов, ходьба, поиск пути, щелчок лучом и бой идут настоящими шагами движка.
+//! Ролевая игра `games/rpg` — деревня из фигур на рельефе («Фаза-15», «Фаза-17», «Трёхмерная сцена»,
+//! «Рельеф»). Игра грузится из настоящих файлов, ходьба, поиск пути, щелчок лучом и бой идут
+//! настоящими шагами движка.
 
-use std::collections::{HashSet, VecDeque};
 use std::fs;
 use std::path::PathBuf;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use engine::core::footprint::Footprint;
 use engine::core::game::Game;
 use engine::core::input::StepInput;
-use engine::core::pathfind::{self, WalkCaches};
+use engine::core::pathfind::WalkCaches;
 use engine::core::property;
+use engine::core::scene::{ground_footprint, pointer_hit, top_surface_height};
 use engine::core::shapes::Body;
+use engine::core::surface;
+use engine::core::terrain::{MAX_SLOPE, Terrain};
 use engine::core::value::Shape;
-use engine::data::load::{ImageVerdict, load_rest_with_tables, read_entry};
+use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
+use engine::data::load::{ImageVerdict, load_rest_with_terrain, read_entry};
+use serde_json::Value as Json;
 
 const WINDOW: [f32; 2] = [1920.0, 1080.0];
 
@@ -40,9 +45,9 @@ fn png_dimensions(name: &str) -> (u32, u32) {
     (width, height)
 }
 
-/// Loads the real `games/rpg` folder end to end, image sizes and the `enemies` table included.
-/// `scene_json` stands in for the real `scene.json` text — a deliberately corrupted copy by
-/// `enemy_catalog_typo_names_the_enemy_and_its_bad_row`.
+/// Loads the real `games/rpg` folder end to end, image sizes, the `enemies` table and the terrain
+/// file included. `scene_json` stands in for the real `scene.json` text — a deliberately corrupted
+/// copy by `enemy_catalog_typo_names_the_enemy_and_its_bad_row`.
 fn load_with_scene(scene_json: &str) -> Game {
     let game_json = read("game.json");
     let (config, entry_warnings) =
@@ -80,7 +85,7 @@ fn load_with_scene(scene_json: &str) -> Game {
             )
         })
         .collect();
-    let (game, _screens, warnings, _images) = load_rest_with_tables(
+    let (game, _screens, warnings, _images) = load_rest_with_terrain(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -94,6 +99,7 @@ fn load_with_scene(scene_json: &str) -> Game {
         Some(&read("code.lua")),
         false,
         &table_texts,
+        Some(&read("terrain.json")),
     )
     .expect("ролевая игра должна проходить предстартовую проверку");
     let mut all_warnings = entry_warnings;
@@ -114,133 +120,319 @@ fn find_named(game: &Game, name: &str) -> u32 {
 }
 
 fn place_of(game: &Game, id: u32) -> Footprint {
-    let position = game
-        .world
-        .vec2(id, property::POSITION)
-        .unwrap_or_else(|| panic!("у объекта {id} нет position"));
-    let size = game
-        .world
-        .vec2(id, property::SIZE)
-        .unwrap_or_else(|| panic!("у объекта {id} нет size"));
-    Footprint::rotated(position, size, game.world.rotation(id, property::ROTATION))
+    ground_footprint(&game.world, id)
+        .unwrap_or_else(|| panic!("у объекта {id} нет position и size"))
 }
 
 fn center_of(game: &Game, id: u32) -> [f64; 2] {
     place_of(game, id).center()
 }
 
+fn z_of(game: &Game, id: u32) -> f64 {
+    game.world.base_z(id)
+}
+
 fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
     ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2)).sqrt()
 }
 
-/// Every `obstacle` object's place, split into the ones that are also an `enemy_unit` and the
-/// ones that aren't — «Локация»: connectivity without any enemy versus with each enemy standing.
-fn obstacles_by_kind(game: &Game) -> (Vec<Footprint>, Vec<(String, Footprint)>) {
+fn scene_size(game: &Game) -> (f64, f64) {
+    (game.scene.width as f64, game.scene.height as f64)
+}
+
+fn near(actual: f64, expected: f64, what: &str) {
+    assert!(
+        (actual - expected).abs() < 1e-6,
+        "{what}: {actual} вместо {expected}"
+    );
+}
+
+const HERO_SIZE: f64 = 0.6;
+
+/// Ручей течёт по прямой `y = x / 2 + 13`: `u` — вдоль него (к нижнему краю сцены), `d` — поперёк,
+/// в сторону входа героя (юго-запад); обе оси в клетках.
+fn from_stream(u: f64, d: f64) -> [f64; 2] {
+    let root = 5.0_f64.sqrt();
+    [(2.0 * u - d) / root, 13.0 + (u + 2.0 * d) / root]
+}
+
+fn to_stream(point: [f64; 2]) -> (f64, f64) {
+    let root = 5.0_f64.sqrt();
+    (
+        (2.0 * point[0] + (point[1] - 13.0)) / root,
+        (2.0 * (point[1] - 13.0) - point[0]) / root,
+    )
+}
+
+/// Где мост поперёк ручья: середина его ширины вдоль ручья.
+const BRIDGE_U: f64 = 11.0;
+/// Берег под мостом: поперёк ручья `d` и высота земли.
+const BANK_D: f64 = 1.9;
+const BANK_HEIGHT: f64 = -2.1;
+
+/// Свободна ли земля под героем с серединой в `p` и на какой высоте он на ней стоит: прямоугольник
+/// героя (с запасом на сотую) не задевает ни препятствие, ни крутое или подводное место рельефа, и
+/// ни один настил не нависает над ним ниже его роста. `None` — герой здесь не помещается.
+fn ground_fit(game: &Game, hero: u32, p: [f64; 2]) -> Option<f64> {
+    const HALF: f64 = HERO_SIZE / 2.0 + 0.01;
+    let scene = scene_size(game);
+    if p[0] < HALF || p[1] < HALF || p[0] > scene.0 - HALF || p[1] > scene.1 - HALF {
+        return None;
+    }
+    let world = &game.world;
+    let rect = Footprint::flat([p[0] - HALF, p[1] - HALF], [2.0 * HALF, 2.0 * HALF]);
     let obstacle = game
         .properties
         .resolve("obstacle")
         .expect("obstacle объявлен");
-    let enemy_unit = game
-        .properties
-        .resolve("enemy_unit")
-        .expect("enemy_unit объявлен");
-    let mut statics = Vec::new();
-    let mut enemies = Vec::new();
-    for id in game.world.ids() {
-        if !game.world.flag(id, obstacle) {
-            continue;
-        }
-        if game.world.flag(id, enemy_unit) {
-            let name = game
-                .world
-                .text(id, property::NAME)
-                .expect("у врага есть имя");
-            enemies.push((name.to_string(), place_of(game, id)));
-        } else {
-            statics.push(place_of(game, id));
-        }
+    if world
+        .ids()
+        .any(|id| id != hero && world.flag(id, obstacle) && place_of(game, id).overlaps(&rect))
+    {
+        return None;
     }
-    (statics, enemies)
+    let corners = rect.corners();
+    if world
+        .terrain()
+        .walk_blocked()
+        .iter()
+        .any(|piece| polygons_overlap(piece, &corners))
+    {
+        return None;
+    }
+    let z = world.terrain().min_under(&rect);
+    let height = surface::body_height(world, hero);
+    let covered = surface::decks(world)
+        .any(|(id, place, _)| place.overlaps(&rect) && world.base_z(id) - z < height);
+    (!covered).then_some(z)
 }
 
-const HERO_SIZE: f64 = 0.6;
-const HERO_HALF: f64 = HERO_SIZE / 2.0;
-/// Шаг сетки проб; каждая проба сдвинута на полшага, чтобы не лечь на общий край двух препятствий.
-const SAMPLE: f64 = 0.1;
-const SAMPLE_OFFSET: f64 = SAMPLE / 2.0;
-
-fn sample_index(v: f64) -> i64 {
-    ((v - SAMPLE_OFFSET) / SAMPLE).round() as i64
-}
-
-fn sample_coord(i: i64) -> f64 {
-    i as f64 * SAMPLE + SAMPLE_OFFSET
-}
-
-/// Помещается ли герой серединой в `p`: его квадрат не пересекает ни одно препятствие.
-fn hero_fits(p: [f64; 2], obstacles: &[Footprint]) -> bool {
-    let hero = Footprint::flat([p[0] - HERO_HALF, p[1] - HERO_HALF], [HERO_SIZE, HERO_SIZE]);
-    let hero_box = hero.aabb();
-    obstacles.iter().all(|o| {
-        let b = o.aabb();
-        let apart = b.x >= hero_box.x + hero_box.w
-            || hero_box.x >= b.x + b.w
-            || b.y >= hero_box.y + hero_box.h
-            || hero_box.y >= b.y + b.h;
-        apart || !o.overlaps(&hero)
+/// Пересекаются ли внутренности двух выпуклых многоугольников (по теореме о разделяющей оси).
+fn polygons_overlap(a: &[[f64; 2]], b: &[[f64; 2]]) -> bool {
+    [a, b].into_iter().all(|polygon| {
+        (0..polygon.len()).all(|i| {
+            let (p, q) = (polygon[i], polygon[(i + 1) % polygon.len()]);
+            let axis = [-(q[1] - p[1]), q[0] - p[0]];
+            let span = |points: &[[f64; 2]]| {
+                points
+                    .iter()
+                    .map(|v| v[0] * axis[0] + v[1] * axis[1])
+                    .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), d| {
+                        (lo.min(d), hi.max(d))
+                    })
+            };
+            let (a_span, b_span) = (span(a), span(b));
+            a_span.1 > b_span.0 + 1e-9 && b_span.1 > a_span.0 + 1e-9
+        })
     })
 }
 
-/// Flood fill of the sample grid from `start`, never leaving the scene shrunk by the hero's half
-/// size — a discretized version of the same walk `pathfind.rs` performs for the real `walk` rule.
-fn flood_fill(obstacles: &[Footprint], start: [f64; 2], scene: (f64, f64)) -> HashSet<(i64, i64)> {
-    let (col_min, col_max) = (sample_index(HERO_HALF), sample_index(scene.0 - HERO_HALF));
-    let (row_min, row_max) = (sample_index(HERO_HALF), sample_index(scene.1 - HERO_HALF));
-    let start_idx = (sample_index(start[0]), sample_index(start[1]));
-    assert!(
-        hero_fits(
-            [sample_coord(start_idx.0), sample_coord(start_idx.1)],
-            obstacles
-        ),
-        "стартовая точка {start:?} сама внутри препятствия"
+/// Кто идёт и откуда: середина, основание и сторона квадратного тела.
+struct Stance {
+    center: [f64; 2],
+    z: f64,
+    size: f64,
+}
+
+/// Ломаная героя от его середины до `target` по поверхностям — тем поиском, что ведёт правило `walk`;
+/// `named_z` — высота цели, как у `walk_to` с третьим числом.
+fn plan_to(
+    game: &Game,
+    hero: u32,
+    caches: &mut WalkCaches,
+    target: [f64; 2],
+    named_z: Option<f64>,
+) -> Vec<[f64; 2]> {
+    let stance = Stance {
+        center: center_of(game, hero),
+        z: z_of(game, hero),
+        size: HERO_SIZE,
+    };
+    plan_from(game, hero, caches, &stance, target, named_z)
+}
+
+/// Тот же поиск для любого тела и места старта — например, для тела шире героя, чтобы измерить проход.
+fn plan_from(
+    game: &Game,
+    hero: u32,
+    caches: &mut WalkCaches,
+    stance: &Stance,
+    target: [f64; 2],
+    named_z: Option<f64>,
+) -> Vec<[f64; 2]> {
+    let world = &game.world;
+    let obstacle = game
+        .properties
+        .resolve("obstacle")
+        .expect("obstacle объявлен");
+    let decks = surface::decks(world)
+        .map(|(id, place, top)| Deck {
+            id,
+            place,
+            bottom: world.base_z(id),
+            top,
+        })
+        .collect();
+    let blockers = world
+        .ids()
+        .filter(|&id| id != hero && world.flag(id, obstacle))
+        .filter_map(|id| {
+            Some(Blocker {
+                id,
+                place: ground_footprint(world, id)?,
+                pillar: surface::pillar(world, id),
+            })
+        })
+        .collect();
+    let surfaces = Surfaces {
+        terrain: world.terrain(),
+        decks,
+        blockers,
+    };
+    let walker = Walker {
+        id: hero,
+        center: stance.center,
+        size: [stance.size, stance.size],
+        rotation: None,
+        height: surface::body_height(world, hero),
+        z: stance.z,
+    };
+    let wanted_z = named_z.unwrap_or_else(|| top_surface_height(world, target));
+    let goal = Goal {
+        point: target,
+        named_z,
+        wanted_z,
+    };
+    walk3d::plan(&surfaces, &walker, &goal, scene_size(game), caches)
+}
+
+fn reaches(path: &[[f64; 2]], target: [f64; 2]) -> bool {
+    path.last().is_some_and(|end| dist(*end, target) < 1e-6)
+}
+
+/// Убирает объекты с этими именами, как убрал бы их бой.
+fn remove_named(game: &mut Game, names: &[&str]) {
+    for name in names {
+        let id = find_named(game, name);
+        game.world.delete(id);
+    }
+}
+
+fn remove_stairs(game: &mut Game) {
+    let stairs: Vec<u32> = game
+        .world
+        .ids()
+        .filter(|&id| {
+            game.world
+                .text(id, property::NAME)
+                .is_some_and(|name| name.starts_with("stair_"))
+        })
+        .collect();
+    assert_eq!(stairs.len(), STAIR_STEPS, "ступеней лестницы");
+    for id in stairs {
+        game.world.delete(id);
+    }
+}
+
+/// Ставит героя серединой в `center`, как ставит объект вызов редактора `move_object`.
+fn put_hero(game: &mut Game, hero: u32, center: [f64; 2]) {
+    game.move_object(
+        hero,
+        [center[0] - HERO_SIZE / 2.0, center[1] - HERO_SIZE / 2.0],
+        None,
     );
-    let mut visited = HashSet::from([start_idx]);
-    let mut queue = VecDeque::from([start_idx]);
-    while let Some((cx, cy)) = queue.pop_front() {
-        for (dx, dy) in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-            let next = (cx + dx, cy + dy);
-            if next.0 < col_min
-                || next.0 > col_max
-                || next.1 < row_min
-                || next.1 > row_max
-                || visited.contains(&next)
-                || !hero_fits([sample_coord(next.0), sample_coord(next.1)], obstacles)
-            {
-                continue;
-            }
-            visited.insert(next);
-            queue.push_back(next);
-        }
-    }
-    visited
 }
 
-fn count_free(obstacles: &[Footprint], scene: (f64, f64)) -> usize {
-    let (col_min, col_max) = (sample_index(HERO_HALF), sample_index(scene.0 - HERO_HALF));
-    let (row_min, row_max) = (sample_index(HERO_HALF), sample_index(scene.1 - HERO_HALF));
-    let mut free = 0;
-    for cx in col_min..=col_max {
-        for cy in row_min..=row_max {
-            if hero_fits([sample_coord(cx), sample_coord(cy)], obstacles) {
-                free += 1;
+/// Верх холма: середина самых высоких точек рельефа и их высота.
+fn summit(game: &Game) -> ([f64; 2], f64) {
+    let terrain = game.world.terrain();
+    let (_, top) = terrain.height_range();
+    let (mut sum, mut count) = ([0.0, 0.0], 0.0);
+    for row in 0..terrain.rows() {
+        for column in 0..terrain.columns() {
+            if terrain.point_height(column, row) >= top - 0.005 {
+                sum = [sum[0] + column as f64 / 2.0, sum[1] + row as f64 / 2.0];
+                count += 1.0;
             }
         }
     }
-    free
+    ([sum[0] / count, sum[1] / count], top)
 }
 
-fn scene_size(game: &Game) -> (f64, f64) {
-    (game.scene.width as f64, game.scene.height as f64)
+const STAIR_STEPS: usize = 10;
+/// Подножие лестницы: на столько клеток по её оси назад от середины нижней ступени.
+const FOOT_BACK: f64 = 1.3;
+
+/// Ось холма вдоль стен деревни — те же 26,57°, что у ручья и стен: единичный вектор вдоль неё.
+fn along_walls() -> [f64; 2] {
+    let root = 5.0_f64.sqrt();
+    [2.0 / root, 1.0 / root]
+}
+
+/// Подножие лестницы — место на земле перед нижней ступенью; считается, пока ступени стоят.
+fn stair_foot(game: &Game) -> [f64; 2] {
+    let first = place_of(game, find_named(game, "stair_1")).center();
+    let axis = along_walls();
+    [
+        first[0] - FOOT_BACK * axis[0],
+        first[1] - FOOT_BACK * axis[1],
+    ]
+}
+
+/// Свободная земля сразу за проходом гоблина `goblin_1`, со стороны холма: отсюда начинается холмовая
+/// часть сцены.
+const HILL_GATE: [f64; 2] = [22.8, 9.4];
+/// Поляна к северу от холма: через неё идёт по земле путь от `HILL_GATE` к подножию лестницы, не задевая
+/// ни холм, ни ступени.
+const GLADE: [f64; 2] = [17.0, 2.4];
+/// Место у верхней кромки сцены, севернее нижних ступеней: отсюда к подножию лестницы ведёт ровная земля,
+/// а ступени остаются в стороне.
+const STAIR_SIDE: [f64; 2] = [9.6, 0.6];
+/// Сторона тела шире героя вдвое, которым меряется проход к подножию.
+const WIDE_BODY: f64 = 1.2;
+
+/// Наклон, круче которого пологий склон не бывает — 35° как тангенс, каким движок считает наклон.
+fn gentle_limit() -> f64 {
+    35.0_f64.to_radians().tan()
+}
+
+/// Все треугольники рельефа, как их делит движок: вершины `[x, y, z]`.
+fn triangles(terrain: &Terrain) -> Vec<[[f64; 3]; 3]> {
+    let [columns, rows] = terrain.squares();
+    (0..rows)
+        .flat_map(|row| {
+            (0..columns).flat_map(move |column| (0..2).map(move |which| (column, row, which)))
+        })
+        .map(|(column, row, which)| terrain.triangle(column, row, which))
+        .collect()
+}
+
+/// Самая нижняя и самая высокая вершина треугольника.
+fn z_range(triangle: &[[f64; 3]; 3]) -> (f64, f64) {
+    triangle
+        .iter()
+        .map(|vertex| vertex[2])
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(low, high), z| {
+            (low.min(z), high.max(z))
+        })
+}
+
+/// Треугольник рельефа, в котором лежит точка сцены: квадрат сетки режется диагональю от левой верхней
+/// вершины к правой нижней.
+fn triangle_at(terrain: &Terrain, point: [f64; 2]) -> [[f64; 3]; 3] {
+    let [columns, rows] = terrain.squares();
+    let (x, y) = (point[0] * 2.0, point[1] * 2.0);
+    let column = (x.floor() as usize).min(columns - 1);
+    let row = (y.floor() as usize).min(rows - 1);
+    let above_diagonal = x - column as f64 >= y - row as f64;
+    terrain.triangle(column, row, usize::from(!above_diagonal))
+}
+
+fn centroid(triangle: &[[f64; 3]; 3]) -> [f64; 2] {
+    [
+        triangle.iter().map(|v| v[0]).sum::<f64>() / 3.0,
+        triangle.iter().map(|v| v[1]).sum::<f64>() / 3.0,
+    ]
 }
 
 /// «Фаза 2.5», требование 16: три прохода деревни идут цепочкой от входа героя к кузнице — гоблин в
@@ -267,10 +459,11 @@ fn rpg_loads_without_errors_or_warnings() {
     let game = load();
     assert!(game.scene.is_3d());
     assert!(!game.scene.y_sort);
+    assert!(!game.world.terrain().is_trivial());
 }
 
-/// Требование 32: из `images` уходят все картинки, кроме травы и кольца отметки, и файлов в папке
-/// тоже остаётся только два.
+/// Требование 32 фазы 15: из `images` уходят все картинки, кроме травы и кольца отметки, и файлов в
+/// папке тоже остаётся только два.
 #[test]
 fn only_the_grass_and_the_marker_ring_remain_as_images() {
     let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
@@ -291,10 +484,393 @@ fn only_the_grass_and_the_marker_ring_remain_as_images() {
     assert_eq!(files, ["grass.png", "marker.png"]);
 }
 
-/// Требование 33: каждый кусок стены — одна повёрнутая коробка толщиной 0,5 нужной высоты; никаких
-/// лесенок и полосок картинок.
+/// Требование 48: файл рельефа — 49 строк по 65 чисел (две высоты сцены плюс одна и две ширины плюс
+/// одна), числа до сотых, вода на своём месте, лишних ключей нет.
 #[test]
-fn every_wall_is_one_turned_box_half_a_cell_thick() {
+fn the_terrain_file_is_49_rows_of_65_numbers_in_hundredths_with_calm_water() {
+    let terrain: Json = serde_json::from_str(&read("terrain.json")).expect("terrain.json — JSON");
+    let keys: Vec<&String> = terrain.as_object().expect("объект").keys().collect();
+    assert_eq!(keys.len(), 2, "только heights и water: {keys:?}");
+    let rows = terrain["heights"].as_array().expect("heights");
+    assert_eq!(rows.len(), 49);
+    for (index, row) in rows.iter().enumerate() {
+        let row = row.as_array().expect("строка heights");
+        assert_eq!(row.len(), 65, "строка {index}");
+        for value in row {
+            let number = value.as_f64().expect("высота — число");
+            assert!(
+                ((number * 100.0).round() / 100.0 - number).abs() < 1e-9,
+                "строка {index}: {number} — не сотые"
+            );
+        }
+    }
+    let water = &terrain["water"];
+    let level = water["level"].as_f64().expect("water.level");
+    assert!((-2.4..=-2.2).contains(&level), "уровень воды {level}");
+    assert!(water["color"].as_str().is_some_and(|c| c.starts_with('#')));
+    let game = load();
+    assert_eq!(game.world.terrain().columns(), 65);
+    assert_eq!(game.world.terrain().rows(), 49);
+}
+
+/// Требование 52: полос ручья и невидимых препятствий воды нет — воду и берега держит рельеф.
+#[test]
+fn the_stream_strips_and_the_invisible_water_are_gone() {
+    let game = load();
+    for id in game.world.ids() {
+        let name = game.world.text(id, property::NAME).unwrap_or_default();
+        assert!(
+            !name.starts_with("stream_") && !name.starts_with("water_"),
+            "{name} остался"
+        );
+    }
+}
+
+/// Требования 49–50: овраг с ручьём по прямой `y = x / 2 + 13`. Вода на −2,3; со стороны входа берег
+/// шириной не меньше клетки на −2,1; от входа к берегу ведёт спуск не круче 35°, остальные стенки
+/// круче 45°.
+#[test]
+fn the_ravine_holds_calm_water_a_bank_and_one_gentle_way_down() {
+    let game = load();
+    let terrain = game.world.terrain();
+    let water = terrain.water().expect("в овраге вода");
+    assert!((-2.4..=-2.2).contains(&water.level));
+
+    let height_at = |u: f64, d: f64| {
+        let p = from_stream(u, d);
+        terrain.height_at(p[0], p[1])
+    };
+    let sweep = |from: f64, to: f64| {
+        (0..=((to - from) / 0.05).round() as usize).map(move |i| from + 0.05 * i as f64)
+    };
+
+    // Берег: ровный кусок на −2,1 не уже клетки поперёк ручья.
+    let bank: Vec<f64> = sweep(0.0, 4.0)
+        .filter(|&d| (height_at(BRIDGE_U, d) - BANK_HEIGHT).abs() < 0.03)
+        .collect();
+    let width = bank.last().expect("берег есть") - bank.first().expect("берег есть");
+    assert!(width >= 1.0, "берег шириной {width}");
+    assert!(
+        bank.iter().any(|&d| (d - BANK_D).abs() < 1e-6),
+        "берег занимает d = {BANK_D}"
+    );
+
+    // Плато с обеих сторон, дно под водой.
+    assert_eq!(height_at(BRIDGE_U, -4.0), 0.0);
+    assert_eq!(height_at(BRIDGE_U, 5.0), 0.0);
+    assert!(height_at(BRIDGE_U, 0.0) < water.level, "дно под водой");
+
+    // Ниже по течению, за мостом и спуском, в овраге ходимо только ровное: ни одного склона между 0 и 45°
+    // в куске, что не под водой, — стенки круче 45°.
+    let [columns, rows] = terrain.squares();
+    let mut checked = 0;
+    for row in 0..rows {
+        for column in 0..columns {
+            for which in 0..2 {
+                let triangle = terrain.triangle(column, row, which);
+                let middle = [
+                    triangle.iter().map(|v| v[0]).sum::<f64>() / 3.0,
+                    triangle.iter().map(|v| v[1]).sum::<f64>() / 3.0,
+                ];
+                let (u, d) = to_stream(middle);
+                let top = triangle
+                    .iter()
+                    .map(|v| v[2])
+                    .fold(f64::NEG_INFINITY, f64::max);
+                let bottom = triangle.iter().map(|v| v[2]).fold(f64::INFINITY, f64::min);
+                if !(12.0..=16.0).contains(&u) || d.abs() > 4.0 {
+                    continue;
+                }
+                if top <= water.level + 0.01 || bottom >= -0.01 {
+                    continue;
+                }
+                checked += 1;
+                let slope = Terrain::slope(&triangle);
+                assert!(
+                    slope < 1e-9 || slope > 1.0 + 1e-6,
+                    "кусок земли в овраге положе 45° и не ровный: {slope} у {middle:?}"
+                );
+            }
+        }
+    }
+    assert!(checked > 20, "стенок оврага проверено {checked}");
+
+    // Спуск к берегу вдоль ручья: от плато на −2,1, круче 35° нигде.
+    let ramp: Vec<f64> = sweep(2.0, 9.5).map(|u| height_at(u, BANK_D)).collect();
+    assert!(ramp[0] > -0.05, "спуск начинается на плато: {}", ramp[0]);
+    assert!((ramp[ramp.len() - 1] - BANK_HEIGHT).abs() < 0.03);
+    let steepest = ramp
+        .windows(2)
+        .map(|pair| (pair[1] - pair[0]).abs() / 0.05)
+        .fold(0.0, f64::max);
+    assert!(steepest <= gentle_limit(), "спуск круче 35°: {steepest}");
+    assert!(
+        ramp.windows(2).all(|pair| pair[1] <= pair[0] + 1e-9),
+        "спуск только вниз"
+    );
+}
+
+/// Требование 49: спуск к берегу не круче 35° — на каждом треугольнике, по его нормали, как считает
+/// наклон движок, а не по срезам вдоль осей. Спуск — вся проходимая земля ниже плато и выше воды.
+#[test]
+fn the_way_down_to_the_water_is_at_most_35_degrees_on_every_triangle() {
+    let game = load();
+    let terrain = game.world.terrain();
+    let level = terrain.water().expect("в овраге вода").level;
+    let (mut sloped, mut steepest) = (0, 0.0_f64);
+    for triangle in triangles(terrain) {
+        let (bottom, top) = z_range(&triangle);
+        if bottom > -0.02 || top < level + 0.05 {
+            continue;
+        }
+        let slope = Terrain::slope(&triangle);
+        if slope > MAX_SLOPE + 1e-9 {
+            continue;
+        }
+        if slope > 1e-9 {
+            sloped += 1;
+        }
+        steepest = steepest.max(slope);
+    }
+    assert!(sloped > 20, "треугольников спуска: {sloped}");
+    assert!(
+        steepest <= gentle_limit(),
+        "треугольник спуска круче 35°: тангенс {steepest}"
+    );
+}
+
+/// Всюду, где можно пройти, земля не круче 35°: каждый треугольник рельефа либо не круче 35°, либо
+/// стена круче 45° (с запасом в полградуса над проходимым пределом движка).
+#[test]
+fn every_triangle_of_the_ground_is_either_gentle_or_a_wall() {
+    let game = load();
+    let wall = 45.5_f64.to_radians().tan();
+    for triangle in triangles(game.world.terrain()) {
+        let slope = Terrain::slope(&triangle);
+        let middle = centroid(&triangle);
+        assert!(
+            slope <= gentle_limit() || slope >= wall,
+            "проходимый треугольник круче 35°: тангенс {slope} у {middle:?}"
+        );
+    }
+}
+
+/// Требование 50: мост — настил-коробка поперёк оврага, без `z` в данных, стоит на плато, верх выше
+/// плато с обеих сторон не больше чем на 0,4, а над берегом до низа моста не меньше 1,9.
+#[test]
+fn the_bridge_is_a_wooden_deck_across_the_ravine_with_room_to_walk_beneath() {
+    let game = load();
+    let world = &game.world;
+    let bridge = find_named(&game, "bridge");
+    assert!(world.flag(bridge, property::DECK));
+    assert_eq!(world.shape(bridge, property::SHAPE), Some(Shape::Box));
+    let height = world.number_like(bridge, property::HEIGHT).expect("height");
+    assert!((0.2..=0.4).contains(&height), "высота моста {height}");
+    let scene: Json = serde_json::from_str(&read("scene.json")).expect("scene.json — JSON");
+    let entry = scene["objects"]
+        .as_array()
+        .expect("objects")
+        .iter()
+        .find(|o| o["name"] == "bridge")
+        .expect("мост в данных");
+    assert_eq!(
+        entry["position"].as_array().map(Vec::len),
+        Some(2),
+        "мост без z"
+    );
+
+    let place = place_of(&game, bridge);
+    let terrain = world.terrain();
+    near(
+        z_of(&game, bridge),
+        terrain.max_under(&place),
+        "низ моста — на самой высокой точке",
+    );
+    let top = surface::deck_top(world, bridge);
+    for d in [-2.4, 4.3] {
+        let p = from_stream(BRIDGE_U, d);
+        assert!(place.contains(p), "концы моста лежат на плато: d = {d}");
+        let rise = top - terrain.height_at(p[0], p[1]);
+        assert!(
+            rise <= 0.4 + 1e-9,
+            "верх моста над плато на {rise}, d = {d}"
+        );
+    }
+    let angle = world
+        .rotation(bridge, property::ROTATION)
+        .expect("rotation")
+        .angle();
+    let turn = (angle - 26.5651).rem_euclid(180.0);
+    assert!((turn - 90.0).abs() < 1e-3, "мост к ручью под {turn}°");
+    let mut under = 0;
+    for step in 0..=20 {
+        let (u, d) = (
+            BRIDGE_U - 0.9 + 0.09 * step as f64,
+            1.2 + 0.06 * step as f64,
+        );
+        let p = from_stream(u, d);
+        if (terrain.height_at(p[0], p[1]) - BANK_HEIGHT).abs() < 0.03 {
+            under += 1;
+            let clearance = z_of(&game, bridge) - BANK_HEIGHT;
+            assert!(clearance >= 1.9, "просвет над берегом {clearance}");
+        }
+    }
+    assert!(under > 5, "под мостом есть берег");
+}
+
+/// Требование 52: тропа и дальняя тропа лежат по рельефу — без склонов и воды под собой; тропа идёт
+/// от входа героя к мосту, дальняя — с моста к проходу гоблина.
+#[test]
+fn the_trails_lie_on_level_ground_and_join_the_entrance_the_bridge_and_the_first_passage() {
+    let game = load();
+    let deck = place_of(&game, find_named(&game, "bridge"));
+    let entrance = center_of(&game, find_named(&game, "hero"));
+    let passage = center_of(&game, find_named(&game, "goblin_1"));
+    let end = |id: u32, sign: f64| {
+        let half = game.world.vec2(id, property::SIZE).expect("size")[0] / 2.0;
+        let (sin, cos) = game
+            .world
+            .rotation(id, property::ROTATION)
+            .expect("rotation")
+            .sin_cos();
+        let center = center_of(&game, id);
+        [center[0] + sign * half * cos, center[1] + sign * half * sin]
+    };
+    let trail = find_named(&game, "trail");
+    let trail_far = find_named(&game, "trail_far");
+    for id in [trail, trail_far] {
+        assert!(game.world.color(id, property::COLOR).is_some());
+        assert_eq!(
+            game.world.shape(id, property::SHAPE),
+            None,
+            "плоская полоса"
+        );
+        let (low, high) = game.world.terrain().range_under(&place_of(&game, id));
+        assert!(
+            low > -0.01 && high - low < 0.05,
+            "тропа на склоне: {low}..{high}"
+        );
+        near(
+            z_of(&game, id),
+            low,
+            "тропа стоит на рельефе, а не на мосту",
+        );
+        assert!(
+            matches!(
+                surface::lies_on(&game.world, id),
+                Some(surface::Lies::Terrain { .. })
+            ),
+            "тропа лежит не по рельефу"
+        );
+    }
+    assert!(dist(end(trail, -1.0), entrance) < 0.1);
+    assert!(deck.contains(end(trail, 1.0)), "тропа не дошла до моста");
+    assert!(
+        deck.contains(end(trail_far, -1.0)),
+        "дальняя тропа не начинается на мосту"
+    );
+    assert!(dist(end(trail_far, 1.0), passage) < 0.5);
+    let marker = find_named(&game, "marker");
+    assert!(game.world.has(marker, property::IMAGE));
+}
+
+/// Требование 52: деревья, камни и кусты стоят на ровном месте выше воды — не на обрыве, не в воде и
+/// не на стенке оврага; постройки, стены и враги остались там, где были.
+#[test]
+fn trees_rocks_and_bushes_stand_on_level_ground_and_the_buildings_stay_put() {
+    let game = load();
+    let terrain = game.world.terrain();
+    let mut planted = 0;
+    for id in game.world.ids() {
+        let name = game.world.text(id, property::NAME).unwrap_or_default();
+        if !["spruce_", "birch_", "boulder_", "bush_"]
+            .iter()
+            .any(|kind| name.starts_with(kind))
+        {
+            continue;
+        }
+        planted += 1;
+        let (low, high) = terrain.range_under(&place_of(&game, id));
+        assert!(
+            low > -0.01 && high - low < 0.1,
+            "{name} на склоне: {low}..{high}"
+        );
+    }
+    assert_eq!(planted, 39, "деревья, камни и кусты деревни");
+    let obstacle = game
+        .properties
+        .resolve("obstacle")
+        .expect("obstacle объявлен");
+    for id in game.world.ids().filter(|&id| game.world.flag(id, obstacle)) {
+        let name = game.world.text(id, property::NAME).unwrap_or_default();
+        let (low, high) = terrain.range_under(&place_of(&game, id));
+        assert!(
+            low > -0.01 && high - low < 0.05,
+            "{name} стоит не на ровном месте: {low}..{high}"
+        );
+    }
+    for (name, position) in [
+        ("chertog_18", [20.0, 16.0]),
+        ("smithy_19", [27.0, 1.0]),
+        ("wall_stone_5", [21.3782, 12.3842]),
+        ("wall_log_6", [10.4098, 7.25]),
+        ("wall_palisade_7", [3.5869, 2.9643]),
+        ("wall_stone_14", [20.4098, 4.25]),
+        ("post_9", [3.0, 0.5]),
+    ] {
+        let id = find_named(&game, name);
+        assert_eq!(
+            game.world.vec2(id, property::POSITION),
+            Some(position),
+            "{name}"
+        );
+    }
+}
+
+/// Требование 52: правки хозяина в `scene.json` сохранены как есть.
+#[test]
+fn the_owners_edits_of_the_izba_and_the_palisade_stay_as_written() {
+    let game = load();
+    let izba = find_named(&game, "izba_17");
+    assert_eq!(
+        game.world.vec2(izba, property::POSITION),
+        Some([5.985, 12.0])
+    );
+    assert_eq!(game.world.vec2(izba, property::SIZE), Some([3.03, 2.0]));
+    let palisade = find_named(&game, "wall_palisade_20");
+    assert_eq!(
+        game.world.vec2(palisade, property::POSITION),
+        Some([5.6151, 7.725])
+    );
+    assert_eq!(
+        game.world.vec2(palisade, property::SIZE),
+        Some([4.64, 0.41])
+    );
+    near(
+        game.world
+            .rotation(palisade, property::ROTATION)
+            .expect("rotation")
+            .angle(),
+        171.0,
+        "поворот палисада",
+    );
+    assert_eq!(
+        game.world.number_like(palisade, property::HEIGHT),
+        Some(1.85)
+    );
+    let text = read("scene.json");
+    assert!(text.contains(
+        r##"{"name":"izba_17","position":[5.985, 12],"size":[3.03, 2],"shape":"box","height":2.5,"color":"#a8713e","obstacle":true}"##
+    ));
+    assert!(text.contains(
+        r##"{"name":"wall_palisade_20","position":[5.6151, 7.725],"size":[4.64, 0.41],"rotation":171,"shape":"box","height":1.85,"color":"#a06d3b","obstacle":true}"##
+    ));
+}
+
+/// Требование 33 фазы 15: каждый кусок стены — одна повёрнутая коробка нужной высоты; никаких лесенок
+/// и полосок картинок. Палисад `wall_palisade_20` хозяин правил сам — у него только коробка и высота.
+#[test]
+fn every_wall_is_one_box() {
     let game = load();
     let mut walls = 0;
     for id in game.world.ids() {
@@ -315,6 +891,14 @@ fn every_wall_is_one_turned_box_half_a_cell_thick() {
             Some(Shape::Box),
             "{name}"
         );
+        assert!(
+            game.world
+                .flag(id, game.properties.resolve("obstacle").unwrap()),
+            "{name}"
+        );
+        if name == "wall_palisade_20" {
+            continue;
+        }
         let size = game.world.vec2(id, property::SIZE).expect("size");
         assert!((size[1] - 0.5).abs() < 1e-9, "{name}: толщина {}", size[1]);
         let rotation = game
@@ -336,16 +920,11 @@ fn every_wall_is_one_turned_box_half_a_cell_thick() {
             _ => 2.4,
         };
         assert_eq!(height, expected, "{name}");
-        assert!(
-            game.world
-                .flag(id, game.properties.resolve("obstacle").unwrap()),
-            "{name}"
-        );
     }
     assert_eq!(walls, 8, "восемь кусков стен деревни");
 }
 
-/// Требования 33: фигуры деревни — что и на каких прямоугольниках.
+/// Требования 33 фазы 15: фигуры деревни — что и на каких прямоугольниках.
 #[test]
 fn buildings_trees_rocks_and_the_cast_are_the_prescribed_shapes() {
     let game = load();
@@ -359,7 +938,7 @@ fn buildings_trees_rocks_and_the_cast_are_the_prescribed_shapes() {
         );
         assert_eq!(game.world.vec2(id, property::SIZE), Some(size), "{name}");
     };
-    check("izba_17", Shape::Box, 2.5, [3.0, 2.0]);
+    check("izba_17", Shape::Box, 2.5, [3.03, 2.0]);
     check("smithy_19", Shape::Box, 3.0, [3.5, 2.5]);
     check("chertog_18", Shape::Box, 3.5, [4.0, 2.0]);
     check("post_8", Shape::Box, 2.6, [0.5, 0.5]);
@@ -377,283 +956,619 @@ fn buildings_trees_rocks_and_the_cast_are_the_prescribed_shapes() {
     assert_eq!(center_of(&game, find_named(&game, "orc_1")), [31.5, 6.5]);
 }
 
-/// Требование 33: ручей, мост и тропа — плоские полосы на земле, без фигур; под водой — невидимые
-/// повёрнутые препятствия.
-#[test]
-fn the_stream_the_bridge_and_the_trail_lie_flat_and_the_water_underneath_is_invisible() {
-    let game = load();
-    for name in [
-        "trail",
-        "trail_far",
-        "bridge",
-        "stream_0_water",
-        "stream_bridge_1_water",
-        "stream_2_water",
-    ] {
-        let id = find_named(&game, name);
-        assert_eq!(game.world.shape(id, property::SHAPE), None, "{name}");
-        assert!(game.world.color(id, property::COLOR).is_some(), "{name}");
-        assert!(
-            game.world.rotation(id, property::ROTATION).is_some(),
-            "{name}"
-        );
+/// Все шаги хода героя до прихода или до `max_steps`: середина и основание после каждого шага.
+fn walk_track(game: &mut Game, hero: u32, max_steps: u32) -> Vec<([f64; 2], f64)> {
+    let mut track = Vec::new();
+    for _ in 0..max_steps {
+        if game.world.vec2(hero, property::WALK_TO).is_none() {
+            break;
+        }
+        game.step(StepInput::empty());
+        track.push((center_of(game, hero), z_of(game, hero)));
     }
-    let water: Vec<u32> = game
-        .world
-        .ids()
-        .filter(|&id| {
-            game.world
-                .text(id, property::NAME)
-                .is_some_and(|n| n.starts_with("water_"))
-        })
-        .collect();
-    assert!(water.len() >= 4);
-    for id in water {
-        assert!(game.world.color(id, property::COLOR).is_none());
-        assert!(game.world.image(id, property::IMAGE).is_none());
-        assert!(game.world.rotation(id, property::ROTATION).is_some());
-        assert!(
-            game.world
-                .flag(id, game.properties.resolve("obstacle").unwrap())
-        );
-    }
+    track
 }
 
-/// Ось вдоль полосы: единичный вектор её длины и координата середины вдоль него.
-fn along(game: &Game, id: u32) -> ([f64; 2], f64) {
-    let (sin, cos) = game
-        .world
-        .rotation(id, property::ROTATION)
-        .expect("rotation")
-        .sin_cos();
-    let axis = [cos, sin];
-    let center = center_of(game, id);
-    (axis, center[0] * axis[0] + center[1] * axis[1])
-}
-
-/// Конец полосы — середина её короткой стороны: `sign` −1 — начало, +1 — конец вдоль длины.
-fn strip_end(game: &Game, id: u32, sign: f64) -> [f64; 2] {
-    let (axis, _) = along(game, id);
-    let half = game.world.vec2(id, property::SIZE).expect("size")[0] / 2.0;
-    let center = center_of(game, id);
-    [
-        center[0] + sign * half * axis[0],
-        center[1] + sign * half * axis[1],
-    ]
-}
-
-/// Требование 33: мост поперёк ручья — под прямым углом к его направлению, на его середине; щель
-/// в препятствиях воды — ровно по ширине моста вдоль ручья; тропа доходит до концов моста.
+/// Требования 50–52: от входа за мост — герой идёт по мосту, стоит на его верху, за мостом сходит на
+/// плато; в овраг и воду не спускается.
 #[test]
-fn the_bridge_lies_across_the_stream_and_the_trail_reaches_both_of_its_ends() {
-    let game = load();
-    let stream = find_named(&game, "stream_bridge_1_water");
+fn the_hero_crosses_the_ravine_by_the_bridge_and_never_leaves_its_deck_sideways() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
     let bridge = find_named(&game, "bridge");
-    let angle = |id: u32| {
-        game.world
-            .rotation(id, property::ROTATION)
-            .expect("rotation")
-            .angle()
-    };
-    let turn = (angle(bridge) - angle(stream)).rem_euclid(180.0);
-    assert!((turn - 90.0).abs() < 1e-3, "мост к ручью под {turn}°");
-
-    let (stream_axis, _) = along(&game, stream);
-    let normal = [-stream_axis[1], stream_axis[0]];
-    let across = |p: [f64; 2]| p[0] * normal[0] + p[1] * normal[1];
-    let deck_center = center_of(&game, bridge);
-    let deck_half_width = game.world.vec2(bridge, property::SIZE).expect("size")[1] / 2.0;
-    let deck_along = deck_center[0] * stream_axis[0] + deck_center[1] * stream_axis[1];
-    assert!(
-        (across(deck_center) - across(center_of(&game, find_named(&game, "water_2")))).abs() < 0.1,
-        "мост стоит не на середине ручья"
-    );
-
-    let (before, before_along) = along(&game, find_named(&game, "water_2"));
-    let (after, after_along) = along(&game, find_named(&game, "water_1"));
-    assert_eq!((before, after), (stream_axis, stream_axis));
-    let half_length = |name: &str| {
-        game.world
-            .vec2(find_named(&game, name), property::SIZE)
-            .expect("size")[0]
-            / 2.0
-    };
-    assert!(
-        (before_along + half_length("water_2") - (deck_along - deck_half_width)).abs() < 1e-3,
-        "вода до моста кончается не у его края"
-    );
-    assert!(
-        (after_along - half_length("water_1") - (deck_along + deck_half_width)).abs() < 1e-3,
-        "вода за мостом начинается не у его края"
-    );
-
     let deck = place_of(&game, bridge);
-    let trail = find_named(&game, "trail");
-    let trail_far = find_named(&game, "trail_far");
-    let entrance = center_of(&game, find_named(&game, "hero"));
-    assert!(dist(strip_end(&game, trail, -1.0), entrance) < 0.1);
-    assert!(
-        deck.contains(strip_end(&game, trail, 1.0)),
-        "тропа не дошла до моста"
-    );
-    assert!(
-        deck.contains(strip_end(&game, trail_far, -1.0)),
-        "дальняя тропа не начинается на мосту"
-    );
-    let passage = center_of(&game, find_named(&game, "goblin_1"));
-    assert!(dist(strip_end(&game, trail_far, 1.0), passage) < 0.5);
+    let top = surface::deck_top(&game.world, bridge);
+    let target = from_stream(12.0, -4.5);
+    game.world.set_walk_to(hero, target, None);
+    let track = walk_track(&mut game, hero, 4000);
+    let (end, end_z) = *track.last().expect("герой шёл");
+    assert!(game.world.vec2(hero, property::WALK_TO).is_none(), "дошёл");
+    assert!(dist(end, target) < 1e-6, "{end:?}");
+    near(end_z, 0.0, "за мостом герой на плато");
+    let mut on_the_bridge = 0;
+    for (center, z) in &track {
+        assert!(*z > -0.01, "герой не спускается в овраг: z = {z}");
+        let (u, d) = to_stream(*center);
+        if (-1.2..=1.2).contains(&d) {
+            on_the_bridge += 1;
+            near(*z, top, "над ручьём герой на верху моста");
+            assert!(
+                deck.contains(*center),
+                "над ручьём герой в пределах моста: {center:?}"
+            );
+            assert!((BRIDGE_U - 0.95..=BRIDGE_U + 0.95).contains(&u), "u = {u}");
+        }
+    }
+    assert!(on_the_bridge > 10, "герой прошёл по мосту: {on_the_bridge}");
 }
 
-/// Требование 33: под водой препятствия, под мостом их нет — квадрат героя, целиком стоящий на воде
-/// у моста, пересекает препятствие воды или стоит на настиле, а сквозь воду по обе стороны от моста
-/// не пройти. Пересечения — повёрнутых прямоугольников (`footprint`).
+/// Требования 50, 49: от входа к берегу по другую сторону моста герой спускается по пологому спуску,
+/// проходит под мостом по берегу на его высоте и в воду не заходит.
 #[test]
-fn the_water_beside_the_bridge_is_impassable() {
-    let game = load();
-    let (statics, _enemies) = obstacles_by_kind(&game);
-    let scene = scene_size(&game);
-    let water = place_of(&game, find_named(&game, "stream_bridge_1_water"));
-    let deck = place_of(&game, find_named(&game, "bridge"));
-    let obstacles: Vec<Footprint> = game
-        .world
-        .ids()
-        .filter(|&id| {
-            game.world
-                .text(id, property::NAME)
-                .is_some_and(|name| name.starts_with("water_"))
-        })
-        .map(|id| place_of(&game, id))
-        .collect();
-    let stands_in = |outer: &Footprint, hero: &Footprint| {
-        hero.corners().iter().all(|corner| outer.contains(*corner))
-    };
+fn the_hero_walks_down_the_ramp_and_along_the_bank_under_the_bridge() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    let target = from_stream(BRIDGE_U + 3.0, BANK_D);
+    game.world.set_walk_to(hero, target, Some(BANK_HEIGHT));
+    let track = walk_track(&mut game, hero, 4000);
+    assert!(game.world.vec2(hero, property::WALK_TO).is_none(), "дошёл");
+    let (end, end_z) = *track.last().expect("герой шёл");
+    assert!(dist(end, target) < 1e-6, "{end:?}");
+    near(end_z, BANK_HEIGHT, "на берегу");
+    let mut lowest = 0.0_f64;
+    let mut passed_under = false;
+    let mut went_down = false;
+    for (center, z) in &track {
+        lowest = lowest.min(*z);
+        let (u, _) = to_stream(*center);
+        if *z < -1.0 {
+            went_down = true;
+        }
+        if (BRIDGE_U - 0.9..=BRIDGE_U + 0.9).contains(&u) {
+            assert!(
+                !went_down || *z < -2.0,
+                "под мостом герой на берегу: z = {z}, u = {u}"
+            );
+            passed_under |= *z < -2.0;
+        }
+    }
+    assert!(passed_under, "герой прошёл под мостом");
     assert!(
-        hero_fits(deck.center(), &statics),
-        "на середине моста герой не помещается"
+        lowest >= BANK_HEIGHT - 0.05,
+        "герой не зашёл в воду: {lowest}"
     );
-    let (col_min, col_max) = (sample_index(HERO_HALF), sample_index(scene.0 - HERO_HALF));
-    let (row_min, row_max) = (sample_index(HERO_HALF), sample_index(scene.1 - HERO_HALF));
-    let (mut on_the_deck, mut in_the_water) = (0, 0);
-    for cx in col_min..=col_max {
-        for cy in row_min..=row_max {
-            let p = [sample_coord(cx), sample_coord(cy)];
-            let hero =
-                Footprint::flat([p[0] - HERO_HALF, p[1] - HERO_HALF], [HERO_SIZE, HERO_SIZE]);
-            if !stands_in(&water, &hero) {
-                continue;
-            }
-            if obstacles.iter().any(|obstacle| obstacle.overlaps(&hero)) {
-                in_the_water += 1;
-            } else {
-                assert!(
-                    stands_in(&deck, &hero),
-                    "герой целиком на воде в {p:?}, не на мосту и не в препятствии"
+}
+
+/// Требование 20: щелчок по мосту без высоты ведёт на мост, а по воде — к кромке воды.
+#[test]
+fn a_click_on_the_bridge_leads_onto_it_and_a_click_on_the_water_ends_at_its_edge() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    let bridge = find_named(&game, "bridge");
+    let on_the_deck = from_stream(BRIDGE_U, BANK_D);
+    game.world.set_walk_to(hero, on_the_deck, None);
+    walk_track(&mut game, hero, 4000);
+    near(
+        z_of(&game, hero),
+        surface::deck_top(&game.world, bridge),
+        "на мосту",
+    );
+
+    let mut game = load();
+    let water = from_stream(5.0, -0.2);
+    game.world.set_walk_to(hero, water, None);
+    let track = walk_track(&mut game, hero, 4000);
+    let (end, end_z) = *track.last().expect("герой шёл");
+    assert!(end_z > -2.15, "герой не в воде: {end_z}");
+    let (_, d) = to_stream(end);
+    assert!(
+        d > 0.3,
+        "герой встал у кромки воды со своей стороны: d = {d}"
+    );
+    assert!(track.iter().all(|(_, z)| *z > -2.15));
+}
+
+/// Требование 49: вброд не пройти — без моста от входа на другую сторону ручья не попасть.
+#[test]
+fn without_the_bridge_there_is_no_way_across_the_water() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    let bridge = find_named(&game, "bridge");
+    game.world.delete(bridge);
+    let target = from_stream(12.0, -4.5);
+    game.world.set_walk_to(hero, target, None);
+    let track = walk_track(&mut game, hero, 3000);
+    let (end, end_z) = *track.last().expect("герой шёл");
+    let (_, d) = to_stream(end);
+    assert!(d > 0.3, "герой остался по свою сторону ручья: d = {d}");
+    assert!(end_z >= BANK_HEIGHT - 0.05, "и не в воде: {end_z}");
+    assert!(
+        dist(end, target) > 3.0,
+        "цель по ту сторону недостижима, герой у берега: {end:?}"
+    );
+}
+
+/// Середина героя у моста или на нём: там основание меняется ступенькой, а не склоном.
+fn bridge_edge(bridge: &Footprint, center: [f64; 2]) -> bool {
+    let half = HERO_SIZE / 2.0 + 0.2;
+    bridge.overlaps(&Footprint::flat(
+        [center[0] - half, center[1] - half],
+        [2.0 * half, 2.0 * half],
+    ))
+}
+
+/// Требование 51: на вершину холма герой поднимается по склону — без лестницы, пешком по пологой
+/// стороне; лестница не нужна, чтобы подняться.
+#[test]
+fn the_hero_climbs_to_the_top_of_the_hill_by_the_gentle_slope() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    remove_named(&mut game, &ENEMY_CHAIN);
+    remove_stairs(&mut game);
+    let (top, height) = summit(&game);
+    game.world.set_walk_to(hero, top, None);
+    let track = walk_track(&mut game, hero, 6000);
+    assert!(game.world.vec2(hero, property::WALK_TO).is_none(), "дошёл");
+    let (end, end_z) = *track.last().expect("герой шёл");
+    assert!(dist(end, top) < 1e-6, "{end:?}");
+    near(end_z, height, "на вершине холма");
+    let bridge = place_of(&game, find_named(&game, "bridge"));
+    let steepest_step = track
+        .windows(2)
+        .filter(|pair| !pair.iter().any(|(center, _)| bridge_edge(&bridge, *center)))
+        .map(|pair| (pair[1].1 - pair[0].1).abs() / dist(pair[0].0, pair[1].0).max(1e-9))
+        .fold(0.0, f64::max);
+    assert!(
+        steepest_step <= 1.0 + 1e-9,
+        "герой шёл по склону положе 45°: {steepest_step}"
+    );
+}
+
+/// Требование 51: обрыв круче 60°, склон с другой стороны — не круче 35°; вдоль оси холма от середины
+/// вершины в обе стороны. По обрыву не пройти: на середине его высоты герою негде встать.
+#[test]
+fn the_hill_has_a_gentle_slope_on_one_side_and_a_cliff_on_the_other() {
+    let game = load();
+    let hero = find_named(&game, "hero");
+    let terrain = game.world.terrain();
+    let (top, height) = summit(&game);
+    assert!((3.0..=4.0).contains(&height), "высота холма {height}");
+    let axis = along_walls();
+    // Вдоль оси: от вершины до её края (высота ниже вершины больше, чем на 0,02) и до подножия
+    // (ниже 0,05); горизонталь между краем и подножием.
+    let profile = |sign: f64| -> Vec<f64> {
+        (0..400)
+            .map(|i| {
+                let t = 0.05 * i as f64;
+                terrain.height_at(top[0] + sign * axis[0] * t, top[1] + sign * axis[1] * t)
+            })
+            .collect()
+    };
+    for (sign, name) in [(1.0, "склон"), (-1.0, "обрыв")] {
+        let heights = profile(sign);
+        let edge = heights
+            .iter()
+            .position(|&h| h < height - 0.02)
+            .expect("край вершины");
+        let foot = heights.iter().position(|&h| h < 0.05).expect("подножие");
+        let run = (foot - edge) as f64 * 0.05;
+        let angle = (height / run).atan().to_degrees();
+        if sign > 0.0 {
+            assert!(angle <= 35.0, "{name} круче 35°: {angle}° на {run} клетках");
+        } else {
+            assert!(angle > 60.0, "{name} положе 60°: {angle}° на {run} клетках");
+            for level in [1.0, 2.0] {
+                let at = heights
+                    .iter()
+                    .position(|&h| h < level)
+                    .expect("обрыв доходит до земли");
+                let t = 0.05 * at as f64;
+                let point = [top[0] - axis[0] * t, top[1] - axis[1] * t];
+                assert_eq!(
+                    ground_fit(&game, hero, point),
+                    None,
+                    "на обрыве, на высоте {level}, герой не встаёт: {point:?}"
                 );
-                on_the_deck += 1;
             }
         }
     }
-    assert!(on_the_deck > 0, "на мосту герою негде встать");
+}
+
+/// Требование 51: пологий склон холма не круче 35° — на каждом треугольнике, по его нормали, а не по
+/// срезу вдоль оси. Лестницы нет, единственный подъём — склон: по каким треугольникам, задетым телом
+/// героя, он поднимается с земли на вершину, ни один не круче 35°.
+#[test]
+fn every_triangle_the_hero_climbs_the_hill_by_is_at_most_35_degrees() {
+    let mut game = load();
+    let (top, height) = summit(&game);
+    let hero = find_named(&game, "hero");
+    remove_named(&mut game, &ENEMY_CHAIN);
+    remove_stairs(&mut game);
+    put_hero(&mut game, hero, HILL_GATE);
+    let track = walk_to_and_track(&mut game, hero, top);
+    near(track.last().expect("герой шёл").1, height, "на вершине");
+    let terrain = game.world.terrain();
+    let half = HERO_SIZE / 2.0;
+    let mut climbed = Vec::new();
+    for (center, _) in &track {
+        for (dx, dy) in [
+            (0.0, 0.0),
+            (-half, -half),
+            (half, -half),
+            (-half, half),
+            (half, half),
+        ] {
+            let triangle = triangle_at(terrain, [center[0] + dx, center[1] + dy]);
+            let slope = Terrain::slope(&triangle);
+            assert!(
+                slope <= gentle_limit(),
+                "герой встал на треугольник круче 35° у {center:?}: тангенс {slope}"
+            );
+            if slope > 1e-9 && !climbed.contains(&triangle) {
+                climbed.push(triangle);
+            }
+        }
+    }
     assert!(
-        in_the_water > 0,
-        "препятствия воды не мешают ни одной пробе"
+        climbed.len() > 20,
+        "треугольников склона: {}",
+        climbed.len()
     );
 }
 
-#[test]
-fn every_walkable_place_is_reachable_from_the_entrance_without_any_enemy() {
-    let game = load();
-    let (statics, _enemies) = obstacles_by_kind(&game);
-    let hero = find_named(&game, "hero");
-    let scene = scene_size(&game);
-    let visited = flood_fill(&statics, center_of(&game, hero), scene);
-    let free = count_free(&statics, scene);
-    assert_eq!(
-        visited.len(),
-        free,
-        "без врагов из входа должно быть достижимо каждое место, где помещается герой: дошёл до {} проб из {}",
-        visited.len(),
-        free
-    );
+fn stair_ids(game: &Game) -> Vec<u32> {
+    (1..=STAIR_STEPS)
+        .map(|n| find_named(game, &format!("stair_{n}")))
+        .collect()
 }
 
+/// Требование 51: лестница — ряд настилов-коробок с `z` в данных, каждая ступень выше предыдущей на
+/// 0,3 и не уже 1,2; верх нижней — не выше рельефа у её края больше чем на 0,3, верх верхней —
+/// вровень с вершиной обрыва.
 #[test]
-fn the_forge_yard_is_unreachable_while_all_enemies_stand() {
+fn the_stair_is_a_row_of_decks_each_three_tenths_above_the_last() {
     let game = load();
-    let (statics, enemies) = obstacles_by_kind(&game);
-    let hero = find_named(&game, "hero");
-    let start = center_of(&game, hero);
-    let scene = scene_size(&game);
-
-    let without_enemies = flood_fill(&statics, start, scene);
-    let mut everything = statics;
-    everything.extend(enemies.into_iter().map(|(_, place)| place));
-    let with_enemies = flood_fill(&everything, start, scene);
-    for p in FORGE_YARD_SAMPLES {
-        let idx = (sample_index(p[0]), sample_index(p[1]));
-        assert!(
-            without_enemies.contains(&idx),
-            "точка двора {p:?} должна быть достижима без врагов, иначе проверка пуста"
+    let world = &game.world;
+    let steps = stair_ids(&game);
+    let (_, height) = summit(&game);
+    let scene: Json = serde_json::from_str(&read("scene.json")).expect("scene.json — JSON");
+    for (index, &id) in steps.iter().enumerate() {
+        let name = format!("stair_{}", index + 1);
+        assert!(world.flag(id, property::DECK), "{name}");
+        assert_eq!(world.shape(id, property::SHAPE), Some(Shape::Box), "{name}");
+        let size = world.vec2(id, property::SIZE).expect("size");
+        assert!(size[1] >= 1.2, "{name}: ширина {}", size[1]);
+        let entry = scene["objects"]
+            .as_array()
+            .expect("objects")
+            .iter()
+            .find(|o| o["name"] == name.as_str())
+            .expect("ступень в данных");
+        assert_eq!(
+            entry["position"].as_array().map(Vec::len),
+            Some(3),
+            "{name}: z в данных"
         );
+        near(
+            surface::deck_top(world, id),
+            0.3 * (index + 1) as f64,
+            &format!("верх ступени {name}"),
+        );
+    }
+    let lowest = place_of(&game, steps[0]);
+    let ground = world.terrain().max_under(&lowest);
+    assert!(surface::deck_top(world, steps[0]) - ground <= 0.3 + 1e-9);
+    assert!((surface::deck_top(world, steps[STAIR_STEPS - 1]) - height).abs() < 0.05);
+}
+
+/// Основания героя по порядку, без повторов подряд: так видно, на каких высотах он стоял.
+fn distinct_levels(track: &[([f64; 2], f64)]) -> Vec<f64> {
+    let mut levels: Vec<f64> = Vec::new();
+    for (_, z) in track {
+        if levels.last().is_none_or(|last| (z - last).abs() > 1e-9) {
+            levels.push(*z);
+        }
+    }
+    levels
+}
+
+/// Герой идёт к `target` настоящими шагами движка и приходит точно в него; след — середина и основание после
+/// каждого шага.
+fn walk_to_and_track(game: &mut Game, hero: u32, target: [f64; 2]) -> Vec<([f64; 2], f64)> {
+    game.world.set_walk_to(hero, target, None);
+    let track = walk_track(game, hero, 6000);
+    assert!(game.world.vec2(hero, property::WALK_TO).is_none(), "дошёл");
+    assert!(
+        dist(center_of(game, hero), target) < 1e-6,
+        "герой у цели {target:?}"
+    );
+    track
+}
+
+/// Требование 51: на обрыв ведёт лестница, и к её подножию подходят снизу, по земле. Врагов нет, герой
+/// стоит на свободной земле сразу за проходом гоблина; через поляну севернее холма и место у верхней
+/// кромки сцены он идёт к подножию — не поднимаясь ни на холм, ни на ступени, — а дальше по лестнице
+/// поднимается на верх обрыва: основание растёт ступенями по 0,3.
+#[test]
+fn the_hero_comes_to_the_foot_of_the_stair_on_the_ground_and_climbs_it_by_steps_of_three_tenths() {
+    let mut game = load();
+    let (top, height) = summit(&game);
+    let hero = find_named(&game, "hero");
+    remove_named(&mut game, &ENEMY_CHAIN);
+    let foot = stair_foot(&game);
+    for place in [HILL_GATE, GLADE, STAIR_SIDE, foot] {
+        assert_eq!(
+            ground_fit(&game, hero, place),
+            Some(0.0),
+            "на ровной земле {place:?} герой встаёт"
+        );
+    }
+    put_hero(&mut game, hero, HILL_GATE);
+
+    let mut approach = Vec::new();
+    for waypoint in [GLADE, STAIR_SIDE, foot] {
+        approach.extend(walk_to_and_track(&mut game, hero, waypoint));
+    }
+    let highest = approach.iter().map(|(_, z)| *z).fold(0.0, f64::max);
+    assert!(
+        highest < 0.1,
+        "по пути к подножию герой не поднимался на холм и на ступени: {highest}"
+    );
+    near(
+        approach.last().expect("герой шёл").1,
+        0.0,
+        "у подножия лестницы",
+    );
+
+    let climb = walk_to_and_track(&mut game, hero, top);
+    near(climb.last().expect("герой шёл").1, height, "на вершине");
+    let levels = distinct_levels(&climb);
+    let expected: Vec<f64> = (0..=STAIR_STEPS).map(|n| 0.3 * n as f64).collect();
+    assert_eq!(
+        levels.len(),
+        expected.len(),
+        "основание по ступеням: {levels:?}"
+    );
+    for (level, expected) in levels.iter().zip(&expected) {
+        near(*level, *expected, "ступень");
+    }
+}
+
+/// Требование 51: проход к подножию лестницы не уже 1,2 клетки. Тело в 1,2 клетки идёт от места за
+/// проходом гоблина к подножию, а от верхней кромки сцены до ближайшего угла любой ступени — не меньше
+/// 1,2: между кромкой и лестницей есть где пройти.
+#[test]
+fn the_passage_to_the_foot_of_the_stair_is_at_least_1_2_wide() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    remove_named(&mut game, &ENEMY_CHAIN);
+    let foot = stair_foot(&game);
+    let wide = Stance {
+        center: HILL_GATE,
+        z: 0.0,
+        size: WIDE_BODY,
+    };
+    let path = plan_from(&game, hero, &mut WalkCaches::new(), &wide, foot, None);
+    assert!(
+        reaches(&path, foot),
+        "тело в {WIDE_BODY} клетки не доходит до подножия {foot:?}"
+    );
+    for (index, id) in stair_ids(&game).into_iter().enumerate() {
+        let nearest = place_of(&game, id)
+            .corners()
+            .iter()
+            .map(|corner| corner[1])
+            .fold(f64::INFINITY, f64::min);
         assert!(
-            !with_enemies.contains(&idx),
-            "двор кузницы {p:?} достижим, хотя все враги живы"
+            nearest >= WIDE_BODY,
+            "ступень {} в {nearest} от верхней кромки сцены",
+            index + 1
         );
     }
 }
 
-fn obstacles_with(
-    statics: &[Footprint],
-    enemies: &[(String, Footprint)],
-    alive: &[bool; 3],
-) -> Vec<(u32, Footprint)> {
-    let mut obstacles: Vec<(u32, Footprint)> = statics
-        .iter()
-        .enumerate()
-        .map(|(i, place)| (i as u32, *place))
-        .collect();
-    for (i, name) in ENEMY_CHAIN.iter().enumerate() {
-        if !alive[i] {
+/// Герой стоит у подножия и идёт на вершину холма; `with_stairs = false` — лестница убрана.
+fn climb_from_the_foot(with_stairs: bool) -> Vec<([f64; 2], f64)> {
+    let mut game = load();
+    let (top, height) = summit(&game);
+    let hero = find_named(&game, "hero");
+    remove_named(&mut game, &ENEMY_CHAIN);
+    let foot = stair_foot(&game);
+    if !with_stairs {
+        remove_stairs(&mut game);
+    }
+    put_hero(&mut game, hero, foot);
+    let track = walk_to_and_track(&mut game, hero, top);
+    near(track.last().expect("герой шёл").1, height, "на вершине");
+    track
+}
+
+/// Требование 51: прямо по обрыву пути нет. Без лестницы из подножия к вершине герой идёт в обход, по
+/// пологому склону, — заметно дольше, чем по лестнице, — и нигде не круче 45°.
+#[test]
+fn without_the_stair_there_is_no_way_up_the_cliff_only_the_long_way_round() {
+    let by_stairs = climb_from_the_foot(true);
+    let around = climb_from_the_foot(false);
+    assert!(
+        around.len() * 2 > 3 * by_stairs.len(),
+        "без лестницы в обход: {} шагов против {}",
+        around.len(),
+        by_stairs.len()
+    );
+    let steepest = around
+        .windows(2)
+        .map(|pair| (pair[1].1 - pair[0].1).abs() / dist(pair[0].0, pair[1].0).max(1e-9))
+        .fold(0.0, f64::max);
+    assert!(
+        steepest <= 1.0 + 1e-9,
+        "без лестницы герой шёл по круче 45°: {steepest}"
+    );
+}
+
+/// `scene.json` ролевой игры с лестницей, сдвинутой целиком на `shift` клеток.
+fn scene_with_the_stair_moved(shift: [f64; 2]) -> String {
+    let mut scene: Json = serde_json::from_str(&read("scene.json")).expect("scene.json — JSON");
+    let mut moved = 0;
+    for object in scene["objects"].as_array_mut().expect("objects") {
+        if !object["name"]
+            .as_str()
+            .is_some_and(|name| name.starts_with("stair_"))
+        {
             continue;
         }
-        let (_, place) = enemies
-            .iter()
-            .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("врага \"{name}\" нет на сцене"));
-        obstacles.push((obstacles.len() as u32, *place));
+        let position = object["position"].as_array_mut().expect("position");
+        for axis in 0..2 {
+            position[axis] = Json::from(position[axis].as_f64().expect("число") + shift[axis]);
+        }
+        moved += 1;
     }
-    obstacles
+    assert_eq!(moved, STAIR_STEPS, "ступеней лестницы");
+    scene.to_string()
+}
+
+fn length_of(from: [f64; 2], points: &[[f64; 2]]) -> f64 {
+    let mut previous = from;
+    points
+        .iter()
+        .map(|&point| {
+            let length = dist(previous, point);
+            previous = point;
+            length
+        })
+        .sum()
+}
+
+/// Ошибка ходьбы по лестнице: путь по ступеням находился, только когда лестница стояла ровно там, где
+/// её подобрали, а сдвинутая вбок на пару десятых уходил в обход вдвое длиннее. Лестница целиком
+/// сдвинута вбок (поперёк её оси и по осям сцены), и путь из подножия на вершину холма всё равно идёт по
+/// ней: не длиннее ломаной через середины ступеней больше чем на 2 %, а сам герой поднимается ступенями
+/// по 0,3.
+#[test]
+fn the_stair_moved_aside_is_still_climbed_by_the_way_through_the_middles_of_its_steps() {
+    let root = 5.0_f64.sqrt();
+    let across = [-1.0 / root, 2.0 / root];
+    let shifts = [
+        ("на месте", [0.0, 0.0]),
+        ("поперёк на 0,2", [0.2 * across[0], 0.2 * across[1]]),
+        ("поперёк на -0,2", [-0.2 * across[0], -0.2 * across[1]]),
+        ("поперёк на 0,5", [0.5 * across[0], 0.5 * across[1]]),
+        ("по x на 0,2", [0.2, 0.0]),
+        ("по x на -0,2", [-0.2, 0.0]),
+        ("по y на 0,2", [0.0, 0.2]),
+        ("по y на -0,2", [0.0, -0.2]),
+    ];
+    for (what, shift) in shifts {
+        let mut game = load_with_scene(&scene_with_the_stair_moved(shift));
+        let (top, height) = summit(&game);
+        let hero = find_named(&game, "hero");
+        remove_named(&mut game, &ENEMY_CHAIN);
+        let foot = stair_foot(&game);
+        put_hero(&mut game, hero, foot);
+        let middles: Vec<[f64; 2]> = stair_ids(&game)
+            .into_iter()
+            .map(|id| center_of(&game, id))
+            .chain([top])
+            .collect();
+        let path = plan_to(&game, hero, &mut WalkCaches::new(), top, None);
+        assert!(reaches(&path, top), "{what}: путь на вершину не дошёл");
+        let (found, through_middles) = (length_of(foot, &path), length_of(foot, &middles));
+        assert!(
+            found <= through_middles * 1.02,
+            "{what}: путь {found:.3} длиннее ломаной через середины ступеней {through_middles:.3}"
+        );
+
+        let climb = walk_to_and_track(&mut game, hero, top);
+        near(climb.last().expect("герой шёл").1, height, what);
+        let levels = distinct_levels(&climb);
+        assert_eq!(levels.len(), STAIR_STEPS + 1, "{what}: {levels:?}");
+        for (n, level) in levels.iter().enumerate() {
+            near(*level, 0.3 * n as f64, what);
+        }
+    }
+}
+
+/// Требование 53: без врагов из входа можно дойти в каждое место, где помещается герой, — по земле;
+/// поиск пути движка сверяется с независимой прикидкой: прямоугольник героя не задевает ни
+/// препятствия, ни крутые и подводные куски рельефа.
+#[test]
+fn every_walkable_place_is_reachable_from_the_entrance_without_any_enemy() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    remove_named(&mut game, &ENEMY_CHAIN);
+    let mut caches = WalkCaches::new();
+    let (mut fits, mut unreachable) = (0, Vec::new());
+    for row in 0..48 {
+        for column in 0..64 {
+            let point = [0.3 + column as f64 * 0.5, 0.3 + row as f64 * 0.5];
+            let Some(z) = ground_fit(&game, hero, point) else {
+                continue;
+            };
+            fits += 1;
+            let path = plan_to(&game, hero, &mut caches, point, Some(z));
+            if !reaches(&path, point) {
+                unreachable.push(point);
+            }
+        }
+    }
+    assert!(fits > 1000, "проверка не пуста: {fits}");
+    assert_eq!(
+        unreachable,
+        Vec::<[f64; 2]>::new(),
+        "из {fits} мест, где помещается герой, до этих не дойти"
+    );
+}
+
+/// Требование 53: двор кузницы закрыт, пока стоит хоть один враг, и открыт, когда все убиты — холм и
+/// овраг обходом не стали.
+#[test]
+fn the_forge_yard_is_unreachable_while_any_enemy_stands() {
+    let hero_start = |game: &Game| center_of(game, find_named(game, "hero"));
+    for killed in 0..ENEMY_CHAIN.len() {
+        let mut game = load();
+        let hero = find_named(&game, "hero");
+        remove_named(&mut game, &ENEMY_CHAIN[..killed]);
+        assert_eq!(hero_start(&game), [2.5, 19.5]);
+        let mut caches = WalkCaches::new();
+        for point in FORGE_YARD_SAMPLES {
+            let path = plan_to(&game, hero, &mut caches, point, None);
+            assert!(
+                !reaches(&path, point),
+                "двор кузницы {point:?} достижим, хотя стоят враги {:?}",
+                &ENEMY_CHAIN[killed..]
+            );
+        }
+    }
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    remove_named(&mut game, &ENEMY_CHAIN);
+    let mut caches = WalkCaches::new();
+    for point in FORGE_YARD_SAMPLES {
+        let path = plan_to(&game, hero, &mut caches, point, None);
+        assert!(
+            reaches(&path, point),
+            "двор {point:?} достижим, когда врагов нет"
+        );
+    }
 }
 
 /// «Фаза 2.5», требование 16, требование 34: цель каждого прохода достижима из входа тогда и только
-/// тогда, когда убиты все враги цепочки до неё включительно — настоящим поиском пути движка
-/// (`pathfind::advance`, тот же, что использует правило `walk`). Все 8 наборов убитых врагов.
+/// тогда, когда убиты все враги цепочки до неё включительно — настоящим поиском пути движка. Все 8
+/// наборов убитых врагов.
 #[test]
 fn every_passage_opens_only_when_all_enemies_up_to_it_are_gone() {
-    let game = load();
-    let (statics, enemies) = obstacles_by_kind(&game);
-    let hero = find_named(&game, "hero");
-    let start = center_of(&game, hero);
-    let scene = scene_size(&game);
-
     for mask in 0u8..(1 << ENEMY_CHAIN.len()) {
         let killed: [bool; 3] = std::array::from_fn(|i| mask & (1 << i) != 0);
-        let alive = killed.map(|gone| !gone);
-        let obstacles = obstacles_with(&statics, &enemies, &alive);
+        let mut game = load();
+        let hero = find_named(&game, "hero");
+        let gone: Vec<&str> = (0..3)
+            .filter(|&i| killed[i])
+            .map(|i| ENEMY_CHAIN[i])
+            .collect();
+        remove_named(&mut game, &gone);
+        let mut caches = WalkCaches::new();
         for (passage, target) in BEHIND_ENEMY.iter().enumerate() {
-            let mut caches = WalkCaches::new();
-            let (pos, _) = pathfind::advance(
-                hero,
-                start,
-                [HERO_SIZE, HERO_SIZE],
-                None,
-                *target,
-                obstacles.clone(),
-                scene,
-                10_000.0,
-                &mut caches,
-            );
-            let reached = dist(pos, *target) < 1e-6;
+            let path = plan_to(&game, hero, &mut caches, *target, None);
+            let reached = reaches(&path, *target);
             let expected = killed[..=passage].iter().all(|&gone| gone);
             assert_eq!(
                 reached, expected,
@@ -664,67 +1579,67 @@ fn every_passage_opens_only_when_all_enemies_up_to_it_are_gone() {
     }
 }
 
-/// Требование 34: каждый враг цепочки один (остальные убраны) перекрывает свой проход целиком — по
-/// сетке проб с одной стороны от него до другой не дойти, а без него дойти.
+/// Требование 34 фазы 15: каждый враг цепочки один (остальные убраны) перекрывает свой проход целиком —
+/// с одной стороны от него до другой не дойти, а без него дойти.
 #[test]
 fn each_enemy_alone_blocks_its_own_corridor() {
-    let game = load();
-    let (statics, enemies) = obstacles_by_kind(&game);
-    assert_eq!(
-        enemies.len(),
-        ENEMY_CHAIN.len(),
-        "враги сцены: {ENEMY_CHAIN:?}"
-    );
-    let hero = find_named(&game, "hero");
-    let entrance = center_of(&game, hero);
-    let scene = scene_size(&game);
-
     for (i, name) in ENEMY_CHAIN.iter().enumerate() {
         let before = if i == 0 {
-            entrance
+            [2.5, 19.5]
         } else {
             BEHIND_ENEMY[i - 1]
         };
         let after = BEHIND_ENEMY[i];
-        let after_idx = (sample_index(after[0]), sample_index(after[1]));
-
-        let open = flood_fill(&statics, before, scene);
-        assert!(
-            open.contains(&after_idx),
-            "без врагов из {before:?} должно быть можно дойти до {after:?}, иначе проверка пуста"
-        );
-
-        let (_, place) = enemies
-            .iter()
-            .find(|(n, _)| n == name)
-            .unwrap_or_else(|| panic!("врага \"{name}\" нет на сцене"));
-        let mut blocked = statics.clone();
-        blocked.push(*place);
-        let visited = flood_fill(&blocked, before, scene);
-        assert!(
-            !visited.contains(&after_idx),
-            "{name} один должен перекрывать свой проход: {before:?} не должно достигать {after:?}"
-        );
+        for enemy_stands in [true, false] {
+            let mut game = load();
+            let hero = find_named(&game, "hero");
+            let others: Vec<&str> = ENEMY_CHAIN
+                .iter()
+                .copied()
+                .filter(|other| other != name || !enemy_stands)
+                .collect();
+            remove_named(&mut game, &others);
+            put_hero(&mut game, hero, before);
+            let mut caches = WalkCaches::new();
+            let path = plan_to(&game, hero, &mut caches, after, None);
+            assert_eq!(
+                reaches(&path, after),
+                !enemy_stands,
+                "{name} {}: из {before:?} до {after:?}",
+                if enemy_stands {
+                    "стоит"
+                } else {
+                    "убран"
+                }
+            );
+        }
     }
 }
 
-/// Щелчок по точке тела фигуры: луч от глаза камеры через точку на теле; в записи — точка земли
-/// под курсором, не прижатая к краю сцены, и место камеры.
+/// Щелчок по точке тела фигуры: луч от глаза камеры через точку на теле; в записи — точка поверхности
+/// под курсором с высотой (рельеф, вода или верх настила) и место камеры.
 fn click_body(game: &mut Game, id: u32, height_share: f64) {
     let camera = game.camera_3d(WINDOW).expect("сцена трёхмерная");
     let body = Body::of_object(&game.world, id).expect("у объекта есть фигура");
-    let point = [body.center[0], body.center[1], body.height * height_share];
+    let point = [
+        body.center[0],
+        body.center[1],
+        body.base + body.height * height_share,
+    ];
     let window = camera.project(point).expect("тело перед камерой");
-    press(game, camera.ground_point(window));
+    let hit = pointer_hit(&game.world, &game.scene, &camera, window).expect("луч ложится на землю");
+    press(game, hit);
 }
 
+/// Щелчок по верхней поверхности в этом месте: верх настила, иначе рельеф.
 fn click_ground(game: &mut Game, cell: [f64; 2]) {
-    press(game, cell);
+    let z = top_surface_height(&game.world, cell);
+    press(game, [cell[0], cell[1], z]);
 }
 
-fn press(game: &mut Game, cell: [f64; 2]) {
+fn press(game: &mut Game, point: [f64; 3]) {
     let camera = game.camera_3d(WINDOW).expect("сцена трёхмерная");
-    game.set_cursor_ray(cell, camera.eye);
+    game.set_cursor_point(point, Some(camera.eye));
     game.key_down("MouseLeft");
     let snap = game.take_input_snapshot();
     game.step(snap);
@@ -760,7 +1675,7 @@ fn steps(game: &mut Game, n: u32) {
     }
 }
 
-/// Требования 36–37: щелчок по капсуле гоблина попадает лучом во врага, герой встаёт вплотную,
+/// Требования 36–37 фазы 15: щелчок по капсуле гоблина попадает лучом во врага, герой встаёт вплотную,
 /// бой идёт по очереди — первым бьёт враг, урон на 15-м шаге удара; повторный щелчок по тому же
 /// врагу бой не прерывает; гоблин исчезает на шаге третьего удара героя.
 #[test]
@@ -858,8 +1773,8 @@ fn clicking_a_goblins_body_walks_the_hero_adjacent_and_the_fight_runs_to_the_gob
     );
 }
 
-/// Требование 37: точка земли под курсором у капсулы лежит за ней, а герой всё равно идёт к самому
-/// врагу — откуда бы ни пришёлся щелчок по телу.
+/// Требование 37 фазы 15: точка земли под курсором у капсулы лежит за ней, а герой всё равно идёт к
+/// самому врагу — откуда бы ни пришёлся щелчок по телу.
 #[test]
 fn a_click_on_any_part_of_the_body_leads_the_hero_to_the_enemy_itself() {
     // Враг цепочки, кого убрали раньше него (проход к нему иначе закрыт), и доля высоты щелчка.
@@ -899,6 +1814,54 @@ fn a_click_on_any_part_of_the_body_leads_the_hero_to_the_enemy_itself() {
     }
 }
 
+/// Требование 28: враг за холмом щелчком не выбрать — рельеф заслоняет его. Гоблин переставлен за
+/// вершину, если смотреть с камеры игры: луч от камеры через его тело сперва встречает склон.
+#[test]
+fn a_hill_hides_an_enemy_behind_it_from_a_click() {
+    let mut game = load();
+    let goblin = find_named(&game, "goblin_1");
+    let (top, _) = summit(&game);
+    let camera = game.camera_3d(WINDOW).expect("сцена трёхмерная");
+    let away = [top[0] - camera.eye[0], top[1] - camera.eye[1]];
+    let length = away[0].hypot(away[1]);
+    let behind = [
+        top[0] + 2.0 * away[0] / length,
+        top[1] + 2.0 * away[1] / length,
+    ];
+    game.move_object(goblin, [behind[0] - 0.45, behind[1] - 0.45], None);
+    let body = Body::of_object(&game.world, goblin).expect("у объекта есть фигура");
+    let window = camera
+        .project([body.center[0], body.center[1], body.base + 0.5])
+        .expect("тело перед камерой");
+    let hit = pointer_hit(&game.world, &game.scene, &camera, window).expect("луч ложится на землю");
+    let target = game.properties.resolve("target").unwrap();
+    game.set_cursor_point(hit, Some(camera.eye));
+    game.key_down("MouseLeft");
+    let snap = game.take_input_snapshot();
+    game.step(snap);
+    assert!(!game.world.flag(goblin, target), "гоблин за холмом выбран");
+    release(&mut game);
+
+    let visible = [
+        top[0] - 6.0 * away[0] / length,
+        top[1] - 6.0 * away[1] / length,
+    ];
+    game.move_object(goblin, [visible[0] - 0.45, visible[1] - 0.45], None);
+    let body = Body::of_object(&game.world, goblin).expect("у объекта есть фигура");
+    let window = camera
+        .project([body.center[0], body.center[1], body.base + 0.5])
+        .expect("тело перед камерой");
+    let hit = pointer_hit(&game.world, &game.scene, &camera, window).expect("луч ложится на землю");
+    game.set_cursor_point(hit, Some(camera.eye));
+    game.key_down("MouseLeft");
+    let snap = game.take_input_snapshot();
+    game.step(snap);
+    assert!(
+        game.world.flag(goblin, target),
+        "гоблин перед холмом не выбран"
+    );
+}
+
 /// «Крайние случаи»: щелчок по земле посреди боя прерывает его без дальнейшего урона.
 #[test]
 fn clicking_open_ground_mid_combat_interrupts_it_without_further_damage() {
@@ -915,7 +1878,7 @@ fn clicking_open_ground_mid_combat_interrupts_it_without_further_damage() {
     assert!(hero_health < 100.0, "гоблин должен был уже ударить");
 
     release(&mut game);
-    click_ground(&mut game, [1.0, 11.0]);
+    click_ground(&mut game, [16.0, 12.0]);
     steps(&mut game, 200);
     assert_eq!(
         number(&game, goblin, "health"),
@@ -942,10 +1905,7 @@ fn hero_dying_to_the_orc_stands_at_the_entrance_the_same_step_while_the_orc_stay
     game.world.set_number(hero, health, 40.0);
     // Оба гоблина стоят раньше в той же цепочке проходов и закрыли бы путь: убираем их, как убрал
     // бы бой, чтобы проверка касалась только орка.
-    for goblin in ["goblin_1", "goblin_2"] {
-        let goblin = find_named(&game, goblin);
-        game.world.delete(goblin);
-    }
+    remove_named(&mut game, &["goblin_1", "goblin_2"]);
     click_body(&mut game, orc, 0.9);
     walk_until_arrival(&mut game, hero, 3000);
     assert!(
@@ -964,6 +1924,7 @@ fn hero_dying_to_the_orc_stands_at_the_entrance_the_same_step_while_the_orc_stay
         "встал с полным здоровьем на том же шаге"
     );
     assert_eq!(center_of(&game, hero), entrance, "и стоит у входа");
+    near(z_of(&game, hero), 0.0, "у входа на плато");
     assert_eq!(
         number(&game, orc, "health"),
         Some(40.0),
@@ -1030,7 +1991,8 @@ fn clicking_the_ground_under_the_hero_deselects_the_enemy_and_ends_combat() {
     assert_eq!(number(&game, hero, "health"), Some(100.0));
 }
 
-/// Требование 36: расстояние между прямоугольниками — по диагонали, а не наибольший зазор по осям.
+/// Требование 36 фазы 15: расстояние между прямоугольниками — по диагонали, а не наибольший зазор по
+/// осям.
 #[test]
 fn combat_distance_is_the_diagonal_not_the_larger_axis_gap() {
     let mut game = load();
@@ -1077,46 +2039,150 @@ fn combat_starts_within_the_threshold_on_a_single_axis() {
     );
 }
 
-/// «Локация»: поиск пути от входа в самый дальний угол лабиринта не дольше 5 мс в
-/// `cargo test --release` — реальные препятствия сцены, включая повёрнутые стены.
-#[test]
-fn pathfinding_to_the_farthest_free_corner_is_fast_in_release() {
-    let game = load();
-    let (statics, _enemies) = obstacles_by_kind(&game);
-    let hero = find_named(&game, "hero");
-    let start = center_of(&game, hero);
-    let scene = scene_size(&game);
-    let visited = flood_fill(&statics, start, scene);
-    let farthest = visited
-        .iter()
-        .map(|&(cx, cy)| [sample_coord(cx), sample_coord(cy)])
-        .max_by(|a, b| dist(start, *a).total_cmp(&dist(start, *b)))
-        .expect("хотя бы одна достижимая точка");
+/// Самое дальнее от входа место, куда можно дойти, если врагов нет: по длине пути на сетке через
+/// клетку.
+fn farthest_place(game: &Game, hero: u32, caches: &mut WalkCaches) -> [f64; 2] {
+    let mut best = ([0.0, 0.0], 0.0);
+    for row in 0..24 {
+        for column in 0..32 {
+            let point = [0.5 + column as f64, 0.5 + row as f64];
+            let Some(z) = ground_fit(game, hero, point) else {
+                continue;
+            };
+            let path = plan_to(game, hero, caches, point, Some(z));
+            if !reaches(&path, point) {
+                continue;
+            }
+            let start = center_of(game, hero);
+            let length: f64 = std::iter::once(start)
+                .chain(path.iter().copied())
+                .collect::<Vec<_>>()
+                .windows(2)
+                .map(|pair| dist(pair[0], pair[1]))
+                .sum();
+            if length > best.1 {
+                best = (point, length);
+            }
+        }
+    }
+    best.0
+}
 
-    let obstacles: Vec<(u32, Footprint)> = statics
-        .iter()
-        .enumerate()
-        .map(|(i, place)| (i as u32, *place))
-        .collect();
-    let mut caches = WalkCaches::new();
+/// Путь после гибели врага, найденный по полю, что подгоняли под новый набор препятствий, — тот же, что
+/// находит поиск на свежем поле: история гибелей не влияет на путь.
+#[test]
+fn a_path_after_an_enemy_dies_is_the_path_a_search_from_scratch_finds() {
+    let mut game = load();
+    let hero = find_named(&game, "hero");
+    let targets = [
+        [19.3, 0.3],
+        [16.0, 21.0],
+        [26.0, 12.0],
+        [10.0, 6.0],
+        [30.0, 2.0],
+    ];
+    let mut warm = WalkCaches::new();
+    for target in targets {
+        plan_to(&game, hero, &mut warm, target, None);
+    }
+    for name in ENEMY_CHAIN {
+        let enemy = find_named(&game, name);
+        game.world.delete(enemy);
+        for target in targets {
+            let incremental = plan_to(&game, hero, &mut warm, target, None);
+            let fresh = plan_to(&game, hero, &mut WalkCaches::new(), target, None);
+            assert_eq!(incremental, fresh, "после гибели {name}, к {target:?}");
+        }
+    }
+}
+
+/// Один шаг с приказом идти в `target`: сколько он длился. Путь ищется в этом шаге — первый шаг после
+/// приказа и после смены набора препятствий.
+fn timed_order(game: &mut Game, hero: u32, target: [f64; 2]) -> Duration {
+    game.world.set_walk_to(hero, target, None);
     let started = Instant::now();
-    pathfind::advance(
-        hero,
-        start,
-        [HERO_SIZE, HERO_SIZE],
-        None,
-        farthest,
-        obstacles,
-        scene,
-        0.0,
-        &mut caches,
+    game.step(StepInput::empty());
+    started.elapsed()
+}
+
+/// «Нефункциональные требования» фазы 17: рельеф, настилы и видимость готовятся при сборке мира, и любой
+/// отдельный поиск пути — первый после сборки, первый после гибели каждого врага, до самого дальнего места и
+/// на вершину холма, с лестницы и со входа — не дольше 5 мс в `cargo test --release`. Сборка мира
+/// меряется отдельно, вместе с загрузкой игры: не дольше 50 мс.
+#[test]
+fn pathfinding_is_ready_with_the_world_and_every_search_takes_at_most_five_milliseconds_in_release()
+{
+    let started = Instant::now();
+    let mut game = load();
+    let build = started.elapsed();
+    let hero = find_named(&game, "hero");
+
+    let mut free = load();
+    let free_hero = find_named(&free, "hero");
+    remove_named(&mut free, &ENEMY_CHAIN);
+    let (top, _) = summit(&free);
+    let farthest = if cfg!(debug_assertions) {
+        [19.3, 0.3]
+    } else {
+        farthest_place(&free, free_hero, &mut WalkCaches::new())
+    };
+    let mut caches = WalkCaches::new();
+    assert!(
+        reaches(
+            &plan_to(&free, free_hero, &mut caches, farthest, None),
+            farthest
+        ),
+        "самое дальнее место {farthest:?} достижимо"
     );
-    let elapsed = started.elapsed();
+    assert!(
+        reaches(&plan_to(&free, free_hero, &mut caches, top, None), top),
+        "вершина холма достижима"
+    );
+
+    let mut spans = vec![(
+        "первый путь после сборки мира, до самого дальнего места".to_string(),
+        timed_order(&mut game, hero, farthest),
+    )];
+    for (n, name) in ENEMY_CHAIN.iter().enumerate() {
+        let enemy = find_named(&game, name);
+        game.world.delete(enemy);
+        let shift = 0.05 * (n + 1) as f64;
+        spans.push((
+            format!("первый путь после гибели {name}"),
+            timed_order(&mut game, hero, [farthest[0] - shift, farthest[1]]),
+        ));
+    }
+    spans.push((
+        "со входа на вершину холма".to_string(),
+        timed_order(&mut game, hero, top),
+    ));
+    let foot = stair_foot(&game);
+    put_hero(&mut game, hero, HILL_GATE);
+    spans.push((
+        "с места за проходом гоблина к подножию лестницы".to_string(),
+        timed_order(&mut game, hero, foot),
+    ));
+    put_hero(&mut game, hero, foot);
+    spans.push((
+        "с подножия лестницы на вершину холма".to_string(),
+        timed_order(&mut game, hero, [top[0] + 0.05, top[1]]),
+    ));
+
+    println!("сборка мира и загрузка {build:?}");
+    for (what, elapsed) in &spans {
+        println!("{what}: {elapsed:?}");
+    }
     if !cfg!(debug_assertions) {
         assert!(
-            elapsed.as_micros() <= 5000,
-            "поиск пути до {farthest:?} занял {elapsed:?}, дольше 5 мс"
+            build.as_millis() <= 50,
+            "сборка мира с загрузкой: {build:?}, дольше 50 мс"
         );
+        for (what, elapsed) in &spans {
+            assert!(
+                elapsed.as_micros() <= 5000,
+                "{what}: {elapsed:?}, дольше 5 мс"
+            );
+        }
     }
 }
 

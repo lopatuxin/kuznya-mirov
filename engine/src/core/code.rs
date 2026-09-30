@@ -361,7 +361,12 @@ enum AnyValue {
     Bool(bool),
     Number(f64),
     Str(String),
-    Vec2 { x: f64, y: f64 },
+    /// «Рельеф»: `z` — третье поле таблицы, высота основания у `position` и высота цели у `walk_to`.
+    Vec2 {
+        x: f64,
+        y: f64,
+        z: Option<f64>,
+    },
     Pair(PairRef),
 }
 
@@ -389,7 +394,10 @@ impl FromLua for AnyValue {
             let y: f64 = table
                 .get_typed("y")
                 .map_err(|_| "пара без числового y".to_string())?;
-            return Ok(AnyValue::Vec2 { x, y });
+            let z: Option<f64> = table
+                .get_typed("z")
+                .map_err(|_| "z пары должно быть числом".to_string())?;
+            return Ok(AnyValue::Vec2 { x, y, z });
         }
         if let Ok(pair) = PairRef::from_value(value) {
             return Ok(AnyValue::Pair(pair));
@@ -515,7 +523,10 @@ fn write_property(
         }
         AnyValue::Pair(pair) => {
             let (_, [x, y]) = live_pair(world, &pair)?;
-            AnyValue::Vec2 { x, y }
+            let z = world
+                .placed_z(pair.id, pair.prop)
+                .filter(|_| matches!(prop, property::POSITION | property::WALK_TO));
+            AnyValue::Vec2 { x, y, z }
         }
         other => other,
     };
@@ -613,8 +624,17 @@ fn write_property(
             }
         },
         (PropKind::Image, _) => Err("ожидалось имя картинки строкой".to_string()),
-        (PropKind::Vec2, AnyValue::Vec2 { x, y }) => {
-            world.set_vec2(id, prop, [x, y]);
+        (PropKind::Vec2, AnyValue::Vec2 { x, y, z }) => {
+            match z {
+                None => world.set_vec2(id, prop, [x, y]),
+                Some(z) => {
+                    check_height_write(properties, prop, z)?;
+                    match prop {
+                        property::POSITION => world.set_position_exact(id, [x, y], z),
+                        _ => world.set_walk_to(id, [x, y], Some(z)),
+                    }
+                }
+            }
             if prop == property::POSITION
                 && let Some(slot) = moved.get_mut(id as usize)
             {
@@ -629,6 +649,21 @@ fn write_property(
     }
 }
 
+/// «Рельеф», требования 30, 38: третье число `position` и `walk_to` есть только в трёхмерной сцене,
+/// и это обычное число.
+fn check_height_write(properties: &PropertyTable, prop: PropertyId, z: f64) -> Result<(), String> {
+    if !properties.three_d() {
+        return Err("z есть только в трёхмерной сцене".to_string());
+    }
+    if !matches!(prop, property::POSITION | property::WALK_TO) {
+        return Err("z есть только у position и walk_to".to_string());
+    }
+    if !z.is_finite() {
+        return Err(format!("z должно быть конечным числом, получено {z}"));
+    }
+    Ok(())
+}
+
 /// «Трёхмерная сцена», «Загрузка и проверка»: что код не даёт объекту — `shape` и `height` в плоской
 /// сцене, `height` не больше нуля, `shape` вместе с `image`, `flip_x` или `opacity`.
 fn check_shape_rules(
@@ -640,7 +675,7 @@ fn check_shape_rules(
 ) -> Result<(), String> {
     let name = properties.name(prop);
     match prop {
-        property::SHAPE | property::HEIGHT if !properties.three_d() => {
+        property::SHAPE | property::HEIGHT | property::DECK if !properties.three_d() => {
             Err(format!("{name} есть только в трёхмерной сцене"))
         }
         property::HEIGHT if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
@@ -821,23 +856,31 @@ fn live_pair(world: &World, pair: &PairRef) -> Result<(u32, [f64; 2]), String> {
     Ok((id, value))
 }
 
-fn install_vec2_metatable(lua: &mut Lua, world_cell: &CtxCell, mt: &LuaTable) -> LuaResult<()> {
+fn install_vec2_metatable(
+    lua: &mut Lua,
+    world_cell: &CtxCell,
+    properties: &Rc<PropertyTable>,
+    mt: &LuaTable,
+) -> LuaResult<()> {
     let index_cell = world_cell.clone();
-    let index_fn =
-        lua.create_function(move |pair: PairRef, key: String| -> Result<f64, String> {
+    let index_fn = lua.create_function(
+        move |pair: PairRef, key: String| -> Result<Option<f64>, String> {
             let ptr = world_ptr(&index_cell)?;
             // SAFETY: see `install_object_metatable` — same call-scoped pointer discipline.
             let ctx = unsafe { &mut *ptr };
-            let (_, value) = live_pair(ctx.world, &pair)?;
+            let (id, value) = live_pair(ctx.world, &pair)?;
             match key.as_str() {
-                "x" => Ok(value[0]),
-                "y" => Ok(value[1]),
+                "x" => Ok(Some(value[0])),
+                "y" => Ok(Some(value[1])),
+                "z" => Ok(ctx.world.placed_z(id, pair.prop)),
                 other => Err(format!("у пары нет поля \"{other}\"")),
             }
-        })?;
+        },
+    )?;
     mt.set("__index", index_fn)?;
 
     let newindex_cell = world_cell.clone();
+    let newindex_properties = Rc::clone(properties);
     let newindex_fn = lua.create_function(
         move |pair: PairRef, key: String, value: LuaValue| -> Result<(), String> {
             let ptr = world_ptr(&newindex_cell)?;
@@ -850,9 +893,22 @@ fn install_vec2_metatable(lua: &mut Lua, world_cell: &CtxCell, mt: &LuaTable) ->
             match key.as_str() {
                 "x" => current[0] = value,
                 "y" => current[1] = value,
+                "z" => {
+                    check_height_write(&newindex_properties, pair.prop, value)?;
+                    match pair.prop {
+                        property::POSITION => ctx.world.set_base_z(id, value),
+                        _ => ctx.world.set_walk_to(id, current, Some(value)),
+                    }
+                    return Ok(());
+                }
                 other => return Err(format!("у пары нет поля \"{other}\"")),
             }
-            ctx.world.set_vec2(id, pair.prop, current);
+            if pair.prop == property::WALK_TO {
+                let z = ctx.world.walk_to_z(id);
+                ctx.world.set_walk_to(id, current, z);
+            } else {
+                ctx.world.set_vec2(id, pair.prop, current);
+            }
             if pair.prop == property::POSITION
                 && let Some(slot) = ctx.moved.get_mut(id as usize)
             {
@@ -1263,7 +1319,7 @@ impl Runner {
         };
 
         install_object_metatable(lua, world_cell, &env_shared, &obj_mt)?;
-        install_vec2_metatable(lua, world_cell, &vec2_mt)?;
+        install_vec2_metatable(lua, world_cell, &env_shared.properties, &vec2_mt)?;
 
         let find_fn = install_find(lua, world_cell, &env_shared)?;
         let delete_fn = install_delete(lua, world_cell)?;

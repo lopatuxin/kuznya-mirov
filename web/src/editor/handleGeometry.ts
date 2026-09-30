@@ -18,7 +18,7 @@ export type HandleGeometry = {
   tipX: Vec2 | null;
   /** Конец стрелки по `y` сцены (перенос) или вдоль глубины объекта (масштаб). */
   tipY: Vec2 | null;
-  /** Конец стрелки высоты (масштаб фигуры). */
+  /** Конец стрелки высоты: вертикальная стрелка переноса основания или высота фигуры при масштабе. */
   tipZ: Vec2 | null;
   /** Кольцо поворота ломаной по кругу. */
   ring: Vec2[];
@@ -39,15 +39,15 @@ function subtract(a: Vec2, b: Vec2): Vec2 {
 }
 
 /**
- * Сколько клеток земли в одной точке экрана на строке середины объекта — «Технические детали»:
+ * Сколько клеток земли в одной точке экрана на строке середины объекта, стоящей на высоте `height` — «Технические детали»:
  * образ шага по осям земли даёт матрицу «клетки → точки экрана», обратная к ней переводит точку
  * экрана вправо в клетки. На строке экрана расстояние до камеры вдоль взгляда одно, поэтому число
  * постоянно вдоль неё. Только `screen_point`: `ground_at` кадр не зовёт. `undefined`, если шаг не
  * виден камерой.
  */
-export function cellsPerScreenPixel(projection: SpaceProjection, ground: Vec2, center: Vec2): number | undefined {
-  const stepX = projection.screenPoint(ground[0] + JACOBIAN_STEP_CELLS, ground[1], 0);
-  const stepY = projection.screenPoint(ground[0], ground[1] + JACOBIAN_STEP_CELLS, 0);
+export function cellsPerScreenPixel(projection: SpaceProjection, ground: Vec2, center: Vec2, height: number): number | undefined {
+  const stepX = projection.screenPoint(ground[0] + JACOBIAN_STEP_CELLS, ground[1], height);
+  const stepY = projection.screenPoint(ground[0], ground[1] + JACOBIAN_STEP_CELLS, height);
   if (stepX === undefined || stepY === undefined) return undefined;
   const ax = (stepX[0] - center[0]) / JACOBIAN_STEP_CELLS;
   const ay = (stepX[1] - center[1]) / JACOBIAN_STEP_CELLS;
@@ -59,21 +59,44 @@ export function cellsPerScreenPixel(projection: SpaceProjection, ground: Vec2, c
 }
 
 /**
- * Геометрия ручек на экране для режима — «Редактор», требование 9. Перенос — стрелки по осям сцены;
- * поворот — кольцо (эллипс по двум осям земли, как круг виден камерой); масштаб — стрелки вдоль
- * сторон объекта с его поворотом и, у фигуры, вверх. `undefined`, если середину не видно камерой
- * или шаг от неё по земле не виден.
+ * Конец вертикальной стрелки переноса — «Рельеф», требование 42: вверх из середины на экране, той же
+ * длины в точках, что стрелки по земле. `undefined`, если точка выше середины не видна или вертикаль
+ * на экране нулевой длины (взгляд строго вниз).
  */
-export function computeHandleGeometry(projection: SpaceProjection, placement: ObjectPlacement, mode: HandleMode): HandleGeometry | undefined {
+export function verticalUnitOnScreen(projection: SpaceProjection, ground: Vec2, center: Vec2, baseHeight: number): Vec2 | undefined {
+  const above = projection.screenPoint(ground[0], ground[1], baseHeight + 1);
+  if (above === undefined) return undefined;
+  const unit = subtract(above, center);
+  return Math.hypot(unit[0], unit[1]) < 1e-6 ? undefined : unit;
+}
+
+function verticalTip(projection: SpaceProjection, ground: Vec2, center: Vec2, baseHeight: number): Vec2 | null {
+  const unit = verticalUnitOnScreen(projection, ground, center, baseHeight);
+  if (unit === undefined) return null;
+  const scale = ARROW_LENGTH_PX / Math.hypot(unit[0], unit[1]);
+  return [center[0] + unit[0] * scale, center[1] + unit[1] * scale];
+}
+
+/**
+ * Геометрия ручек на экране для режима — «Редактор», требование 9. Перенос — стрелки по осям сцены
+ * и зелёная вертикальная; поворот — кольцо (эллипс по двум осям земли, как круг виден камерой);
+ * масштаб — стрелки вдоль сторон объекта с его поворотом и, у фигуры, вверх. Середина и все стрелки
+ * — на высоте основания `baseHeight` («Рельеф», требование 40). `undefined`, если середину не видно
+ * камерой или шаг от неё по земле не виден.
+ */
+export function computeHandleGeometry(projection: SpaceProjection, placement: ObjectPlacement, mode: HandleMode, baseHeight: number): HandleGeometry | undefined {
   const ground = placementCenter(placement);
-  const center = projection.screenPoint(ground[0], ground[1], 0);
+  const center = projection.screenPoint(ground[0], ground[1], baseHeight);
   if (center === undefined) return undefined;
-  const cellsPerPixel = cellsPerScreenPixel(projection, ground, center);
+  const cellsPerPixel = cellsPerScreenPixel(projection, ground, center, baseHeight);
   if (cellsPerPixel === undefined) return undefined;
   const length = ARROW_LENGTH_PX * cellsPerPixel;
-  const tipAlong = (direction: Vec2): Vec2 | null => projection.screenPoint(ground[0] + direction[0] * length, ground[1] + direction[1] * length, 0) ?? null;
+  const tipAlong = (direction: Vec2): Vec2 | null =>
+    projection.screenPoint(ground[0] + direction[0] * length, ground[1] + direction[1] * length, baseHeight) ?? null;
 
-  if (mode === "translate") return { center, tipX: tipAlong([1, 0]), tipY: tipAlong([0, 1]), tipZ: null, ring: [] };
+  if (mode === "translate") {
+    return { center, tipX: tipAlong([1, 0]), tipY: tipAlong([0, 1]), tipZ: verticalTip(projection, ground, center, baseHeight), ring: [] };
+  }
   if (mode === "rotate") {
     const ringX = tipAlong([1, 0]);
     const ringY = tipAlong([0, 1]);
@@ -83,7 +106,7 @@ export function computeHandleGeometry(projection: SpaceProjection, placement: Ob
   const radians = ((placement.rotation ?? 0) * Math.PI) / 180;
   const width: Vec2 = [Math.cos(radians), Math.sin(radians)];
   const depth: Vec2 = [-Math.sin(radians), Math.cos(radians)];
-  const tipZ = placement.hasShape ? (projection.screenPoint(ground[0], ground[1], length) ?? null) : null;
+  const tipZ = placement.hasShape ? (projection.screenPoint(ground[0], ground[1], baseHeight + length) ?? null) : null;
   return { center, tipX: tipAlong(width), tipY: tipAlong(depth), tipZ, ring: [] };
 }
 

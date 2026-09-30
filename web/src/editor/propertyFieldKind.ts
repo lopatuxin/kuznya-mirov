@@ -13,7 +13,7 @@ const SHAPE_OPTIONS = ["box", "cylinder", "capsule", "sphere"] as const;
 const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
 
 /**
- * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `camera_follows`,
+ * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `deck` («Рельеф», требование 46), `camera_follows`,
  * `flip_x` (Фаза 14, требование 20) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
  * `rotation` (0/90/180/270 в плоской сцене; в трёхмерной — любое число, текстовое поле, «Фаза 15», требование 29),
  * `shape` (`box`/`cylinder`/`capsule`/`sphere`), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; объявленное свойство
@@ -30,7 +30,7 @@ export function propertyFieldKind(
   isThreeDimensionalScene: boolean,
 ): PropertyFieldKind {
   if (authorPropertyKinds[key] === "text") return { kind: "raw-text" };
-  if (key === "collides" || key === "camera_follows" || key === "flip_x" || authorPropertyKinds[key] === "flag") {
+  if (key === "collides" || key === "deck" || key === "camera_follows" || key === "flip_x" || authorPropertyKinds[key] === "flag") {
     return typeof value === "boolean" ? { kind: "checkbox" } : { kind: "text" };
   }
   if (key === "image") {

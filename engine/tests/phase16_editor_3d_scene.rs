@@ -439,6 +439,7 @@ fn transform_object_sets_what_is_named_and_show_scene_brings_the_file_back() {
         WALL,
         ObjectTransform {
             position: [3.0, 4.0],
+            z: None,
             size: [5.0, 6.0],
             height: None,
             rotation: None,
@@ -454,6 +455,7 @@ fn transform_object_sets_what_is_named_and_show_scene_brings_the_file_back() {
         WALL,
         ObjectTransform {
             position: [3.0, 4.0],
+            z: None,
             size: [5.0, 6.0],
             height: Some(4.5),
             rotation: Some(280.0),
@@ -486,6 +488,7 @@ fn transform_object_skips_a_missing_object_and_adds_a_height_a_shape_did_not_hav
     );
     let transform = ObjectTransform {
         position: [7.0, 8.0],
+        z: None,
         size: [2.0, 2.0],
         height: Some(1.0),
         rotation: None,
@@ -511,7 +514,7 @@ fn moving_an_object_of_a_three_dimensional_scene_leaves_the_game_camera_where_it
     after_one_step(&mut game);
     let before = game.camera_3d(WINDOW).expect("камера");
     assert!(near(before.target[0], 9.5, 1e-9));
-    game.move_object(HERO, [20.0, 14.0]);
+    game.move_object(HERO, [20.0, 14.0], None);
     assert_eq!(
         game.world.vec2(HERO, property::POSITION),
         Some([20.0, 14.0])
@@ -522,6 +525,7 @@ fn moving_an_object_of_a_three_dimensional_scene_leaves_the_game_camera_where_it
         HERO,
         ObjectTransform {
             position: [21.0, 15.0],
+            z: None,
             size: [1.0, 1.0],
             height: None,
             rotation: Some(10.0),
@@ -532,7 +536,7 @@ fn moving_an_object_of_a_three_dimensional_scene_leaves_the_game_camera_where_it
     let mut flat = load(FLAT, FLAT_OBJECTS);
     after_one_step(&mut flat);
     let frame = flat.camera_frame(WINDOW);
-    flat.move_object(HERO, [20.0, 14.0]);
+    flat.move_object(HERO, [20.0, 14.0], None);
     assert_ne!(flat.camera_frame(WINDOW), frame);
 }
 
@@ -556,7 +560,7 @@ fn setting_the_place_on_a_pause_puts_the_game_camera_on_the_object() {
     after_one_step(&mut game);
     let before = game.camera_3d(WINDOW).expect("камера");
 
-    game.move_object(HERO, [20.0, 14.0]);
+    game.move_object(HERO, [20.0, 14.0], None);
     assert_eq!(
         game.camera_3d(WINDOW),
         Some(before),

@@ -160,7 +160,7 @@ fn seeking_to_the_end_of_an_eighteen_thousand_step_tetris_replay_is_fast_and_cor
         if step % 15 == 0 {
             let cell = [(step % 17) as f64, (step % 27) as f64];
             game.set_cursor_cell(cell);
-            session.record_cursor(&game, cell);
+            session.record_cursor(&game);
         }
         session.step_once(
             &mut queue,

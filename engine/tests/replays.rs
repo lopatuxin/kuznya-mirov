@@ -20,6 +20,8 @@ use engine::core::value::PropKind;
 use engine::data::load::{self, parse_initial_values};
 use serde_json::Value as Json;
 
+const VIEWPORT: [f32; 2] = [800.0, 600.0];
+
 fn replays_dir() -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
     path.push("tests");
@@ -61,7 +63,12 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
         .iter()
         .map(|(name, path)| (name.clone(), read_optional(&dir.join(path))))
         .collect();
-    let (game_obj, screens_config, _warnings, _images) = load::load_rest_with_tables(
+    let terrain_text = config
+        .files
+        .terrain
+        .as_ref()
+        .and_then(|p| read_optional(&dir.join(p)));
+    let (game_obj, screens_config, _warnings, _images) = load::load_rest_with_terrain(
         &game_json,
         config,
         properties_json.as_deref(),
@@ -75,6 +82,7 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
         code_json.as_deref(),
         true,
         &table_texts,
+        terrain_text.as_deref(),
     )
     .unwrap_or_else(|e| panic!("{game}: не прошла предстартовая проверка: {e:?}"));
     (game_obj, screens_config)
@@ -84,7 +92,7 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
 enum InputEvent {
     Press(String),
     Release(String),
-    Cursor([f64; 2], Option<[f64; 3]>),
+    Cursor([f64; 3], Option<[f64; 3]>),
 }
 
 struct ReplayCheck {
@@ -105,6 +113,10 @@ enum CheckKind {
     },
     Screen {
         name: String,
+    },
+    /// «Рельеф» → «Камера»: высота, на которой камера игры держит взгляд.
+    CameraHeight {
+        equals: f64,
     },
 }
 
@@ -138,10 +150,13 @@ fn parse_replay(text: &str, file: &str) -> ReplaySpec {
         } else if let Some(cursor) = entry.get("cursor").and_then(Json::as_array) {
             let x = cursor[0].as_f64().expect("cursor[0] число");
             let y = cursor[1].as_f64().expect("cursor[1] число");
+            let z = cursor
+                .get(2)
+                .map_or(0.0, |z| z.as_f64().expect("cursor[2] число"));
             let eye = entry.get("eye").and_then(Json::as_array).map(|eye| {
                 std::array::from_fn(|axis| eye[axis].as_f64().expect("eye — три числа"))
             });
-            input.push((step, InputEvent::Cursor([x, y], eye)));
+            input.push((step, InputEvent::Cursor([x, y, z], eye)));
         } else {
             panic!("{file}: элемент input на шаге {step} без press/release/cursor");
         }
@@ -183,8 +198,10 @@ fn parse_replay(text: &str, file: &str) -> ReplaySpec {
             CheckKind::Screen {
                 name: screen.to_string(),
             }
+        } else if let Some(height) = entry.get("camera_z").and_then(Json::as_f64) {
+            CheckKind::CameraHeight { equals: height }
         } else {
-            panic!("{file}: проверка на шаге {step} не object/count/screen");
+            panic!("{file}: проверка на шаге {step} не object/count/screen/camera_z");
         };
         checks.push(ReplayCheck { step, kind });
     }
@@ -232,10 +249,13 @@ fn read_property_as_json(game: &Game, id: u32, prop: PropertyId) -> Option<Json>
             .world
             .text(id, prop)
             .map(|s| Json::String(s.to_string())),
-        PropKind::Vec2 => game
-            .world
-            .vec2(id, prop)
-            .map(|v| Json::Array(vec![json_number(v[0]), json_number(v[1])])),
+        PropKind::Vec2 => game.world.vec2(id, prop).map(|v| {
+            let mut numbers = vec![json_number(v[0]), json_number(v[1])];
+            if prop == engine::core::property::POSITION && game.world.three_d() {
+                numbers.push(json_number(game.world.base_z(id)));
+            }
+            Json::Array(numbers)
+        }),
         PropKind::FollowMouse => game
             .world
             .follow_mouse(id, prop)
@@ -341,6 +361,17 @@ fn run_check(
                 );
             }
         }
+        CheckKind::CameraHeight { equals } => {
+            let camera = game
+                .camera_3d(VIEWPORT)
+                .unwrap_or_else(|| panic!("{file}: шаг {}: сцена без камеры", check.step));
+            if (camera.target_z - equals).abs() > 1e-6 {
+                panic!(
+                    "{file}: шаг {}: высота камеры — ожидалось {equals}, получено {}",
+                    check.step, camera.target_z
+                );
+            }
+        }
     }
 }
 
@@ -390,7 +421,7 @@ fn run_replay(path: &Path) {
     let mut ui_queue = UiQueue::new();
     let mut mouse = MouseState::default();
     let mut runner = Runner::new();
-    let viewport = [800.0, 600.0];
+    let viewport = VIEWPORT;
 
     for step_n in 1..=total_steps {
         if game.is_running() {
@@ -399,8 +430,7 @@ fn run_replay(path: &Path) {
                     match event {
                         InputEvent::Press(code) => ui_queue.push_key_down(code),
                         InputEvent::Release(code) => ui_queue.push_key_up(code),
-                        InputEvent::Cursor(cell, Some(eye)) => game.set_cursor_ray(*cell, *eye),
-                        InputEvent::Cursor(cell, None) => game.set_cursor_cell(*cell),
+                        InputEvent::Cursor(point, eye) => game.set_cursor_point(*point, *eye),
                     }
                 }
             }

@@ -14,6 +14,7 @@
   "files": {
     "properties": "properties.json",
     "scene": "scene.json",
+    "terrain": "terrain.json",
     "rules": "rules.json",
     "screens": "screens.json",
     "code": "code.lua",

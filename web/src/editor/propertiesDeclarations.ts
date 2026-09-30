@@ -14,6 +14,7 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "velocity",
   "grid",
   "collides",
+  "deck",
   "color",
   "layer",
   "image",

@@ -969,7 +969,7 @@ impl Renderer {
                 label: Some("frame_3d"),
             });
         if let Some(scene3d) = self.scene3d.as_ref() {
-            scene3d.encode(&mut encoder, &self.quad_buffer, &view, self.background);
+            scene3d.encode(&mut encoder, &view, self.background);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {

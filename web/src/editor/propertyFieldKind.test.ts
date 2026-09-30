@@ -9,6 +9,11 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("collides", true, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "checkbox" });
   });
 
+  it("deck — галочка, как collides («Рельеф», требование 46); не булево — текстовое поле", () => {
+    expect(propertyFieldKind("deck", true, NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "checkbox" });
+    expect(propertyFieldKind("deck", 1, NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
+  });
+
   it("объявленное свойство автора вида flag — галочка", () => {
     expect(propertyFieldKind("falling", true, { falling: "flag" }, IMAGES, false)).toEqual({ kind: "checkbox" });
   });

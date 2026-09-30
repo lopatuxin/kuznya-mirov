@@ -187,6 +187,8 @@ pub enum Value {
     Time(i64),
     Timer(i64),
     Vec2(Vec2),
+    /// «Рельеф»: `position` или `walk_to` трёхмерной сцены с третьим числом — высотой основания.
+    Vec3([f64; 3]),
     Color([f32; 4]),
     Layer(i32),
     Text(String),
@@ -203,7 +205,7 @@ impl Value {
             Value::Number(_) => PropKind::Number,
             Value::Time(_) => PropKind::Time,
             Value::Timer(_) => PropKind::Timer,
-            Value::Vec2(_) => PropKind::Vec2,
+            Value::Vec2(_) | Value::Vec3(_) => PropKind::Vec2,
             Value::Color(_) => PropKind::Color,
             Value::Layer(_) => PropKind::Layer,
             Value::Text(_) => PropKind::Text,
