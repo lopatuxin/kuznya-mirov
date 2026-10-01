@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::mountains::StampTable;
 use super::terrain::Terrain;
 use super::value::PropKind;
 
@@ -75,6 +76,8 @@ pub struct PropertyTable {
     /// «Рельеф»: земля трёхмерной сцены — та же таблица, что знает про `three_d`, отдаёт её каждому
     /// миру, который строится по этим свойствам.
     terrain: Option<Arc<Terrain>>,
+    /// «Лепка рельефа»: штампы `files.stamps` — по ним ставятся горы файла рельефа и правки редактора.
+    stamps: StampTable,
 }
 
 impl PropertyTable {
@@ -84,6 +87,7 @@ impl PropertyTable {
             by_name: HashMap::with_capacity(BUILTINS.len()),
             three_d: false,
             terrain: None,
+            stamps: StampTable::default(),
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -127,6 +131,14 @@ impl PropertyTable {
 
     pub fn terrain(&self) -> Option<&Arc<Terrain>> {
         self.terrain.as_ref()
+    }
+
+    pub fn set_stamps(&mut self, stamps: StampTable) {
+        self.stamps = stamps;
+    }
+
+    pub fn stamps(&self) -> &StampTable {
+        &self.stamps
     }
 
     pub fn resolve(&self, name: &str) -> Option<PropertyId> {

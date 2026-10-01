@@ -1183,6 +1183,12 @@ body.is-resizing-panel {
   font: 12px var(--editor-font-mono);
 }
 
+/* Выпадающий список штампов в полосе над сценой: имя штампа длиннее числа. */
+.scene-view__field-input--select {
+  width: auto;
+  max-width: 120px;
+}
+
 .scene-view__field-input:focus {
   border-color: var(--editor-accent-ring);
   outline: none;

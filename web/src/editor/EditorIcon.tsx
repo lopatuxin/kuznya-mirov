@@ -30,6 +30,7 @@ const ICON_PATHS = {
   scale: ["M21 3 9 15", "M12 3H3v18h18v-9", "M16 3h5v5", "M14 15H9v-5"],
   "terrain-raise": ["M3 20c2.5-5 5.5-7.5 9-7.5s6.5 2.5 9 7.5", "M12 9V3", "m9 6 3-3 3 3"],
   "terrain-level": ["M3 12h18", "M7 3v5", "m5 6 2 2 2-2", "M17 21v-5", "m15 18 2-2 2 2"],
+  "terrain-mountain": ["m8 3 4 8 5-5 5 15H2L8 3z"],
   "terrain-smooth": ["m3 9 3-4 3 4 3-4 3 4 3-4 3 4", "M3 19c3-3 6-3 9 0s6 3 9 0"],
   download: ["M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4", "M7 10l5 5 5-5", "M12 15V3"],
 } as const;

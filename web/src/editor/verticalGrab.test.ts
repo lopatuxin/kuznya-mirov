@@ -1,41 +1,11 @@
 import { describe, expect, it } from "vitest";
-import type { SpaceProjection } from "./handleGeometry";
 import { computeHeight } from "./handleMath";
 import type { Vec2 } from "./objectPlacement";
-import { createVerticalGrab, raisedAtPointer } from "./verticalGrab";
-
-type Vec3 = [number, number, number];
-
-const VIEWPORT: Vec2 = [1280, 800];
-const FOCAL = VIEWPORT[1] / 2 / Math.tan((35 / 2) * (Math.PI / 180));
+import { pinholeCamera } from "./pinholeCamera";
+import { createPlaneGrab, createVerticalGrab, pointOnPlane, raisedAtPointer } from "./verticalGrab";
 
 function dot(a: readonly number[], b: readonly number[]): number {
   return a.reduce((sum, value, index) => sum + value * (b[index] as number), 0);
-}
-
-/** Честная камера с перспективой, как у движка: наклон, поворот, `distance` клеток от точки земли `target` до глаза. */
-function pinholeCamera(target: Vec2, yaw: number, pitch: number, distance: number) {
-  const [sinPitch, cosPitch] = [Math.sin((pitch * Math.PI) / 180), Math.cos((pitch * Math.PI) / 180)];
-  const [sinYaw, cosYaw] = [Math.sin((yaw * Math.PI) / 180), Math.cos((yaw * Math.PI) / 180)];
-  const eye: Vec3 = [target[0] - distance * cosPitch * sinYaw, target[1] + distance * cosPitch * cosYaw, distance * sinPitch];
-  const forward: Vec3 = [cosPitch * sinYaw, -cosPitch * cosYaw, -sinPitch];
-  const up: Vec3 = [sinPitch * sinYaw, -sinPitch * cosYaw, cosPitch];
-  const right: Vec3 = [cosYaw, sinYaw, 0];
-  const relative = (point: Vec3): Vec3 => [point[0] - eye[0], point[1] - eye[1], point[2] - eye[2]];
-  const projection: SpaceProjection = {
-    screenPoint: (x, y, z) => {
-      const rel = relative([x, y, z]);
-      const depth = dot(rel, forward);
-      if (depth <= 1e-6) return undefined;
-      return [VIEWPORT[0] / 2 + (FOCAL * dot(rel, right)) / depth, VIEWPORT[1] / 2 - (FOCAL * dot(rel, up)) / depth];
-    },
-  };
-  const rayDirection = (pointer: Vec2): Vec3 => {
-    const dx = (pointer[0] - VIEWPORT[0] / 2) / FOCAL;
-    const dy = (pointer[1] - VIEWPORT[1] / 2) / FOCAL;
-    return [0, 1, 2].map((index) => forward[index]! + right[index]! * dx - up[index]! * dy) as Vec3;
-  };
-  return { eye, projection, rayDirection };
 }
 
 function pointAt(camera: ReturnType<typeof pinholeCamera>, x: number, y: number, z: number): Vec2 {
@@ -143,5 +113,37 @@ describe("вырожденные случаи", () => {
   it("середина или точка вертикали за камерой — хвата нет", () => {
     expect(createVerticalGrab({ screenPoint: () => undefined }, GROUND, BASE)).toBeUndefined();
     expect(createVerticalGrab({ screenPoint: (_x, _y, z) => (z > BASE + 1 ? undefined : [z, z * 2]) }, GROUND, BASE)).toBeUndefined();
+  });
+});
+
+describe("место горизонтальной плоскости под указателем", () => {
+  const anchor: [number, number, number] = [11, 9.5, 0];
+
+  it.each([
+    [STRONG, "близкая камера"],
+    [pinholeCamera([20, 15], 200, 50, 40), "дальняя камера, повёрнутая"],
+    [pinholeCamera([20, 15], 0, 90, 30), "камера строго сверху"],
+  ])("луч через экранную точку места на высоте h даёт это место: %#", (camera) => {
+    const grab = createPlaneGrab(camera.projection, anchor);
+    expect(grab).toBeDefined();
+    for (const [x, y, height] of [[10, 8, 0], [14.5, 12, 3.5], [8, 14, -2]] as const) {
+      const place = pointOnPlane(grab!, pointAt(camera, x, y, height), height);
+      expect(place?.[0]).toBeCloseTo(x, 6);
+      expect(place?.[1]).toBeCloseTo(y, 6);
+    }
+  });
+
+  it("плоскость за камерой или луч параллелен ей — места нет", () => {
+    const grab = createPlaneGrab(STRONG.projection, anchor)!;
+    expect(pointOnPlane(grab, pointAt(STRONG, 10, 8, 0), STRONG.eye[2] + 5)).toBeUndefined();
+    const horizon = pinholeCamera([20, 15], 0, 5, 30);
+    const horizonGrab = createPlaneGrab(horizon.projection, anchor)!;
+    expect(pointOnPlane(horizonGrab, [640, 200], 0)).toBeUndefined();
+  });
+
+  it("камеру восстановить нельзя — хвата нет", () => {
+    expect(createPlaneGrab({ screenPoint: () => undefined }, anchor)).toBeUndefined();
+    const overhead = pinholeCamera([anchor[0], anchor[1]], 0, 90, 30);
+    expect(createPlaneGrab(overhead.projection, anchor)).toBeUndefined();
   });
 });

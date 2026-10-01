@@ -3,6 +3,7 @@ use serde_json::Value as Json;
 use crate::core::footprint::Footprint;
 use crate::core::game::{self, Game};
 use crate::core::keys::{EditValue, KeyBinding, KeyEdit, KeyTable};
+use crate::core::mountains::StampTable;
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::rules::{
     CollideEffect, CommonAction, CompareOp, Condition, NumberExpr, Outcome, Rule, RuleSet,
@@ -26,6 +27,7 @@ use super::error::ErrorSink;
 use super::wav;
 
 mod materials;
+mod stamps;
 
 pub use super::error::{GameError, LoadFailure};
 pub use materials::{MaterialDecl, terrain_image_paths};
@@ -33,6 +35,8 @@ use materials::{
     declaration_order, parse_covers, parse_materials_table, validate_material_files,
     warn_unused_materials,
 };
+pub use stamps::parse_edit_mountains;
+use stamps::{parse_mountains, parse_stamp_table, warn_unused_stamps};
 
 fn join(base: &str, seg: &str) -> String {
     if base.is_empty() {
@@ -1200,20 +1204,21 @@ fn parse_ground_layer(
 
 /// «Рельеф», требования 1, 38: `heights` — `d × высота + 1` строк по `d × ширина + 1` чисел; `water`
 /// необязательна, но с `level` и `color`; `covers` — слои покрытий из `materials`, их маски и карта
-/// цвета `tint` проверены по ответу страницы `masks`, если он есть.
+/// цвета `tint` проверены по ответу страницы `masks`, если он есть; `stamps` — горы из штампов `stamps`.
 fn parse_terrain(
     text: &str,
     file: &str,
     scene: &SceneConfig,
     materials: &[MaterialDecl],
     masks: Option<&[(String, ImageVerdict)]>,
+    stamps: &StampTable,
     errors: &mut ErrorSink,
 ) -> Option<Terrain> {
     let root = parse_json_or_error(file, text, errors)?;
     let obj = expect_object(&root, file, "", errors)?;
     reject_unknown_keys(
         obj,
-        &["heights", "water", "covers", "tint"],
+        &["heights", "water", "covers", "tint", "stamps"],
         file,
         "",
         errors,
@@ -1232,10 +1237,18 @@ fn parse_terrain(
         None => Some(false),
         Some(v) => materials::parse_tint(v, file, masks, errors).map(|()| true),
     };
+    let mountains = match obj.get("stamps") {
+        None => Some(Vec::new()),
+        Some(v) => parse_mountains(v, file, stamps, errors),
+    };
     let terrain = Terrain::from_rows([scene.width, scene.height], &rows?, water?)
         .map_err(|message| errors.push(file, "heights", message))
         .ok()?;
-    Some(terrain.with_covers(covers?, tint?))
+    Some(
+        terrain
+            .with_covers(covers?, tint?)
+            .with_mountains(mountains?),
+    )
 }
 
 fn parse_heights(
@@ -1636,6 +1649,9 @@ pub struct FilePaths {
     /// `files.terrain` — «Рельеф»: необязательный путь к файлу высот земли трёхмерной сцены. `None`
     /// — земля ровная на высоте 0.
     pub terrain: Option<String>,
+    /// `(имя, путь)`, в порядке объявления `files.stamps` — «Лепка рельефа»: номер штампа, на который
+    /// ссылаются горы файла рельефа. Пусто, если не объявлена.
+    pub stamps: Vec<(String, String)>,
     /// `files.materials` — «Свет и материалы»: материалы рельефа в порядке объявления; этот порядок —
     /// номер материала, на который ссылаются слои `covers` файла рельефа. Пусто, если не объявлена.
     pub materials: Vec<MaterialDecl>,
@@ -1921,6 +1937,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "tables",
                 "terrain",
                 "materials",
+                "stamps",
             ],
             "game.json",
             "files",
@@ -1964,9 +1981,14 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         // «Таблицы данных»: необязательна — нет ключа, нет и таблиц; та же форма «имя → путь»,
         // что у `files.fonts`, но с непустым именем — требование 22.
         let tables = match f.get("tables") {
-            Some(v) => {
-                parse_tables_paths(v, "game.json", "files → tables", errors).unwrap_or_default()
-            }
+            Some(v) => parse_named_paths(
+                v,
+                "game.json",
+                "files → tables",
+                "files → tables → пустое имя: имя таблицы — любая непустая строка",
+                errors,
+            )
+            .unwrap_or_default(),
             None => Vec::new(),
         };
         // «Рельеф»: необязателен — нет ключа, нет и файла высот, земля ровная.
@@ -1975,13 +1997,28 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             .and_then(|v| expect_string(v, "game.json", "files → terrain", errors));
         // «Свет и материалы»: необязательна — нет ключа, нет и материалов.
         let materials = f.get("materials").map(|v| {
-            let order = declaration_order(text);
+            let order = declaration_order(text).materials;
             parse_materials_table(v, &order, "game.json", "files → materials", errors)
                 .unwrap_or_default()
         });
+        // «Лепка рельефа»: необязательна — нет ключа, нет и гор из штампов; номер штампа — порядок
+        // объявления, а не алфавит.
+        let stamps = f.get("stamps").map(|v| {
+            let order = declaration_order(text).stamps;
+            let mut stamps = parse_named_paths(
+                v,
+                "game.json",
+                "files → stamps",
+                "files → stamps → пустое имя: у штампа должно быть имя, которым его назовёт гора",
+                errors,
+            )
+            .unwrap_or_default();
+            stamps.sort_by_key(|(name, _)| order.iter().position(|n| n == name));
+            stamps
+        });
         (
             properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables,
-            terrain, materials,
+            terrain, materials, stamps,
         )
     });
 
@@ -2010,6 +2047,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         tables,
         terrain,
         materials,
+        stamps,
     ) = files?;
     if terrain.is_some() && scene.camera.is_none() {
         errors.push(
@@ -2023,6 +2061,13 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             "game.json",
             "files → materials",
             "files.materials есть только в трёхмерной сцене: у scene в game.json нет camera",
+        );
+    }
+    if stamps.is_some() && scene.camera.is_none() {
+        errors.push(
+            "game.json",
+            "files → stamps",
+            "files.stamps есть только в трёхмерной сцене: у scene в game.json нет camera",
         );
     }
     let (properties, scene_path, rules, screens, fonts) =
@@ -2053,6 +2098,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             code,
             tables,
             terrain,
+            stamps: stamps.unwrap_or_default(),
             materials: materials.unwrap_or_default(),
         },
         start_screen,
@@ -2064,22 +2110,20 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
 /// `files.tables`: the same shape as `files.fonts` — an object mapping a data table's name (used
 /// by the game code as `tables.<name>`) to its JSON file's path inside the game's folder — but,
 /// unlike a font's name, requirement 22 makes the table's name any non-empty string, so an empty
-/// key is its own error rather than a silently accepted `read_entry` name.
-fn parse_tables_paths(
+/// key is its own error (`empty_name`) rather than a silently accepted `read_entry` name. `files.stamps`
+/// has the same shape.
+fn parse_named_paths(
     value: &Json,
     file: &str,
     path: &str,
+    empty_name: &str,
     errors: &mut ErrorSink,
 ) -> Option<Vec<(String, String)>> {
     let obj = expect_object(value, file, path, errors)?;
     let mut tables = Vec::with_capacity(obj.len());
     for (name, path_json) in obj {
         if name.is_empty() {
-            errors.push(
-                file,
-                path,
-                "files → tables → пустое имя: имя таблицы — любая непустая строка",
-            );
+            errors.push(file, path, empty_name);
             continue;
         }
         if let Some(table_path) = expect_string(path_json, file, &join(path, name), errors) {
@@ -7860,6 +7904,48 @@ pub fn load_rest_with_terrain(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest_with_materials(
     game_json: &str,
+    config: GameConfig,
+    properties_json: Option<&str>,
+    scene_json: Option<&str>,
+    rules_json: Option<&str>,
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
+    skip_media_validation: bool,
+    table_texts: &[(String, Option<String>)],
+    terrain_text: Option<&str>,
+    material_data: &[(String, ImageVerdict)],
+    mask_data: &[(String, ImageVerdict)],
+) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
+    load_rest_with_stamps(
+        game_json,
+        config,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        font_bytes,
+        sound_bytes,
+        music_verdicts,
+        image_data,
+        code_json,
+        skip_media_validation,
+        table_texts,
+        terrain_text,
+        material_data,
+        mask_data,
+        &[],
+    )
+}
+
+/// Same as `load_rest_with_materials`, additionally accepting the texts of `files.stamps`, by name,
+/// the same shape as `table_texts` — «Лепка рельефа»: `None` — файла штампа нет на месте.
+#[allow(clippy::too_many_arguments)]
+pub fn load_rest_with_stamps(
+    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -7875,6 +7961,7 @@ pub fn load_rest_with_materials(
     terrain_text: Option<&str>,
     material_data: &[(String, ImageVerdict)],
     mask_data: &[(String, ImageVerdict)],
+    stamp_texts: &[(String, Option<String>)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -7891,13 +7978,20 @@ pub fn load_rest_with_materials(
     };
     properties.set_three_d(config.scene.is_3d());
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
+    let stamp_table = parse_stamp_table(&config.files.stamps, stamp_texts, &mut errors);
     match (&config.files.terrain, terrain_text) {
         (Some(path), Some(text)) if config.scene.is_3d() => {
             let masks = (!skip_media_validation).then_some(mask_data);
             let materials = &config.files.materials;
-            if let Some(terrain) =
-                parse_terrain(text, path, &config.scene, materials, masks, &mut errors)
-            {
+            if let Some(terrain) = parse_terrain(
+                text,
+                path,
+                &config.scene,
+                materials,
+                masks,
+                &stamp_table,
+                &mut errors,
+            ) {
                 properties.set_terrain(terrain);
             }
         }
@@ -7908,6 +8002,7 @@ pub fn load_rest_with_materials(
         ),
         _ => {}
     }
+    properties.set_stamps(stamp_table);
 
     let ParsedSceneFile {
         objects: scene_objects,
@@ -8150,6 +8245,10 @@ pub fn load_rest_with_materials(
             .terrain()
             .map_or(&[][..], |terrain| terrain.covers());
         warn_unused_materials(&config.files.materials, covers, &mut errors);
+        let mountains = properties
+            .terrain()
+            .map_or(&[][..], |terrain| terrain.mountains());
+        warn_unused_stamps(&config.files.stamps, mountains, &mut errors);
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {

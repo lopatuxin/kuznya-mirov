@@ -32,7 +32,8 @@ struct Covers {
     // x — число слоёв, yz — размер сцены в клетках, w — слой карты цвета в массиве масок плюс один
     // (0 — карты цвета нет).
     head: vec4<f32>,
-    // По слою снизу вверх: x — слой массивов материалов, y — карт материала на клетку сцены.
+    // По слою снизу вверх: x — слой массивов материалов, y — карт материала на клетку сцены, z — номер
+    // маски слоя в массиве масок (−1 — маски нет), w — `slope` слоя в градусах (−1 — правила крутизны нет).
     layers: array<vec4<f32>, 8>,
 };
 
@@ -45,6 +46,8 @@ const SOLID_MASK: f32 = 0.99;
 const COVER_BAND: f32 = 0.25;
 // Проекции склона с весом меньше этого не читаются.
 const MIN_PROJECTION: f32 = 0.03;
+// На сколько градусов круче порога `slope` слой набирает силу от 0 до 1.
+const SLOPE_BAND: f32 = 5.0;
 
 @group(0) @binding(0)
 var<uniform> globals: Globals3d;
@@ -365,35 +368,57 @@ fn cover_weight(mask: f32, height: f32) -> f32 {
     return clamp((height + mask * (1.0 + COVER_BAND) - 1.0) / COVER_BAND, 0.0, 1.0);
 }
 
-// Земля с покрытиями в точке `world`: слои ниже самого верхнего слоя с маской 1 и слои с маской 0
-// не читаются.
+// Земля с покрытиями в точке `world`: сила слоя — большее из его маски и крутизны склона (от порога
+// `slope` до порога плюс `SLOPE_BAND`), слои ниже самого верхнего слоя с силой 1 и слои с силой 0
+// не читаются. Массив масок читается, только если у какого-то слоя есть маска.
 fn cover_surface(world: vec3<f32>, n: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>) -> Surface {
     let count = i32(covers.head.x + 0.5);
     let uv = world.xy / covers.head.yz;
-    var masks = array<f32, 8>(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    let first = textureSampleLevel(cover_masks, atlas_sampler_linear, uv, 0, 0.0);
-    masks[1] = first.x;
-    masks[2] = first.y;
-    masks[3] = first.z;
-    masks[4] = first.w;
-    if (count > 5) {
-        let second = textureSampleLevel(cover_masks, atlas_sampler_linear, uv, 1, 0.0);
-        masks[5] = second.x;
-        masks[6] = second.y;
-        masks[7] = second.z;
+    // Угол между вертикалью и нормалью земли, той же, что даёт свет.
+    let tilt = degrees(acos(clamp(n.z, 0.0, 1.0)));
+    var mask_values = array<f32, 8>(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
+    var reads_first = false;
+    var reads_second = false;
+    for (var k = 1; k < count; k++) {
+        let channel = i32(round(covers.layers[k].z));
+        reads_first = reads_first || (channel >= 0 && channel < 4);
+        reads_second = reads_second || channel >= 4;
     }
+    if (reads_first) {
+        let first = textureSampleLevel(cover_masks, atlas_sampler_linear, uv, 0, 0.0);
+        mask_values[0] = first.x;
+        mask_values[1] = first.y;
+        mask_values[2] = first.z;
+        mask_values[3] = first.w;
+    }
+    if (reads_second) {
+        let second = textureSampleLevel(cover_masks, atlas_sampler_linear, uv, 1, 0.0);
+        mask_values[4] = second.x;
+        mask_values[5] = second.y;
+        mask_values[6] = second.z;
+    }
+    var strengths = array<f32, 8>(1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
     var start = 0;
     for (var k = 1; k < count; k++) {
-        masks[k] = clamp(masks[k] / SOLID_MASK, 0.0, 1.0);
-        if (masks[k] >= 1.0) {
+        let entry = covers.layers[k];
+        let channel = i32(round(entry.z));
+        var strength = 0.0;
+        if (channel >= 0) {
+            strength = clamp(mask_values[channel] / SOLID_MASK, 0.0, 1.0);
+        }
+        if (entry.w >= 0.0) {
+            strength = max(strength, clamp((tilt - entry.w) / SLOPE_BAND, 0.0, 1.0));
+        }
+        strengths[k] = strength;
+        if (strengths[k] >= 1.0) {
             start = k;
         }
     }
     var surface = layer_surface(start, world, n, ddx, ddy);
     for (var k = start + 1; k < count; k++) {
-        if (masks[k] > 0.0) {
+        if (strengths[k] > 0.0) {
             let top = layer_surface(k, world, n, ddx, ddy);
-            surface = mix_surface(surface, top, cover_weight(masks[k], top.height));
+            surface = mix_surface(surface, top, cover_weight(strengths[k], top.height));
         }
     }
     return surface;

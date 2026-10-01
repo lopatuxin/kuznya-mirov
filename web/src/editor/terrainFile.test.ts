@@ -6,9 +6,13 @@ import {
   flatTerrainGrid,
   formatTerrainText,
   parseTerrainText,
+  readTerrainMountains,
   readTerrainWater,
   terrainTextWithHeights,
+  terrainTextWithMountains,
   terrainTextWithWater,
+  type MountainEntry,
+  type TerrainCoverLayer,
   type TerrainGrid,
   type TerrainWater,
 } from "./terrainFile";
@@ -165,9 +169,22 @@ describe("покрытия covers", () => {
     expect(terrainTextWithHeights(crlf, grid([[3, 3]]))).toBe(formatTerrainText({ ...grid([[3, 3]]), water: null, covers: COVERS }, "\r\n"));
   });
 
+  it("слой с порогом крутизны: slope перед маской, число как есть; читается обратно", () => {
+    const covers: TerrainCoverLayer[] = [{ material: "grass" }, { material: "rock", slope: 34 }, { material: "scree", slope: 22.5, mask: "terrain/scree.png" }];
+    const text = formatTerrainText({ ...grid([[0, 0]]), water: null, covers });
+    expect(text).toContain('    { "material": "rock", "slope": 34 },');
+    expect(text).toContain('    { "material": "scree", "slope": 22.5, "mask": "terrain/scree.png" }');
+    expect(parseTerrainText(text)?.covers).toEqual(covers);
+  });
+
   it("редактор и построитель локации пишут для одного содержимого один и тот же текст", async () => {
     const builderFiles = (await import(/* @vite-ignore */ new URL("../../../tools/location/files.mjs", import.meta.url).href)) as {
-      terrainText(grid: { cols: number; rows: number; h: Float64Array }, water: TerrainWater | null, covers: typeof COVERS | null): string;
+      terrainText(
+        grid: { cols: number; rows: number; h: Float64Array },
+        water: TerrainWater | null,
+        covers: TerrainCoverLayer[] | null,
+        stamps: MountainEntry[] | null,
+      ): string;
     };
     const heights = [
       [0, 1.004, -0.004],
@@ -175,10 +192,115 @@ describe("покрытия covers", () => {
     ];
     const content = grid(heights);
     const builderGrid = { cols: content.columns, rows: content.rows, h: content.heights };
+    const slopeCovers: TerrainCoverLayer[] = [{ material: "grass" }, { material: "rock", slope: 34 }, { material: "scree", slope: 22, mask: "terrain/scree.png" }];
     for (const water of [null, WATER]) {
-      for (const covers of [null, COVERS]) {
-        expect(formatTerrainText({ ...content, water, covers })).toBe(builderFiles.terrainText(builderGrid, water, covers));
+      for (const covers of [null, COVERS, slopeCovers]) {
+        for (const stamps of [null, MOUNTAINS]) {
+          expect(formatTerrainText({ ...content, water, covers, stamps })).toBe(builderFiles.terrainText(builderGrid, water, covers, stamps));
+        }
       }
     }
   });
 });
+
+const MOUNTAINS: MountainEntry[] = [
+  { stamp: "beluha", position: [8, 0], size: [38, 32], height: 15 },
+  { stamp: "chuya", position: [104.004, 4], size: [40, 30.125], height: 18, rotation: 345 },
+  { stamp: "taganai", position: [124, 52], size: [34, 16], height: 8, rotation: 0 },
+];
+
+describe("горы stamps", () => {
+  const WATER = { level: -1, color: "#112233" };
+  const COVERS = [{ material: "grass" }, { material: "rock", slope: 34 }];
+  const textWithMountains = formatTerrainText({ ...grid([[0, 0]]), water: WATER, covers: COVERS, tint: "terrain/tint.png", stamps: MOUNTAINS });
+  const plainText = formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null });
+
+  it("stamps — после tint, по горе на строку, перед heights; числа до сотых, rotation — если не 0", () => {
+    expect(textWithMountains).toBe(
+      [
+        "{",
+        '  "water": { "level": -1, "color": "#112233" },',
+        '  "covers": [',
+        '    { "material": "grass" },',
+        '    { "material": "rock", "slope": 34 }',
+        "  ],",
+        '  "tint": "terrain/tint.png",',
+        '  "stamps": [',
+        '    { "stamp": "beluha", "position": [8, 0], "size": [38, 32], "height": 15 },',
+        '    { "stamp": "chuya", "position": [104, 4], "size": [40, 30.13], "height": 18, "rotation": 345 },',
+        '    { "stamp": "taganai", "position": [124, 52], "size": [34, 16], "height": 8 }',
+        "  ],",
+        '  "heights": [',
+        "    [0, 0]",
+        "  ]",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("пустой список и null — ключа stamps нет", () => {
+    expect(formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null, stamps: [] })).not.toContain("stamps");
+    expect(formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null, stamps: null })).not.toContain("stamps");
+  });
+
+  it("горы читаются как лежат в файле; нет ключа — нет гор", () => {
+    expect(readTerrainMountains(textWithMountains)).toHaveLength(3);
+    expect(readTerrainMountains(textWithMountains)[1]).toEqual({ stamp: "chuya", position: [104, 4], size: [40, 30.13], height: 18, rotation: 345 });
+    expect(readTerrainMountains(plainText)).toEqual([]);
+    expect(readTerrainMountains(null)).toEqual([]);
+    expect(readTerrainMountains("{")).toEqual([]);
+  });
+
+  it("мазок и правка воды сохраняют stamps, tint и covers", () => {
+    expect(terrainTextWithHeights(textWithMountains, grid([[0.5, 2]]))).toBe(
+      formatTerrainText({ ...grid([[0.5, 2]]), water: WATER, covers: COVERS, tint: "terrain/tint.png", stamps: readTerrainMountains(textWithMountains) }),
+    );
+    const withoutWater = terrainTextWithWater(textWithMountains, { width: 1, height: 1 }, null);
+    expect(readTerrainMountains(withoutWater)).toEqual(readTerrainMountains(textWithMountains));
+    expect(withoutWater).toContain('"tint"');
+  });
+
+  it("правка гор сохраняет heights, covers, tint и воду", () => {
+    const after = terrainTextWithMountains(textWithMountains, { width: 1, height: 1 }, [{ stamp: "beluha", position: [1, 2], size: [3, 4], height: 5 }]) as string;
+    const content = parseTerrainText(after);
+    expect(content?.water).toEqual(WATER);
+    expect(content?.covers).toEqual(COVERS);
+    expect(content?.tint).toBe("terrain/tint.png");
+    expect(Array.from(content?.heights ?? [])).toEqual([0, 0]);
+    expect(content?.stamps).toEqual([{ stamp: "beluha", position: [1, 2], size: [3, 4], height: 5 }]);
+  });
+
+  it("последняя гора убрана — ключ stamps уходит из файла", () => {
+    const after = terrainTextWithMountains(textWithMountains, { width: 1, height: 1 }, []) as string;
+    expect(after).not.toContain("stamps");
+    expect(after).toBe(formatTerrainText({ ...grid([[0, 0]]), water: WATER, covers: COVERS, tint: "terrain/tint.png" }));
+  });
+
+  it("первая гора в проекте без файла — ровная земля нужного размера без воды и покрытий", () => {
+    const text = terrainTextWithMountains(null, { width: 3, height: 2 }, [MOUNTAINS[0] as MountainEntry]) as string;
+    const content = parseTerrainText(text);
+    expect(content?.columns).toBe(7);
+    expect(content?.rows).toBe(5);
+    expect(content?.water).toBe(null);
+    expect(content?.covers).toBe(null);
+    expect(content?.stamps).toEqual([MOUNTAINS[0]]);
+  });
+
+  it("файл, что не разбирается, — править нечего; перенос строки сохраняется", () => {
+    expect(terrainTextWithMountains("{", { width: 1, height: 1 }, MOUNTAINS)).toBe(null);
+    const crlf = formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null, stamps: MOUNTAINS }, "\r\n");
+    expect(terrainTextWithMountains(crlf, { width: 1, height: 1 }, [])).toBe(formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null }, "\r\n"));
+  });
+
+  it("набранное в свойствах пишется как есть: ошибку назовёт движок", () => {
+    const text = formatTerrainText({
+      ...grid([[0, 0]]),
+      water: null,
+      covers: null,
+      stamps: [{ stamp: "beluha", position: "abc", size: [3, "x"], height: [1.234, 2], rotation: null, extra: true }],
+    });
+    expect(text).toContain('{ "stamp": "beluha", "position": "abc", "size": [3,"x"], "height": [1.23, 2], "rotation": null, "extra": true }');
+  });
+});
+

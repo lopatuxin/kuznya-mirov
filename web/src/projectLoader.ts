@@ -8,6 +8,7 @@ type FontEntry = { name: string; path: string };
 type SoundEntry = { index: number; name: string; path: string };
 type MusicEntry = { index: number; name: string; path: string };
 type TableEntry = { name: string; path: string };
+type StampEntry = { name: string; path: string };
 
 type ReadEntryFiles = {
   properties: string;
@@ -16,6 +17,7 @@ type ReadEntryFiles = {
   screens: string;
   fonts: FontEntry[];
   tables: TableEntry[];
+  stamps: StampEntry[];
   code?: string;
   terrain?: string;
 };
@@ -39,6 +41,8 @@ type LoadResult =
 
 type LoadedFont = { name: string; bytes: Uint8Array | null };
 type LoadedTable = { name: string; text: string | null };
+/** Текст файла штампа горы; `null` — файл не найден, движок назовёт ошибку («Лепка рельефа»). */
+export type LoadedStamp = { name: string; text: string | null };
 export type LoadedSound = { index: number; path: string; bytes: Uint8Array | null };
 type LoadedMusic = { index: number; path: string; bytes: Uint8Array | null };
 /** Байты трека и приговор ему разом — «Звук» → «Два вида звука»: кто хочет проигрывать музыку
@@ -67,6 +71,8 @@ export type ProjectLoadResult =
       sceneText: string | null;
       loadedSounds: LoadedSound[];
       musicTracks: LoadedMusicVerdict[];
+      /** Штампы `files.stamps` в порядке объявления с прочитанными текстами — редактор берёт из них пропорции новой горы. */
+      stamps: LoadedStamp[];
       audioContext: AudioContext;
     }
   /** `game.json` не читается вовсе — вызывающая сторона сама знает, как это назвать (имя игры или проекта). */
@@ -82,6 +88,12 @@ async function fetchFonts(reader: ProjectFileReader, fonts: FontEntry[]): Promis
 async function fetchTableTexts(reader: ProjectFileReader, tables: TableEntry[]): Promise<LoadedTable[]> {
   const textsList = await Promise.all(tables.map((table) => reader.readText(table.path)));
   return tables.map((table, index) => ({ name: table.name, text: textsList[index] ?? null }));
+}
+
+/** Штампы гор читаются текстом во втором заходе, как таблицы («Лепка рельефа», требование 14). */
+async function fetchStampTexts(reader: ProjectFileReader, stamps: StampEntry[]): Promise<LoadedStamp[]> {
+  const textsList = await Promise.all(stamps.map((stamp) => reader.readText(stamp.path)));
+  return stamps.map((stamp, index) => ({ name: stamp.name, text: textsList[index] ?? null }));
 }
 
 async function fetchSoundBytes(reader: ProjectFileReader, sounds: SoundEntry[]): Promise<LoadedSound[]> {
@@ -124,7 +136,7 @@ export async function loadProject(
     return { status: "rejected", errors: entryResult.errors, warnings: entryResult.warnings, gameJsonText, sceneText: null };
   }
 
-  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText] = await Promise.all([
+  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText, stamps] = await Promise.all([
     reader.readText(entryResult.files.properties),
     reader.readText(entryResult.files.scene),
     reader.readText(entryResult.files.rules),
@@ -134,6 +146,7 @@ export async function loadProject(
     // «Рельеф», требование 47: файл высот читается вместе с остальными; без `files.terrain` движку уходит
     // `undefined`, а не `null` — `null` он читает как «файл назван, но не найден».
     entryResult.files.terrain !== undefined ? reader.readText(entryResult.files.terrain) : Promise.resolve(undefined),
+    fetchStampTexts(reader, entryResult.files.stamps),
   ]);
 
   const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText, terrainText) as ReadTextsResult;
@@ -170,6 +183,7 @@ export async function loadProject(
     terrainText,
     materialMapsPayload,
     coverMasksPayload,
+    stamps,
   ) as LoadResult;
   // read_entry первым, load вторым — тот же порядок, в котором предупреждения собирает сам движок
   // при объединённой загрузке («Редактор», требование 15).
@@ -178,7 +192,7 @@ export async function loadProject(
     return { status: "rejected", errors: loadResult.errors, warnings, gameJsonText, sceneText };
   }
 
-  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, audioContext };
+  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, audioContext };
 }
 
 /**

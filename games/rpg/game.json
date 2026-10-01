@@ -24,6 +24,15 @@
     "tables": {
       "enemies": "enemies.json"
     },
+    "stamps": {
+      "beluha": "stamps/beluha.json",
+      "chuya": "stamps/chuya.json",
+      "ergaki": "stamps/ergaki.json",
+      "dombai": "stamps/dombai.json",
+      "khamar": "stamps/khamar.json",
+      "konzhak": "stamps/konzhak.json",
+      "taganai": "stamps/taganai.json"
+    },
     "images": {
       "marker": {
         "path": "images/marker.png"

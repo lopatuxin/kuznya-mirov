@@ -163,7 +163,7 @@ fn hero_json(x: f64, y: f64) -> String {
 #[test]
 fn set_terrain_gives_new_heights_at_grid_points_and_between_them() {
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     let terrain = game.world.terrain();
     near(terrain.point_height(20, 12), 2.0, "плато в точке сетки");
     near(
@@ -182,7 +182,7 @@ fn set_terrain_puts_the_same_terrain_a_file_would() {
     let text = terrain_file(&heights, Some((-0.5, "#3f7fd0")));
     let from_file = load(true, Some(&text), "", NO_RULES);
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &heights, Some((-0.5, "#3f7fd0"))).expect("рельеф поставлен");
+    set_terrain(&mut game, &heights, Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
     assert_eq!(game.world.terrain(), from_file.world.terrain());
 }
 
@@ -197,10 +197,10 @@ fn a_tree_on_a_raised_place_stands_higher_and_a_rock_in_a_dug_pit_lower() {
     );
     near(z_of(&game, 0), 0.0, "дерево на ровной земле");
     near(z_of(&game, 1), 0.0, "камень на ровной земле");
-    set_terrain(&mut game, &grid(hill_and_pit), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill_and_pit), None, &[]).expect("рельеф поставлен");
     near(z_of(&game, 0), 2.0, "дерево на холме");
     near(z_of(&game, 1), -1.0, "камень в яме");
-    set_terrain(&mut game, &grid(level), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(level), None, &[]).expect("рельеф поставлен");
     near(z_of(&game, 0), 0.0, "холм срыт");
     near(z_of(&game, 1), 0.0, "яма засыпана");
 }
@@ -213,10 +213,10 @@ fn a_deck_without_z_takes_the_new_highest_point_under_it_and_an_object_with_z_ke
     );
     let mut game = load_flat(objects, NO_RULES);
     near(z_of(&game, 0), 0.0, "мост на ровной земле");
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     near(z_of(&game, 0), 2.0, "мост на самой высокой точке под собой");
     near(z_of(&game, 1), 1.25, "ступень на своём z");
-    set_terrain(&mut game, &grid(|_, _| 3.0), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(|_, _| 3.0), None, &[]).expect("рельеф поставлен");
     near(
         z_of(&game, 1),
         1.25,
@@ -228,7 +228,7 @@ fn a_deck_without_z_takes_the_new_highest_point_under_it_and_an_object_with_z_ke
 fn a_flat_object_lies_on_the_new_terrain() {
     let trail = r##"{"name":"trail","position":[9,5],"size":[2,2],"color":"#aa8844"}"##;
     let mut game = load_flat(trail, NO_RULES);
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     near(z_of(&game, 0), 2.0, "плоский объект на плато");
     assert!(matches!(
         surface::lies_on(&game.world, 0),
@@ -240,7 +240,7 @@ fn a_flat_object_lies_on_the_new_terrain() {
 fn set_terrain_builds_the_world_from_the_scene_again() {
     let mut game = load_flat(&tree(9.7, 5.7), NO_RULES);
     game.move_object(0, [3.0, 3.0], None);
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     assert_eq!(
         game.world.vec2(0, property::POSITION),
         Some([9.7, 5.7]),
@@ -251,16 +251,16 @@ fn set_terrain_builds_the_world_from_the_scene_again() {
 #[test]
 fn water_appears_and_goes_with_set_terrain() {
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &grid(hill), Some((-0.5, "#3f7fd0"))).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
     let water = game.world.terrain().water().expect("вода есть");
     near(water.level, -0.5, "уровень воды");
     assert_eq!(Some(water.color), parse_color("#3f7fd0"));
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     assert_eq!(game.world.terrain().water(), None, "воды нет");
 }
 
 fn error_of(game: &mut Game, heights: &[f64], water: Option<(f64, &str)>) -> String {
-    set_terrain(game, heights, water).expect_err("рельеф должен не встать")
+    set_terrain(game, heights, water, &[]).expect_err("рельеф должен не встать")
 }
 
 #[test]
@@ -325,7 +325,7 @@ fn a_running_partiya_takes_no_terrain_but_a_stopped_one_does() {
     assert!(message.contains("партия"), "{message}");
     assert!(game.world.terrain().is_trivial(), "рельеф не тронут");
     game.end_session();
-    set_terrain(&mut game, &grid(hill), None).expect("после «Стопа» рельеф ставится");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("после «Стопа» рельеф ставится");
 }
 
 // -------------------------------------------------------------------------------------------
@@ -351,7 +351,7 @@ fn a_wall_raised_by_set_terrain_stops_the_hero_after_the_run_begins() {
     game.world.set_walk_to(0, [16.0, 6.0], None);
     step(&mut game, 5);
     let steep = 46.0_f64.to_radians().tan();
-    set_terrain(&mut game, &grid(ridge(steep)), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(ridge(steep)), None, &[]).expect("рельеф поставлен");
     let x = hero_x_after_walk(&mut game);
     assert!(x < 8.5, "стена круче 45° не пустила: герой у x = {x}");
 }
@@ -368,7 +368,7 @@ fn a_hill_cut_down_by_set_terrain_is_walked_across_after_the_run_begins() {
     game.reset_for_play(true);
     game.world.set_walk_to(0, [16.0, 6.0], None);
     step(&mut game, 5);
-    set_terrain(&mut game, &grid(level), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(level), None, &[]).expect("рельеф поставлен");
     let x = hero_x_after_walk(&mut game);
     near(x, 16.0, "герой дошёл");
 }
@@ -396,7 +396,7 @@ fn pivot(game: &Game) -> f64 {
 #[test]
 fn the_pivot_height_of_the_editor_camera_is_the_terrain_under_it_or_exactly_the_named_one() {
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     let on_terrain = orbit([10.0, 6.0], 0.0).on_terrain(game.world.terrain());
     near(on_terrain.target_z, 2.0, "два числа — высота из рельефа");
     game.set_editor_camera(on_terrain);
@@ -408,9 +408,9 @@ fn the_pivot_height_of_the_editor_camera_is_the_terrain_under_it_or_exactly_the_
 #[test]
 fn set_terrain_and_show_scene_keep_the_pivot_height() {
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     game.set_editor_camera(orbit([10.0, 6.0], 2.0));
-    set_terrain(&mut game, &grid(level), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(level), None, &[]).expect("рельеф поставлен");
     near(pivot(&game), 2.0, "после set_terrain");
     game.show_scene();
     near(pivot(&game), 2.0, "после show_scene");
@@ -425,7 +425,7 @@ fn set_terrain_and_show_scene_keep_the_pivot_height() {
 #[test]
 fn fit_camera_hands_out_the_pivot_height_of_the_terrain_under_its_target() {
     let mut game = load_flat(&tree(3.0, 3.0), NO_RULES);
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     let ground = game.fit_camera(None, WINDOW_F32).expect("камера");
     near(ground.target_z, 2.0, "вся земля — середина холма");
     let object = game.fit_camera(Some(0), WINDOW_F32).expect("камера");
@@ -462,7 +462,7 @@ fn terrain_heights_without_a_file_are_zeros_of_the_scene_size_and_no_water() {
 fn terrain_heights_hand_back_what_set_terrain_took() {
     let mut game = load_flat("", NO_RULES);
     let heights = grid(hill_and_pit);
-    set_terrain(&mut game, &heights, Some((-0.5, "#3f7fd0"))).expect("рельеф поставлен");
+    set_terrain(&mut game, &heights, Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
     let snapshot = terrain_heights(&game).expect("сцена трёхмерная");
     assert_eq!(snapshot.heights, heights);
     assert_eq!(snapshot.water, Some((-0.5, "#3f7fd0".to_string())));
@@ -588,7 +588,7 @@ fn terrain_at_sees_the_terrain_set_by_set_terrain() {
     let mut game = load_flat("", NO_RULES);
     let camera = Camera3d::looking_at([10.0, 6.0], 55.0, 12.0, WINDOW);
     let window = pixel(&camera, [10.0, 6.0, 2.0]);
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     let point = terrain_hit(&game.world, &game.scene, &camera, window).expect("луч вниз");
     near(point[2], 2.0, "луч встретил плато холма");
 }
@@ -596,7 +596,7 @@ fn terrain_at_sees_the_terrain_set_by_set_terrain() {
 #[test]
 fn terrain_height_is_height_at_and_outside_the_scene_the_height_of_the_edge() {
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &grid(|x, y| x + y), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(|x, y| x + y), None, &[]).expect("рельеф поставлен");
     let terrain: &Terrain = game.world.terrain();
     near(terrain.height_at(3.0, 4.0), 7.0, "внутри сцены");
     near(terrain.height_at(-5.0, 4.0), 4.0, "за левым краем");
@@ -621,9 +621,9 @@ fn land_heights(mesh: &TerrainMesh) -> Vec<f32> {
 #[test]
 fn the_terrain_mesh_after_set_terrain_holds_the_new_heights_in_the_same_number_of_vertices() {
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &grid(level), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(level), None, &[]).expect("рельеф поставлен");
     let before = TerrainMesh::build(game.world.terrain(), [0.0; 4]).expect("файл высот есть");
-    set_terrain(&mut game, &grid(hill), None).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     let after = TerrainMesh::build(game.world.terrain(), [0.0; 4]).expect("файл высот есть");
     assert_ne!(before.id, after.id, "новая сетка — новый номер");
     assert_eq!(
@@ -640,7 +640,7 @@ fn the_terrain_mesh_after_set_terrain_holds_the_new_heights_in_the_same_number_o
 fn the_terrain_mesh_of_a_scene_without_a_file_appears_with_the_first_set_terrain() {
     let mut game = load_flat("", NO_RULES);
     assert!(TerrainMesh::build(game.world.terrain(), [0.0; 4]).is_none());
-    set_terrain(&mut game, &grid(hill), Some((-0.5, "#3f7fd0"))).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
     let mesh = TerrainMesh::build(game.world.terrain(), [0.0; 4]).expect("файл высот есть");
     assert!(mesh.land > 0);
 }

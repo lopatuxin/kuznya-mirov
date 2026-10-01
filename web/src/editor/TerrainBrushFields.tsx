@@ -13,7 +13,7 @@ type BrushNumberFieldProps = {
 };
 
 /** Число правится, как текстовое значение свойства: Enter или уход из поля принимает, Esc и не число возвращают прежнее. */
-function BrushNumberField({ label, value, isDisabled = false, normalize, onCommit }: BrushNumberFieldProps): React.JSX.Element {
+export function BrushNumberField({ label, value, isDisabled = false, normalize, onCommit }: BrushNumberFieldProps): React.JSX.Element {
   const [draft, setDraft] = useState<string | null>(null);
 
   function commit(): void {
