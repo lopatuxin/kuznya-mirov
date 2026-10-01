@@ -25,7 +25,7 @@ import {
   type Vec2,
 } from "./objectPlacement";
 import { drawSelectionQuad } from "./selectionDrawing";
-import { applyBrushFrame, brushPathPoints, type BrushSettings } from "./terrainBrush";
+import { applyBrushFrame, brushPathPoints, type BrushGrid, type BrushSettings } from "./terrainBrush";
 import { differsInHundredths, type TerrainGrid } from "./terrainFile";
 import { createVerticalGrab, type VerticalGrab } from "./verticalGrab";
 
@@ -121,7 +121,7 @@ type StrokeGesture = {
   lastPoint: Vec2 | null;
   /** «Выровнять»: высота рельефа в точке нажатия. */
   levelTarget: number;
-  grid: TerrainGrid;
+  grid: BrushGrid;
   start: Float64Array;
   water: unknown;
   hasChanged: boolean;
@@ -156,10 +156,10 @@ function isStrokeGesture(gesture: Gesture | null): gesture is StrokeGesture {
 }
 
 /** Рельеф, каким его отдаёт `terrain_heights`: сетка, что движок не держит за собой, и вода как есть. */
-function readTerrainSnapshot(value: unknown): { grid: TerrainGrid; water: unknown } | undefined {
-  const snapshot = value as { columns?: unknown; rows?: unknown; heights?: unknown; water?: unknown } | undefined;
-  if (typeof snapshot?.columns !== "number" || typeof snapshot.rows !== "number" || !(snapshot.heights instanceof Float64Array)) return undefined;
-  return { grid: { columns: snapshot.columns, rows: snapshot.rows, heights: snapshot.heights }, water: snapshot.water };
+function readTerrainSnapshot(value: unknown): { grid: BrushGrid; water: unknown } | undefined {
+  const snapshot = value as { density?: unknown; columns?: unknown; rows?: unknown; heights?: unknown; water?: unknown } | undefined;
+  if (typeof snapshot?.density !== "number" || typeof snapshot.columns !== "number" || typeof snapshot.rows !== "number" || !(snapshot.heights instanceof Float64Array)) return undefined;
+  return { grid: { density: snapshot.density, columns: snapshot.columns, rows: snapshot.rows, heights: snapshot.heights }, water: snapshot.water };
 }
 
 function toVec2(value: unknown): Vec2 | undefined {

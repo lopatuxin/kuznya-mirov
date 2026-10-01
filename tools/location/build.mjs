@@ -8,9 +8,11 @@ import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { coverMasks } from "./covers.mjs";
 import { terrainText } from "./files.mjs";
-import { grayPng } from "./png.mjs";
+import { applyBlocks, applyCracks, applyErosion, applyStrata, applyTalus } from "./mountains.mjs";
+import { grayPng, rgbaPng } from "./png.mjs";
 import { readPlan } from "./plan.mjs";
 import { Grid, applyChannel, applyHill, applyNoise, applyPad, applyRange, applySmooth } from "./terrain.mjs";
+import { TINT_PATH, tintMap } from "./tint.mjs";
 
 const APPLY = {
   noise: applyNoise,
@@ -19,12 +21,17 @@ const APPLY = {
   pad: applyPad,
   channel: applyChannel,
   smooth: applySmooth,
+  strata: applyStrata,
+  blocks: applyBlocks,
+  cracks: applyCracks,
+  erosion: applyErosion,
+  talus: applyTalus,
 };
 
 /** Сетка высот по описанию: операции по порядку, поздняя меняет сделанное ранней. */
 export function buildGrid(plan) {
-  const { size, operations } = readPlan(plan);
-  const grid = new Grid(size[0], size[1]);
+  const { size, density, operations } = readPlan(plan);
+  const grid = new Grid(size[0], size[1], density);
   for (const operation of operations) APPLY[operation.op](grid, operation);
   return grid;
 }
@@ -46,8 +53,16 @@ function main() {
   }
   const grid = buildGrid(plan);
   const { layers, masks } = buildCovers(plan, grid);
+  const { tint } = readPlan(plan);
   const target = resolve(dirname(planPath), plan.terrain);
-  writeFileSync(target, terrainText(grid, plan.water, layers));
+  writeFileSync(target, terrainText(grid, plan.water, layers, tint && TINT_PATH));
+  if (tint) {
+    const { width, height, pixels } = tintMap(grid, tint);
+    const file = resolve(dirname(target), TINT_PATH);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, rgbaPng(width, height, pixels));
+    console.log(`карта цвета ${width} × ${height} → ${file}`);
+  }
   for (const { mask, width, height, pixels } of masks) {
     const file = resolve(dirname(target), mask);
     mkdirSync(dirname(file), { recursive: true });

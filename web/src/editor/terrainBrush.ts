@@ -1,6 +1,9 @@
 import type { Vec2 } from "./objectPlacement";
 import type { TerrainGrid } from "./terrainFile";
 
+/** Сетка, по которой идёт кисть: `density` точек высот на клетку, точка `(column, row)` лежит в месте сцены `(column / density, row / density)`. */
+export type BrushGrid = TerrainGrid & { density: number };
+
 export type BrushKind = "raise" | "level" | "smooth";
 
 /** Размер и сила кисти — числа полей над сценой: пределы и значения при открытии редактора («Кисти рельефа», требование 2). */
@@ -79,21 +82,22 @@ function approach(height: number, target: number, rate: number): number {
  * делятся поровну между точками пути; меняются только точки сетки в пределах сцены. «Сгладить»
  * берёт средние по высотам до кадра, поэтому порядок обхода точек результат не меняет.
  */
-export function applyBrushFrame(grid: TerrainGrid, path: readonly Vec2[], frame: BrushFrame): void {
+export function applyBrushFrame(grid: BrushGrid, path: readonly Vec2[], frame: BrushFrame): void {
   const { kind, size, strength } = frame.settings;
   const seconds = Math.min(Math.max(frame.seconds, 0), MAX_FRAME_SECONDS) / path.length;
   const radius = size / 2;
   const before = kind === "smooth" ? Float64Array.from(grid.heights) : grid.heights;
   const direction = frame.isLowering ? -1 : 1;
+  const { density } = grid;
 
   for (const [x, y] of path) {
-    const firstColumn = Math.max(0, Math.ceil((x - radius) * 2));
-    const lastColumn = Math.min(grid.columns - 1, Math.floor((x + radius) * 2));
-    const firstRow = Math.max(0, Math.ceil((y - radius) * 2));
-    const lastRow = Math.min(grid.rows - 1, Math.floor((y + radius) * 2));
+    const firstColumn = Math.max(0, Math.ceil((x - radius) * density));
+    const lastColumn = Math.min(grid.columns - 1, Math.floor((x + radius) * density));
+    const firstRow = Math.max(0, Math.ceil((y - radius) * density));
+    const lastRow = Math.min(grid.rows - 1, Math.floor((y + radius) * density));
     for (let row = firstRow; row <= lastRow; row += 1) {
       for (let column = firstColumn; column <= lastColumn; column += 1) {
-        const weight = brushWeight(Math.hypot(column / 2 - x, row / 2 - y), radius);
+        const weight = brushWeight(Math.hypot(column / density - x, row / density - y), radius);
         if (weight === 0) continue;
         const index = row * grid.columns + column;
         const height = grid.heights[index] as number;

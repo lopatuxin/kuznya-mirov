@@ -3,14 +3,14 @@ import type { SceneSize } from "./sceneObjects";
 /** Уровень и цвет воды, как их пишет `water` в файле рельефа. */
 export type TerrainWater = { level: number; color: string };
 
-/** Сетка высот сцены строками сверху вниз: точка `(column, row)` лежит в месте сцены `(column / 2, row / 2)`. */
+/** Сетка высот сцены строками сверху вниз: точки через равные доли клетки, по две — четыре на клетку. */
 export type TerrainGrid = { columns: number; rows: number; heights: Float64Array };
 
 /** Слой покрытия из `covers` файла рельефа: материал и маска, у первого слоя маски нет. */
 export type TerrainCoverLayer = { material: string; mask?: string };
 
-/** Что лежит в файле рельефа: сетка высот, вода и покрытия, если они есть. Покрытия редактор не правит, только переносит. */
-export type TerrainContent = TerrainGrid & { water: TerrainWater | null; covers: TerrainCoverLayer[] | null };
+/** Что лежит в файле рельефа: сетка высот, вода, покрытия и путь карты цвета `tint`, если они есть. Покрытия и карту цвета редактор не правит, только переносит. */
+export type TerrainContent = TerrainGrid & { water: TerrainWater | null; covers: TerrainCoverLayer[] | null; tint?: string | null };
 
 /** «Рельеф», требование 23: вода, которую включает галочка, — земля высоты 0 остаётся сушей. */
 export const DEFAULT_WATER: TerrainWater = { level: -0.5, color: "#3f7fd0" };
@@ -34,8 +34,8 @@ function lineBreakOf(text: string | null): string {
 
 /**
  * Текст файла рельефа — «Кисти рельефа», требование 18, и «Свет и материалы», требование 27: `water`
- * первой строкой, если вода есть, затем `covers` — по слою на строку, если они есть, затем `heights` —
- * по строке сетки на строку файла, числа через запятую с пробелом, как лежит `games/rpg/terrain.json`.
+ * первой строкой, если вода есть, затем `covers` — по слою на строку, если они есть, затем путь карты
+ * цвета `tint`, если он есть, затем `heights` — по строке сетки на строку файла, числа через запятую с пробелом, как лежит `games/rpg/terrain.json`.
  * Тот же вид пишет построитель локации (`tools/location/files.mjs`).
  */
 export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): string {
@@ -53,6 +53,7 @@ export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): st
     });
     lines.push("  ],");
   }
+  if (typeof content.tint === "string") lines.push(`  "tint": ${JSON.stringify(content.tint)},`);
   lines.push('  "heights": [');
   for (let row = 0; row < content.rows; row += 1) {
     const numbers = Array.from(content.heights.subarray(row * content.columns, (row + 1) * content.columns), formatNumber);
@@ -88,7 +89,7 @@ export function parseTerrainText(text: string): TerrainContent | null {
   } catch {
     return null;
   }
-  const file = parsed as { heights?: unknown; water?: unknown; covers?: unknown } | null;
+  const file = parsed as { heights?: unknown; water?: unknown; covers?: unknown; tint?: unknown } | null;
   const rows = file?.heights;
   if (!Array.isArray(rows) || rows.length === 0 || !rows.every((row) => Array.isArray(row) && row.length === rows[0].length)) return null;
   if (!rows.every((row: unknown[]) => row.every((height) => typeof height === "number"))) return null;
@@ -99,6 +100,7 @@ export function parseTerrainText(text: string): TerrainContent | null {
     heights: Float64Array.from((rows as number[][]).flat()),
     water: water === null ? null : { level: water.level, color: water.color },
     covers: parseCovers(file?.covers),
+    tint: typeof file?.tint === "string" ? file.tint : null,
   };
 }
 
@@ -117,7 +119,7 @@ export function flatTerrainGrid(sceneSize: SceneSize): TerrainGrid {
 /** Текст рельефа после мазка: высоты — из сетки, вода, покрытия и перенос строки — как были. */
 export function terrainTextWithHeights(previousText: string | null, grid: TerrainGrid): string {
   const previous = previousText === null ? null : parseTerrainText(previousText);
-  return formatTerrainText({ ...grid, water: previous?.water ?? null, covers: previous?.covers ?? null }, lineBreakOf(previousText));
+  return formatTerrainText({ ...grid, water: previous?.water ?? null, covers: previous?.covers ?? null, tint: previous?.tint ?? null }, lineBreakOf(previousText));
 }
 
 /**

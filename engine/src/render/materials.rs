@@ -37,15 +37,16 @@ pub struct MaterialMaps<'a> {
 }
 
 /// Всё, что отправляется на видеокарту при загрузке игры: материалы по номерам, маски покрытий в
-/// порядке слоёв и таблица слоёв для шейдера.
+/// порядке слоёв, карта цвета и таблица слоёв для шейдера.
 #[derive(Debug)]
 pub struct Relief<'a> {
     /// Сторона карт материалов в точках; 1, пока материалов нет.
     pub side: u32,
     pub materials: Vec<MaterialMaps<'a>>,
     pub masks: Vec<MapView<'a>>,
-    /// Строка 0: число слоёв и размер сцены в клетках; дальше по строке на слой: номер материала и
-    /// число карт на клетку сцены.
+    pub tint: Option<MapView<'a>>,
+    /// Строка 0: число слоёв, размер сцены в клетках и слой карты цвета в массиве масок плюс один (0 —
+    /// карты цвета нет); дальше по строке на слой: номер материала и число карт на клетку сцены.
     pub table: [[f32; 4]; COVER_TABLE_LEN],
 }
 
@@ -68,13 +69,15 @@ fn find_view<'a>(data: &'a [(String, ImageVerdict)], path: &str) -> Option<MapVi
 }
 
 impl<'a> Relief<'a> {
-    /// Материалы `decls`, слои `covers` и маски по их путям `mask_paths` из ответов страницы,
-    /// которые уже прошли проверку загрузки. `None` — какой-то карты или маски в ответах нет.
+    /// Материалы `decls`, слои `covers` и картинки рельефа по их путям `image_paths` из ответов
+    /// страницы, которые уже прошли проверку загрузки: маски, а если `tint` — последней карта цвета.
+    /// `None` — какой-то карты или картинки в ответах нет.
     pub fn new(
         decls: &[MaterialDecl],
         material_data: &'a [(String, ImageVerdict)],
         covers: &[Cover],
-        mask_paths: &[String],
+        tint: bool,
+        image_paths: &[String],
         mask_data: &'a [(String, ImageVerdict)],
         scene: [u32; 2],
     ) -> Option<Relief<'a>> {
@@ -94,29 +97,40 @@ impl<'a> Relief<'a> {
                 })
             })
             .collect::<Option<Vec<_>>>()?;
-        let masks = mask_paths
+        let mut masks = image_paths
             .iter()
             .map(|path| find_view(mask_data, path))
             .collect::<Option<Vec<_>>>()?;
+        let tint = if tint { Some(masks.pop()?) } else { None };
         let side = materials.first().map_or(1, |maps| maps.color.width);
+        let tint_layer = tint.map(|_| mask_layers(masks.len()));
         Some(Relief {
             side,
             materials,
             masks,
-            table: cover_table(covers, decls, scene),
+            tint,
+            table: cover_table(covers, decls, scene, tint_layer),
         })
     }
 }
 
-/// Таблица слоёв для шейдера: строка 0 — число слоёв и размер сцены, дальше по слою снизу вверх.
+/// Слоёв в массиве масок под `count` масок: по четыре в слой, и хотя бы один.
+fn mask_layers(count: usize) -> usize {
+    count.div_ceil(4).max(1)
+}
+
+/// Таблица слоёв для шейдера: строка 0 — число слоёв, размер сцены и слой карты цвета плюс один,
+/// дальше по слою снизу вверх.
 fn cover_table(
     covers: &[Cover],
     decls: &[MaterialDecl],
     scene: [u32; 2],
+    tint_layer: Option<usize>,
 ) -> [[f32; 4]; COVER_TABLE_LEN] {
     let mut table = [[0.0; 4]; COVER_TABLE_LEN];
     let layers = covers.len().min(MAX_COVERS);
-    table[0] = [layers as f32, scene[0] as f32, scene[1] as f32, 0.0];
+    let tint = tint_layer.map_or(0.0, |layer| (layer + 1) as f32);
+    table[0] = [layers as f32, scene[0] as f32, scene[1] as f32, tint];
     for (row, cover) in table[1..].iter_mut().zip(covers) {
         let size = decls.get(cover.material).map_or(1.0, |decl| decl.size);
         *row = [cover.material as f32, (1.0 / size) as f32, 0.0, 0.0];
@@ -265,12 +279,11 @@ pub struct PackedMasks {
     pub layers: Vec<Vec<u8>>,
 }
 
-/// Красный канал `mask`, приведённый билинейно к `width × height`.
-fn resample_red(mask: &MapView<'_>, width: u32, height: u32) -> Vec<u8> {
+/// Канал `channel` картинки `mask`, приведённый билинейно к `width × height`.
+fn resample(mask: &MapView<'_>, channel: usize, width: u32, height: u32) -> Vec<u8> {
+    let value = |index: usize| mask.pixels[index * 4 + channel];
     if (mask.width, mask.height) == (width, height) {
-        return (0..(width * height) as usize)
-            .map(|index| mask.red(index))
-            .collect();
+        return (0..(width * height) as usize).map(value).collect();
     }
     let source = |dst: u32, dst_side: u32, src_side: u32| {
         let at = (dst as f32 + 0.5) * src_side as f32 / dst_side as f32 - 0.5;
@@ -283,7 +296,7 @@ fn resample_red(mask: &MapView<'_>, width: u32, height: u32) -> Vec<u8> {
         let (y0, y1, fy) = source(y, height, mask.height);
         for x in 0..width {
             let (x0, x1, fx) = source(x, width, mask.width);
-            let at = |px: u32, py: u32| f32::from(mask.red((py * mask.width + px) as usize));
+            let at = |px: u32, py: u32| f32::from(value((py * mask.width + px) as usize));
             let top = at(x0, y0) * (1.0 - fx) + at(x1, y0) * fx;
             let bottom = at(x0, y1) * (1.0 - fx) + at(x1, y1) * fx;
             out.push((top * (1.0 - fy) + bottom * fy).round() as u8);
@@ -292,28 +305,40 @@ fn resample_red(mask: &MapView<'_>, width: u32, height: u32) -> Vec<u8> {
     out
 }
 
-/// Приводит маски к размеру самой крупной (но не больше слоя, который держит видеокарта) и кладёт
-/// по четыре в слой RGBA; лишние каналы пусты. Слой есть всегда, даже без масок.
-pub fn pack_masks(masks: &[MapView<'_>]) -> PackedMasks {
-    let width = masks
-        .iter()
+/// Приводит маски и карту цвета `tint` к размеру самой крупной (но не больше слоя, который держит
+/// видеокарта) и кладёт маски по четыре в слой RGBA — лишние каналы пусты, — а карту цвета отдельным
+/// слоем после них, всеми четырьмя каналами. Слой масок есть всегда, даже без масок.
+pub fn pack_masks(masks: &[MapView<'_>], tint: Option<&MapView<'_>>) -> PackedMasks {
+    let all = || masks.iter().chain(tint);
+    let width = all()
         .map(|mask| mask.width)
         .max()
         .unwrap_or(1)
         .min(MAX_MASK_SIDE);
-    let height = masks
-        .iter()
+    let height = all()
         .map(|mask| mask.height)
         .max()
         .unwrap_or(1)
         .min(MAX_MASK_SIDE);
     let points = (width * height) as usize;
-    let mut layers = vec![vec![0u8; points * 4]; masks.len().div_ceil(4).max(1)];
+    let mut layers = vec![vec![0u8; points * 4]; mask_layers(masks.len())];
     for (index, mask) in masks.iter().enumerate() {
         let layer = &mut layers[index / 4];
-        for (point, value) in resample_red(mask, width, height).into_iter().enumerate() {
+        for (point, value) in resample(mask, 0, width, height).into_iter().enumerate() {
             layer[point * 4 + index % 4] = value;
         }
+    }
+    if let Some(tint) = tint {
+        let mut layer = vec![0u8; points * 4];
+        for channel in 0..4 {
+            for (point, value) in resample(tint, channel, width, height)
+                .into_iter()
+                .enumerate()
+            {
+                layer[point * 4 + channel] = value;
+            }
+        }
+        layers.push(layer);
     }
     PackedMasks {
         width,

@@ -30,3 +30,20 @@ export function grayPng(width, height, pixels) {
   }
   return Buffer.concat([SIGNATURE, chunk("IHDR", header), chunk("IDAT", deflateSync(rows, { level: 9 })), chunk("IEND", Buffer.alloc(0))]);
 }
+
+const RGBA = 6;
+
+/** PNG из `pixels` — `width × height` точек по четыре байта (красный, зелёный, синий, прозрачность). */
+export function rgbaPng(width, height, pixels) {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = RGBA;
+  const stride = width * 4;
+  const rows = Buffer.alloc((stride + 1) * height);
+  for (let row = 0; row < height; row++) {
+    Buffer.from(pixels.buffer, pixels.byteOffset + row * stride, stride).copy(rows, row * (stride + 1) + 1);
+  }
+  return Buffer.concat([SIGNATURE, chunk("IHDR", header), chunk("IDAT", deflateSync(rows, { level: 9 })), chunk("IEND", Buffer.alloc(0))]);
+}

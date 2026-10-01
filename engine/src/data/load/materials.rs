@@ -211,13 +211,15 @@ fn parse_map(
     Some(Some(text))
 }
 
-/// Пути масок файла рельефа в порядке слоёв — то, что страница должна прочитать. Файл, который не
-/// читается, и `covers`, которых в нём нет, дают пустой список: настоящая ошибка придёт из `load`.
-pub fn cover_mask_paths(terrain_json: &str) -> Vec<String> {
+/// Картинки файла рельефа, которые страница должна прочитать: маски покрытий в порядке слоёв, за
+/// ними карта цвета `tint`, если она названа. Файл, который не читается, и `covers`, которых в нём
+/// нет, дают пустой список масок: настоящая ошибка придёт из `load`.
+pub fn terrain_image_paths(terrain_json: &str) -> Vec<String> {
     let Ok(root) = serde_json::from_str::<Json>(terrain_json) else {
         return Vec::new();
     };
-    root.get("covers")
+    let mut paths: Vec<String> = root
+        .get("covers")
         .and_then(Json::as_array)
         .map(|layers| {
             layers
@@ -226,7 +228,11 @@ pub fn cover_mask_paths(terrain_json: &str) -> Vec<String> {
                 .map(str::to_string)
                 .collect()
         })
-        .unwrap_or_default()
+        .unwrap_or_default();
+    if let Some(tint) = root.get("tint").and_then(Json::as_str) {
+        paths.push(tint.to_string());
+    }
+    paths
 }
 
 /// `covers` файла рельефа: слои снизу вверх. `masks` — что страница ответила по каждой маске;
@@ -332,12 +338,54 @@ fn parse_mask(
     masks: Option<&[(String, ImageVerdict)]>,
     errors: &mut ErrorSink,
 ) -> Option<()> {
+    parse_terrain_image(
+        value,
+        file,
+        path,
+        "маска",
+        "серая PNG-картинка маски, названная в covers",
+        masks,
+        errors,
+    )
+}
+
+/// «Свет и материалы» → «Карта цвета»: `tint` файла рельефа — PNG, который страница прочитала и
+/// разжала. `masks` — ответы страницы по картинкам рельефа; `None` — файлы не проверяются.
+pub(super) fn parse_tint(
+    value: &Json,
+    file: &str,
+    masks: Option<&[(String, ImageVerdict)]>,
+    errors: &mut ErrorSink,
+) -> Option<()> {
+    parse_terrain_image(
+        value,
+        file,
+        "tint",
+        "карта цвета",
+        "PNG-картинка карты цвета, названная в tint",
+        masks,
+        errors,
+    )
+}
+
+/// Картинка файла рельефа — маска или карта цвета: путь на `.png`, и страница этот файл нашла и
+/// разжала. `what` — чем картинка зовётся в тексте ошибки, `expected` — что ожидалось на месте
+/// ненайденного файла.
+fn parse_terrain_image(
+    value: &Json,
+    file: &str,
+    path: &str,
+    what: &str,
+    expected: &str,
+    masks: Option<&[(String, ImageVerdict)]>,
+    errors: &mut ErrorSink,
+) -> Option<()> {
     let text = expect_string(value, file, path, errors)?;
     if !has_extension(&text, &[".png"]) {
         errors.push(
             file,
             path,
-            format!("{text} — маска берётся только из PNG; путь должен оканчиваться на \".png\""),
+            format!("{text} — {what} берётся только из PNG; путь должен оканчиваться на \".png\""),
         );
         return None;
     }
@@ -354,9 +402,9 @@ fn parse_mask(
         Some(ImageVerdict::Rejected) => Some(format!(
             "{text} — исполнитель (браузер) не берётся разжимать этот файл"
         )),
-        Some(ImageVerdict::Missing) | None => Some(format!(
-            "файл \"{text}\" не найден; ожидалась серая PNG-картинка маски, названная в covers"
-        )),
+        Some(ImageVerdict::Missing) | None => {
+            Some(format!("файл \"{text}\" не найден; ожидалась {expected}"))
+        }
     };
     if let Some(message) = problem {
         errors.push(file, path, message);

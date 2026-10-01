@@ -1171,14 +1171,17 @@ fn masks_are_brought_to_the_size_of_the_biggest_and_packed_four_to_a_layer() {
     let third = gray(4, 2, |_, _| 30);
     let fourth = gray(4, 4, |_, _| 40);
     let fifth = gray(3, 3, |_, _| 50);
-    let packed = pack_masks(&[
-        map_view(2, 2, &small),
-        map_view(4, 4, &big),
-        map_view(1, 1, &single),
-        map_view(4, 2, &third),
-        map_view(4, 4, &fourth),
-        map_view(3, 3, &fifth),
-    ]);
+    let packed = pack_masks(
+        &[
+            map_view(2, 2, &small),
+            map_view(4, 4, &big),
+            map_view(1, 1, &single),
+            map_view(4, 2, &third),
+            map_view(4, 4, &fourth),
+            map_view(3, 3, &fifth),
+        ],
+        None,
+    );
     assert_eq!((packed.width, packed.height), (4, 4));
     assert_eq!(packed.layers.len(), 2, "шесть масок — два слоя");
     let point = |layer: usize, x: usize, y: usize| {
@@ -1199,7 +1202,10 @@ fn masks_are_brought_to_the_size_of_the_biggest_and_packed_four_to_a_layer() {
 #[test]
 fn a_smaller_mask_is_stretched_bilinearly_over_the_whole_scene() {
     let ramp = gray(2, 1, |x, _| if x == 0 { 0 } else { 255 });
-    let packed = pack_masks(&[map_view(2, 1, &ramp), map_view(4, 1, &gray(4, 1, |_, _| 1))]);
+    let packed = pack_masks(
+        &[map_view(2, 1, &ramp), map_view(4, 1, &gray(4, 1, |_, _| 1))],
+        None,
+    );
     let row: Vec<u8> = (0..4).map(|x| packed.layers[0][x * 4]).collect();
     assert_eq!(row, [0, 64, 191, 255]);
 }
@@ -1207,17 +1213,17 @@ fn a_smaller_mask_is_stretched_bilinearly_over_the_whole_scene() {
 #[test]
 fn a_mask_that_is_one_by_one_is_a_whole_scene_of_one_value() {
     let one = gray(1, 1, |_, _| 77);
-    let packed = pack_masks(&[map_view(1, 1, &one)]);
+    let packed = pack_masks(&[map_view(1, 1, &one)], None);
     assert_eq!((packed.width, packed.height), (1, 1));
     assert_eq!(packed.layers[0][0], 77);
 }
 
 #[test]
 fn no_masks_still_make_a_layer_and_a_huge_mask_is_capped_to_what_the_card_holds() {
-    let none = pack_masks(&[]);
+    let none = pack_masks(&[], None);
     assert_eq!((none.width, none.height, none.layers.len()), (1, 1, 1));
     let huge = gray(4096, 2, |x, _| (x % 250) as u8);
-    let capped = pack_masks(&[map_view(4096, 2, &huge)]);
+    let capped = pack_masks(&[map_view(4096, 2, &huge)], None);
     assert_eq!((capped.width, capped.height), (2048, 2));
 }
 
@@ -1238,8 +1244,16 @@ fn a_relief_needs_every_map_and_every_mask() {
     let setup = Setup::default();
     let covers = setup.game().world.terrain().covers().to_vec();
     let paths = vec![MASK.to_string()];
-    let whole = Relief::new(&decls, &setup.maps, &covers, &paths, &setup.masks, [2, 2])
-        .expect("все карты и маски на месте");
+    let whole = Relief::new(
+        &decls,
+        &setup.maps,
+        &covers,
+        false,
+        &paths,
+        &setup.masks,
+        [2, 2],
+    )
+    .expect("все карты и маски на месте");
     assert_eq!(
         (whole.side, whole.materials.len(), whole.masks.len()),
         (512, 2, 1)
@@ -1253,6 +1267,17 @@ fn a_relief_needs_every_map_and_every_mask() {
 
     let mut lacking = Setup::default();
     lacking.maps.retain(|(path, _)| path != "earth/ao.jpg");
-    assert!(Relief::new(&decls, &lacking.maps, &covers, &paths, &setup.masks, [2, 2]).is_none());
-    assert!(Relief::new(&decls, &setup.maps, &covers, &paths, &[], [2, 2]).is_none());
+    assert!(
+        Relief::new(
+            &decls,
+            &lacking.maps,
+            &covers,
+            false,
+            &paths,
+            &setup.masks,
+            [2, 2]
+        )
+        .is_none()
+    );
+    assert!(Relief::new(&decls, &setup.maps, &covers, false, &paths, &[], [2, 2]).is_none());
 }

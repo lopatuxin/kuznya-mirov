@@ -20,6 +20,7 @@ const RULES = {
   pebbles: {},
   path: { required: ["lines"] },
   slope: { required: ["from", "full"], optional: ["range"] },
+  scree: { required: ["range"], optional: ["from", "full"] },
 };
 
 const EDGE_WAVELENGTH = 3; // клеток: волна шума на краях
@@ -36,6 +37,10 @@ const BREAKUP_WAVELENGTH = 1.2; // клеток: волна мелкого шу�
 const ZONE_SHIFT = 3; // клеток: на сколько шум сдвигает границу гор
 const WIDTH_WAVELENGTH = 7; // клеток: волна, по которой плавает ширина тропы
 const WIDTH_VARIATION = 0.2; // доля ширины тропы, на которую она сужается и расширяется
+
+// Осыпь: слой сыпучего камня, который накопили размыв и осыпи гор, толщиной в клетках.
+const SCREE_FROM = 0.04; // тоньше — осыпи нет
+const SCREE_FULL = 0.25; // толще — осыпь лежит целиком
 
 const PEBBLES_FULL = 0.5; // выше уровня воды: галька лежит целиком
 const PEBBLES_NONE = 1; // выше уровня воды: гальки нет
@@ -110,6 +115,11 @@ function readLayer(layer, index, { seed, water, named, materials }) {
         fail("«from» и «full» — градусы от 0 до 90, «from» меньше «full»");
       }
       return { ...base, from: layer.from, full: layer.full, range: readNamed(layer.range, "range", named, fail) };
+    case "scree": {
+      const { from = SCREE_FROM, full = SCREE_FULL } = layer;
+      if (!isNumber(from) || !isNumber(full) || from < 0 || from >= full) fail("«from» и «full» — толщина осыпи в клетках, «from» меньше «full»");
+      return { ...base, from, full, range: readNamed(layer.range, "range", named, fail) };
+    }
     default:
       return base;
   }
@@ -238,7 +248,22 @@ const FIELDS = {
       return steep * smoothstep(-SOFT_EDGE, SOFT_EDGE, inside + ZONE_SHIFT * noise);
     };
   },
+  scree: (layer, { grid }) => screeField(layer, grid),
 };
+
+/**
+ * Осыпь — где лежит сыпучий камень гор `range` (карта сетки `loose` от их размыва и осыпей): с
+ * толщины `from` клеток нарастая, с `full` целиком. За подножием она тоже лежит — конусы выноса.
+ */
+function screeField(layer, grid) {
+  const loose = grid.maps?.get("loose");
+  if (!loose) throw new Error(`покрытие «${layer.material}»: осыпи нет — в описании нет операций «erosion» или «talus»`);
+  return (x, y, noise) => {
+    const col = Math.min(grid.cols - 1, Math.max(0, Math.round(x * grid.density)));
+    const row = Math.min(grid.rows - 1, Math.max(0, Math.round(y * grid.density)));
+    return raggedRamp(loose[row * grid.cols + col], layer.from, layer.full, noise);
+  };
+}
 
 /** Вызывает `fn(x, y, index)` для каждой точки маски: `x`, `y` — середина её квадрата в клетках сцены. */
 function eachMaskPoint(grid, fn) {

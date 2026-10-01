@@ -7,10 +7,11 @@ export function hundredths(value) {
 }
 
 /**
- * Файл рельефа: `water` первой строкой, затем `covers` по слою на строку, затем `heights` по строке
- * сетки на строку файла. Слой покрытий — `{ material, mask? }`.
+ * Файл рельефа: `water` первой строкой, затем `covers` по слою на строку, затем путь карты цвета
+ * `tint`, если он есть, затем `heights` по строке сетки на строку файла. Слой покрытий —
+ * `{ material, mask? }`.
  */
-export function terrainText(grid, water, covers) {
+export function terrainText(grid, water, covers, tint) {
   const lines = ["{"];
   if (water) lines.push(`  "water": { "level": ${hundredths(water.level)}, "color": ${JSON.stringify(water.color)} },`);
   if (covers) {
@@ -22,6 +23,7 @@ export function terrainText(grid, water, covers) {
     });
     lines.push("  ],");
   }
+  if (tint) lines.push(`  "tint": ${JSON.stringify(tint)},`);
   lines.push('  "heights": [');
   for (let row = 0; row < grid.rows; row++) {
     const numbers = Array.from(grid.h.subarray(row * grid.cols, (row + 1) * grid.cols), hundredths);

@@ -8,16 +8,16 @@ import {
   clampToLimits,
   parseNumberField,
   type BrushFrame,
+  type BrushGrid,
   type BrushKind,
 } from "./terrainBrush";
-import type { TerrainGrid } from "./terrainFile";
 
 /** Сцена 8 × 8 клеток: точек сетки 17 × 17, точка `(column, row)` лежит в месте `(column / 2, row / 2)`. */
-function flatGrid(height = 0): TerrainGrid {
-  return { columns: 17, rows: 17, heights: new Float64Array(17 * 17).fill(height) };
+function flatGrid(height = 0): BrushGrid {
+  return { density: 2, columns: 17, rows: 17, heights: new Float64Array(17 * 17).fill(height) };
 }
 
-function indexOf(grid: TerrainGrid, x: number, y: number): number {
+function indexOf(grid: BrushGrid, x: number, y: number): number {
   return y * 2 * grid.columns + x * 2;
 }
 
@@ -25,7 +25,7 @@ function frame(kind: BrushKind, extra: Partial<BrushFrame> = {}): BrushFrame {
   return { settings: { kind, size: 4, strength: 50 }, seconds: 0.1, isLowering: false, levelTarget: 0, ...extra };
 }
 
-function runFrames(grid: TerrainGrid, point: Vec2, count: number, brushFrame: BrushFrame): void {
+function runFrames(grid: BrushGrid, point: Vec2, count: number, brushFrame: BrushFrame): void {
   for (let index = 0; index < count; index += 1) applyBrushFrame(grid, [point], brushFrame);
 }
 

@@ -16,7 +16,7 @@ use engine::core::shapes::Body;
 use engine::core::surface;
 use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
 use engine::data::load::{
-    GameConfig, ImageVerdict, cover_mask_paths, load_rest_with_materials, read_entry,
+    GameConfig, ImageVerdict, load_rest_with_materials, read_entry, terrain_image_paths,
 };
 use engine::render::materials::{Relief, pack_masks};
 use serde_json::json;
@@ -44,6 +44,15 @@ fn png_dimensions(name: &str) -> (u32, u32) {
     let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
     let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
     (width, height)
+}
+
+/// Размер карты материала по её файлу: у PNG — из `IHDR`, у JPEG — из начала кадра.
+fn map_dimensions(name: &str) -> (u32, u32) {
+    if name.ends_with(".png") {
+        png_dimensions(name)
+    } else {
+        jpeg_dimensions(name)
+    }
 }
 
 /// `width`/`height` of a JPEG straight out of its start-of-frame segment: the first `SOF` marker,
@@ -84,10 +93,10 @@ fn map_data(config: &GameConfig, terrain_json: Option<&str>) -> (Verdicts, Verdi
         .materials
         .iter()
         .flat_map(|material| material.maps())
-        .map(|(_, path)| (path.to_string(), ok_verdict(jpeg_dimensions(path))))
+        .map(|(_, path)| (path.to_string(), ok_verdict(map_dimensions(path))))
         .collect();
     let masks = terrain_json
-        .map(cover_mask_paths)
+        .map(terrain_image_paths)
         .unwrap_or_default()
         .into_iter()
         .map(|path| {
@@ -374,14 +383,23 @@ fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
 
     let terrain = read("terrain.json");
     let (map_verdicts, mask_verdicts) = map_data(&config, Some(&terrain));
-    let mask_paths = cover_mask_paths(&terrain);
-    assert_eq!(mask_paths.len(), covers.len() - 1);
+    let image_paths = terrain_image_paths(&terrain);
+    assert!(
+        game.world.terrain().has_tint(),
+        "у деревни есть карта цвета гор"
+    );
+    assert_eq!(
+        image_paths.len(),
+        covers.len(),
+        "маски слоёв поверх нижнего и карта цвета"
+    );
     let scene = [game.scene.width, game.scene.height];
     let relief = Relief::new(
         &config.files.materials,
         &map_verdicts,
         covers,
-        &mask_paths,
+        true,
+        &image_paths,
         &mask_verdicts,
         scene,
     )
@@ -390,9 +408,13 @@ fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
         (relief.side, relief.materials.len(), relief.masks.len()),
         (1024, config.files.materials.len(), covers.len() - 1)
     );
-    let packed = pack_masks(&relief.masks);
+    let packed = pack_masks(&relief.masks, relief.tint.as_ref());
     assert_eq!((packed.width, packed.height), (512, 384));
-    assert_eq!(packed.layers.len(), (covers.len() - 1).div_ceil(4));
+    assert_eq!(
+        packed.layers.len(),
+        (covers.len() - 1).div_ceil(4) + 1,
+        "слои масок и слой карты цвета"
+    );
 }
 
 /// Требование 32 фазы 15 с поправкой требования 31 фазы 19: плитки травы ушли — из `images` остаётся

@@ -231,7 +231,10 @@ impl MaterialGpu {
             }
         }
 
-        let packed_masks = materials::pack_masks(relief.map_or(&[][..], |relief| &relief.masks));
+        let packed_masks = materials::pack_masks(
+            relief.map_or(&[][..], |relief| &relief.masks),
+            relief.and_then(|relief| relief.tint.as_ref()),
+        );
         let mask_side = [packed_masks.width, packed_masks.height];
         let masks = array_texture(
             device,

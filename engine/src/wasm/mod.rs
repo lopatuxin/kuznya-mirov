@@ -1316,7 +1316,7 @@ impl Engine {
             .collect();
         let mask_paths = terrain
             .as_deref()
-            .map(load::cover_mask_paths)
+            .map(load::terrain_image_paths)
             .unwrap_or_default();
         let map_verdicts = parse_image_verdicts(&material_maps, &path_table(&map_paths));
         let mask_verdicts = parse_image_verdicts(&cover_masks, &path_table(&mask_paths));
@@ -1397,6 +1397,7 @@ impl Engine {
                     &material_decls,
                     &map_verdicts,
                     game.world.terrain().covers(),
+                    game.world.terrain().has_tint(),
                     &mask_paths,
                     &mask_verdicts,
                     [game.scene.width, game.scene.height],
@@ -1696,7 +1697,8 @@ impl Engine {
         None
     }
 
-    /// «Редактор», «Вызовы движка»: нынешний рельеф `{columns, rows, heights, water}` — `heights`
+    /// «Редактор», «Вызовы движка»: нынешний рельеф `{density, columns, rows, heights, water}` —
+    /// `density` — точек высот на клетку, `heights`
     /// (`Float64Array`) строками сверху вниз, как в `set_terrain`, `water` — `{level, color}` или
     /// `null`. Без файла рельефа — нули нужного размера. `undefined` в плоской сцене.
     pub fn terrain_heights(&self) -> JsValue {
@@ -1704,6 +1706,7 @@ impl Engine {
             return JsValue::UNDEFINED;
         };
         let obj = Object::new();
+        set(&obj, "density", &JsValue::from_f64(terrain.density as f64));
         set(&obj, "columns", &JsValue::from_f64(terrain.columns as f64));
         set(&obj, "rows", &JsValue::from_f64(terrain.rows as f64));
         set(

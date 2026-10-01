@@ -29,7 +29,8 @@ struct Globals3d {
 };
 
 struct Covers {
-    // x — число слоёв, yz — размер сцены в клетках.
+    // x — число слоёв, yz — размер сцены в клетках, w — слой карты цвета в массиве масок плюс один
+    // (0 — карты цвета нет).
     head: vec4<f32>,
     // По слою снизу вверх: x — слой массивов материалов, y — карт материала на клетку сцены.
     layers: array<vec4<f32>, 8>,
@@ -63,7 +64,7 @@ var material_color: texture_2d_array<f32>;
 // Нормаль `xy`, шероховатость, затенение.
 @group(0) @binding(7)
 var material_data: texture_2d_array<f32>;
-// Маски покрытий по четыре в слой.
+// Маски покрытий по четыре в слой, за ними слоем — карта цвета.
 @group(0) @binding(8)
 var cover_masks: texture_2d_array<f32>;
 @group(0) @binding(9)
@@ -227,9 +228,10 @@ fn hex_cell(
     st: vec2<f32>,
     dx: vec2<f32>,
     dy: vec2<f32>,
+    turn: f32,
 ) -> MapSample {
     let random = cell_random(vertex);
-    let angle = (random.z * 2.0 - 1.0) * PI;
+    let angle = (random.z * 2.0 - 1.0) * PI * turn;
     let c = cos(angle);
     let s = sin(angle);
     let rotation = mat2x2<f32>(c, s, -s, c);
@@ -246,14 +248,15 @@ fn hex_cell(
     return out;
 }
 
-// Карты материала `material` в точке `st` (в картах), без видимого повтора.
-fn hex_sample(material: i32, st: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>) -> MapSample {
+// Карты материала `material` в точке `st` (в картах), без видимого повтора: картинка в каждом шестиграннике
+// сдвинута, а при `turn` 1 ещё и повёрнута случайно. На стенах `turn` 0: пласты камня идут ровно.
+fn hex_sample(material: i32, st: vec2<f32>, dx: vec2<f32>, dy: vec2<f32>, turn: f32) -> MapSample {
     let grid = hex_grid(st);
     var w = pow(max(grid.weights, vec3<f32>(0.0)), vec3<f32>(7.0));
     w = w / (w.x + w.y + w.z);
-    let a = hex_cell(material, grid.v1, st, dx, dy);
-    let b = hex_cell(material, grid.v2, st, dx, dy);
-    let c = hex_cell(material, grid.v3, st, dx, dy);
+    let a = hex_cell(material, grid.v1, st, dx, dy, turn);
+    let b = hex_cell(material, grid.v2, st, dx, dy, turn);
+    let c = hex_cell(material, grid.v3, st, dx, dy, turn);
     var out: MapSample;
     out.color = a.color * w.x + b.color * w.y + c.color * w.z;
     out.height = a.height * w.x + b.height * w.y + c.height * w.z;
@@ -319,7 +322,7 @@ fn layer_surface(
 
     // Сверху: картинка вправо по x, вверх по картинке — к дальнему краю сцены, то есть против y.
     if (w.z > 0.0) {
-        let s = hex_sample(material, world.xy * scale, ddx.xy * scale, ddy.xy * scale);
+        let s = hex_sample(material, world.xy * scale, ddx.xy * scale, ddy.xy * scale, 1.0);
         let t = tangent_normal(s.tilt);
         let blended = vec3<f32>(t.x + n.x, -t.y + n.y, abs(t.z) * n.z);
         out.albedo += s.color * w.z;
@@ -331,7 +334,7 @@ fn layer_surface(
     // Сбоку, лицом вдоль x: картинка вправо по y, вверх по z.
     if (w.x > 0.0) {
         let st = vec2<f32>(world.y, -world.z) * scale;
-        let s = hex_sample(material, st, vec2<f32>(ddx.y, -ddx.z) * scale, vec2<f32>(ddy.y, -ddy.z) * scale);
+        let s = hex_sample(material, st, vec2<f32>(ddx.y, -ddx.z) * scale, vec2<f32>(ddy.y, -ddy.z) * scale, 0.0);
         let t = tangent_normal(s.tilt);
         let blended = vec3<f32>(abs(t.z) * n.x, t.x + n.y, t.y + n.z);
         out.albedo += s.color * w.x;
@@ -343,7 +346,7 @@ fn layer_surface(
     // Сбоку, лицом вдоль y: картинка вправо по x, вверх по z.
     if (w.y > 0.0) {
         let st = vec2<f32>(world.x, -world.z) * scale;
-        let s = hex_sample(material, st, vec2<f32>(ddx.x, -ddx.z) * scale, vec2<f32>(ddy.x, -ddy.z) * scale);
+        let s = hex_sample(material, st, vec2<f32>(ddx.x, -ddx.z) * scale, vec2<f32>(ddy.x, -ddy.z) * scale, 0.0);
         let t = tangent_normal(s.tilt);
         let blended = vec3<f32>(t.x + n.x, abs(t.z) * n.y, t.y + n.z);
         out.albedo += s.color * w.y;
@@ -426,18 +429,32 @@ fn vs_terrain(vertex: TerrainVertex) -> TerrainOutput {
     return out;
 }
 
-// Земля: без покрытий залита цветом сцены и освещена как матовая поверхность.
+// Карта цвета рельефа в точке `world`: `rgb` — во сколько раз цвет земли светлее (0,5 — как есть,
+// 0 — чёрный, 1 — вдвое светлее), `a` — сколько неба видно из этой точки. Без карты — ничего не меняет.
+fn terrain_tint(world: vec3<f32>) -> vec4<f32> {
+    if (covers.head.w < 0.5) {
+        return vec4<f32>(0.5, 0.5, 0.5, 1.0);
+    }
+    let layer = i32(covers.head.w - 0.5);
+    return textureSampleLevel(cover_masks, atlas_sampler_linear, world.xy / covers.head.yz, layer, 0.0);
+}
+
+// Земля: без покрытий залита цветом сцены и освещена как матовая поверхность. Карта цвета красит
+// землю и гасит свет неба там, куда он не доходит.
 @fragment
 fn fs_terrain(in: TerrainOutput) -> @location(0) vec4<f32> {
     let normal = normalize(in.normal);
     let ddx = dpdx(in.world);
     let ddy = dpdy(in.world);
     let visible = shadow_lit(in.world, normal);
+    let tint = terrain_tint(in.world);
     if (covers.head.x < 0.5) {
-        return vec4<f32>(finish(shade_matte(srgb_to_linear(in.color), in.world, normal, visible)), 1.0);
+        let albedo = srgb_to_linear(in.color) * tint.rgb * 2.0;
+        return vec4<f32>(finish(shade(albedo, in.world, normal, 1.0, tint.a, visible)), 1.0);
     }
     let surface = cover_surface(in.world, normal, ddx, ddy);
-    let color = shade(surface.albedo, in.world, surface.normal, surface.roughness, surface.ao, visible);
+    let albedo = surface.albedo * tint.rgb * 2.0;
+    let color = shade(albedo, in.world, surface.normal, surface.roughness, surface.ao * tint.a, visible);
     return vec4<f32>(finish(color), 1.0);
 }
 

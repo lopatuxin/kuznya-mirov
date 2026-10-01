@@ -15,7 +15,7 @@ use crate::core::screens::{
     ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement, WorldElementKind,
     WorldTextPart,
 };
-use crate::core::terrain::{Terrain, Water};
+use crate::core::terrain::{DENSITIES, Terrain, Water};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
 use crate::core::value::{
     FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2, parse_color,
@@ -28,7 +28,7 @@ use super::wav;
 mod materials;
 
 pub use super::error::{GameError, LoadFailure};
-pub use materials::{MaterialDecl, cover_mask_paths};
+pub use materials::{MaterialDecl, terrain_image_paths};
 use materials::{
     declaration_order, parse_covers, parse_materials_table, validate_material_files,
     warn_unused_materials,
@@ -1198,9 +1198,9 @@ fn parse_ground_layer(
     Some(GroundLayer { image, cells })
 }
 
-/// «Рельеф», требования 1, 38: `heights` — `2 × высота + 1` строк по `2 × ширина + 1` чисел; `water`
-/// необязательна, но с `level` и `color`; `covers` — слои покрытий из `materials`, их маски проверены
-/// по ответу страницы `masks`, если он есть.
+/// «Рельеф», требования 1, 38: `heights` — `d × высота + 1` строк по `d × ширина + 1` чисел; `water`
+/// необязательна, но с `level` и `color`; `covers` — слои покрытий из `materials`, их маски и карта
+/// цвета `tint` проверены по ответу страницы `masks`, если он есть.
 fn parse_terrain(
     text: &str,
     file: &str,
@@ -1211,7 +1211,13 @@ fn parse_terrain(
 ) -> Option<Terrain> {
     let root = parse_json_or_error(file, text, errors)?;
     let obj = expect_object(&root, file, "", errors)?;
-    reject_unknown_keys(obj, &["heights", "water", "covers"], file, "", errors);
+    reject_unknown_keys(
+        obj,
+        &["heights", "water", "covers", "tint"],
+        file,
+        "",
+        errors,
+    );
     let rows = require_field(obj, "heights", file, "", errors)
         .and_then(|v| parse_heights(v, file, scene, errors));
     let water = match obj.get("water") {
@@ -1222,10 +1228,14 @@ fn parse_terrain(
         None => Some(Vec::new()),
         Some(v) => parse_covers(v, file, materials, masks, errors),
     };
+    let tint = match obj.get("tint") {
+        None => Some(false),
+        Some(v) => materials::parse_tint(v, file, masks, errors).map(|()| true),
+    };
     let terrain = Terrain::from_rows([scene.width, scene.height], &rows?, water?)
         .map_err(|message| errors.push(file, "heights", message))
         .ok()?;
-    Some(terrain.with_covers(covers?))
+    Some(terrain.with_covers(covers?, tint?))
 }
 
 fn parse_heights(
@@ -1235,20 +1245,20 @@ fn parse_heights(
     errors: &mut ErrorSink,
 ) -> Option<Vec<Vec<f64>>> {
     let rows_json = expect_array(value, file, "heights", errors)?;
-    let (want_rows, want_columns) = (2 * scene.height as usize + 1, 2 * scene.width as usize + 1);
-    if rows_json.len() != want_rows {
+    let Some(density) = Terrain::density_for(rows_json.len(), scene.height) else {
         errors.push(
             file,
             "heights",
             format!(
-                "heights: {} строк, а высота сцены {} клеток: нужно 2 × {} + 1 = {want_rows}",
+                "heights: {} строк, а по высоте сцены {} клеток нужно {}",
                 rows_json.len(),
                 scene.height,
-                scene.height
+                Terrain::allowed_rows(scene.height)
             ),
         );
         return None;
-    }
+    };
+    let (want_rows, want_columns) = (rows_json.len(), density * scene.width as usize + 1);
     let mut ok = true;
     let mut rows = Vec::with_capacity(want_rows);
     for (r, row_json) in rows_json.iter().enumerate() {
@@ -1262,7 +1272,7 @@ fn parse_heights(
                 file,
                 &row_path,
                 format!(
-                    "heights[{r}]: {} чисел, а ширина сцены {} клеток: нужно 2 × {} + 1 = {want_columns}",
+                    "heights[{r}]: {} чисел, а при {density} точках на клетку (строк {want_rows}) и ширине сцены {} клеток нужно {density} × {} + 1 = {want_columns}",
                     row_arr.len(),
                     scene.width,
                     scene.width
@@ -1313,16 +1323,23 @@ pub fn terrain_from_numbers(
     heights: &[f64],
     water: Option<(f64, &str)>,
 ) -> Result<Terrain, String> {
-    let (want_rows, want_columns) = (2 * scene.height as usize + 1, 2 * scene.width as usize + 1);
-    if heights.len() != want_rows * want_columns {
+    let points = |d: usize| (d * scene.height as usize + 1) * (d * scene.width as usize + 1);
+    let Some(density) = DENSITIES.into_iter().find(|&d| points(d) == heights.len()) else {
         return Err(format!(
-            "heights: {} чисел, а нужно {}: (2 × {} + 1) строк по (2 × {} + 1) чисел",
+            "heights: {} чисел, а сцене {} × {} клеток нужно (d × {} + 1) строк по (d × {} + 1) чисел, где d — точек на клетку: {}",
             heights.len(),
-            want_rows * want_columns,
+            scene.width,
             scene.height,
-            scene.width
+            scene.height,
+            scene.width,
+            DENSITIES
+                .iter()
+                .map(|&d| format!("{} при d = {d}", points(d)))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
-    }
+    };
+    let want_columns = density * scene.width as usize + 1;
     if let Some(index) = heights.iter().position(|h| !h.is_finite()) {
         return Err(format!(
             "heights[{}][{}]: ожидалось число, получено {}",
@@ -1817,7 +1834,7 @@ pub fn read_texts(
             .iter()
             .flat_map(|material| material.maps().map(|(_, path)| path.to_string()))
             .collect(),
-        masks: terrain_json.map(cover_mask_paths).unwrap_or_default(),
+        masks: terrain_json.map(terrain_image_paths).unwrap_or_default(),
     }
 }
 

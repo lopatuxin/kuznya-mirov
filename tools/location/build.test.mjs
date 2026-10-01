@@ -7,6 +7,7 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import { buildCovers, buildGrid } from "./build.mjs";
 import { hundredths, terrainText } from "./files.mjs";
+import { TINT_PATH } from "./tint.mjs";
 import { decodeGrayPng } from "./pngDecoder.mjs";
 import { Grid } from "./terrain.mjs";
 
@@ -177,7 +178,7 @@ describe("деревня ролевой игры", () => {
 
   it("файлы в games/rpg — то, что строит описание: рельеф и маски те же", () => {
     const committed = readFileSync(join(gameDir, "terrain.json"), "utf8").replaceAll("\r\n", "\n");
-    assert.equal(committed, terrainText(grid, village.water, layers));
+    assert.equal(committed, terrainText(grid, village.water, layers, village.tint && TINT_PATH));
     for (const { mask, pixels } of masks) {
       assert.deepEqual(decodeGrayPng(readFileSync(join(gameDir, mask))).pixels, pixels, mask);
     }

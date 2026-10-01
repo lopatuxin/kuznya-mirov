@@ -73,7 +73,7 @@ impl TerrainMesh {
                 normal: to_f32(UP),
                 color: [water.color[0], water.color[1], water.color[2]],
             };
-            let scene = [columns as f64 / 2.0, rows as f64 / 2.0];
+            let scene = terrain.point_place(columns, rows);
             for piece in terrain.pieces_below(water.level, [[0.0, 0.0], scene]) {
                 for at in 1..piece.len() - 1 {
                     vertices.extend([corner(piece[0]), corner(piece[at]), corner(piece[at + 1])]);
@@ -236,8 +236,8 @@ fn plane_height(triangle: &[Vec3; 3], point: Vec2) -> f64 {
             / normal[2]
 }
 
-/// Плитка слоя `ground`: клетка — восемь треугольников рельефа этой клетки, картинка растянута по
-/// ним. Без файла высот клетка ровная, два треугольника.
+/// Плитка слоя `ground`: клетка — треугольники рельефа этой клетки, по два на квадрат сетки,
+/// картинка растянута по ним. Без файла высот клетка ровная, два треугольника.
 fn push_tile(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>) {
     let cell = [
         f64::from(paint.rect.position[0]),
@@ -248,10 +248,11 @@ fn push_tile(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>)
         paint.push_level_quad(0.0, out);
         return;
     }
-    for dy in 0..2 {
-        for dx in 0..2 {
-            let column = 2 * cell[0] as usize + dx;
-            let row = 2 * cell[1] as usize + dy;
+    let density = terrain.density();
+    for dy in 0..density {
+        for dx in 0..density {
+            let column = density * cell[0] as usize + dx;
+            let row = density * cell[1] as usize + dy;
             if column >= squares[0] || row >= squares[1] {
                 continue;
             }
@@ -282,13 +283,8 @@ fn push_on_terrain(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVe
     let high = quad.iter().fold([f64::NEG_INFINITY; 2], |m, c| {
         [m[0].max(c[0]), m[1].max(c[1])]
     });
-    let range = |low: f64, high: f64, count: usize| {
-        let first = ((low * 2.0).floor().max(0.0) as usize).min(count);
-        let last = ((high * 2.0).ceil().max(0.0) as usize).min(count);
-        first..last
-    };
-    for row in range(low[1], high[1], squares[1]) {
-        for column in range(low[0], high[0], squares[0]) {
+    for row in terrain.square_span(low[1], high[1], squares[1]) {
+        for column in terrain.square_span(low[0], high[0], squares[0]) {
             for which in 0..2 {
                 let triangle = terrain.triangle(column, row, which);
                 let footprint = triangle.map(|corner| [corner[0], corner[1]]);
