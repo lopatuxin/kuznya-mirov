@@ -8,8 +8,7 @@ import {
   type SpaceSceneContext,
   type SpaceSceneEngine,
 } from "./spaceSceneController";
-import type { BrushSettings } from "./terrainBrush";
-import type { TerrainGrid } from "./terrainFile";
+import type { BrushGrid, BrushSettings } from "./terrainBrush";
 
 const START_CAMERA: EditorCameraState = { target: [16, 12, 0], yaw: 0, pitch: 55, distance: 40 };
 const NO_KEYS: KeyInput = { code: "", ctrlKey: false, altKey: false, metaKey: false, shiftKey: false };
@@ -54,7 +53,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     /** Луч мимо рельефа сцены (небо) — `terrain_at` ничего не отдаёт. */
     isSkyUnderPointer: false,
     /** Рельеф сцены 12 × 12 клеток: точек 25 × 25, все на нуле. */
-    grid: { columns: 25, rows: 25, heights: new Float64Array(25 * 25) } as TerrainGrid,
+    grid: { density: 2, columns: 25, rows: 25, heights: new Float64Array(25 * 25) } as BrushGrid,
     water: null as unknown,
     setTerrainError: undefined as string | undefined,
   };

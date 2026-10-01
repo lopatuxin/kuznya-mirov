@@ -489,11 +489,8 @@ pub fn fit_ground(
     ];
     for row in 0..terrain.rows() {
         for column in 0..terrain.columns() {
-            points.push([
-                column as f64 / 2.0,
-                row as f64 / 2.0,
-                terrain.point_height(column, row),
-            ]);
+            let [x, y] = terrain.point_place(column, row);
+            points.push([x, y, terrain.point_height(column, row)]);
         }
     }
     let target = [width / 2.0, height / 2.0];

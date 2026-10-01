@@ -15,7 +15,7 @@ use crate::core::screens::{
     ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement, WorldElementKind,
     WorldTextPart,
 };
-use crate::core::terrain::{Terrain, Water};
+use crate::core::terrain::{DENSITIES, Terrain, Water};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
 use crate::core::value::{
     FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2, parse_color,
@@ -25,7 +25,14 @@ use crate::core::world::World;
 use super::error::ErrorSink;
 use super::wav;
 
+mod materials;
+
 pub use super::error::{GameError, LoadFailure};
+pub use materials::{MaterialDecl, terrain_image_paths};
+use materials::{
+    declaration_order, parse_covers, parse_materials_table, validate_material_files,
+    warn_unused_materials,
+};
 
 fn join(base: &str, seg: &str) -> String {
     if base.is_empty() {
@@ -1191,26 +1198,44 @@ fn parse_ground_layer(
     Some(GroundLayer { image, cells })
 }
 
-/// «Рельеф», требования 1, 38: `heights` — `2 × высота + 1` строк по `2 × ширина + 1` чисел; `water`
-/// необязательна, но с `level` и `color`.
+/// «Рельеф», требования 1, 38: `heights` — `d × высота + 1` строк по `d × ширина + 1` чисел; `water`
+/// необязательна, но с `level` и `color`; `covers` — слои покрытий из `materials`, их маски и карта
+/// цвета `tint` проверены по ответу страницы `masks`, если он есть.
 fn parse_terrain(
     text: &str,
     file: &str,
     scene: &SceneConfig,
+    materials: &[MaterialDecl],
+    masks: Option<&[(String, ImageVerdict)]>,
     errors: &mut ErrorSink,
 ) -> Option<Terrain> {
     let root = parse_json_or_error(file, text, errors)?;
     let obj = expect_object(&root, file, "", errors)?;
-    reject_unknown_keys(obj, &["heights", "water"], file, "", errors);
+    reject_unknown_keys(
+        obj,
+        &["heights", "water", "covers", "tint"],
+        file,
+        "",
+        errors,
+    );
     let rows = require_field(obj, "heights", file, "", errors)
         .and_then(|v| parse_heights(v, file, scene, errors));
     let water = match obj.get("water") {
         None => Some(None),
         Some(v) => parse_water(v, file, errors).map(Some),
     };
-    Terrain::from_rows([scene.width, scene.height], &rows?, water?)
+    let covers = match obj.get("covers") {
+        None => Some(Vec::new()),
+        Some(v) => parse_covers(v, file, materials, masks, errors),
+    };
+    let tint = match obj.get("tint") {
+        None => Some(false),
+        Some(v) => materials::parse_tint(v, file, masks, errors).map(|()| true),
+    };
+    let terrain = Terrain::from_rows([scene.width, scene.height], &rows?, water?)
         .map_err(|message| errors.push(file, "heights", message))
-        .ok()
+        .ok()?;
+    Some(terrain.with_covers(covers?, tint?))
 }
 
 fn parse_heights(
@@ -1220,20 +1245,20 @@ fn parse_heights(
     errors: &mut ErrorSink,
 ) -> Option<Vec<Vec<f64>>> {
     let rows_json = expect_array(value, file, "heights", errors)?;
-    let (want_rows, want_columns) = (2 * scene.height as usize + 1, 2 * scene.width as usize + 1);
-    if rows_json.len() != want_rows {
+    let Some(density) = Terrain::density_for(rows_json.len(), scene.height) else {
         errors.push(
             file,
             "heights",
             format!(
-                "heights: {} строк, а высота сцены {} клеток: нужно 2 × {} + 1 = {want_rows}",
+                "heights: {} строк, а по высоте сцены {} клеток нужно {}",
                 rows_json.len(),
                 scene.height,
-                scene.height
+                Terrain::allowed_rows(scene.height)
             ),
         );
         return None;
-    }
+    };
+    let (want_rows, want_columns) = (rows_json.len(), density * scene.width as usize + 1);
     let mut ok = true;
     let mut rows = Vec::with_capacity(want_rows);
     for (r, row_json) in rows_json.iter().enumerate() {
@@ -1247,7 +1272,7 @@ fn parse_heights(
                 file,
                 &row_path,
                 format!(
-                    "heights[{r}]: {} чисел, а ширина сцены {} клеток: нужно 2 × {} + 1 = {want_columns}",
+                    "heights[{r}]: {} чисел, а при {density} точках на клетку (строк {want_rows}) и ширине сцены {} клеток нужно {density} × {} + 1 = {want_columns}",
                     row_arr.len(),
                     scene.width,
                     scene.width
@@ -1298,16 +1323,23 @@ pub fn terrain_from_numbers(
     heights: &[f64],
     water: Option<(f64, &str)>,
 ) -> Result<Terrain, String> {
-    let (want_rows, want_columns) = (2 * scene.height as usize + 1, 2 * scene.width as usize + 1);
-    if heights.len() != want_rows * want_columns {
+    let points = |d: usize| (d * scene.height as usize + 1) * (d * scene.width as usize + 1);
+    let Some(density) = DENSITIES.into_iter().find(|&d| points(d) == heights.len()) else {
         return Err(format!(
-            "heights: {} чисел, а нужно {}: (2 × {} + 1) строк по (2 × {} + 1) чисел",
+            "heights: {} чисел, а сцене {} × {} клеток нужно (d × {} + 1) строк по (d × {} + 1) чисел, где d — точек на клетку: {}",
             heights.len(),
-            want_rows * want_columns,
+            scene.width,
             scene.height,
-            scene.width
+            scene.height,
+            scene.width,
+            DENSITIES
+                .iter()
+                .map(|&d| format!("{} при d = {d}", points(d)))
+                .collect::<Vec<_>>()
+                .join(", ")
         ));
-    }
+    };
+    let want_columns = density * scene.width as usize + 1;
     if let Some(index) = heights.iter().position(|h| !h.is_finite()) {
         return Err(format!(
             "heights[{}][{}]: ожидалось число, получено {}",
@@ -1413,7 +1445,7 @@ fn parse_light(value: &Json, errors: &mut ErrorSink) -> Option<LightConfig> {
     let obj = expect_object(value, "game.json", "scene → light", errors)?;
     reject_unknown_keys(
         obj,
-        &["sun_from", "sun_height", "shadow"],
+        &["sun_from", "sun_height", "sun_color", "sky_color", "shadow"],
         "game.json",
         "scene → light",
         errors,
@@ -1442,10 +1474,30 @@ fn parse_light(value: &Json, errors: &mut ErrorSink) -> Option<LightConfig> {
     let sun_from = field("sun_from", 0.0..=360.0, defaults.sun_from);
     let sun_height = field("sun_height", 10.0..=90.0, defaults.sun_height);
     let shadow = field("shadow", 0.0..=1.0, defaults.shadow);
+    let mut tint = |key: &str, default: [f32; 3]| {
+        let Some(v) = obj.get(key) else {
+            return Some(default);
+        };
+        let path = format!("scene → light → {key}");
+        let text = expect_string(v, "game.json", &path, errors)?;
+        let Some([r, g, b, _]) = parse_hex_color(&text) else {
+            errors.push(
+                "game.json",
+                &path,
+                format!("цвет должен быть вида \"#rrggbb\", получено \"{text}\""),
+            );
+            return None;
+        };
+        Some([r, g, b])
+    };
+    let sun_color = tint("sun_color", defaults.sun_color);
+    let sky_color = tint("sky_color", defaults.sky_color);
     Some(LightConfig {
         sun_from: sun_from?,
         sun_height: sun_height?,
         shadow: shadow?,
+        sun_color: sun_color?,
+        sky_color: sky_color?,
     })
 }
 
@@ -1584,6 +1636,9 @@ pub struct FilePaths {
     /// `files.terrain` — «Рельеф»: необязательный путь к файлу высот земли трёхмерной сцены. `None`
     /// — земля ровная на высоте 0.
     pub terrain: Option<String>,
+    /// `files.materials` — «Свет и материалы»: материалы рельефа в порядке объявления; этот порядок —
+    /// номер материала, на который ссылаются слои `covers` файла рельефа. Пусто, если не объявлена.
+    pub materials: Vec<MaterialDecl>,
 }
 
 /// One `files.images` entry — «Картинки» → «Таблица картинок»: `frames`/`frame_time` default to
@@ -1654,6 +1709,11 @@ pub struct NeededMedia {
     pub sounds: Vec<(String, String)>,
     pub music: Vec<(String, String)>,
     pub images: Vec<(String, String)>,
+    /// Пути карт всех материалов: материал за материалом, в каждом `color`, `normal`, `roughness`,
+    /// `height`, `ao`.
+    pub materials: Vec<String>,
+    /// Пути масок `covers` по порядку слоёв.
+    pub masks: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -1731,6 +1791,7 @@ pub fn read_texts(
     config: &GameConfig,
     properties_json: Option<&str>,
     screens_json: Option<&str>,
+    terrain_json: Option<&str>,
 ) -> NeededMedia {
     let mut scratch = ErrorSink::new();
     let properties = match properties_json {
@@ -1766,6 +1827,14 @@ pub fn read_texts(
             .iter()
             .map(|decl| (decl.name.clone(), decl.path.clone()))
             .collect(),
+        // «Свет и материалы»: каждая карта каждого материала и каждая маска покрытий.
+        materials: config
+            .files
+            .materials
+            .iter()
+            .flat_map(|material| material.maps().map(|(_, path)| path.to_string()))
+            .collect(),
+        masks: terrain_json.map(terrain_image_paths).unwrap_or_default(),
     }
 }
 
@@ -1851,6 +1920,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "code",
                 "tables",
                 "terrain",
+                "materials",
             ],
             "game.json",
             "files",
@@ -1903,9 +1973,15 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         let terrain = f
             .get("terrain")
             .and_then(|v| expect_string(v, "game.json", "files → terrain", errors));
+        // «Свет и материалы»: необязательна — нет ключа, нет и материалов.
+        let materials = f.get("materials").map(|v| {
+            let order = declaration_order(text);
+            parse_materials_table(v, &order, "game.json", "files → materials", errors)
+                .unwrap_or_default()
+        });
         (
             properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables,
-            terrain,
+            terrain, materials,
         )
     });
 
@@ -1933,12 +2009,20 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         code,
         tables,
         terrain,
+        materials,
     ) = files?;
     if terrain.is_some() && scene.camera.is_none() {
         errors.push(
             "game.json",
             "files → terrain",
             "files.terrain есть только в трёхмерной сцене: у scene в game.json нет camera",
+        );
+    }
+    if materials.is_some() && scene.camera.is_none() {
+        errors.push(
+            "game.json",
+            "files → materials",
+            "files.materials есть только в трёхмерной сцене: у scene в game.json нет camera",
         );
     }
     let (properties, scene_path, rules, screens, fonts) =
@@ -1969,6 +2053,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             code,
             tables,
             terrain,
+            materials: materials.unwrap_or_default(),
         },
         start_screen,
         win_screen,
@@ -7734,6 +7819,47 @@ pub fn load_rest_with_tables(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest_with_terrain(
     game_json: &str,
+    config: GameConfig,
+    properties_json: Option<&str>,
+    scene_json: Option<&str>,
+    rules_json: Option<&str>,
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
+    skip_media_validation: bool,
+    table_texts: &[(String, Option<String>)],
+    terrain_text: Option<&str>,
+) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
+    load_rest_with_materials(
+        game_json,
+        config,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        font_bytes,
+        sound_bytes,
+        music_verdicts,
+        image_data,
+        code_json,
+        skip_media_validation,
+        table_texts,
+        terrain_text,
+        &[],
+        &[],
+    )
+}
+
+/// Same as `load_rest_with_terrain`, additionally accepting what the page answered for each map of
+/// each material and for each cover mask — «Свет и материалы»: `material_data` and `mask_data` are
+/// keyed by the file's path, like `image_data` is by the image's name, numbered by
+/// `read_texts`'s `materials` and `masks`.
+#[allow(clippy::too_many_arguments)]
+pub fn load_rest_with_materials(
+    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -7747,6 +7873,8 @@ pub fn load_rest_with_terrain(
     skip_media_validation: bool,
     table_texts: &[(String, Option<String>)],
     terrain_text: Option<&str>,
+    material_data: &[(String, ImageVerdict)],
+    mask_data: &[(String, ImageVerdict)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -7765,7 +7893,11 @@ pub fn load_rest_with_terrain(
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
     match (&config.files.terrain, terrain_text) {
         (Some(path), Some(text)) if config.scene.is_3d() => {
-            if let Some(terrain) = parse_terrain(text, path, &config.scene, &mut errors) {
+            let masks = (!skip_media_validation).then_some(mask_data);
+            let materials = &config.files.materials;
+            if let Some(terrain) =
+                parse_terrain(text, path, &config.scene, materials, masks, &mut errors)
+            {
                 properties.set_terrain(terrain);
             }
         }
@@ -7904,6 +8036,7 @@ pub fn load_rest_with_terrain(
         validate_font_files(&config.files.fonts, font_bytes, &mut errors);
         validate_sound_files(&config.files.sounds, sound_bytes, &mut errors);
         validate_image_files(&config.files.images, image_data, &mut errors);
+        validate_material_files(&config.files.materials, material_data, &mut errors);
     }
     // «Звук» → «Загрузка и проверка»: captured from the raw parse,
     // before `resolve_screens` resolves each screen's `music` name, so an unknown or malformed
@@ -8013,6 +8146,10 @@ pub fn load_rest_with_terrain(
         validate_unused_sounds(&config.files.sounds, &rules, code_json, &mut errors);
         validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
         validate_unused_tables(&config.files.tables, code_json, &mut errors);
+        let covers = properties
+            .terrain()
+            .map_or(&[][..], |terrain| terrain.covers());
+        warn_unused_materials(&config.files.materials, covers, &mut errors);
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {

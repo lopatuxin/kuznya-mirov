@@ -42,7 +42,7 @@ describe("первый мазок в проекте без рельефа", () =
     const plan = await planTerrainEdit(sessionWithoutTerrain(), GAME_JSON, NO_FILES, (displayed) => terrainTextWithHeights(displayed.terrainText, raisedGrid()));
     const undone = beginUndo(plan?.state as NonNullable<typeof plan>["state"]);
 
-    expect(undone?.candidate.terrainText).toBe(formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null }));
+    expect(undone?.candidate.terrainText).toBe(formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: null }));
     expect(parseTerrainText(undone?.candidate.terrainText ?? "")?.heights.every((height) => height === 0)).toBe(true);
     expect(parseProjectFilePaths(plan?.gameJsonText ?? null)?.terrain).toBe("terrain.json");
   });
@@ -78,7 +78,7 @@ describe("первый мазок в проекте без рельефа", () =
 
 describe("проект с файлом рельефа", () => {
   const WITH_FILE_JSON = GAME_JSON.replace('"scene": "scene.json",', '"scene": "scene.json",\n    "terrain": "terrain.json",');
-  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null }) };
+  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: null }) };
 
   it("мазок — одно обычное действие: game.json не меняется, отмена возвращает высоты до мазка", async () => {
     const plan = await planTerrainEdit(createEditSessionState(EXISTING), WITH_FILE_JSON, NO_FILES, (displayed) =>

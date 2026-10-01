@@ -85,6 +85,8 @@ describe("loadProject", () => {
       sounds: [{ index: 5, name: "beep", path: "sounds/beep.wav" }],
       music: [{ index: 7, name: "theme", path: "music/theme.mp3" }],
       images: [{ index: 9, name: "head", path: "images/head.png" }],
+      materials: [],
+      masks: [],
     }));
     const load = vi.fn(() => ({
       ok: true,
@@ -102,6 +104,7 @@ describe("loadProject", () => {
       files["rules.json"],
       files["screens.json"],
       files["code.lua"],
+      undefined,
     );
     // load получает шрифты, звуки, приговоры музыке, картинки и код — «Редактор», требование 11.
     expect(load).toHaveBeenCalledWith(
@@ -116,6 +119,8 @@ describe("loadProject", () => {
       files["code.lua"],
       [{ name: "enemies", text: files["tables/enemies.json"] }],
       undefined,
+      [],
+      [],
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -146,7 +151,7 @@ describe("loadProject", () => {
         },
         warnings: NO_WARNINGS,
       })),
-      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [] })),
+      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] })),
       load,
     };
     const reader = createReader(files);
@@ -165,6 +170,8 @@ describe("loadProject", () => {
       null,
       [{ name: "enemies", text: null }],
       undefined,
+      [],
+      [],
     );
   });
 
@@ -186,7 +193,7 @@ describe("loadProject", () => {
           files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], terrain: terrainPath },
           warnings: NO_WARNINGS,
         })),
-        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [] })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] })),
         load,
       };
       return { engine, load };
@@ -209,7 +216,7 @@ describe("loadProject", () => {
 
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
 
-      expect(load.mock.calls[0]).toHaveLength(11);
+      expect(load.mock.calls[0]).toHaveLength(13);
       expect(load.mock.calls[0]?.[10]).toBeUndefined();
       expect(readText).not.toHaveBeenCalledWith("terrain.json");
     });
@@ -220,6 +227,85 @@ describe("loadProject", () => {
       await loadProject(engine, createReader({}), "{}", stubAudioContext);
 
       expect(load.mock.calls[0]?.[10]).toBeNull();
+    });
+  });
+
+  describe("карты материалов и маски покрытий", () => {
+    const files: Record<string, string | Uint8Array> = {
+      "game.json": "{}",
+      "properties.json": "{}",
+      "scene.json": '{"objects":[]}',
+      "rules.json": "{}",
+      "screens.json": "{}",
+      "terrain.json": '{"covers":[{"material":"grass"},{"material":"earth","mask":"terrain/earth.png"}],"heights":[[0]]}',
+      "materials/grass/color.jpg": new Uint8Array([1]),
+      "terrain/earth.png": new Uint8Array([2]),
+    };
+
+    function stubBrowserDecoder(): void {
+      const bitmap = { width: 1, height: 1, close: vi.fn() };
+      vi.stubGlobal("createImageBitmap", vi.fn(async () => bitmap));
+      vi.stubGlobal("document", {
+        createElement: () => ({
+          width: 0,
+          height: 0,
+          getContext: () => ({ drawImage: vi.fn(), getImageData: () => ({ data: new Uint8ClampedArray([9, 8, 7, 255]) }) }),
+        }),
+      } as unknown as Document);
+    }
+
+    it("текст рельефа идёт в read_texts шестым аргументом, карты и маски читаются, разжимаются и уходят в load по номерам; ненайденный файл — missing", async () => {
+      stubBrowserDecoder();
+      const readTexts = vi.fn((..._args: unknown[]) => ({
+        fonts: [],
+        sounds: [],
+        music: [],
+        images: [],
+        // Номера из read_texts — дело движка, нарочно не по возрастанию и не с нуля.
+        materials: [
+          { index: 4, path: "materials/grass/color.jpg" },
+          { index: 2, path: "materials/grass/normal.jpg" },
+        ],
+        masks: [{ index: 7, path: "terrain/earth.png" }],
+      }));
+      const load = vi.fn((..._args: unknown[]) => ({ ok: true, warnings: NO_WARNINGS }));
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], terrain: "terrain.json" },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: readTexts,
+        load,
+      };
+
+      await loadProject(engine, createReader(files), "{}", stubAudioContext);
+
+      expect(readTexts.mock.calls[0]?.[5]).toBe(files["terrain.json"]);
+      const decoded = { verdict: "ok", width: 1, height: 1, pixels: new Uint8Array([9, 8, 7, 255]) };
+      expect(load.mock.calls[0]?.[11]).toEqual([
+        { index: 4, ...decoded },
+        { index: 2, verdict: "missing" },
+      ]);
+      expect(load.mock.calls[0]?.[12]).toEqual([{ index: 7, ...decoded }]);
+    });
+
+    it("без файла рельефа в read_texts идёт undefined", async () => {
+      const readTexts = vi.fn((..._args: unknown[]) => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] }));
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [] },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: readTexts,
+        load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
+      };
+
+      await loadProject(engine, createReader(files), "{}", stubAudioContext);
+
+      expect(readTexts.mock.calls[0]).toHaveLength(6);
+      expect(readTexts.mock.calls[0]?.[5]).toBeUndefined();
     });
   });
 
@@ -238,7 +324,7 @@ describe("loadProject", () => {
         files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [] },
         warnings: NO_WARNINGS,
       })),
-      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [] })),
+      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] })),
       load: vi.fn(() => ({ ok: false, errors, warnings: NO_WARNINGS })),
     };
     const reader = createReader(files);

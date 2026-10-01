@@ -19,3 +19,10 @@ export function derivedSeed(seed, salt) {
   h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35) >>> 0;
   return (h ^ (h >>> 16)) >>> 0;
 }
+
+/** Имя в число для зерна: неровности зависят от имени, а не от места в описании, и вставка нового соседа их не меняет. */
+export function nameHash(name) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < name.length; i++) h = Math.imul(h ^ name.charCodeAt(i), 0x01000193) >>> 0;
+  return h;
+}

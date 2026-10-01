@@ -1,6 +1,8 @@
 import { decodeImage, type DecodedImage } from "./imageLoader";
 
 export type ImageEntry = { index: number; name: string; path: string };
+/** Карта материала и маска покрытия читаются как картинки, но имени у них нет — «Свет и материалы», «Загрузка». */
+export type ImageFileEntry = { index: number; path: string };
 export type LoadedImage = { index: number; path: string; bytes: Uint8Array | null };
 export type ImagePayloadEntry = { index: number } & DecodedImage;
 
@@ -11,7 +13,7 @@ export type ImagePayloadEntry = { index: number } & DecodedImage;
  * шрифтов и звука, здесь не дублируется.
  */
 export async function fetchImageBytes(
-  images: ImageEntry[],
+  images: ImageFileEntry[],
   readBinary: (path: string) => Promise<Uint8Array | null>,
 ): Promise<LoadedImage[]> {
   const bytesList = await Promise.all(images.map((image) => readBinary(image.path)));

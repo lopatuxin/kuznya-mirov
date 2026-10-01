@@ -15,7 +15,10 @@ use engine::core::scene::{ground_footprint, pointer_hit, top_surface_height};
 use engine::core::shapes::Body;
 use engine::core::surface;
 use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
-use engine::data::load::{ImageVerdict, load_rest_with_terrain, read_entry};
+use engine::data::load::{
+    GameConfig, ImageVerdict, load_rest_with_materials, read_entry, terrain_image_paths,
+};
+use engine::render::materials::{Relief, pack_masks};
 use serde_json::json;
 
 const WINDOW: [f32; 2] = [1920.0, 1080.0];
@@ -43,8 +46,69 @@ fn png_dimensions(name: &str) -> (u32, u32) {
     (width, height)
 }
 
-/// Loads a `games/rpg` folder end to end, image sizes, the `enemies` table and the terrain file
-/// included. `game_json`, `scene_json` and `terrain_json` stand in for the real files: the village
+/// Размер карты материала по её файлу: у PNG — из `IHDR`, у JPEG — из начала кадра.
+fn map_dimensions(name: &str) -> (u32, u32) {
+    if name.ends_with(".png") {
+        png_dimensions(name)
+    } else {
+        jpeg_dimensions(name)
+    }
+}
+
+/// `width`/`height` of a JPEG straight out of its start-of-frame segment: the first `SOF` marker,
+/// then precision (one byte), height and width (two bytes each, big-endian).
+fn jpeg_dimensions(name: &str) -> (u32, u32) {
+    let path = game_path(name);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"));
+    assert_eq!(bytes[..2], [0xFF, 0xD8], "{name}: не JPEG");
+    let mut at = 2;
+    while at + 4 <= bytes.len() {
+        assert_eq!(bytes[at], 0xFF, "{name}: сломан сегмент на {at}");
+        let marker = bytes[at + 1];
+        let length = usize::from(u16::from_be_bytes([bytes[at + 2], bytes[at + 3]]));
+        if matches!(marker, 0xC0..=0xC3 | 0xC5..=0xC7 | 0xC9..=0xCB | 0xCD..=0xCF) {
+            let height = u16::from_be_bytes([bytes[at + 5], bytes[at + 6]]);
+            let width = u16::from_be_bytes([bytes[at + 7], bytes[at + 8]]);
+            return (u32::from(width), u32::from(height));
+        }
+        at += 2 + length;
+    }
+    panic!("{name}: в JPEG нет кадра");
+}
+
+fn ok_verdict((width, height): (u32, u32)) -> ImageVerdict {
+    ImageVerdict::Ok {
+        width,
+        height,
+        pixels: vec![0u8; (width * height * 4) as usize],
+    }
+}
+
+type Verdicts = Vec<(String, ImageVerdict)>;
+
+/// Ответы страницы по картам материалов и маскам покрытий: размеры настоящих файлов, точки нулевые.
+fn map_data(config: &GameConfig, terrain_json: Option<&str>) -> (Verdicts, Verdicts) {
+    let maps = config
+        .files
+        .materials
+        .iter()
+        .flat_map(|material| material.maps())
+        .map(|(_, path)| (path.to_string(), ok_verdict(map_dimensions(path))))
+        .collect();
+    let masks = terrain_json
+        .map(terrain_image_paths)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|path| {
+            let verdict = ok_verdict(png_dimensions(&path));
+            (path, verdict)
+        })
+        .collect();
+    (maps, masks)
+}
+
+/// Loads a `games/rpg` folder end to end, image sizes, the `enemies` table, the terrain file, the
+/// material maps and the cover masks included. `game_json`, `scene_json` and `terrain_json` stand in for the real files: the village
 /// passes them as they are, the combat scene passes its own.
 fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> Game {
     let (config, entry_warnings) =
@@ -82,7 +146,8 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
             )
         })
         .collect();
-    let (game, _screens, warnings, _images) = load_rest_with_terrain(
+    let (map_verdicts, mask_verdicts) = map_data(&config, terrain_json);
+    let (game, _screens, warnings, _images) = load_rest_with_materials(
         game_json,
         config,
         Some(&read("properties.json")),
@@ -97,6 +162,8 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
         false,
         &table_texts,
         terrain_json,
+        &map_verdicts,
+        &mask_verdicts,
     )
     .expect("ролевая игра должна проходить предстартовую проверку");
     let mut all_warnings = entry_warnings;
@@ -174,7 +241,7 @@ fn combat_scene(first_goblin_kind: &str) -> String {
 }
 
 /// `game.json` игры с боевой сценой вместо деревни: свой размер, ровная земля без файла рельефа и без
-/// травы, которой на сцене нет.
+/// материалов, которым на ней нечего одевать.
 fn combat_game_json() -> String {
     let mut game_json: serde_json::Value =
         serde_json::from_str(&read("game.json")).expect("game.json должен разбираться");
@@ -182,10 +249,7 @@ fn combat_game_json() -> String {
     game_json["scene"]["height"] = json!(COMBAT_SCENE[1]);
     let files = game_json["files"].as_object_mut().expect("files — объект");
     files.remove("terrain");
-    files["images"]
-        .as_object_mut()
-        .expect("images — объект")
-        .remove("grass");
+    files.remove("materials");
     game_json.to_string()
 }
 
@@ -304,10 +368,59 @@ fn rpg_loads_without_errors_or_warnings() {
     assert!(!game.scene.y_sort);
 }
 
-/// Требование 32 фазы 15: из `images` уходят все картинки, кроме травы и кольца отметки, и файлов в
-/// папке тоже остаётся только два.
+/// Требования 28–29 и 31 фазы 19: деревня одета материалами — слоями покрытий, маски у всех, кроме
+/// нижнего, — и плиток травы на сцене нет; её карты и маски собираются в текстуры видеокарты.
 #[test]
-fn only_the_grass_and_the_marker_ring_remain_as_images() {
+fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
+    let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
+    let game = load_village(&read("scene.json"));
+    assert!(game.ground.is_empty(), "плитки травы ушли");
+    let covers = game.world.terrain().covers();
+    assert!(covers.len() > 1, "у деревни есть слои поверх нижнего");
+    let masks: Vec<Option<usize>> = covers.iter().map(|c| c.mask).collect();
+    let expected: Vec<Option<usize>> = (0..covers.len()).map(|k| k.checked_sub(1)).collect();
+    assert_eq!(masks, expected, "маска у каждого слоя, кроме нижнего");
+
+    let terrain = read("terrain.json");
+    let (map_verdicts, mask_verdicts) = map_data(&config, Some(&terrain));
+    let image_paths = terrain_image_paths(&terrain);
+    assert!(
+        game.world.terrain().has_tint(),
+        "у деревни есть карта цвета гор"
+    );
+    assert_eq!(
+        image_paths.len(),
+        covers.len(),
+        "маски слоёв поверх нижнего и карта цвета"
+    );
+    let scene = [game.scene.width, game.scene.height];
+    let relief = Relief::new(
+        &config.files.materials,
+        &map_verdicts,
+        covers,
+        true,
+        &image_paths,
+        &mask_verdicts,
+        scene,
+    )
+    .expect("карты и маски деревни собираются");
+    assert_eq!(
+        (relief.side, relief.materials.len(), relief.masks.len()),
+        (1024, config.files.materials.len(), covers.len() - 1)
+    );
+    let packed = pack_masks(&relief.masks, relief.tint.as_ref());
+    assert_eq!((packed.width, packed.height), (512, 384));
+    assert_eq!(
+        packed.layers.len(),
+        (covers.len() - 1).div_ceil(4) + 1,
+        "слои масок и слой карты цвета"
+    );
+}
+
+/// Требование 32 фазы 15 с поправкой требования 31 фазы 19: плитки травы ушли — из `images` остаётся
+/// только кольцо отметки, и файл в папке тоже один.
+#[test]
+fn only_the_marker_ring_remains_as_an_image() {
     let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
     let names: Vec<&str> = config
         .files
@@ -315,15 +428,13 @@ fn only_the_grass_and_the_marker_ring_remain_as_images() {
         .iter()
         .map(|d| d.name.as_str())
         .collect();
-    assert_eq!(names, ["grass", "marker"]);
-    let (gw, gh) = png_dimensions("images/grass.png");
-    assert_eq!((gw, gh), (384, 384), "grass: 4×4 плитки по 96×96");
+    assert_eq!(names, ["marker"]);
     let mut files: Vec<String> = fs::read_dir(game_path("images"))
         .expect("папка images")
         .map(|e| e.expect("запись").file_name().to_string_lossy().to_string())
         .collect();
     files.sort();
-    assert_eq!(files, ["grass.png", "marker.png"]);
+    assert_eq!(files, ["marker.png"]);
 }
 
 /// Щелчок по точке тела фигуры: луч от глаза камеры через точку на теле; в записи — точка поверхности

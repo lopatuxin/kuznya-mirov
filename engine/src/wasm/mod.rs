@@ -19,6 +19,7 @@ use crate::data::error::GameError;
 use crate::data::load::{self, GameConfig, ImageDecl, ImageVerdict, MusicVerdict, NeededMedia};
 use crate::data::session::{self, PlaySession};
 use crate::render::atlas::{self, AtlasRect};
+use crate::render::materials::Relief;
 use crate::render::relief::TerrainMesh;
 use crate::render::scene3d::{self, Frame3d};
 use crate::render::{
@@ -145,6 +146,26 @@ fn js_indexed_media_table(subset: &[(String, String)], full: &[(String, String)]
     arr
 }
 
+/// Пути карт или масок с их номерами: страница отвечает на них по номеру.
+fn js_numbered_paths(paths: &[String]) -> Array {
+    let arr = Array::new();
+    for (index, path) in paths.iter().enumerate() {
+        let item = Object::new();
+        set(&item, "index", &JsValue::from_f64(index as f64));
+        set(&item, "path", &JsValue::from_str(path));
+        arr.push(&item);
+    }
+    arr
+}
+
+/// Ответ на путь, которым ключом служит сам путь: карты материалов и маски покрытий.
+fn path_table(paths: &[String]) -> Vec<(String, String)> {
+    paths
+        .iter()
+        .map(|path| (path.clone(), path.clone()))
+        .collect()
+}
+
 /// `read_texts()`'s result: which binary files are worth fetching next — «Звук» →«Загрузка и проверка». Never an error shape: a text file this step
 /// couldn't parse just names fewer tracks, and the real errors surface later, from `load()`,
 /// so every error from every file is collected in the one place that already does that.
@@ -171,6 +192,8 @@ fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> J
         "images",
         &js_indexed_media_table(&needed.images, &needed.images),
     );
+    set(&obj, "materials", &js_numbered_paths(&needed.materials));
+    set(&obj, "masks", &js_numbered_paths(&needed.masks));
     obj.into()
 }
 
@@ -991,6 +1014,19 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundVertex>, [Vec<Shape
         light_view_proj: frame.light_view_proj,
         sun: frame.sun,
         shade: [frame.shadow, frame.depth_per_cell, 0.02, 0.0],
+        eye: [frame.eye[0], frame.eye[1], frame.eye[2], 0.0],
+        sun_light: [
+            frame.sun_light[0],
+            frame.sun_light[1],
+            frame.sun_light[2],
+            0.0,
+        ],
+        sky_light: [
+            frame.sky_light[0],
+            frame.sky_light[1],
+            frame.sky_light[2],
+            0.0,
+        ],
     };
     let ground = frame
         .surface
@@ -1186,8 +1222,12 @@ impl Engine {
     /// them, numbered), `music` (only the tracks some screen actually names, numbered). Never
     /// fails: a text file that doesn't parse here just names fewer tracks, and the real errors
     /// surface later, from `load()`, so every error from every file still collects in one place.
-    /// Returns `{fonts:[{name,path}], sounds:[{index,name,path}], music:[{index,name,path}]}`; an
-    /// empty answer if called before a successful `read_entry()`.
+    /// Returns `{fonts:[{name,path}], sounds:[{index,name,path}], music:[{index,name,path}],
+    /// images:[{index,name,path}], materials:[{index,path}], masks:[{index,path}]}` — «Свет и
+    /// материалы»: `materials` — каждая карта каждого материала в порядке объявления и, внутри
+    /// материала, `color`, `normal`, `roughness`, `height`, `ao`; `masks` — маски `covers` файла рельефа
+    /// `terrain_json` по порядку слоёв, пусто, если файла нет или он не читается; an empty answer if
+    /// called before a successful `read_entry()`.
     pub fn read_texts(
         &self,
         properties_json: Option<String>,
@@ -1197,11 +1237,18 @@ impl Engine {
         // «Код игры»: движок его здесь не читает — принят только для единообразия с остальными
         // текстами второго захода; `load()` читает его по-настоящему.
         _code_json: Option<String>,
+        // «Свет и материалы»: текст файла рельефа — из него берутся пути масок покрытий.
+        terrain_json: Option<String>,
     ) -> JsValue {
         let Some(config) = self.pending_config.peek() else {
             return js_needed_media_ok(&NeededMedia::default(), &[]);
         };
-        let needed = load::read_texts(config, properties_json.as_deref(), screens_json.as_deref());
+        let needed = load::read_texts(
+            config,
+            properties_json.as_deref(),
+            screens_json.as_deref(),
+            terrain_json.as_deref(),
+        );
         js_needed_media_ok(&needed, &config.files.music)
     }
 
@@ -1215,6 +1262,9 @@ impl Engine {
     /// success, the game is ready to run starting from the next `tick`. Returns `{ok:true,
     /// warnings:[...]}` on success or `{ok:false, errors:[...], warnings:[...]}` on failure —
     /// warnings never stop the game from starting, but the page still needs to see them either way.
+    /// «Свет и материалы»: `material_maps` и `cover_masks` — ответы страницы по картам материалов и
+    /// маскам покрытий, `[{index, verdict: "ok"|"missing"|"rejected", width?, height?, pixels?}]`, как
+    /// у `images`, по номерам из `read_texts()`'s `materials` и `masks`.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -1229,6 +1279,8 @@ impl Engine {
         code_json: Option<String>,
         tables: JsValue,
         terrain: Option<String>,
+        material_maps: JsValue,
+        cover_masks: JsValue,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -1256,7 +1308,19 @@ impl Engine {
         let music_verdicts = parse_music_verdicts(&music, &config.files.music);
         let image_verdicts = parse_image_verdicts(&images, &image_table);
         let table_texts = parse_table_texts(&tables);
-        match load::load_rest_with_terrain(
+        // «Свет и материалы»: те же списки, что отдал `read_texts()`, — ответы страницы идут по номерам.
+        let material_decls = config.files.materials.clone();
+        let map_paths: Vec<String> = material_decls
+            .iter()
+            .flat_map(|material| material.maps().map(|(_, path)| path.to_string()))
+            .collect();
+        let mask_paths = terrain
+            .as_deref()
+            .map(load::terrain_image_paths)
+            .unwrap_or_default();
+        let map_verdicts = parse_image_verdicts(&material_maps, &path_table(&map_paths));
+        let mask_verdicts = parse_image_verdicts(&cover_masks, &path_table(&mask_paths));
+        match load::load_rest_with_materials(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -1271,6 +1335,8 @@ impl Engine {
             false,
             &table_texts,
             terrain.as_deref(),
+            &map_verdicts,
+            &mask_verdicts,
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -1327,6 +1393,16 @@ impl Engine {
                     }
                 };
                 self.atlas_rects = atlas_rects;
+                let relief = Relief::new(
+                    &material_decls,
+                    &map_verdicts,
+                    game.world.terrain().covers(),
+                    game.world.terrain().has_tint(),
+                    &mask_paths,
+                    &mask_verdicts,
+                    [game.scene.width, game.scene.height],
+                );
+                self.renderer.set_relief(relief.as_ref());
                 self.images = image_order;
                 self.rules_path = rules_path;
                 self.ui_clock.reset();
@@ -1374,6 +1450,7 @@ impl Engine {
         self.atlas_rects = Vec::new();
         self.rules_path = String::new();
         self.renderer.reset_fonts();
+        self.renderer.set_relief(None);
         self.session = None;
     }
 
@@ -1620,7 +1697,8 @@ impl Engine {
         None
     }
 
-    /// «Редактор», «Вызовы движка»: нынешний рельеф `{columns, rows, heights, water}` — `heights`
+    /// «Редактор», «Вызовы движка»: нынешний рельеф `{density, columns, rows, heights, water}` —
+    /// `density` — точек высот на клетку, `heights`
     /// (`Float64Array`) строками сверху вниз, как в `set_terrain`, `water` — `{level, color}` или
     /// `null`. Без файла рельефа — нули нужного размера. `undefined` в плоской сцене.
     pub fn terrain_heights(&self) -> JsValue {
@@ -1628,6 +1706,7 @@ impl Engine {
             return JsValue::UNDEFINED;
         };
         let obj = Object::new();
+        set(&obj, "density", &JsValue::from_f64(terrain.density as f64));
         set(&obj, "columns", &JsValue::from_f64(terrain.columns as f64));
         set(&obj, "rows", &JsValue::from_f64(terrain.rows as f64));
         set(

@@ -28,6 +28,6 @@ export async function planTerrainEdit(
   const candidate: EditSnapshot = { ...session.displayed, terrainText };
   if (session.displayed.terrainText !== null) return { state: beginAction(session, candidate), gameJsonText };
   const terrainPath = await chooseTerrainFilePath(paths.scene, isFilePresent);
-  const flatText = formatTerrainText({ ...flatTerrainGrid(sceneSize), water: null });
+  const flatText = formatTerrainText({ ...flatTerrainGrid(sceneSize), water: null, covers: null });
   return { state: beginTerrainCreation(session, candidate, flatText), gameJsonText: addTerrainFilePath(gameJsonText, terrainPath) };
 }

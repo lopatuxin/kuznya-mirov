@@ -265,27 +265,39 @@ pub fn set_terrain(
     if game.session_active() {
         return Err("идёт партия: рельеф правится вне партии".into());
     }
-    game.set_terrain(terrain_from_numbers(&game.scene, heights, water)?);
+    let (covers, tint) = (
+        game.world.terrain().covers().to_vec(),
+        game.world.terrain().has_tint(),
+    );
+    game.set_terrain(terrain_from_numbers(&game.scene, heights, water)?.with_covers(covers, tint));
     Ok(())
 }
 
 /// «Редактор», «Вызовы движка», `terrain_heights`: рельеф сцены как его принимает `set_terrain`.
 pub struct TerrainHeights {
+    /// Точек высот на клетку сцены.
+    pub density: usize,
     pub columns: usize,
     pub rows: usize,
     pub heights: Vec<f64>,
     pub water: Option<(f64, String)>,
 }
 
-/// Нынешний рельеф; без файла — нули нужного размера и без воды. `None` в плоской сцене.
+/// Нынешний рельеф; без файла — нули нужного размера, по две точки на клетку, и без воды. `None` в
+/// плоской сцене.
 pub fn terrain_heights(game: &Game) -> Option<TerrainHeights> {
     if !game.scene.is_3d() {
         return None;
     }
     let terrain = game.world.terrain();
+    let density = if terrain.heights().is_empty() {
+        2
+    } else {
+        terrain.density()
+    };
     let (columns, rows) = (
-        2 * game.scene.width as usize + 1,
-        2 * game.scene.height as usize + 1,
+        density * game.scene.width as usize + 1,
+        density * game.scene.height as usize + 1,
     );
     let heights = if terrain.heights().is_empty() {
         vec![0.0; columns * rows]
@@ -293,6 +305,7 @@ pub fn terrain_heights(game: &Game) -> Option<TerrainHeights> {
         terrain.heights().to_vec()
     };
     Some(TerrainHeights {
+        density,
         columns,
         rows,
         heights,

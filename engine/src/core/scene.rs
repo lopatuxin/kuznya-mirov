@@ -29,6 +29,10 @@ pub struct LightConfig {
     pub sun_height: f64,
     /// Насколько темна тень, 0–1.
     pub shadow: f64,
+    /// Цвет солнечного света в sRGB: задаёт только оттенок.
+    pub sun_color: [f32; 3],
+    /// Цвет неба — рассеянного света сверху — в sRGB: задаёт только оттенок.
+    pub sky_color: [f32; 3],
 }
 
 impl Default for LightConfig {
@@ -37,6 +41,8 @@ impl Default for LightConfig {
             sun_from: 135.0,
             sun_height: 50.0,
             shadow: 0.4,
+            sun_color: [1.0, 242.0 / 255.0, 220.0 / 255.0],
+            sky_color: [169.0 / 255.0, 200.0 / 255.0, 238.0 / 255.0],
         }
     }
 }

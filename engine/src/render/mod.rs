@@ -1,4 +1,5 @@
 pub mod atlas;
+pub mod materials;
 pub mod relief;
 pub mod scene3d;
 
