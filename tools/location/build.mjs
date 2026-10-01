@@ -1,18 +1,18 @@
-// Строит рельеф локации по описанию из форм — горы, холмы, площадки, русла — и пишет файл рельефа
-// игры, а по разделу `covers` — маски покрытий рядом с ним, в папке `terrain/`. Одно описание всегда
-// даёт одни и те же файлы: случайность только от `seed` описания.
+// Строит рельеф локации по описанию из форм — подъёмы, холмы, площадки, русла — и пишет файл рельефа
+// игры, а по разделу `covers` — маски покрытий рядом с ним, в папке `terrain/`. Горы-штампы описание
+// не знает: они лежат в файле рельефа (`stamps`), и перезапись их сохраняет. Одно описание всегда даёт
+// одни и те же файлы: случайность только от `seed` описания.
 // Запуск: `node tools/location/build.mjs art/rpg/village/plan.json`.
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { coverMasks } from "./covers.mjs";
+import { isNumber, isPoint } from "./curve.mjs";
 import { terrainText } from "./files.mjs";
-import { applyBlocks, applyCracks, applyErosion, applyStrata, applyTalus } from "./mountains.mjs";
-import { grayPng, rgbaPng } from "./png.mjs";
+import { grayPng } from "./png.mjs";
 import { readPlan } from "./plan.mjs";
 import { Grid, applyChannel, applyHill, applyNoise, applyPad, applyRange, applySmooth } from "./terrain.mjs";
-import { TINT_PATH, tintMap } from "./tint.mjs";
 
 const APPLY = {
   noise: applyNoise,
@@ -21,11 +21,6 @@ const APPLY = {
   pad: applyPad,
   channel: applyChannel,
   smooth: applySmooth,
-  strata: applyStrata,
-  blocks: applyBlocks,
-  cracks: applyCracks,
-  erosion: applyErosion,
-  talus: applyTalus,
 };
 
 /** Сетка высот по описанию: операции по порядку, поздняя меняет сделанное ранней. */
@@ -42,6 +37,24 @@ export function buildCovers(plan, grid) {
   return { layers: covers, masks: covers ? coverMasks(grid, covers) : [] };
 }
 
+/** Горы, что уже лежат в файле рельефа `target`; нет файла или раздела `stamps` — `undefined`. */
+function savedStamps(target) {
+  if (!existsSync(target)) return undefined;
+  let stamps;
+  try {
+    ({ stamps } = JSON.parse(readFileSync(target, "utf8")));
+  } catch (error) {
+    throw new Error(`${target}: ${error.message}`);
+  }
+  if (stamps === undefined) return undefined;
+  const isStamp = (stamp) =>
+    typeof stamp?.stamp === "string" && isPoint(stamp.position) && isPoint(stamp.size) && isNumber(stamp.height) && (stamp.rotation === undefined || isNumber(stamp.rotation));
+  if (!Array.isArray(stamps)) throw new Error(`${target}: stamps — список гор`);
+  const broken = stamps.findIndex((stamp) => !isStamp(stamp));
+  if (broken >= 0) throw new Error(`${target}: stamps → ${broken}: гора — { stamp, position, size, height, rotation? }`);
+  return stamps;
+}
+
 function main() {
   const [planPath] = process.argv.slice(2);
   if (!planPath) throw new Error("node tools/location/build.mjs <описание.json>");
@@ -53,16 +66,8 @@ function main() {
   }
   const grid = buildGrid(plan);
   const { layers, masks } = buildCovers(plan, grid);
-  const { tint } = readPlan(plan);
   const target = resolve(dirname(planPath), plan.terrain);
-  writeFileSync(target, terrainText(grid, plan.water, layers, tint && TINT_PATH));
-  if (tint) {
-    const { width, height, pixels } = tintMap(grid, tint);
-    const file = resolve(dirname(target), TINT_PATH);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, rgbaPng(width, height, pixels));
-    console.log(`карта цвета ${width} × ${height} → ${file}`);
-  }
+  writeFileSync(target, terrainText(grid, plan.water, layers, savedStamps(target)));
   for (const { mask, width, height, pixels } of masks) {
     const file = resolve(dirname(target), mask);
     mkdirSync(dirname(file), { recursive: true });

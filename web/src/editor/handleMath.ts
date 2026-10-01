@@ -14,7 +14,7 @@ function roundToHundredth(value: number): number {
 }
 
 /** Убирает хвост машинного округления (`2.9999999999999996`), не трогая доли до миллионных. */
-function trimFloatNoise(value: number): number {
+export function trimFloatNoise(value: number): number {
   return Math.round(value * 1e6) / 1e6;
 }
 

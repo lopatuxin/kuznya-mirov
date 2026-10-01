@@ -15,6 +15,9 @@ use super::{
     reject_unknown_keys, require_field,
 };
 
+/// Круче вертикальной стены склона не бывает.
+const MAX_SLOPE_DEGREES: f64 = 90.0;
+
 /// Стороны квадратной карты материала, которые берёт движок, в точках.
 const MAP_SIDES: [u32; 3] = [512, 1024, 2048];
 
@@ -74,22 +77,34 @@ impl<'de> Deserialize<'de> for KeyOrder {
     }
 }
 
-/// Имена материалов `files.materials` в порядке записи в `game.json`; порядок — номер материала.
-/// Пусто, если таблицы нет.
-pub(super) fn declaration_order(game_json: &str) -> Vec<String> {
+/// Имена из таблиц `files.materials` и `files.stamps` в порядке записи в `game.json`; порядок — номер
+/// материала и номер штампа. Пусто, если таблицы нет.
+#[derive(Debug, Default)]
+pub(super) struct DeclarationOrder {
+    pub materials: Vec<String>,
+    pub stamps: Vec<String>,
+}
+
+pub(super) fn declaration_order(game_json: &str) -> DeclarationOrder {
     #[derive(Deserialize)]
     struct Files {
         materials: Option<KeyOrder>,
+        stamps: Option<KeyOrder>,
     }
     #[derive(Deserialize)]
     struct Root {
         files: Option<Files>,
     }
-    serde_json::from_str::<Root>(game_json)
+    let Some(files) = serde_json::from_str::<Root>(game_json)
         .ok()
-        .and_then(|root| root.files?.materials)
-        .map(|order| order.0)
-        .unwrap_or_default()
+        .and_then(|root| root.files)
+    else {
+        return DeclarationOrder::default();
+    };
+    DeclarationOrder {
+        materials: files.materials.map(|order| order.0).unwrap_or_default(),
+        stamps: files.stamps.map(|order| order.0).unwrap_or_default(),
+    }
 }
 
 fn has_extension(path: &str, extensions: &[&str]) -> bool {
@@ -290,7 +305,7 @@ fn parse_cover(
 ) -> Option<Cover> {
     let path = format!("covers[{index}]");
     let obj = expect_object(value, file, &path, errors)?;
-    reject_unknown_keys(obj, &["material", "mask"], file, &path, errors);
+    reject_unknown_keys(obj, &["material", "mask", "slope"], file, &path, errors);
     let material = require_field(obj, "material", file, &path, errors)
         .and_then(|v| expect_string(v, file, &join(&path, "material"), errors))
         .and_then(|name| {
@@ -315,20 +330,49 @@ fn parse_cover(
             );
             None
         }
+        (_, None) if obj.contains_key("slope") => Some(None),
         (_, None) => {
             errors.push(
                 file,
                 &path,
-                "слой поверх нижнего без маски: отсутствует обязательная настройка \"mask\"",
+                "слой поверх нижнего без маски и без slope: нужна настройка \"mask\" или \"slope\"",
             );
             None
         }
         (_, Some(v)) => parse_mask(v, file, &mask_path, masks, errors).map(|()| Some(mask_index)),
     };
+    let slope_path = join(&path, "slope");
+    let slope = match (index, obj.get("slope")) {
+        (_, None) => Some(None),
+        (0, Some(_)) => {
+            errors.push(
+                file,
+                &slope_path,
+                "у нижнего слоя slope нет: он лежит на всём рельефе",
+            );
+            None
+        }
+        (_, Some(v)) => parse_slope(v, file, &slope_path, errors).map(Some),
+    };
     Some(Cover {
         material: material?,
         mask: mask?,
+        slope: slope?,
     })
+}
+
+/// `slope` слоя: градусы от 0 до 90.
+fn parse_slope(value: &Json, file: &str, path: &str, errors: &mut ErrorSink) -> Option<f64> {
+    let slope = expect_number(value, file, path, errors)?;
+    if !(0.0..=MAX_SLOPE_DEGREES).contains(&slope) {
+        errors.push(
+            file,
+            path,
+            format!("slope — градусы от 0 до {MAX_SLOPE_DEGREES}, получено {slope}"),
+        );
+        return None;
+    }
+    Some(slope)
 }
 
 fn parse_mask(

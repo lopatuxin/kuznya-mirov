@@ -20,31 +20,6 @@ function masksOf(description) {
 }
 
 describe("правила масок", () => {
-  it("slope: склон круче «full» целиком, на ровном месте и на плоскогорье нет", () => {
-    const rock = masksOf(plan([MOUNTAINS], [{ material: "rock", rule: "slope", from: 30, full: 38 }])).get("rock");
-    assert.equal(rock.at(20, 11.5), 255);
-    assert.equal(rock.at(20, 3), 0);
-    assert.equal(rock.at(20, 20), 0);
-  });
-
-  it("slope с range: только севернее подножия гор, южный крутой холм не задевает", () => {
-    const description = plan(
-      [{ ...MOUNTAINS, height: 10, depth: 20 }, { op: "hill", name: "холм", at: [30, 27], radius: 3, height: 4 }],
-      [
-        { material: "moss", rule: "slope", from: 8, full: 12, range: "горы" },
-        { material: "rock", rule: "slope", from: 30, full: 38 },
-      ],
-    );
-    const masks = masksOf(description);
-    const moss = masks.get("moss");
-    assert.equal(moss.at(20, 2), 255);
-    assert.equal(masks.get("rock").at(20, 2), 0);
-    assert.equal(moss.at(20, 20), 0);
-    const southRow = 20 * MASK_PER_CELL * moss.width;
-    assert.equal(Math.max(...moss.pixels.subarray(southRow)), 0, "склон холма южнее подножия — вне гор");
-    assert.ok(Math.max(...masks.get("rock").pixels.subarray(southRow)) > 0, "слой без range на нём лежит");
-  });
-
   it("patches: пятна по всей сцене занимают около своей доли, край пятна плавный", () => {
     const lush = masksOf(plan([], [{ material: "lush", rule: "patches", share: 0.35, wavelength: 8, soft: 0.2 }])).get("lush");
     const covered = lush.pixels.filter((value) => value > 127).length / lush.pixels.length;
@@ -109,19 +84,19 @@ describe("покрытия описания", () => {
   const layers = [
     { material: "earth", rule: "earth" },
     { material: "path", rule: "path", lines: [{ width: 2, points: [[2, 10], [38, 10]] }] },
-    { material: "rock", rule: "slope", from: 30, full: 38 },
+    { material: "rock", slope: 34 },
   ];
 
-  it("слои — по порядку описания, маска у всех, кроме первого; маски по четыре точки на клетку", () => {
+  it("слои — по порядку описания, маска у слоёв с правилом, у первого и у слоя со «slope» без правила её нет; маски по четыре точки на клетку", () => {
     const description = plan([MOUNTAINS], layers);
     const { layers: read, masks } = buildCovers(description, buildGrid(description));
     assert.deepEqual(
-      read.map(({ material, mask }) => [material, mask]),
+      read.map(({ material, mask, slope }) => [material, mask, slope]),
       [
-        ["grass", undefined],
-        ["earth", "terrain/earth.png"],
-        ["path", "terrain/path.png"],
-        ["rock", "terrain/rock.png"],
+        ["grass", undefined, undefined],
+        ["earth", "terrain/earth.png", undefined],
+        ["path", "terrain/path.png", undefined],
+        ["rock", undefined, 34],
       ],
     );
     assert.deepEqual(
@@ -129,9 +104,23 @@ describe("покрытия описания", () => {
       [
         ["earth", 160, 120],
         ["path", 160, 120],
-        ["rock", 160, 120],
       ],
     );
+  });
+
+  it("слой со «slope» и правилом получает и маску, и порог; порог переходит в слой как есть", () => {
+    const description = plan([], [{ material: "lush", rule: "patches", share: 0.3, wavelength: 8, slope: 33.5 }, { material: "rock", slope: 0 }, { material: "ice", slope: 90 }]);
+    const { layers: read, masks } = buildCovers(description, buildGrid(description));
+    assert.deepEqual(
+      read.map(({ material, mask, slope }) => [material, mask, slope]),
+      [
+        ["grass", undefined, undefined],
+        ["lush", "terrain/lush.png", 33.5],
+        ["rock", undefined, 0],
+        ["ice", undefined, 90],
+      ],
+    );
+    assert.deepEqual(masks.map(({ material }) => material), ["lush"]);
   });
 
   it("одно описание — одни и те же маски, другое зерно — другие края", () => {
@@ -148,19 +137,20 @@ describe("покрытия описания", () => {
     assert.ok(!terrainText(buildGrid(description), WATER, read).includes("covers"));
   });
 
-  it("файл рельефа: covers после water, по слою на строку, затем heights", () => {
-    const description = plan([], [{ material: "rock", rule: "slope", from: 30, full: 38 }]);
+  it("файл рельефа: covers после water, по слою на строку, затем heights; порог крутизны — перед маской", () => {
+    const description = plan([], [{ material: "moss", slope: 34 }, { material: "lush", rule: "patches", share: 0.3, wavelength: 8, slope: 20 }]);
     const { layers: read } = buildCovers(description, buildGrid(description));
     const lines = terrainText(buildGrid(description), WATER, read).split("\n");
-    assert.deepEqual(lines.slice(0, 6), [
+    assert.deepEqual(lines.slice(0, 8), [
       "{",
       '  "water": { "level": -2.2, "color": "#3f7fd0" },',
       '  "covers": [',
       '    { "material": "grass" },',
-      '    { "material": "rock", "mask": "terrain/rock.png" }',
+      '    { "material": "moss", "slope": 34 },',
+      '    { "material": "lush", "slope": 20, "mask": "terrain/lush.png" }',
       "  ],",
+      '  "heights": [',
     ]);
-    assert.equal(lines[6], '  "heights": [');
   });
 });
 
@@ -174,21 +164,23 @@ describe("ошибки покрытий", () => {
     [plan([], [], { covers: [{ material: "gr ass" }] }), "покрытие 1 «gr ass»: «material» — имя из латинских букв"],
     [plan([], [], { covers: [{ material: "grass", mask: "terrain/grass.png" }] }), "покрытие 1 «grass»: неизвестный ключ «mask»"],
     [plan([], [{ material: "grass", rule: "pebbles" }]), "покрытие 2 «grass»: этот материал уже есть"],
-    [plan([], [{ material: "rock" }]), "покрытие 2 «rock»: «rule» — одно из: patches, earth, pebbles, path, slope"],
+    [plan([], [{ material: "rock" }]), "покрытие 2 «rock»: нужно «rule» (одно из: patches, earth, pebbles, path) или «slope»"],
     [plan([], [{ material: "rock", rule: "cliff" }]), "«rule» — одно из"],
+    [plan([], [{ material: "rock", rule: "slope", from: 30, full: 38 }]), "покрытие 2 «rock»: «rule» — одно из: patches, earth, pebbles, path"],
+    [plan([], [{ material: "rock", rule: "scree", range: "горы" }]), "«rule» — одно из: patches, earth, pebbles, path"],
+    [plan([], [], { covers: [{ material: "grass", slope: 30 }] }), "покрытие 1 «grass»: неизвестный ключ «slope»"],
+    [plan([], [{ material: "rock", slope: -1 }]), "покрытие 2 «rock»: «slope» — градусы крутизны, число от 0 до 90"],
+    [plan([], [{ material: "rock", slope: 91 }]), "«slope» — градусы крутизны, число от 0 до 90"],
+    [plan([], [{ material: "rock", slope: "30" }]), "«slope» — градусы крутизны, число от 0 до 90"],
+    [plan([], [{ material: "rock", rule: "pebbles", slope: 120 }]), "«slope» — градусы крутизны, число от 0 до 90"],
+    [plan([], [{ material: "rock", slope: 30, mask: "terrain/rock.png" }]), "покрытие 2 «rock»: неизвестный ключ «mask»"],
+    [plan([], [{ material: "rock", slope: 30, from: 20 }]), "неизвестный ключ «from»"],
     [plan([], [{ material: "rock", rule: "pebbles", mask: "x.png" }]), "покрытие 2 «rock»: неизвестный ключ «mask»"],
     [plan([], [{ material: "path", rule: "path" }]), "покрытие 2 «path»: нет обязательного ключа «lines»"],
     [plan([], [{ ...path, lines: [] }]), "«lines» — непустой список троп"],
     [plan([], [{ ...path, lines: [{ width: 0, points: [[0, 0], [5, 5]] }] }]), "«lines»[1]: «width» — число больше 0"],
     [plan([], [{ ...path, lines: [{ width: 1, points: [[0, 0]] }] }]), "«lines»[1].points» — список не меньше 2 точек"],
     [plan([], [{ ...path, lines: [{ width: 1, points: [[0, 0], [5, 5]], color: 1 }] }]), "«lines»[1]: неизвестный ключ «color»"],
-    [plan([], [{ material: "moss", rule: "slope", from: 8, full: 12, range: "нет такой" }]), "«range» — имя операции «range» из описания"],
-    [
-      plan([{ op: "hill", name: "холм", at: [5, 5], radius: 2, height: 1 }], [{ material: "moss", rule: "slope", from: 8, full: 12, range: "холм" }]),
-      "«range» — имя операции «range» из описания",
-    ],
-    [plan([], [{ material: "rock", rule: "slope", from: 38, full: 30 }]), "«from» и «full» — градусы от 0 до 90, «from» меньше «full»"],
-    [plan([], [{ material: "rock", rule: "slope", full: 30 }]), "нет обязательного ключа «from»"],
     [plan([], [{ material: "lush", rule: "patches", wavelength: 8 }]), "нет обязательного ключа «share»"],
     [plan([], [{ material: "lush", rule: "patches", share: 0.3, wavelength: 8, soft: 0 }]), "«soft» — число больше 0"],
     [plan([], [{ material: "earth", rule: "earth", worn: 0.2 }]), "«worn» — число больше 0.2"],

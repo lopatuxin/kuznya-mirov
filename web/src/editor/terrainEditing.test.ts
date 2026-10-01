@@ -2,7 +2,16 @@ import { describe, expect, it } from "vitest";
 import { beginUndo, createEditSessionState, dirtyFiles, type EditSnapshot } from "./editSession";
 import { parseProjectFilePaths } from "./projectFiles";
 import { planTerrainEdit } from "./terrainEditing";
-import { DEFAULT_WATER, flatTerrainGrid, formatTerrainText, parseTerrainText, terrainTextWithHeights, terrainTextWithWater } from "./terrainFile";
+import {
+  DEFAULT_WATER,
+  flatTerrainGrid,
+  formatTerrainText,
+  parseTerrainText,
+  readTerrainMountains,
+  terrainTextWithHeights,
+  terrainTextWithMountains,
+  terrainTextWithWater,
+} from "./terrainFile";
 
 const GAME_JSON = `{
   "name": "Проба",
@@ -68,6 +77,20 @@ describe("первый мазок в проекте без рельефа", () =
     expect(parseProjectFilePaths(plan?.gameJsonText ?? null)?.terrain).toBe("terrain.json");
   });
 
+  it("первая гора тоже заводит terrain.json: ровная земля с горой, отмена оставляет файл без горы", async () => {
+    const mountain = { stamp: "beluha", position: [1, 1], size: [2, 1], height: 3 };
+    const plan = await planTerrainEdit(sessionWithoutTerrain(), GAME_JSON, NO_FILES, (displayed, sceneSize) =>
+      terrainTextWithMountains(displayed.terrainText, sceneSize, [mountain]),
+    );
+
+    expect(parseProjectFilePaths(plan?.gameJsonText ?? null)?.terrain).toBe("terrain.json");
+    expect(readTerrainMountains(plan?.state.displayed.terrainText ?? null)).toEqual([mountain]);
+    expect(plan?.state.history).toHaveLength(1);
+    const undone = beginUndo(plan?.state as NonNullable<typeof plan>["state"]);
+    expect(undone?.candidate.terrainText).toBe(formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: null }));
+    expect(parseProjectFilePaths(plan?.gameJsonText ?? null)?.terrain).toBe("terrain.json");
+  });
+
   it("мазок без изменений и сцена без размера — действия нет", async () => {
     const same = await planTerrainEdit(sessionWithoutTerrain(), GAME_JSON, NO_FILES, () => null);
     const noScene = await planTerrainEdit(sessionWithoutTerrain(), '{ "files": { "scene": "s.json", "properties": "p.json" } }', NO_FILES, () => "{}");
@@ -88,6 +111,21 @@ describe("проект с файлом рельефа", () => {
     expect(plan?.gameJsonText).toBe(WITH_FILE_JSON);
     expect(plan?.state.history).toEqual([EXISTING]);
     expect(beginUndo(plan?.state as NonNullable<typeof plan>["state"])?.candidate).toEqual(EXISTING);
+  });
+
+  it("гора: правка — одно действие, Ctrl+Z откатывает её вместе с остальным файлом рельефа", async () => {
+    const mountain = { stamp: "beluha", position: [1, 1], size: [2, 1], height: 3 };
+    const placed = await planTerrainEdit(createEditSessionState(EXISTING), WITH_FILE_JSON, NO_FILES, (displayed, sceneSize) =>
+      terrainTextWithMountains(displayed.terrainText, sceneSize, [mountain]),
+    );
+    const moved = await planTerrainEdit(placed?.state as NonNullable<typeof placed>["state"], WITH_FILE_JSON, NO_FILES, (displayed, sceneSize) =>
+      terrainTextWithMountains(displayed.terrainText, sceneSize, [{ ...mountain, position: [2, 1] }]),
+    );
+
+    expect(placed?.gameJsonText).toBe(WITH_FILE_JSON);
+    expect(moved?.state.history).toHaveLength(2);
+    expect(beginUndo(moved?.state as NonNullable<typeof moved>["state"])?.candidate.terrainText).toBe(placed?.state.displayed.terrainText);
+    expect(beginUndo(placed?.state as NonNullable<typeof placed>["state"])?.candidate.terrainText).toBe(EXISTING.terrainText);
   });
 
   it("вода: включить и снять — по одному действию, Ctrl+Z возвращает воду до правки", async () => {

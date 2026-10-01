@@ -1,7 +1,8 @@
 // Покрытия локации: слои материалов на рельефе и серые маски, по которым они лежат («Свет и
 // материалы», «Покрытия рельефа»). Слой описания — материал и правило, по которому строится его
-// маска; правило смотрит на сетку высот и линии описания. Края масок сдвигает шум, чтобы граница не
-// выходила циркульной.
+// маска; правило смотрит на сетку высот и линии описания. Слой с `slope` ложится ещё и на крутые
+// склоны — это решает движок, построитель пишет число в файл рельефа как есть и маски для него не
+// рисует. Края масок сдвигает шум, чтобы граница не выходила циркульной.
 
 import { isNumber, readLine } from "./curve.mjs";
 import { fractal } from "./noise.mjs";
@@ -19,28 +20,20 @@ const RULES = {
   earth: { optional: ["patches", "pad", "worn"] },
   pebbles: {},
   path: { required: ["lines"] },
-  slope: { required: ["from", "full"], optional: ["range"] },
-  scree: { required: ["range"], optional: ["from", "full"] },
 };
 
 const EDGE_WAVELENGTH = 3; // клеток: волна шума на краях
 const EDGE_SHIFT = 0.3; // клеток: на сколько шум сдвигает край тропы и области
 const RAGGED = 0.4; // доля ступени нарастания, на которую шум сдвигает значение внутри неё
 const SOFT_EDGE = 0.5; // клеток: мягкий край тропы, полосы земли и площадки
-const SLOPE_STEP = 0.25; // клеток: полшага сетки высот в обе стороны от точки
 // Вытоптанная земля вдоль тропы — только если у слоя есть «worn»: столько клеток от края тропы.
 const WORN_FULL = 0.2; // клеток: у самого края тропы земля вытоптана целиком
 const PATCH_SOFT = 0.03; // ширина края пятна в единицах шума по умолчанию
 const PATCH_FADE = 1; // клеток: пятна гаснут к краю области
 const PATCH_BREAKUP = 0.12; // единиц шума: насколько мелкий шум рвёт край пятна
 const BREAKUP_WAVELENGTH = 1.2; // клеток: волна мелкого шума на краю пятна
-const ZONE_SHIFT = 3; // клеток: на сколько шум сдвигает границу гор
 const WIDTH_WAVELENGTH = 7; // клеток: волна, по которой плавает ширина тропы
 const WIDTH_VARIATION = 0.2; // доля ширины тропы, на которую она сужается и расширяется
-
-// Осыпь: слой сыпучего камня, который накопили размыв и осыпи гор, толщиной в клетках.
-const SCREE_FROM = 0.04; // тоньше — осыпи нет
-const SCREE_FULL = 0.25; // толще — осыпь лежит целиком
 
 const PEBBLES_FULL = 0.5; // выше уровня воды: галька лежит целиком
 const PEBBLES_NONE = 1; // выше уровня воды: гальки нет
@@ -82,17 +75,25 @@ function readLayer(layer, index, { seed, water, named, materials }) {
   if (materials.has(material)) fail("этот материал уже есть в другом слое: по нему названа маска");
   if (index === 0) {
     const extra = Object.keys(layer).find((key) => key !== "material");
-    if (extra) fail(`неизвестный ключ «${extra}»: первый слой лежит на всём рельефе, у него нет правила и маски`);
+    if (extra) fail(`неизвестный ключ «${extra}»: первый слой лежит на всём рельефе, у него нет правила, порога крутизны и маски`);
     return { material };
+  }
+  const { slope } = layer;
+  if (slope !== undefined && (!isNumber(slope) || slope < 0 || slope > 90)) fail("«slope» — градусы крутизны, число от 0 до 90");
+  if (rule === undefined && slope === undefined) fail(`нужно «rule» (одно из: ${Object.keys(RULES).join(", ")}) или «slope»`);
+  if (rule === undefined) {
+    const extra = Object.keys(layer).find((key) => key !== "material" && key !== "slope");
+    if (extra) fail(`неизвестный ключ «${extra}»: у слоя без «rule» маски нет, он лежит только на склонах круче «slope»`);
+    return { material, slope };
   }
   if (!Object.hasOwn(RULES, rule)) fail(`«rule» — одно из: ${Object.keys(RULES).join(", ")}`);
   const spec = RULES[rule];
-  const allowed = ["material", "rule", ...(spec.required ?? []), ...(spec.optional ?? [])];
+  const allowed = ["material", "rule", "slope", ...(spec.required ?? []), ...(spec.optional ?? [])];
   const extra = Object.keys(layer).find((key) => !allowed.includes(key));
   if (extra) fail(`неизвестный ключ «${extra}»`);
   const missing = (spec.required ?? []).find((key) => layer[key] === undefined);
   if (missing) fail(`нет обязательного ключа «${missing}»`);
-  const base = { material, rule, mask: maskPath(material), seed: derivedSeed(seed, nameHash(`покрытие ${material}`)) };
+  const base = { material, rule, slope, mask: maskPath(material), seed: derivedSeed(seed, nameHash(`покрытие ${material}`)) };
 
   switch (rule) {
     case "patches":
@@ -110,22 +111,12 @@ function readLayer(layer, index, { seed, water, named, materials }) {
       return { ...base, level: water.level };
     case "path":
       return { ...base, lines: readLines(layer.lines, fail) };
-    case "slope":
-      if (!isNumber(layer.from) || !isNumber(layer.full) || layer.from < 0 || layer.full > 90 || layer.from >= layer.full) {
-        fail("«from» и «full» — градусы от 0 до 90, «from» меньше «full»");
-      }
-      return { ...base, from: layer.from, full: layer.full, range: readNamed(layer.range, "range", named, fail) };
-    case "scree": {
-      const { from = SCREE_FROM, full = SCREE_FULL } = layer;
-      if (!isNumber(from) || !isNumber(full) || from < 0 || from >= full) fail("«from» и «full» — толщина осыпи в клетках, «from» меньше «full»");
-      return { ...base, from, full, range: readNamed(layer.range, "range", named, fail) };
-    }
     default:
       return base;
   }
 }
 
-// Ключ слоя называет и вид операции, на которую он ссылается: `pad` — на площадку, `range` — на горы.
+// Ключ слоя называет и вид операции, на которую он ссылается: `pad` — на площадку.
 function readNamed(name, key, named, fail) {
   if (name === undefined) return undefined;
   const found = typeof name === "string" ? named.get(name) : undefined;
@@ -164,17 +155,6 @@ function readLines(lines, fail) {
     if (!isNumber(line.width) || line.width <= 0) fail(`${at}: «width» — число больше 0`);
     return { width: line.width, path: readLine(line.points, `${at}.points`, { closed: false, sharp: false }, fail) };
   });
-}
-
-/** Крутизна земли в градусах по сетке высот через полклетки от точки. */
-function slopeAt(grid, x, y) {
-  const x0 = Math.max(0, x - SLOPE_STEP);
-  const x1 = Math.min(grid.width, x + SLOPE_STEP);
-  const y0 = Math.max(0, y - SLOPE_STEP);
-  const y1 = Math.min(grid.height, y + SLOPE_STEP);
-  const gx = (grid.heightAt(x1, y) - grid.heightAt(x0, y)) / (x1 - x0);
-  const gy = (grid.heightAt(x, y1) - grid.heightAt(x, y0)) / (y1 - y0);
-  return (Math.atan(Math.hypot(gx, gy)) * 180) / Math.PI;
 }
 
 /**
@@ -237,33 +217,7 @@ const FIELDS = {
     const widthNoise = widthNoiseOf(layers);
     return (x, y, noise) => corridor(layer.lines, 0, SOFT_EDGE, x, y, noise, widthNoise);
   },
-  // Склон круче `from` градусов нарастая, круче `full` целиком; с `range` — только по ту сторону
-  // подножия гор, где они стоят, и граница гор сдвинута шумом.
-  slope(layer, { grid }) {
-    return (x, y, noise) => {
-      const steep = raggedRamp(slopeAt(grid, x, y), layer.from, layer.full, noise);
-      if (steep === 0 || !layer.range) return steep;
-      const near = layer.range.foot.nearest([x, y]);
-      const inside = near.left === (layer.range.side === "left") ? near.distance : -near.distance;
-      return steep * smoothstep(-SOFT_EDGE, SOFT_EDGE, inside + ZONE_SHIFT * noise);
-    };
-  },
-  scree: (layer, { grid }) => screeField(layer, grid),
 };
-
-/**
- * Осыпь — где лежит сыпучий камень гор `range` (карта сетки `loose` от их размыва и осыпей): с
- * толщины `from` клеток нарастая, с `full` целиком. За подножием она тоже лежит — конусы выноса.
- */
-function screeField(layer, grid) {
-  const loose = grid.maps?.get("loose");
-  if (!loose) throw new Error(`покрытие «${layer.material}»: осыпи нет — в описании нет операций «erosion» или «talus»`);
-  return (x, y, noise) => {
-    const col = Math.min(grid.cols - 1, Math.max(0, Math.round(x * grid.density)));
-    const row = Math.min(grid.rows - 1, Math.max(0, Math.round(y * grid.density)));
-    return raggedRamp(loose[row * grid.cols + col], layer.from, layer.full, noise);
-  };
-}
 
 /** Вызывает `fn(x, y, index)` для каждой точки маски: `x`, `y` — середина её квадрата в клетках сцены. */
 function eachMaskPoint(grid, fn) {

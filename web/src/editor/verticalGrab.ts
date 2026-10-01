@@ -117,3 +117,31 @@ export function raisedAtPointer(grab: VerticalGrab, pointer: Vec2): number | und
   const raised = grab.ray === null ? heightOnScreenLine(grab, pointer) : heightNearestToRay(grab.ray, pointer);
   return Number.isFinite(raised) && 1 + grab.depthSlope * raised > MIN_DEPTH_RATIO ? raised : undefined;
 }
+
+/** Камера, из которой можно взять луч указателя и найти точку горизонтальной плоскости, — для переноса горы по земле. */
+export type PlaneGrab = { base: Vec3; ray: RayModel };
+
+/**
+ * Модель камеры, восстановленная вокруг точки `around` («Рельеф», перенос горы): те же семь вызовов
+ * `screen_point`, что у вертикальной стрелки. `undefined`, если камеру по трём осям не восстановить —
+ * тогда плоскость луч не найдёт.
+ */
+export function createPlaneGrab(projection: SpaceProjection, around: Vec3): PlaneGrab | undefined {
+  const ray = createVerticalGrab(projection, [around[0], around[1]], around[2])?.ray;
+  return ray === null || ray === undefined ? undefined : { base: around, ray };
+}
+
+/**
+ * Место `(x, y)` горизонтальной плоскости высоты `height`, где её пересекает луч через точку экрана.
+ * `undefined`, если луч параллелен плоскости (камера смотрит вдоль земли) или плоскость за камерой.
+ * Точка луча — `eye + s · direction`, где `s` — глубина перед камерой, поэтому `s > 0`.
+ */
+export function pointOnPlane(grab: PlaneGrab, pointer: Vec2, height: number): Vec2 | undefined {
+  const { ray, base } = grab;
+  const [x, y, z] = applyRows(ray.inverseRows, [pointer[0], pointer[1], 1]);
+  const direction: Vec3 = [x / ray.determinant, y / ray.determinant, z / ray.determinant];
+  if (Math.abs(direction[2]) <= DEGENERATE * Math.hypot(direction[0], direction[1], direction[2])) return undefined;
+  const depth = (height - base[2] - ray.eye[2]) / direction[2];
+  if (!(depth > MIN_DEPTH_RATIO)) return undefined;
+  return [base[0] + ray.eye[0] + depth * direction[0], base[1] + ray.eye[1] + depth * direction[1]];
+}

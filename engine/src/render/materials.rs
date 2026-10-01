@@ -46,7 +46,8 @@ pub struct Relief<'a> {
     pub masks: Vec<MapView<'a>>,
     pub tint: Option<MapView<'a>>,
     /// Строка 0: число слоёв, размер сцены в клетках и слой карты цвета в массиве масок плюс один (0 —
-    /// карты цвета нет); дальше по строке на слой: номер материала и число карт на клетку сцены.
+    /// карты цвета нет); дальше по строке на слой: номер материала, число карт на клетку сцены, номер
+    /// маски слоя (−1 — маски нет) и `slope` слоя в градусах (−1 — правила крутизны нет).
     pub table: [[f32; 4]; COVER_TABLE_LEN],
 }
 
@@ -133,7 +134,12 @@ fn cover_table(
     table[0] = [layers as f32, scene[0] as f32, scene[1] as f32, tint];
     for (row, cover) in table[1..].iter_mut().zip(covers) {
         let size = decls.get(cover.material).map_or(1.0, |decl| decl.size);
-        *row = [cover.material as f32, (1.0 / size) as f32, 0.0, 0.0];
+        *row = [
+            cover.material as f32,
+            (1.0 / size) as f32,
+            cover.mask.map_or(-1.0, |mask| mask as f32),
+            cover.slope.map_or(-1.0, |slope| slope as f32),
+        ];
     }
     table
 }

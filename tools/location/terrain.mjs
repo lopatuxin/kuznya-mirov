@@ -24,29 +24,6 @@ export class Grid {
     return 1 / this.density;
   }
 
-  /**
-   * Карта `name` по точкам сетки — то, что операции гор копят для покрытий: где текла вода, что она
-   * унесла и положила, где лежит осыпь. Первое обращение заводит карту из нулей.
-   */
-  map(name) {
-    this.maps ??= new Map();
-    if (!this.maps.has(name)) this.maps.set(name, new Float64Array(this.cols * this.rows));
-    return this.maps.get(name);
-  }
-
-  /** Тангенс крутизны в точке сетки `index` по высотам `h` (без `h` — по нынешним). */
-  slopeTan(index, h = this.h) {
-    const col = index % this.cols;
-    const row = (index - col) / this.cols;
-    const left = col > 0 ? index - 1 : index;
-    const right = col < this.cols - 1 ? index + 1 : index;
-    const up = row > 0 ? index - this.cols : index;
-    const down = row < this.rows - 1 ? index + this.cols : index;
-    const gx = ((h[right] - h[left]) * this.density) / Math.max(1, (right - left));
-    const gy = ((h[down] - h[up]) * this.density) / Math.max(1, (down - up) / this.cols);
-    return Math.hypot(gx, gy);
-  }
-
   at(row, col) {
     return this.h[row * this.cols + col];
   }
@@ -104,18 +81,12 @@ export function applyNoise(grid, { amplitude, wavelength, seed, area, fade }) {
  * На сколько клеток точка `(x, y)` зашла за подножие гор `range` в их сторону, с отрогами и заливами
  * `warp`: больше нуля — в горах, меньше — перед ними.
  */
-export function rangeReach(range) {
-  const place = rangePlace(range);
-  return (x, y) => place(x, y).reach;
-}
-
-/** То же, что `rangeReach`, и `along` — сколько клеток от начала линии подножия до ближайшей к точке её точки. */
-function rangePlace({ foot, side, wavelength, warp, seed }) {
+export function rangeReach({ foot, side, wavelength, warp, seed }) {
   const wobble = fractal(seed + 1);
   return (x, y) => {
     const near = foot.nearest([x, y]);
     const inside = near.left === (side === "left") ? near.distance : -near.distance;
-    return { reach: inside + warp * spread(wobble(x / wavelength, y / wavelength)), along: near.s };
+    return inside + warp * spread(wobble(x / wavelength, y / wavelength));
   };
 }
 
@@ -125,26 +96,22 @@ const MASSIF_SPREAD = 0.35;
 /**
  * Горы: от линии подножия `foot` в сторону `side` земля поднимается на `height` на глубине `depth`.
  * Подъём круче всего у подножия — втрое круче среднего `height / depth` — и выполаживается к
- * гребню; с `profile` «middle» он пологий у подножия и у гребня и круче всего посередине.
- * `roughness` — доля высоты, которую распадки забирают у гор между острыми гребнями; при ней же одни
+ * гребню. `roughness` — доля высоты, которую распадки забирают у гор между острыми гребнями; при ней же одни
  * массивы выше соседних. `warp` — на сколько клеток подножие уходит от линии вперёд отрогами и назад
- * заливами. С `spurs` гребни вытянуты поперёк гор во столько раз: отроги спускаются от главного
- * гребня к подножию, между ними лежат кулуары, а массивы сменяют друг друга вдоль гор.
+ * заливами.
  */
 export function applyRange(grid, range) {
-  const { height, depth, roughness, wavelength, profile, spurs, seed } = range;
+  const { height, depth, roughness, wavelength, seed } = range;
   const ridges = ridged(seed);
   const massifs = fractal(seed + 2, 2);
-  const placeOf = rangePlace(range);
+  const reachOf = rangeReach(range);
   grid.each(grid.whole, (index, x, y) => {
-    const { reach, along } = placeOf(x, y);
+    const reach = reachOf(x, y);
     if (reach <= 0) return;
-    const t = Math.min(1, reach / depth);
-    const rise = profile === "middle" ? smoothstep(0, 1, t) : 1 - (1 - t) ** 3;
-    const [u, v] = spurs ? [along, reach / spurs] : [x, y];
+    const rise = 1 - (1 - Math.min(1, reach / depth)) ** 3;
     // Квадрат хребтов оставляет высоким только сам гребень: склоны к распадкам вогнутые, вершины острые.
-    const crest = ridges(u / wavelength, v / wavelength) ** 2;
-    const massif = 1 + MASSIF_SPREAD * roughness * spread(massifs(u / (wavelength * 3), v / (wavelength * 3)));
+    const crest = ridges(x / wavelength, y / wavelength) ** 2;
+    const massif = 1 + MASSIF_SPREAD * roughness * spread(massifs(x / (wavelength * 3), y / (wavelength * 3)));
     grid.h[index] += height * rise * (1 - roughness + roughness * crest) * massif;
   });
 }

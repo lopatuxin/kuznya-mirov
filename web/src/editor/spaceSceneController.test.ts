@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createEditorCameraStore, type EditorCameraRequest, type EditorCameraState } from "./editorCamera";
+import type { MountainContext } from "./mountainSceneController";
 import type { PlacementChange } from "./objectPlacement";
 import {
   createSpaceSceneController,
@@ -39,7 +40,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const restCalls: [number, number, number, number | null | undefined][] = [];
   const transforms: [number, Record<string, unknown>][] = [];
   const cameras: EditorCameraRequest[] = [];
-  const terrainSets: { heights: Float64Array; water: unknown }[] = [];
+  const terrainSets: { heights: Float64Array; water: unknown; stamps: unknown }[] = [];
   const fitCalls: unknown[] = [];
   const state = {
     pickedId: undefined as number | undefined,
@@ -56,6 +57,10 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     grid: { density: 2, columns: 25, rows: 25, heights: new Float64Array(25 * 25) } as BrushGrid,
     water: null as unknown,
     setTerrainError: undefined as string | undefined,
+    /** Итоговые высоты с горами; без значения они равны высотам файла. */
+    effective: undefined as Float64Array | undefined,
+    /** Номер горы под указателем. */
+    pickedStamp: undefined as number | undefined,
   };
   const engine = {
     object_at: () => state.pickedId,
@@ -79,11 +84,12 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     },
     terrain_at: (x: number, y: number) => (state.isSkyUnderPointer ? undefined : [...ground(x, y), state.groundZ]),
     terrain_height: () => 0,
-    terrain_heights: () => ({ ...state.grid, heights: Float64Array.from(state.grid.heights), water: state.water }),
-    set_terrain: (heights: Float64Array, water: unknown) => {
-      terrainSets.push({ heights: Float64Array.from(heights), water });
+    terrain_heights: () => ({ ...state.grid, heights: Float64Array.from(state.grid.heights), effective: Float64Array.from(state.effective ?? state.grid.heights), water: state.water }),
+    set_terrain: (heights: Float64Array, water: unknown, stamps: unknown) => {
+      terrainSets.push({ heights: Float64Array.from(heights), water, stamps });
       return state.setTerrainError;
     },
+    stamp_at: () => state.pickedStamp,
     fit_camera: (id?: number | null) => {
       fitCalls.push(id);
       return state.fitted;
@@ -100,6 +106,13 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const modes: string[] = [];
   const terrainCommits: Float64Array[] = [];
   const strokeStates: boolean[] = [];
+  const mountainSelections: number[] = [];
+  const mountainPlaced: unknown[] = [];
+  const mountains: MountainContext = {
+    ...setupMountains(),
+    onSelect: (index) => mountainSelections.push(index),
+    onPlace: (entry) => mountainPlaced.push(entry),
+  };
   const context: SpaceSceneContext = {
     engine,
     cameraStore,
@@ -116,10 +129,11 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     onCommitPlacement: (index, changes) => commits.push([index, changes]),
     onCommitTerrain: (grid) => terrainCommits.push(Float64Array.from(grid.heights)),
     onStrokeActiveChange: (isActive) => strokeStates.push(isActive),
+    mountains,
     ...overrides,
   };
   const controller = createSpaceSceneController(() => context);
-  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, terrainCommits, strokeStates, engine };
+  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, terrainCommits, strokeStates, mountainSelections, mountainPlaced, engine };
 }
 
 describe("выбор щелчком", () => {
@@ -154,6 +168,68 @@ describe("выбор щелчком", () => {
     scene.state.pickedId = 7;
     expect(scene.controller.pointerDown(pointer(100, 100))).toBe(false);
     expect(scene.selections).toEqual([7]);
+  });
+});
+
+describe("горы при щелчке", () => {
+  const BELUHA = { stamp: "beluha", position: [10, 10], size: [8, 8], height: 4 };
+
+  it("объект под указателем важнее горы под ним: выбирается объект, гора нет", () => {
+    const scene = setup({ selectedIndex: null });
+    scene.state.pickedId = 7;
+    scene.state.pickedStamp = 0;
+    scene.controller.pointerDown(pointer(100, 100));
+    expect(scene.selections).toEqual([7]);
+    expect(scene.mountainSelections).toEqual([]);
+  });
+
+  it("объекта нет, гора есть — выбирается гора, объектов выбор не снимает вызовом onSelect(null)", () => {
+    const scene = setup({ selectedIndex: null });
+    scene.state.pickedStamp = 2;
+    scene.controller.pointerDown(pointer(100, 100));
+    expect(scene.mountainSelections).toEqual([2]);
+    expect(scene.selections).toEqual([]);
+  });
+
+  it("нет ни объекта, ни горы — выбор снимается", () => {
+    const scene = setup({ selectedIndex: null });
+    expect(scene.controller.pointerDown(pointer(100, 100))).toBe(false);
+    expect(scene.selections).toEqual([null]);
+    expect(scene.mountainSelections).toEqual([]);
+  });
+
+  it("в повторе и на паузе горы не выбираются", () => {
+    const scene = setup({ selectedIndex: null, mountains: { ...setupMountains(), isEditable: false } });
+    scene.state.pickedStamp = 2;
+    scene.controller.pointerDown(pointer(100, 100));
+    expect(scene.mountainSelections).toEqual([]);
+    expect(scene.selections).toEqual([null]);
+  });
+
+  it("при кнопке «Гора» щелчок ставит гору и ничего не выбирает; Esc возвращает ручки", () => {
+    const placing = { stamp: { name: "beluha", columns: 4, rows: 2 }, width: 8, height: 4 };
+    const scene = setup({ mountains: { ...setupMountains(), placing, onPlace: (entry) => scene.mountainPlaced.push(entry) } });
+    scene.state.pickedId = 7;
+    expect(scene.controller.pointerDown(pointer(100, 100))).toBe(false);
+    expect(scene.mountainPlaced).toEqual([{ stamp: "beluha", position: [5, 5], size: [8, 4], height: 4 }]);
+    expect(scene.selections).toEqual([]);
+    expect(scene.controller.keyDown(key("Escape"))).toBe(true);
+    expect(scene.modes).toEqual(["translate"]);
+  });
+
+  it("щелчок мимо земли при «Горе» горы не ставит", () => {
+    const placing = { stamp: { name: "beluha", columns: 4, rows: 2 }, width: 8, height: 4 };
+    const scene = setup({ mountains: { ...setupMountains(), placing, onPlace: (entry) => scene.mountainPlaced.push(entry) } });
+    scene.state.isSkyUnderPointer = true;
+    scene.controller.pointerDown(pointer(100, 100));
+    expect(scene.mountainPlaced).toEqual([]);
+  });
+
+  it("рамка выбранной горы рисуется вместе с рамкой объекта", () => {
+    const scene = setup({ selectedIndex: null, mountains: { ...setupMountains(), entries: [BELUHA], selectedIndex: 0 } });
+    const terrainHeight = vi.spyOn(scene.engine, "terrain_height");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(terrainHeight.mock.calls.length).toBeGreaterThanOrEqual(32);
   });
 });
 
@@ -554,6 +630,11 @@ function runFrames(scene: ReturnType<typeof setup>, fromMs: number, toMs: number
   for (let time = fromMs; time <= toMs; time += 100) scene.controller.strokeFrame(time);
 }
 
+/** Горы без выбора, как их отдаёт страница, когда ничего не выбрано. */
+function setupMountains(): MountainContext {
+  return { isEditable: true, entries: [], selectedIndex: null, placing: null, onSelect: () => {}, onPlace: () => {}, onCommit: () => {}, onActiveChange: () => {} };
+}
+
 function isFlat(heights: Float64Array | undefined): boolean {
   return heights !== undefined && Array.from(heights).every((height) => height === 0);
 }
@@ -607,6 +688,38 @@ describe("мазок кисти рельефа", () => {
     scene.controller.pointerMove(pointer(100, 100, { shiftKey: true }));
     runFrames(scene, 600, 600);
     expect(scene.terrainSets[5]?.heights[CENTER]).toBeCloseTo(0, 9);
+  });
+
+  it("на горе кисть лепит итоговую землю: в файл идёт прирост итоговой высоты, горы мазок не трогает", () => {
+    const stamps = [{ stamp: "beluha", position: [6, 6], size: [4, 4], height: 3 }];
+    const scene = setup({ brush: RAISE, mountains: { ...setupMountains(), entries: stamps } });
+    scene.state.effective = new Float64Array(25 * 25).fill(3);
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 1000);
+    expect(scene.terrainSets[9]?.heights[CENTER]).toBeCloseTo(1, 9);
+    expect(scene.terrainSets[9]?.heights[0]).toBe(0);
+    expect(scene.terrainSets[9]?.stamps).toBe(stamps);
+    scene.controller.pointerUp(release(100, 100));
+    expect(scene.terrainCommits[0]?.[CENTER]).toBeCloseTo(1, 9);
+  });
+
+  it("«Выровнять» на горе ведёт видимую землю к итоговой высоте начала мазка, а файл — на ту же разницу", () => {
+    const scene = setup({ brush: { kind: "level", size: 4, strength: 50 } });
+    scene.state.effective = new Float64Array(25 * 25).fill(3);
+    scene.state.groundZ = 5;
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 500);
+    expect(scene.terrainSets[4]?.heights[CENTER]).toBeCloseTo(2 * (1 - Math.exp(-2.5)), 9);
+  });
+
+  it("Esc посреди мазка на горе возвращает высоты файла без прироста", () => {
+    const scene = setup({ brush: RAISE });
+    scene.state.effective = new Float64Array(25 * 25).fill(3);
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 300);
+    scene.controller.keyDown(key("Escape"));
+    expect(isFlat(scene.terrainSets.at(-1)?.heights)).toBe(true);
+    expect(scene.terrainCommits).toEqual([]);
   });
 
   it("«Выровнять» ведёт к высоте рельефа в точке нажатия", () => {

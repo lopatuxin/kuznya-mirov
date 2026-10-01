@@ -740,15 +740,18 @@ fn covers_number_their_materials_by_declaration_and_their_masks_by_layer() {
         [
             Cover {
                 material: 1,
-                mask: None
+                mask: None,
+                slope: None
             },
             Cover {
                 material: 0,
-                mask: Some(0)
+                mask: Some(0),
+                slope: None
             },
             Cover {
                 material: 1,
-                mask: Some(1)
+                mask: Some(1),
+                slope: None
             },
         ]
     );
@@ -771,7 +774,8 @@ fn a_terrain_without_covers_has_none_and_a_one_layer_terrain_has_no_masks() {
         game.world.terrain().covers(),
         [Cover {
             material: 0,
-            mask: None
+            mask: None,
+            slope: None
         }]
     );
     let texts = read_texts(
@@ -790,12 +794,12 @@ fn a_brush_stroke_changes_the_heights_and_the_water_and_keeps_the_covers() {
     assert_eq!(covers.len(), 2);
     let mut heights = vec![0.0; 25];
     heights[12] = 1.5;
-    edit::set_terrain(&mut game, &heights, Some((-1.0, "#3f7fd0"))).expect("правка рельефа");
+    edit::set_terrain(&mut game, &heights, Some((-1.0, "#3f7fd0")), &[]).expect("правка рельефа");
     let terrain = game.world.terrain();
     assert_eq!(terrain.covers(), covers);
     assert_eq!(terrain.heights()[12], 1.5);
     assert!(terrain.water().is_some());
-    edit::set_terrain(&mut game, &heights, None).expect("правка без воды");
+    edit::set_terrain(&mut game, &heights, None, &[]).expect("правка без воды");
     assert_eq!(game.world.terrain().covers(), covers);
 }
 
@@ -806,7 +810,7 @@ fn a_brush_stroke_on_a_terrain_without_covers_does_not_make_any() {
         ..Setup::default()
     }
     .game();
-    edit::set_terrain(&mut game, &[0.5; 25], None).expect("правка рельефа");
+    edit::set_terrain(&mut game, &[0.5; 25], None, &[]).expect("правка рельефа");
     assert_eq!(game.world.terrain().covers(), []);
 }
 
@@ -1261,8 +1265,8 @@ fn a_relief_needs_every_map_and_every_mask() {
     assert_eq!(whole.table[0], [2.0, 2.0, 2.0, 0.0]);
     assert_eq!(
         whole.table[2],
-        [1.0, 0.5, 0.0, 0.0],
-        "второй слой — earth, size 2"
+        [1.0, 0.5, 0.0, -1.0],
+        "второй слой — earth, size 2, первая маска, без slope"
     );
 
     let mut lacking = Setup::default();

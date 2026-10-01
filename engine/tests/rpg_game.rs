@@ -16,7 +16,7 @@ use engine::core::shapes::Body;
 use engine::core::surface;
 use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
 use engine::data::load::{
-    GameConfig, ImageVerdict, load_rest_with_materials, read_entry, terrain_image_paths,
+    GameConfig, ImageVerdict, load_rest_with_stamps, read_entry, terrain_image_paths,
 };
 use engine::render::materials::{Relief, pack_masks};
 use serde_json::json;
@@ -146,8 +146,14 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
             )
         })
         .collect();
+    let stamp_texts: Vec<(String, Option<String>)> = config
+        .files
+        .stamps
+        .iter()
+        .map(|(name, path)| (name.clone(), Some(read(path))))
+        .collect();
     let (map_verdicts, mask_verdicts) = map_data(&config, terrain_json);
-    let (game, _screens, warnings, _images) = load_rest_with_materials(
+    let (game, _screens, warnings, _images) = load_rest_with_stamps(
         game_json,
         config,
         Some(&read("properties.json")),
@@ -164,6 +170,7 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
         terrain_json,
         &map_verdicts,
         &mask_verdicts,
+        &stamp_texts,
     )
     .expect("ролевая игра должна проходить предстартовую проверку");
     let mut all_warnings = entry_warnings;
@@ -250,6 +257,7 @@ fn combat_game_json() -> String {
     let files = game_json["files"].as_object_mut().expect("files — объект");
     files.remove("terrain");
     files.remove("materials");
+    files.remove("stamps");
     game_json.to_string()
 }
 
@@ -368,8 +376,9 @@ fn rpg_loads_without_errors_or_warnings() {
     assert!(!game.scene.y_sort);
 }
 
-/// Требования 28–29 и 31 фазы 19: деревня одета материалами — слоями покрытий, маски у всех, кроме
-/// нижнего, — и плиток травы на сцене нет; её карты и маски собираются в текстуры видеокарты.
+/// Требования 28–29 и 31 фазы 19 с поправкой требования 9 фазы 20: деревня одета материалами —
+/// слоями покрытий, у каждого, кроме нижнего, маска или правило крутизны, — и плиток травы на сцене
+/// нет; её карты и маски собираются в текстуры видеокарты.
 #[test]
 fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
     let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
@@ -377,28 +386,42 @@ fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
     assert!(game.ground.is_empty(), "плитки травы ушли");
     let covers = game.world.terrain().covers();
     assert!(covers.len() > 1, "у деревни есть слои поверх нижнего");
-    let masks: Vec<Option<usize>> = covers.iter().map(|c| c.mask).collect();
-    let expected: Vec<Option<usize>> = (0..covers.len()).map(|k| k.checked_sub(1)).collect();
-    assert_eq!(masks, expected, "маска у каждого слоя, кроме нижнего");
+    assert_eq!(
+        (covers[0].mask, covers[0].slope),
+        (None, None),
+        "нижний слой — на всём"
+    );
+    let mut masks = 0;
+    for cover in &covers[1..] {
+        assert!(cover.mask.is_some() || cover.slope.is_some(), "{cover:?}");
+        if let Some(mask) = cover.mask {
+            assert_eq!(mask, masks, "маски нумеруются по слоям, у которых они есть");
+            masks += 1;
+        }
+    }
+    assert!(
+        covers.iter().any(|cover| cover.slope.is_some()),
+        "горы одеты по крутизне"
+    );
 
     let terrain = read("terrain.json");
     let (map_verdicts, mask_verdicts) = map_data(&config, Some(&terrain));
     let image_paths = terrain_image_paths(&terrain);
     assert!(
-        game.world.terrain().has_tint(),
-        "у деревни есть карта цвета гор"
+        !game.world.terrain().has_tint(),
+        "карта цвета ушла вместе с горами построителя"
     );
     assert_eq!(
         image_paths.len(),
-        covers.len(),
-        "маски слоёв поверх нижнего и карта цвета"
+        masks,
+        "картинки рельефа — только маски слоёв"
     );
     let scene = [game.scene.width, game.scene.height];
     let relief = Relief::new(
         &config.files.materials,
         &map_verdicts,
         covers,
-        true,
+        false,
         &image_paths,
         &mask_verdicts,
         scene,
@@ -406,14 +429,35 @@ fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
     .expect("карты и маски деревни собираются");
     assert_eq!(
         (relief.side, relief.materials.len(), relief.masks.len()),
-        (1024, config.files.materials.len(), covers.len() - 1)
+        (1024, config.files.materials.len(), masks)
     );
     let packed = pack_masks(&relief.masks, relief.tint.as_ref());
     assert_eq!((packed.width, packed.height), (512, 384));
-    assert_eq!(
-        packed.layers.len(),
-        (covers.len() - 1).div_ceil(4) + 1,
-        "слои масок и слой карты цвета"
+    assert_eq!(packed.layers.len(), masks.div_ceil(4), "слои масок");
+}
+
+/// Фаза 20: каждый штамп деревни поставлен горой, и горы поднимают землю над высотами файла.
+#[test]
+fn every_stamp_of_the_village_stands_as_a_mountain_that_lifts_the_land() {
+    let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
+    let game = load_village(&read("scene.json"));
+    let terrain = game.world.terrain();
+    for (index, (name, _)) in config.files.stamps.iter().enumerate() {
+        assert!(
+            terrain
+                .mountains()
+                .iter()
+                .any(|mountain| mountain.stamp == index),
+            "штамп \"{name}\" не поставлен"
+        );
+    }
+    assert!(
+        terrain
+            .heights()
+            .iter()
+            .zip(terrain.base_heights())
+            .any(|(effective, base)| effective > base),
+        "горы поднимают землю"
     );
 }
 

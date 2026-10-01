@@ -7,6 +7,7 @@ use std::sync::OnceLock;
 
 use super::footprint::Footprint;
 use super::math3::{self, Vec3};
+use super::mountains::Mountain;
 use super::value::Vec2;
 
 /// Тангенс самого крутого склона, по которому идут: 45°.
@@ -40,12 +41,14 @@ const MERGED_WALK_SQUARES: usize = 2;
 /// Больше слоёв покрытий рельефа не бывает.
 pub const MAX_COVERS: usize = 8;
 
-/// Слой покрытия: материал по номеру в `files.materials` и маска по номеру в списке масок файла
-/// рельефа; у нижнего слоя маски нет.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Слой покрытия: материал по номеру в `files.materials`, маска по номеру в списке масок файла
+/// рельефа и правило крутизны `slope` — градусы, от которых слой набирает силу. У нижнего слоя нет
+/// ни маски, ни `slope`, у остальных есть хотя бы одно из двух.
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Cover {
     pub material: usize,
     pub mask: Option<usize>,
+    pub slope: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -53,7 +56,11 @@ pub struct Terrain {
     scene: [u32; 2],
     /// Точек высот на клетку сцены.
     density: usize,
+    /// Итоговые высоты: `base` плюс наибольшая из гор в точке.
     heights: Vec<f64>,
+    /// Высоты файла рельефа, без гор.
+    base: Vec<f64>,
+    mountains: Vec<Mountain>,
     water: Option<Water>,
     covers: Vec<Cover>,
     /// Есть ли карта цвета `tint`: она идёт после масок покрытий.
@@ -67,6 +74,8 @@ static FLAT: Terrain = Terrain {
     scene: [0, 0],
     density: 2,
     heights: Vec::new(),
+    base: Vec::new(),
+    mountains: Vec::new(),
     water: None,
     covers: Vec::new(),
     tint: false,
@@ -125,7 +134,9 @@ impl Terrain {
             scene,
             density,
             flat: heights.iter().all(|&h| h == 0.0),
+            base: heights.clone(),
             heights,
+            mountains: Vec::new(),
             water,
             covers: Vec::new(),
             tint: false,
@@ -139,6 +150,57 @@ impl Terrain {
         self.covers = covers;
         self.tint = tint;
         self
+    }
+
+    /// Тот же рельеф с горами `mountains`: итоговые высоты — `heights` файла плюс наибольшая из гор
+    /// в точке сетки; считаются только точки под прямоугольниками гор.
+    pub fn with_mountains(mut self, mountains: Vec<Mountain>) -> Terrain {
+        let mut lift = vec![0.0; self.base.len()];
+        for mountain in &mountains {
+            self.lift_under(mountain, &mut lift);
+        }
+        self.heights = self.base.iter().zip(&lift).map(|(h, up)| h + up).collect();
+        self.flat = self.heights.iter().all(|&h| h == 0.0);
+        self.mountains = mountains;
+        self
+    }
+
+    /// Поднимает `lift` в точках сетки под горой до её высоты, если та выше уже записанной.
+    fn lift_under(&self, mountain: &Mountain, lift: &mut [f64]) {
+        let [low, high] = mountain.bounds();
+        let [columns, rows] = self.squares().map(|squares| squares + 1);
+        for row in self.lattice_span(low[1], high[1], rows) {
+            for column in self.lattice_span(low[0], high[0], columns) {
+                let height = mountain.height_at(self.point_place(column, row));
+                let slot = &mut lift[row * columns + column];
+                *slot = slot.max(height);
+            }
+        }
+    }
+
+    /// Точки сетки из `count` по одной оси, что лежат на отрезке сцены от `low` до `high`.
+    fn lattice_span(&self, low: f64, high: f64, count: usize) -> std::ops::Range<usize> {
+        let d = self.density as f64;
+        let first = (low * d - EPS).ceil().max(0.0) as usize;
+        let last = ((high * d + EPS).floor() + 1.0).clamp(0.0, count as f64) as usize;
+        first..last
+    }
+
+    /// Горы файла рельефа, в порядке записи.
+    pub fn mountains(&self) -> &[Mountain] {
+        &self.mountains
+    }
+
+    /// Номер горы с наибольшей высотой больше нуля в месте сцены; из равных — меньший.
+    pub fn mountain_at(&self, x: f64, y: f64) -> Option<usize> {
+        let mut best: Option<(usize, f64)> = None;
+        for (index, mountain) in self.mountains.iter().enumerate() {
+            let height = mountain.height_at([x, y]);
+            if height > 0.0 && best.is_none_or(|(_, top)| height > top) {
+                best = Some((index, height));
+            }
+        }
+        best.map(|(index, _)| index)
     }
 
     /// Слои покрытий снизу вверх; пусто, пока файл рельефа не назвал их.
@@ -191,9 +253,14 @@ impl Terrain {
         self.water
     }
 
-    /// Высоты точек сетки строками сверху вниз; пусто у ровной земли без файла.
+    /// Итоговые высоты точек сетки с горами, строками сверху вниз; пусто у ровной земли без файла.
     pub fn heights(&self) -> &[f64] {
         &self.heights
+    }
+
+    /// Высоты точек сетки из файла рельефа, без гор; пусто у ровной земли без файла.
+    pub fn base_heights(&self) -> &[f64] {
+        &self.base
     }
 
     /// Вся земля на высоте 0.

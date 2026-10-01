@@ -631,6 +631,19 @@ pub fn terrain_hit(
     ])
 }
 
+/// «Редактор», «Вызовы движка», `stamp_at`: номер горы с наибольшей высотой больше нуля там, где луч
+/// из точки окна `window` первым встретил рельеф сцены (как у `terrain_at`); `None` — луч мимо
+/// рельефа или горы в этом месте нет.
+pub fn stamp_hit(
+    world: &World,
+    scene: &SceneConfig,
+    camera: &super::camera::Camera3d,
+    window: [f64; 2],
+) -> Option<usize> {
+    let point = terrain_hit(world, scene, camera, window)?;
+    world.terrain().mountain_at(point[0], point[1])
+}
+
 /// Высота верхней поверхности в точке: верх самого высокого настила над ней, иначе рельеф.
 pub fn top_surface_height(world: &World, point: super::value::Vec2) -> f64 {
     surface::decks(world)

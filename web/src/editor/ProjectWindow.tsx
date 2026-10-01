@@ -5,11 +5,13 @@ import { liveObjectListEmptyLabel } from "./battleSelection";
 import { isBattleTransportShortcut, isReplaySeekShortcut } from "./battleShortcuts";
 import { withCodeErrorLine } from "./battleTypes";
 import { EditorIcon } from "./EditorIcon";
+import { MountainPropertiesPanel } from "./MountainPropertiesPanel";
+import { parseStampShape } from "./mountainGeometry";
 import { ObjectList } from "./ObjectList";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
-import { readTerrainWater } from "./terrainFile";
+import { readTerrainMountains, readTerrainWater } from "./terrainFile";
 import { parseProjectImageNames } from "./projectFiles";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -96,7 +98,7 @@ function isEditableElementFocused(): boolean {
 export function ProjectWindow({ source, onBackToProjects, brushFields }: ProjectWindowProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneEditing = useSceneEditing(canvasRef, source);
-  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, terrainText, saveState, canUndo, selectedIndex, setSelectedIndex } = sceneEditing;
+  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, terrainText, saveState, canUndo, selectedIndex, setSelectedIndex, selectedMountainIndex } = sceneEditing;
   const [objectsWidth, setObjectsWidth] = useStoredPanelWidth("kuznya-editor.objects-width", 260);
   const [propertiesWidth, setPropertiesWidth] = useStoredPanelWidth("kuznya-editor.properties-width", 320);
   // Колбэк-реф вместо обычного — «Редактор», партия: элемент нужен движку звука сразу после
@@ -121,6 +123,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
+  const mountains = useMemo(() => readTerrainMountains(terrainText), [terrainText]);
+  const stampShapes = useMemo(() => (result?.status === "ok" ? result.stamps.flatMap(({ name, text }) => parseStampShape(name, text) ?? []) : []), [result]);
   const selectedObject = selectedIndex !== null ? (objectSummaries[selectedIndex] ?? null) : null;
 
   const battle = useBattleSession({
@@ -146,6 +150,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const displayedPropertiesView = isLive ? battle.livePropertiesView : propertiesView;
   const displayedCanEdit = isLive ? battle.canLiveEdit : canEdit;
   const displayedOnSelect = isLive ? battle.setLiveSelectedId : setSelectedIndex;
+  // Гора выбирается только вне партии, паузы и повтора («Лепка рельефа», «Редактор», требование 26).
+  const selectedMountain = !isLive && selectedMountainIndex !== null ? mountains[selectedMountainIndex] : undefined;
 
   // Место и размер объекта по номеру для переноса мышью — из текста сцены вне партии, из живого
   // мира на паузе внутри неё («Редактор», требование 20).
@@ -165,8 +171,17 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const sceneObjectProperties = useCallback((id: number) => getObjectProperties(objects, id), [objects]);
 
   // Последний selectedIndex и действия правки — в ref, чтобы не переставлять слушатель на каждый рендер.
-  const shortcutStateRef = useRef({ selectedIndex, undo: sceneEditing.undo, copyObject: sceneEditing.copyObject, deleteObject: sceneEditing.deleteObject });
-  shortcutStateRef.current = { selectedIndex, undo: sceneEditing.undo, copyObject: sceneEditing.copyObject, deleteObject: sceneEditing.deleteObject };
+  const shortcutState = {
+    selectedIndex,
+    selectedMountainIndex,
+    undo: sceneEditing.undo,
+    copyObject: sceneEditing.copyObject,
+    deleteObject: sceneEditing.deleteObject,
+    copyMountain: sceneEditing.copyMountain,
+    deleteMountain: sceneEditing.deleteMountain,
+  };
+  const shortcutStateRef = useRef(shortcutState);
+  shortcutStateRef.current = shortcutState;
   const battleRef = useRef(battle);
   battleRef.current = battle;
   // Мазок кисти держит перезагрузку файлов, пока кнопка нажата («Кисти рельефа», крайние случаи); партия держит её сама.
@@ -242,13 +257,21 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
         event.preventDefault();
         current.undo();
       } else if (isCtrlOnly && event.key.toLowerCase() === "d") {
-        if (current.selectedIndex === null) return;
-        event.preventDefault();
-        current.copyObject(current.selectedIndex);
+        if (current.selectedMountainIndex !== null) {
+          event.preventDefault();
+          current.copyMountain(current.selectedMountainIndex);
+        } else if (current.selectedIndex !== null) {
+          event.preventDefault();
+          current.copyObject(current.selectedIndex);
+        }
       } else if (event.key === "Delete") {
-        if (current.selectedIndex === null) return;
-        event.preventDefault();
-        current.deleteObject(current.selectedIndex);
+        if (current.selectedMountainIndex !== null) {
+          event.preventDefault();
+          current.deleteMountain(current.selectedMountainIndex);
+        } else if (current.selectedIndex !== null) {
+          event.preventDefault();
+          current.deleteObject(current.selectedIndex);
+        }
       }
     }
     window.addEventListener("keydown", handleKeyDown);
@@ -324,42 +347,61 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           onWaterChange={sceneEditing.setTerrainWater}
           onStrokeActiveChange={handleStrokeActiveChange}
           brushFields={brushFields}
+          mountains={mountains}
+          stampShapes={stampShapes}
+          selectedMountainIndex={isLive ? null : selectedMountainIndex}
+          onSelectMountain={sceneEditing.setSelectedMountainIndex}
+          onPlaceMountain={sceneEditing.placeMountain}
+          onCommitMountain={sceneEditing.replaceMountain}
         />
         {!sceneAvailable && !isLive && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
       </main>
 
       <aside className="project-window__properties">
         <PanelResizeHandle edge="left" width={propertiesWidth} onWidthChange={setPropertiesWidth} label="Ширина панели свойств" />
-        <PropertiesPanel
-          key={isLive ? `live-${displayedSelectedIndex ?? "none"}` : (selectedIndex ?? "none")}
-          view={displayedPropertiesView}
-          selectedObject={displayedSelectedObject}
-          canEdit={displayedCanEdit}
-          imageNames={imageNames}
-          declaredProperties={declaredProperties}
-          isThreeDimensionalScene={isThreeDimensionalScene}
-          disallowDeclare={isLive}
-          onSetValue={(key, value) =>
-            isLive
-              ? battle.liveSelection !== null && battle.setLiveProperty(battle.liveSelection.id, key, value)
-              : selectedIndex !== null && sceneEditing.setPropertyValue(selectedIndex, key, value)
-          }
-          onRemove={(key) =>
-            isLive
-              ? battle.liveSelection !== null && battle.removeLiveProperty(battle.liveSelection.id, key)
-              : selectedIndex !== null && sceneEditing.removeProperty(selectedIndex, key)
-          }
-          onAdd={(key, value) => {
-            if (isLive) return battle.liveSelection !== null ? battle.setLiveProperty(battle.liveSelection.id, key, value) : undefined;
-            if (selectedIndex !== null) sceneEditing.addProperty(selectedIndex, key, value);
-            return undefined;
-          }}
-          onDeclare={(key, kind, value) => selectedIndex !== null && sceneEditing.declareProperty(selectedIndex, key, kind, value)}
-          onCopy={() => (isLive ? battle.liveSelection !== null && battle.copyLiveObject(battle.liveSelection.id) : selectedIndex !== null && sceneEditing.copyObject(selectedIndex))}
-          onDelete={() =>
-            isLive ? battle.liveSelection !== null && battle.deleteLiveObject(battle.liveSelection.id) : selectedIndex !== null && sceneEditing.deleteObject(selectedIndex)
-          }
-        />
+        {selectedMountain !== undefined && selectedMountainIndex !== null ? (
+          <MountainPropertiesPanel
+            key={`mountain-${selectedMountainIndex}`}
+            index={selectedMountainIndex}
+            entry={selectedMountain}
+            stampNames={stampShapes.map((shape) => shape.name)}
+            canEdit={canEdit}
+            onSetValue={(key, value) => sceneEditing.setMountainValue(selectedMountainIndex, key, value)}
+            onCopy={() => sceneEditing.copyMountain(selectedMountainIndex)}
+            onDelete={() => sceneEditing.deleteMountain(selectedMountainIndex)}
+          />
+        ) : (
+          <PropertiesPanel
+            key={isLive ? `live-${displayedSelectedIndex ?? "none"}` : (selectedIndex ?? "none")}
+            view={displayedPropertiesView}
+            selectedObject={displayedSelectedObject}
+            canEdit={displayedCanEdit}
+            imageNames={imageNames}
+            declaredProperties={declaredProperties}
+            isThreeDimensionalScene={isThreeDimensionalScene}
+            disallowDeclare={isLive}
+            onSetValue={(key, value) =>
+              isLive
+                ? battle.liveSelection !== null && battle.setLiveProperty(battle.liveSelection.id, key, value)
+                : selectedIndex !== null && sceneEditing.setPropertyValue(selectedIndex, key, value)
+            }
+            onRemove={(key) =>
+              isLive
+                ? battle.liveSelection !== null && battle.removeLiveProperty(battle.liveSelection.id, key)
+                : selectedIndex !== null && sceneEditing.removeProperty(selectedIndex, key)
+            }
+            onAdd={(key, value) => {
+              if (isLive) return battle.liveSelection !== null ? battle.setLiveProperty(battle.liveSelection.id, key, value) : undefined;
+              if (selectedIndex !== null) sceneEditing.addProperty(selectedIndex, key, value);
+              return undefined;
+            }}
+            onDeclare={(key, kind, value) => selectedIndex !== null && sceneEditing.declareProperty(selectedIndex, key, kind, value)}
+            onCopy={() => (isLive ? battle.liveSelection !== null && battle.copyLiveObject(battle.liveSelection.id) : selectedIndex !== null && sceneEditing.copyObject(selectedIndex))}
+            onDelete={() =>
+              isLive ? battle.liveSelection !== null && battle.deleteLiveObject(battle.liveSelection.id) : selectedIndex !== null && sceneEditing.deleteObject(selectedIndex)
+            }
+          />
+        )}
       </aside>
 
       <footer className="project-window__problems">

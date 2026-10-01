@@ -1,4 +1,4 @@
-use js_sys::{Array, Float64Array, Object, Reflect, Uint8Array};
+use js_sys::{Array, Float64Array, JSON, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
@@ -10,7 +10,9 @@ use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
-use crate::core::scene::{CellRange, GroundLayer, ObjectTransform, pointer_hit, terrain_hit};
+use crate::core::scene::{
+    CellRange, GroundLayer, ObjectTransform, pointer_hit, stamp_hit, terrain_hit,
+};
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
 use crate::core::world_elements;
@@ -107,9 +109,30 @@ fn js_entry_ok(config: &GameConfig, warnings: &[GameError]) -> JsValue {
     // «Таблицы данных», требование 25: пути таблиц, названные с их именами — страница читает их
     // во втором заходе вместе с остальными текстами, тем же общим загрузчиком.
     set(&files, "tables", &js_media_table(&config.files.tables));
+    // «Лепка рельефа»: пути штампов с их именами, в порядке объявления — страница читает их тем же
+    // заходом, что таблицы.
+    set(&files, "stamps", &js_media_table(&config.files.stamps));
     set(&obj, "files", &files);
     set(&obj, "warnings", &js_error_array(warnings));
     obj.into()
+}
+
+/// Список гор от страницы как JSON: то, что не превращается в JSON, станет `null` и не пройдёт проверку
+/// горы с понятным текстом.
+fn parse_stamps_list(stamps: &JsValue) -> Vec<serde_json::Value> {
+    if stamps.is_undefined() || stamps.is_null() {
+        return Vec::new();
+    }
+    Array::from(stamps)
+        .iter()
+        .map(|item| {
+            JSON::stringify(&item)
+                .ok()
+                .and_then(|text| text.as_string())
+                .and_then(|text| serde_json::from_str(&text).ok())
+                .unwrap_or(serde_json::Value::Null)
+        })
+        .collect()
 }
 
 /// A `(name, path)` table with no numbering — `read_texts()`'s `fonts`, matched back by name the
@@ -1265,6 +1288,8 @@ impl Engine {
     /// «Свет и материалы»: `material_maps` и `cover_masks` — ответы страницы по картам материалов и
     /// маскам покрытий, `[{index, verdict: "ok"|"missing"|"rejected", width?, height?, pixels?}]`, как
     /// у `images`, по номерам из `read_texts()`'s `materials` и `masks`.
+    /// «Лепка рельефа»: `stamps` — `[{name, text: string|null}]`, по одному на штамп из `files.stamps`
+    /// `read_entry()`, как `tables`.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -1281,6 +1306,7 @@ impl Engine {
         terrain: Option<String>,
         material_maps: JsValue,
         cover_masks: JsValue,
+        stamps: JsValue,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -1308,6 +1334,7 @@ impl Engine {
         let music_verdicts = parse_music_verdicts(&music, &config.files.music);
         let image_verdicts = parse_image_verdicts(&images, &image_table);
         let table_texts = parse_table_texts(&tables);
+        let stamp_texts = parse_table_texts(&stamps);
         // «Свет и материалы»: те же списки, что отдал `read_texts()`, — ответы страницы идут по номерам.
         let material_decls = config.files.materials.clone();
         let map_paths: Vec<String> = material_decls
@@ -1320,7 +1347,7 @@ impl Engine {
             .unwrap_or_default();
         let map_verdicts = parse_image_verdicts(&material_maps, &path_table(&map_paths));
         let mask_verdicts = parse_image_verdicts(&cover_masks, &path_table(&mask_paths));
-        match load::load_rest_with_materials(
+        match load::load_rest_with_stamps(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -1337,6 +1364,7 @@ impl Engine {
             terrain.as_deref(),
             &map_verdicts,
             &mask_verdicts,
+            &stamp_texts,
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -1678,11 +1706,17 @@ impl Engine {
     }
 
     /// «Редактор», «Вызовы движка»: ставит рельеф — `heights` строками сверху вниз, вода `{level, color}`
-    /// или `undefined` — так, будто он прочитан из файла, собирает мир из сцены заново и перестраивает
-    /// сетку рельефа для отрисовки. Сети поиска пути и камера редактора не меняются. `undefined` —
-    /// поставлен; иначе текст ошибки: чисел не столько, высота или уровень не число, цвет не цвет,
-    /// сцена плоская, идёт партия.
-    pub fn set_terrain(&mut self, heights: &[f64], water: JsValue) -> Option<String> {
+    /// или `undefined` и горы `stamps` `[{stamp, position, size, height, rotation?}]` в виде файла
+    /// рельефа — так, будто он прочитан из файла, собирает мир из сцены заново и перестраивает сетку
+    /// рельефа для отрисовки. Сети поиска пути и камера редактора не меняются. `undefined` — поставлен;
+    /// иначе текст ошибки, и ничего не меняется: чисел не столько, высота или уровень не число, цвет не
+    /// цвет, гора не проходит проверку, сцена плоская, идёт партия.
+    pub fn set_terrain(
+        &mut self,
+        heights: &[f64],
+        water: JsValue,
+        stamps: JsValue,
+    ) -> Option<String> {
         let Some(game) = self.game.as_mut() else {
             return Some("игра не загружена".to_string());
         };
@@ -1690,17 +1724,18 @@ impl Engine {
         let water = water
             .as_ref()
             .map(|(level, color)| (*level, color.as_str()));
-        if let Err(message) = edit::set_terrain(game, heights, water) {
+        let stamps = parse_stamps_list(&stamps);
+        if let Err(message) = edit::set_terrain(game, heights, water, &stamps) {
             return Some(message);
         }
         self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
         None
     }
 
-    /// «Редактор», «Вызовы движка»: нынешний рельеф `{density, columns, rows, heights, water}` —
-    /// `density` — точек высот на клетку, `heights`
-    /// (`Float64Array`) строками сверху вниз, как в `set_terrain`, `water` — `{level, color}` или
-    /// `null`. Без файла рельефа — нули нужного размера. `undefined` в плоской сцене.
+    /// «Редактор», «Вызовы движка»: нынешний рельеф `{density, columns, rows, heights, effective, water}` —
+    /// `density` — точек высот на клетку, `heights` (`Float64Array`) строками сверху вниз, как в
+    /// `set_terrain`, — высоты файла без гор, `effective` — итоговые высоты с горами той же сетки, `water` —
+    /// `{level, color}` или `null`. Без файла рельефа — нули нужного размера. `undefined` в плоской сцене.
     pub fn terrain_heights(&self) -> JsValue {
         let Some(terrain) = self.game.as_ref().and_then(edit::terrain_heights) else {
             return JsValue::UNDEFINED;
@@ -1713,6 +1748,11 @@ impl Engine {
             &obj,
             "heights",
             &Float64Array::from(terrain.heights.as_slice()),
+        );
+        set(
+            &obj,
+            "effective",
+            &Float64Array::from(terrain.effective.as_slice()),
         );
         let water = terrain.water.map_or(JsValue::NULL, |(level, color)| {
             let water = Object::new();
@@ -1733,6 +1773,20 @@ impl Engine {
         };
         match terrain_hit(&game.world, &game.scene, &camera, [x, y]) {
             Some(point) => js_point3(point),
+            None => JsValue::UNDEFINED,
+        }
+    }
+
+    /// «Редактор», «Вызовы движка»: номер горы в `stamps` файла рельефа (с нуля) с наибольшей высотой
+    /// больше нуля там, где луч из точки холста `(x, y)` (CSS-пиксели) камерой, которой сцена видна
+    /// сейчас, первым встретил рельеф, как у `terrain_at`; `undefined`, если гор там нет, луч мимо
+    /// рельефа или сцена плоская.
+    pub fn stamp_at(&self, x: f64, y: f64) -> JsValue {
+        let (Some(game), Some(View::Space(camera))) = (self.game.as_ref(), self.frame()) else {
+            return JsValue::UNDEFINED;
+        };
+        match stamp_hit(&game.world, &game.scene, &camera, [x, y]) {
+            Some(index) => JsValue::from_f64(index as f64),
             None => JsValue::UNDEFINED,
         }
     }

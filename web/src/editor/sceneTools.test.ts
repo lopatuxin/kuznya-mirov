@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { resolveSceneToolAvailability, selectHandleModeTool, settleSelectedTool, type SceneToolContext } from "./sceneTools";
+import {
+  isMountainToolEnabled,
+  resolveSceneToolAvailability,
+  selectBrushTool,
+  selectHandleModeTool,
+  selectMountainTool,
+  settleSelectedTool,
+  type SceneToolContext,
+} from "./sceneTools";
 
 const EDITING: SceneToolContext = {
   isThreeDimensionalScene: true,
@@ -38,24 +46,47 @@ describe("resolveSceneToolAvailability", () => {
   });
 });
 
-describe("selectHandleModeTool", () => {
-  it("вид ручек снимает кисть", () => {
-    expect(selectHandleModeTool("rotate")).toEqual({ handleMode: "rotate", brushKind: null });
+describe("isMountainToolEnabled", () => {
+  it("кнопка «Гора» нажимается там, где есть кисти, и только со штампами", () => {
+    expect(isMountainToolEnabled(true, true)).toBe(true);
+    expect(isMountainToolEnabled(true, false)).toBe(false);
+  });
+
+  it("в партии, на паузе, в повторе и в плоской сцене кистей нет — «Горы» тоже", () => {
+    expect(isMountainToolEnabled(false, true)).toBe(false);
+  });
+});
+
+describe("выбор инструмента", () => {
+  it("вид ручек снимает кисть и «Гору»", () => {
+    expect(selectHandleModeTool("rotate")).toEqual({ handleMode: "rotate", brushKind: null, isMountainTool: false });
+  });
+
+  it("кисть и «Гора» заменяют друг друга", () => {
+    expect(selectBrushTool("scale", "level")).toEqual({ handleMode: "scale", brushKind: "level", isMountainTool: false });
+    expect(selectMountainTool("scale")).toEqual({ handleMode: "scale", brushKind: null, isMountainTool: true });
   });
 });
 
 describe("settleSelectedTool", () => {
   it("«Запуск» при выбранной кисти выбирает «Перенос», а не прежний вид ручек", () => {
-    expect(settleSelectedTool({ handleMode: "scale", brushKind: "raise" }, false)).toEqual({ handleMode: "translate", brushKind: null });
+    expect(settleSelectedTool(selectBrushTool("scale", "raise"), false, false)).toEqual(selectHandleModeTool("translate"));
   });
 
   it("кисть остаётся, пока кисти доступны", () => {
-    const tool = { handleMode: "scale" as const, brushKind: "smooth" as const };
-    expect(settleSelectedTool(tool, true)).toBe(tool);
+    const tool = selectBrushTool("scale", "smooth");
+    expect(settleSelectedTool(tool, true, true)).toBe(tool);
   });
 
   it("выбранные ручки остаются, когда кистей нет: после «Стопа» вид ручек тот же", () => {
-    const tool = { handleMode: "rotate" as const, brushKind: null };
-    expect(settleSelectedTool(tool, false)).toBe(tool);
+    const tool = selectHandleModeTool("rotate");
+    expect(settleSelectedTool(tool, false, false)).toBe(tool);
+  });
+
+  it("«Гора» уходит в «Перенос», когда пропали кисти или штампы, и остаётся, пока доступна", () => {
+    const tool = selectMountainTool("rotate");
+    expect(settleSelectedTool(tool, true, true)).toBe(tool);
+    expect(settleSelectedTool(tool, true, false)).toEqual(selectHandleModeTool("translate"));
+    expect(settleSelectedTool(tool, false, false)).toEqual(selectHandleModeTool("translate"));
   });
 });

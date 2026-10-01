@@ -76,6 +76,7 @@ describe("loadProject", () => {
         screens: "screens.json",
         fonts: [{ name: "Rubik", path: "fonts/Rubik.ttf" }],
         tables: [{ name: "enemies", path: "tables/enemies.json" }],
+        stamps: [],
         code: "code.lua",
       },
       warnings: [{ file: "a", path: "", message: "предупреждение входа", line: null, column: null }] as EngineError[],
@@ -121,6 +122,7 @@ describe("loadProject", () => {
       undefined,
       [],
       [],
+      [],
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -148,6 +150,7 @@ describe("loadProject", () => {
           screens: "screens.json",
           fonts: [],
           tables: [{ name: "enemies", path: "tables/enemies.json" }],
+          stamps: [],
         },
         warnings: NO_WARNINGS,
       })),
@@ -172,6 +175,7 @@ describe("loadProject", () => {
       undefined,
       [],
       [],
+      [],
     );
   });
 
@@ -190,7 +194,7 @@ describe("loadProject", () => {
       const engine: ProjectLoadEngine = {
         read_entry: vi.fn(() => ({
           ok: true,
-          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], terrain: terrainPath },
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [], terrain: terrainPath },
           warnings: NO_WARNINGS,
         })),
         read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] })),
@@ -216,7 +220,7 @@ describe("loadProject", () => {
 
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
 
-      expect(load.mock.calls[0]).toHaveLength(13);
+      expect(load.mock.calls[0]).toHaveLength(14);
       expect(load.mock.calls[0]?.[10]).toBeUndefined();
       expect(readText).not.toHaveBeenCalledWith("terrain.json");
     });
@@ -272,7 +276,7 @@ describe("loadProject", () => {
       const engine: ProjectLoadEngine = {
         read_entry: vi.fn(() => ({
           ok: true,
-          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], terrain: "terrain.json" },
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [], terrain: "terrain.json" },
           warnings: NO_WARNINGS,
         })),
         read_texts: readTexts,
@@ -295,7 +299,7 @@ describe("loadProject", () => {
       const engine: ProjectLoadEngine = {
         read_entry: vi.fn(() => ({
           ok: true,
-          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [] },
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] },
           warnings: NO_WARNINGS,
         })),
         read_texts: readTexts,
@@ -306,6 +310,58 @@ describe("loadProject", () => {
 
       expect(readTexts.mock.calls[0]).toHaveLength(6);
       expect(readTexts.mock.calls[0]?.[5]).toBeUndefined();
+    });
+  });
+
+  describe("штампы гор files.stamps", () => {
+    const files: Record<string, string> = {
+      "game.json": "{}",
+      "properties.json": "{}",
+      "scene.json": '{"objects":[]}',
+      "rules.json": "{}",
+      "screens.json": "{}",
+      "stamps/beluha.json": '{"heights":[[0,1],[1,0]]}',
+    };
+
+    function createEngine(): { engine: ProjectLoadEngine; load: ReturnType<typeof vi.fn> } {
+      const load = vi.fn((..._args: unknown[]) => ({ ok: true, warnings: NO_WARNINGS }));
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: {
+            properties: "properties.json",
+            scene: "scene.json",
+            rules: "rules.json",
+            screens: "screens.json",
+            fonts: [],
+            tables: [],
+            stamps: [
+              { name: "beluha", path: "stamps/beluha.json" },
+              { name: "chuya", path: "stamps/chuya.json" },
+            ],
+          },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] })),
+        load,
+      };
+      return { engine, load };
+    }
+
+    it("тексты читаются вторым проходом тем же читателем и уходят в load последним аргументом по порядку объявления; ненайденный файл — null", async () => {
+      const { engine, load } = createEngine();
+      const recording = createRecordingProjectFileReader(createReader(files));
+
+      const result = await loadProject(engine, recording.reader, "{}", stubAudioContext);
+
+      // Пути прошли через читателя — значит, их же опрашивает редактор, и правка штампа перезагружает проект.
+      expect(recording.getReadPaths()).toEqual(expect.arrayContaining(["stamps/beluha.json", "stamps/chuya.json"]));
+      const expected = [
+        { name: "beluha", text: files["stamps/beluha.json"] },
+        { name: "chuya", text: null },
+      ];
+      expect(load.mock.calls[0]?.[13]).toEqual(expected);
+      expect(result.status === "ok" && result.stamps).toEqual(expected);
     });
   });
 
@@ -321,7 +377,7 @@ describe("loadProject", () => {
     const engine: ProjectLoadEngine = {
       read_entry: vi.fn(() => ({
         ok: true,
-        files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [] },
+        files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] },
         warnings: NO_WARNINGS,
       })),
       read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] })),

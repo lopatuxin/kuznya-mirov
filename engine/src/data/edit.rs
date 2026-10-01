@@ -11,7 +11,9 @@ use crate::core::surface;
 use crate::core::value::{GridSpec, PropKind, Value};
 use crate::core::world::World;
 
-use super::load::{ImageDecl, parse_grid, parse_scalar_value, terrain_from_numbers};
+use super::load::{
+    ImageDecl, parse_edit_mountains, parse_grid, parse_scalar_value, terrain_from_numbers,
+};
 use crate::data::error::ErrorSink;
 
 /// «Редактор», требование 14: «не больше трёх знаков после запятой и без хвоста машинного
@@ -252,12 +254,14 @@ pub fn delete_object(world: &mut World, id: u32) {
 }
 
 /// «Редактор», «Вызовы движка», `set_terrain`: ставит рельеф в загруженной игре — `heights` строками
-/// сверху вниз, вода — уровень и цвет `#rrggbb`. Ошибка — текстом: чисел не столько, высота или
-/// уровень не число, цвет не цвет, сцена плоская или идёт партия.
+/// сверху вниз, вода — уровень и цвет `#rrggbb`, горы — `stamps` в виде файла рельефа. Ошибка —
+/// текстом, и ничего не меняется: чисел не столько, высота или уровень не число, цвет не цвет, гора не
+/// проходит проверку, сцена плоская или идёт партия.
 pub fn set_terrain(
     game: &mut Game,
     heights: &[f64],
     water: Option<(f64, &str)>,
+    stamps: &[Json],
 ) -> Result<(), String> {
     if !game.scene.is_3d() {
         return Err("рельеф есть только у трёхмерной сцены: у scene в game.json нет camera".into());
@@ -269,7 +273,9 @@ pub fn set_terrain(
         game.world.terrain().covers().to_vec(),
         game.world.terrain().has_tint(),
     );
-    game.set_terrain(terrain_from_numbers(&game.scene, heights, water)?.with_covers(covers, tint));
+    let terrain = terrain_from_numbers(&game.scene, heights, water)?;
+    let mountains = parse_edit_mountains(stamps, game.properties.stamps())?;
+    game.set_terrain(terrain.with_covers(covers, tint).with_mountains(mountains));
     Ok(())
 }
 
@@ -279,7 +285,10 @@ pub struct TerrainHeights {
     pub density: usize,
     pub columns: usize,
     pub rows: usize,
+    /// `heights` файла рельефа, без гор.
     pub heights: Vec<f64>,
+    /// Итоговые высоты с горами, той же сетки.
+    pub effective: Vec<f64>,
     pub water: Option<(f64, String)>,
 }
 
@@ -299,16 +308,17 @@ pub fn terrain_heights(game: &Game) -> Option<TerrainHeights> {
         density * game.scene.width as usize + 1,
         density * game.scene.height as usize + 1,
     );
-    let heights = if terrain.heights().is_empty() {
-        vec![0.0; columns * rows]
+    let (heights, effective) = if terrain.heights().is_empty() {
+        (vec![0.0; columns * rows], vec![0.0; columns * rows])
     } else {
-        terrain.heights().to_vec()
+        (terrain.base_heights().to_vec(), terrain.heights().to_vec())
     };
     Some(TerrainHeights {
         density,
         columns,
         rows,
         heights,
+        effective,
         water: terrain
             .water()
             .map(|water| (water.level, format_hex_color(water.color))),

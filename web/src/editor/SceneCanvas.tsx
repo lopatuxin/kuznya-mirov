@@ -5,13 +5,22 @@ import { cellSizeFromObjectRect, computeDragPosition, hasCrossedDragThreshold } 
 import type { EditorCameraStore } from "./editorCamera";
 import type { HandleMode } from "./handleGeometry";
 import { HandleModeToolbar } from "./HandleModeToolbar";
+import type { StampShape } from "./mountainGeometry";
 import type { PlacementChange } from "./objectPlacement";
 import type { SceneSize } from "./sceneObjects";
 import { drawSelection, type CanvasRect } from "./selectionDrawing";
 import { fitSceneStage } from "./sceneStageLayout";
-import { resolveSceneToolAvailability, selectHandleModeTool, settleSelectedTool, type SelectedTool } from "./sceneTools";
+import {
+  isMountainToolEnabled,
+  resolveSceneToolAvailability,
+  selectBrushTool,
+  selectHandleModeTool,
+  selectMountainTool,
+  settleSelectedTool,
+  type SelectedTool,
+} from "./sceneTools";
 import type { SpaceSceneContext } from "./spaceSceneController";
-import type { TerrainGrid, TerrainWater } from "./terrainFile";
+import type { MountainEntry, TerrainGrid, TerrainWater } from "./terrainFile";
 import { useSpaceSceneInput } from "./useSpaceSceneInput";
 
 type ObjectGeometry = { position: readonly [number, number]; size: readonly [number, number] };
@@ -71,7 +80,20 @@ type SceneCanvasProps = {
   onStrokeActiveChange: (isActive: boolean) => void;
   /** Размер и сила кисти — их держит страница редактора, а не окно проекта («Кисти рельефа», требование 2). */
   brushFields: BrushFields;
+  /** Горы файла рельефа как есть, штампы `files.stamps` и выбранная гора — «Лепка рельефа». */
+  mountains: readonly MountainEntry[];
+  stampShapes: readonly StampShape[];
+  selectedMountainIndex: number | null;
+  onSelectMountain: (index: number) => void;
+  /** Кнопка «Гора» поставила гору: дописывается в конец файла и выбирается. */
+  onPlaceMountain: (entry: MountainEntry) => void;
+  /** Отпускание после жеста горы: гора целиком — одно действие. */
+  onCommitMountain: (index: number, entry: MountainEntry) => void;
 };
+
+/** Числа новой горы по умолчанию — «Правка сцены», требование 22: ширина и высота в клетках. */
+const DEFAULT_MOUNTAIN_WIDTH = 30;
+const DEFAULT_MOUNTAIN_HEIGHT = 10;
 
 export type BrushFields = {
   size: number;
@@ -126,6 +148,12 @@ export function SceneCanvas({
   onWaterChange,
   onStrokeActiveChange,
   brushFields,
+  mountains,
+  stampShapes,
+  selectedMountainIndex,
+  onSelectMountain,
+  onPlaceMountain,
+  onCommitMountain,
 }: SceneCanvasProps): React.JSX.Element {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -146,6 +174,9 @@ export function SceneCanvas({
   onMoveObjectRef.current = onMoveObject;
   const dragRef = useRef<DragState | null>(null);
   const [selectedTool, setSelectedTool] = useState<SelectedTool>(selectHandleModeTool("translate"));
+  const [mountainStampName, setMountainStampName] = useState<string | null>(null);
+  const [mountainWidth, setMountainWidth] = useState(DEFAULT_MOUNTAIN_WIDTH);
+  const [mountainHeight, setMountainHeight] = useState(DEFAULT_MOUNTAIN_HEIGHT);
   const { handleMode, brushKind } = selectedTool;
   const { size: brushSize, strength: brushStrength } = brushFields;
   const { areHandlesAvailable, areBrushesAvailable } = resolveSceneToolAvailability({
@@ -155,6 +186,9 @@ export function SceneCanvas({
     isGameInputActive,
     isEditorCameraActive,
   });
+  const isMountainEnabled = isMountainToolEnabled(areBrushesAvailable, stampShapes.length > 0);
+  // Штамп по умолчанию — первый; объявление, что пропало из `files.stamps`, выбор тоже уводит на первый.
+  const mountainStamp = stampShapes.find((shape) => shape.name === mountainStampName) ?? stampShapes[0];
   const selectHandleMode = (mode: HandleMode): void => setSelectedTool(selectHandleModeTool(mode));
   const spaceContext: SpaceSceneContext | null =
     engine !== null && isThreeDimensionalScene
@@ -174,17 +208,30 @@ export function SceneCanvas({
           onCommitPlacement,
           onCommitTerrain,
           onStrokeActiveChange,
+          mountains: {
+            isEditable: areBrushesAvailable,
+            entries: mountains,
+            selectedIndex: selectedMountainIndex,
+            placing: selectedTool.isMountainTool && isMountainEnabled && mountainStamp !== undefined ? { stamp: mountainStamp, width: mountainWidth, height: mountainHeight } : null,
+            onSelect: onSelectMountain,
+            onPlace: (entry) => {
+              onPlaceMountain(entry);
+              selectHandleMode("translate");
+            },
+            onCommit: onCommitMountain,
+            onActiveChange: onStrokeActiveChange,
+          },
         }
       : null;
   const spaceScene = useSpaceSceneInput({ overlayCanvasRef, context: spaceContext, objectsVersion });
   const sceneWidth = sceneSize?.width ?? null;
   const sceneHeight = sceneSize?.height ?? null;
 
-  // «Запуск» и всё, что убирает кисти, — вместо кисти ручки «Перенос»; после «Стопа» остаются ручки.
+  // «Запуск» и всё, что убирает кисти или «Гору», — вместо них ручки «Перенос»; после «Стопа» остаются ручки.
   useEffect(() => {
-    const settledTool = settleSelectedTool(selectedTool, areBrushesAvailable);
+    const settledTool = settleSelectedTool(selectedTool, areBrushesAvailable, isMountainEnabled);
     if (settledTool !== selectedTool) setSelectedTool(settledTool);
-  }, [areBrushesAvailable, selectedTool]);
+  }, [areBrushesAvailable, isMountainEnabled, selectedTool]);
 
   // Внешняя правка или другое действие поменяли объекты во время переноса — «Редактор», крайний
   // случай: перенос отменяется, мир движок уже собрал заново из показанного своей перезагрузкой.
@@ -445,8 +492,22 @@ export function SceneCanvas({
           brushSize={brushSize}
           brushStrength={brushStrength}
           water={terrainWater}
+          mountainTool={{
+            isSelected: selectedTool.isMountainTool,
+            isEnabled: isMountainEnabled,
+            fields: {
+              stampNames: stampShapes.map((shape) => shape.name),
+              stamp: mountainStamp?.name ?? "",
+              width: mountainWidth,
+              height: mountainHeight,
+              onStampChange: setMountainStampName,
+              onWidthChange: setMountainWidth,
+              onHeightChange: setMountainHeight,
+            },
+            onSelect: () => setSelectedTool(selectMountainTool(handleMode)),
+          }}
           onChange={selectHandleMode}
-          onBrushChange={(kind) => setSelectedTool({ handleMode, brushKind: kind })}
+          onBrushChange={(kind) => setSelectedTool(selectBrushTool(handleMode, kind))}
           onBrushSizeChange={brushFields.onSizeChange}
           onBrushStrengthChange={brushFields.onStrengthChange}
           onWaterChange={onWaterChange}

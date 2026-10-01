@@ -1,8 +1,20 @@
 import { EditorIcon, type EditorIconName } from "./EditorIcon";
 import type { HandleMode } from "./handleGeometry";
+import { MountainToolFields, type MountainToolFieldsProps } from "./MountainToolFields";
 import { TerrainBrushFields } from "./TerrainBrushFields";
 import type { BrushKind } from "./terrainBrush";
 import type { TerrainWater } from "./terrainFile";
+
+/** Кнопка «Гора» и её поля («Правка сцены», требования 22–23). */
+export type MountainToolbar = {
+  isSelected: boolean;
+  /** Кнопка нажимается, когда в игре объявлены штампы. */
+  isEnabled: boolean;
+  fields: MountainToolFieldsProps;
+  onSelect: () => void;
+};
+
+const NO_STAMPS_TITLE = "Нет штампов: объяви files.stamps в game.json";
 
 type HandleModeToolbarProps = {
   mode: HandleMode;
@@ -13,6 +25,7 @@ type HandleModeToolbarProps = {
   brushSize: number;
   brushStrength: number;
   water: TerrainWater | null;
+  mountainTool: MountainToolbar;
   onChange: (mode: HandleMode) => void;
   onBrushChange: (kind: BrushKind) => void;
   onBrushSizeChange: (size: number) => void;
@@ -32,9 +45,9 @@ const BRUSH_BUTTONS: { kind: BrushKind; icon: EditorIconName; title: string }[] 
   { kind: "smooth", icon: "terrain-smooth", title: "Сгладить перепады" },
 ];
 
-type ToolButtonProps = { title: string; isActive: boolean; onClick: () => void; children: React.ReactNode };
+type ToolButtonProps = { title: string; isActive: boolean; isDisabled?: boolean; onClick: () => void; children: React.ReactNode };
 
-function ToolButton({ title, isActive, onClick, children }: ToolButtonProps): React.JSX.Element {
+function ToolButton({ title, isActive, isDisabled = false, onClick, children }: ToolButtonProps): React.JSX.Element {
   return (
     <button
       type="button"
@@ -42,6 +55,7 @@ function ToolButton({ title, isActive, onClick, children }: ToolButtonProps): Re
       title={title}
       aria-label={title}
       aria-pressed={isActive}
+      disabled={isDisabled}
       // Кнопка не забирает фокус у сцены: `W`, `E`, `R` и `F` работают, пока фокус на ней.
       onMouseDown={(event) => event.preventDefault()}
       onClick={onClick}
@@ -53,7 +67,8 @@ function ToolButton({ title, isActive, onClick, children }: ToolButtonProps): Re
 
 /**
  * Инструменты над сценой — «Редактор», требование 10, и «Кисти рельефа», требования 1–3: виды ручек
- * (те же режимы, что клавиши `W`, `E`, `R`), кисти рельефа и, пока выбрана кисть, поля размера, силы и воды.
+ * (те же режимы, что клавиши `W`, `E`, `R`), кисти рельефа, «Гора» и, пока выбрана кисть, поля размера, силы и воды,
+ * пока выбрана «Гора» — поля штампа, ширины и высоты.
  */
 export function HandleModeToolbar({
   mode,
@@ -62,6 +77,7 @@ export function HandleModeToolbar({
   brushSize,
   brushStrength,
   water,
+  mountainTool,
   onChange,
   onBrushChange,
   onBrushSizeChange,
@@ -74,7 +90,7 @@ export function HandleModeToolbar({
         <div className="scene-view__panel" role="group" aria-label="Ручки объекта">
           <span className="scene-view__panel-caption">Объект</span>
           {MODE_BUTTONS.map((button) => (
-            <ToolButton key={button.mode} title={button.title} isActive={brushKind === null && mode === button.mode} onClick={() => onChange(button.mode)}>
+            <ToolButton key={button.mode} title={button.title} isActive={brushKind === null && !mountainTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
               <EditorIcon name={button.icon} size={14} />
             </ToolButton>
           ))}
@@ -87,9 +103,22 @@ export function HandleModeToolbar({
                 <EditorIcon name={button.icon} size={14} />
               </ToolButton>
             ))}
+            <ToolButton
+              title={mountainTool.isEnabled ? "Поставить гору из штампа" : NO_STAMPS_TITLE}
+              isActive={mountainTool.isSelected}
+              isDisabled={!mountainTool.isEnabled}
+              onClick={mountainTool.onSelect}
+            >
+              <EditorIcon name="terrain-mountain" size={14} />
+            </ToolButton>
           </div>
         )}
       </div>
+      {areBrushesAvailable && mountainTool.isSelected && (
+        <div className="scene-view__tool-row">
+          <MountainToolFields {...mountainTool.fields} />
+        </div>
+      )}
       {areBrushesAvailable && brushKind !== null && (
         <TerrainBrushFields
           size={brushSize}
