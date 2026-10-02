@@ -25,8 +25,9 @@ import {
   type Vec2,
 } from "./objectPlacement";
 import { createMountainSceneController, type MountainContext } from "./mountainSceneController";
+import { createPaintSceneController, type PaintContext } from "./paintSceneController";
 import { drawSelectionQuad } from "./selectionDrawing";
-import { applyBrushFrame, brushPathPoints, type BrushGrid, type BrushSettings } from "./terrainBrush";
+import { applyBrushFrame, brushPathPoints, syncFileHeights, type BrushGrid, type BrushSettings } from "./terrainBrush";
 import { differsInHundredths, type MountainEntry, type TerrainGrid } from "./terrainFile";
 import { readTerrainSnapshot, toVec2, toVec3, type Vec3 } from "./terrainReadings";
 import { createVerticalGrab, type VerticalGrab } from "./verticalGrab";
@@ -48,6 +49,7 @@ export type SpaceSceneEngine = Pick<
   | "terrain_height"
   | "terrain_heights"
   | "set_terrain"
+  | "set_covers"
   | "stamp_at"
 >;
 
@@ -66,6 +68,8 @@ export type SpaceSceneContext = {
   handleMode: HandleMode;
   /** Выбрана кисть рельефа — левая кнопка лепит землю, ручек нет; `null` — выбраны ручки или кисти недоступны. */
   brush: BrushSettings | null;
+  /** Выбрана «Покрасить» — левая кнопка красит землю, ручек нет; `null` — выбраны ручки или кисть рельефа, или покраски нет. */
+  paint: PaintContext | null;
   /** Свойства объекта в виде файла: из текста `scene.json` вне партии, из живого мира на паузе. */
   getObjectProperties: (objectId: number) => Record<string, unknown> | null;
   onSelect: (index: number | null) => void;
@@ -232,6 +236,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   /** Где указатель над холстом — по нему кисть рисует круг, пока кнопка не нажата. */
   let hoverPoint: Vec2 | null = null;
   const mountainController = createMountainSceneController();
+  const paintController = createPaintSceneController();
 
   function projectionOf(engine: SpaceSceneEngine): SpaceProjection {
     return { screenPoint: (x, y, z) => toVec2(engine.screen_point(x, y, z)) };
@@ -324,14 +329,11 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     return engine.set_terrain(heights, water, stamps) === undefined;
   }
 
-  /** Высоты файла после кадра мазка: прежние плюс то, на сколько кисть изменила итоговую землю. */
-  function syncFileHeights(active: StrokeGesture): void {
-    for (let index = 0; index < active.heights.length; index += 1) {
-      active.heights[index] = (active.start[index] as number) + (active.grid.heights[index] as number) - (active.startEffective[index] as number);
-    }
-  }
-
   function strokeFrame(nowMs: number): void {
+    if (paintController.isActive()) {
+      paintController.frame(getContext(), nowMs);
+      return;
+    }
     const active = gesture;
     if (!isStrokeGesture(active)) return;
     const context = getContext();
@@ -348,7 +350,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (seconds <= 0) return;
     applyBrushFrame(active.grid, path, { settings: active.settings, seconds, isLowering: active.isLowering, levelTarget: active.levelTarget });
     active.hasChanged = true;
-    syncFileHeights(active);
+    syncFileHeights(active.heights, active.start, active.grid.heights, active.startEffective);
     if (sendTerrain(context.engine, active.heights, active.water, active.stamps)) return;
     // Движок отказал (игра пересобрана или пошла партия) — мазок бросается без действия.
     gesture = null;
@@ -373,7 +375,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   function pointerDown(input: PointerInput): boolean {
     const context = getContext();
-    if (context.isInputLocked || gesture !== null || mountainController.isActive()) return false;
+    if (context.isInputLocked || gesture !== null || mountainController.isActive() || paintController.isActive()) return false;
     if (input.button === MIDDLE_BUTTON) {
       const camera = context.cameraStore.current();
       if (!context.isEditorCameraActive || camera === null) return false;
@@ -389,6 +391,8 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (input.button !== LEFT_BUTTON) return false;
     // Кисть: нажатие не выбирает объект и выбор не снимает («Кисти рельефа», требование 8).
     if (context.brush !== null) return startStroke(context, input, context.brush);
+    // «Покрасить»: нажатие красит так же, как кисть лепит — ничего не выбирает («Покраска», требование 5).
+    if (context.paint !== null) return paintController.start(context, input);
     // «Гора»: щелчок по земле ставит гору и сам ничего не выбирает и не тянет.
     if (context.mountains.placing !== null) {
       mountainController.place(context, input);
@@ -478,7 +482,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   function updateHover(context: SpaceSceneContext, input: PointerInput): void {
     hovered = null;
-    if (!context.areHandlesAvailable || context.brush !== null) return;
+    if (!context.areHandlesAvailable || context.brush !== null || context.paint !== null) return;
     const subject = selectedHandleSubject(context);
     if (subject === null) return;
     const geometry = computeHandleGeometry(projectionOf(context.engine), subject.placement, context.handleMode, subject.baseHeight);
@@ -490,6 +494,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (context.isInputLocked) return;
     hoverPoint = [input.x, input.y];
     if (mountainController.pointerMove(context, input)) return;
+    if (paintController.pointerMove(input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId) {
       if (active === null) updateHover(context, input);
@@ -518,6 +523,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   function pointerUp(input: PointerInput): void {
     if (mountainController.pointerUp(getContext(), input)) return;
+    if (paintController.pointerUp(input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId || (input.buttons & BUTTON_BITS[active.button]) !== 0) return;
     gesture = null;
@@ -553,6 +559,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   function pointerCancel(input: PointerInput): void {
     if (mountainController.pointerCancel(getContext(), input)) return;
+    if (paintController.pointerCancel(getContext(), input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId) return;
     gesture = null;
@@ -572,6 +579,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   /** Shift смотрится в каждом кадре мазка: нажал посреди мазка — дальше «Поднять» опускает («Кисти рельефа», требование 11). */
   function noteShift(input: KeyInput): void {
     if (isStrokeGesture(gesture)) gesture.isLowering = input.shiftKey;
+    paintController.noteShift(input.shiftKey);
   }
 
   function keyUp(input: KeyInput): void {
@@ -585,6 +593,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (input.ctrlKey || input.altKey || input.metaKey) return false;
     if (input.code === "Escape") {
       if (mountainController.cancel(context)) return true;
+      if (paintController.cancel(context)) return true;
       const active = gesture;
       if (isStrokeGesture(active)) {
         gesture = null;
@@ -592,7 +601,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
         return true;
       }
       // Без жеста Esc снимает кисть или «Гору»: круг пропадает, щелчок снова выбирает, ручки — прежнего вида.
-      if (active === null && (context.brush !== null || context.mountains.placing !== null)) {
+      if (active === null && (context.brush !== null || context.paint !== null || context.mountains.placing !== null)) {
         context.onHandleModeChange(context.handleMode);
         return true;
       }
@@ -603,7 +612,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     }
     const mode = MODE_KEYS[input.code];
     if (mode !== undefined && !input.shiftKey) {
-      if (!context.areHandlesAvailable || isStrokeGesture(gesture) || mountainController.isActive()) return false;
+      if (!context.areHandlesAvailable || isStrokeGesture(gesture) || mountainController.isActive() || paintController.isActive()) return false;
       hovered = null;
       context.onHandleModeChange(mode);
       return true;
@@ -618,13 +627,14 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   /** Круг кисти на рельефе под указателем — «Кисти рельефа», требования 6–7: точки окружности садятся на землю и идут за её изгибом. */
   function drawBrush(context: SpaceSceneContext, context2d: CanvasRenderingContext2D, pixelRatio: number): void {
-    const settings = isStrokeGesture(gesture) ? gesture.settings : context.brush;
-    const pointer = isStrokeGesture(gesture) ? gesture.pointer : gesture === null ? hoverPoint : null;
-    if (settings === null || pointer === null) return;
+    const painting = paintController.circle();
+    const size = painting?.size ?? (isStrokeGesture(gesture) ? gesture.settings.size : (context.brush?.size ?? context.paint?.size));
+    const pointer = painting?.pointer ?? (isStrokeGesture(gesture) ? gesture.pointer : gesture === null ? hoverPoint : null);
+    if (size === undefined || pointer === null) return;
     const place = toVec3(context.engine.terrain_at(pointer[0], pointer[1]));
     if (place === undefined) return;
     const projection = projectionOf(context.engine);
-    const ring = brushRingPoints([place[0], place[1]], settings.size / 2).map((point) => {
+    const ring = brushRingPoints([place[0], place[1]], size / 2).map((point) => {
       const height = context.engine.terrain_height(point[0], point[1]);
       return typeof height === "number" ? projection.screenPoint(point[0], point[1], height) : undefined;
     });
@@ -638,7 +648,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (context.selectedIndex === null) return;
     const rect = context.engine.object_rect(context.selectedIndex) as { corners?: Vec2[] } | undefined;
     if (rect?.corners !== undefined) drawSelectionQuad(context2d, rect.corners, context.selectedLabel, pixelRatio);
-    if (!context.areHandlesAvailable || context.brush !== null) return;
+    if (!context.areHandlesAvailable || context.brush !== null || context.paint !== null) return;
     const subject = selectedHandleSubject(context);
     if (subject === null) return;
     const geometry = computeHandleGeometry(projectionOf(context.engine), subject.placement, context.handleMode, subject.baseHeight);
@@ -664,6 +674,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
       const active = gesture;
       gesture = null;
       if (isStrokeGesture(active)) active.onActiveChange(false);
+      paintController.abandon();
       mountainController.abandon();
     },
   };

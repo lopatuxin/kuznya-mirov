@@ -1,13 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { beginUndo, createEditSessionState, dirtyFiles, type EditSnapshot } from "./editSession";
+import { beginUndo, createEditSessionState, dirtyFiles, dirtyMaskPaths, markWritten, type EditSnapshot } from "./editSession";
+import { NO_MASKS } from "./maskBytes";
 import { parseProjectFilePaths } from "./projectFiles";
-import { planTerrainEdit } from "./terrainEditing";
+import { planTerrainEdit, terrainTextAfterPaint } from "./terrainEditing";
 import {
   DEFAULT_WATER,
   flatTerrainGrid,
   formatTerrainText,
   parseTerrainText,
   readTerrainMountains,
+  terrainTextWithCovers,
   terrainTextWithHeights,
   terrainTextWithMountains,
   terrainTextWithWater,
@@ -27,7 +29,7 @@ const SCENE_SIZE = { width: 2, height: 1 };
 const NO_FILES = async (): Promise<boolean> => false;
 
 function sessionWithoutTerrain(): ReturnType<typeof createEditSessionState> {
-  return createEditSessionState({ sceneText: "scene", propertiesText: "props", terrainText: null });
+  return createEditSessionState({ sceneText: "scene", propertiesText: "props", terrainText: null, masks: NO_MASKS });
 }
 
 function raisedGrid(): ReturnType<typeof flatTerrainGrid> {
@@ -101,7 +103,7 @@ describe("первый мазок в проекте без рельефа", () =
 
 describe("проект с файлом рельефа", () => {
   const WITH_FILE_JSON = GAME_JSON.replace('"scene": "scene.json",', '"scene": "scene.json",\n    "terrain": "terrain.json",');
-  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: null }) };
+  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: null }), masks: NO_MASKS };
 
   it("мазок — одно обычное действие: game.json не меняется, отмена возвращает высоты до мазка", async () => {
     const plan = await planTerrainEdit(createEditSessionState(EXISTING), WITH_FILE_JSON, NO_FILES, (displayed) =>
@@ -139,5 +141,91 @@ describe("проект с файлом рельефа", () => {
     expect(off?.state.history).toHaveLength(2);
     expect(off?.state.displayed.terrainText).toBe(EXISTING.terrainText);
     expect(beginUndo(off?.state as NonNullable<typeof off>["state"])?.candidate.terrainText).toBe(on?.state.displayed.terrainText);
+  });
+});
+
+describe("покраска — действие с масками («Покраска», требования 12, 15–16)", () => {
+  const WITH_FILE_JSON = GAME_JSON.replace('"scene": "scene.json",', '"scene": "scene.json",\n    "terrain": "terrain.json",');
+  const FLAT_WITH_GRASS = formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: [{ material: "grass" }] });
+  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: FLAT_WITH_GRASS, masks: NO_MASKS };
+  const COVERS = [{ material: "grass" }, { material: "rock", mask: "terrain/rock.png" }];
+  const PAINTED = { "terrain/rock.png": { width: 8, height: 4, pixels: new Uint8Array(32).fill(7) } };
+  const withCovers = (displayed: EditSnapshot, sceneSize: typeof SCENE_SIZE): string | null => terrainTextWithCovers(displayed.terrainText, sceneSize, COVERS);
+
+  it("мазок, что положил слой: рельеф и маска — одно действие, маска не записана, отмена убирает слой и маску", async () => {
+    const plan = await planTerrainEdit(createEditSessionState(EXISTING), WITH_FILE_JSON, NO_FILES, withCovers, PAINTED);
+
+    const state = plan?.state as NonNullable<typeof plan>["state"];
+    expect(plan?.gameJsonText).toBe(WITH_FILE_JSON);
+    expect(parseTerrainText(state.displayed.terrainText ?? "")?.covers).toEqual(COVERS);
+    expect(state.displayed.masks).toEqual(PAINTED);
+    expect(dirtyMaskPaths(state)).toEqual(["terrain/rock.png"]);
+    expect(state.history).toEqual([EXISTING]);
+    expect(beginUndo(state)?.candidate).toEqual(EXISTING);
+  });
+
+  it("слои те же, байты маски другие — тоже действие: текст рельефа не меняется, маска пишется", async () => {
+    const painted = await planTerrainEdit(createEditSessionState(EXISTING), WITH_FILE_JSON, NO_FILES, withCovers, PAINTED);
+    const written = markWritten(painted?.state as NonNullable<typeof painted>["state"]);
+    const repainted = { "terrain/rock.png": { width: 8, height: 4, pixels: new Uint8Array(32).fill(9) } };
+
+    const plan = await planTerrainEdit(written, WITH_FILE_JSON, NO_FILES, withCovers, repainted);
+
+    const state = plan?.state as NonNullable<typeof plan>["state"];
+    expect(state.displayed.terrainText).toBe(written.displayed.terrainText);
+    expect(dirtyFiles(state).terrain).toBe(false);
+    expect(dirtyMaskPaths(state)).toEqual(["terrain/rock.png"]);
+    expect(beginUndo(state)?.candidate.masks).toEqual(PAINTED);
+  });
+
+  it("мазок только по маске: текст рельефа с нестандартным числом остаётся байт в байт, пишется одна маска", async () => {
+    const handWritten = formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: COVERS }).replace("0, 0", "1.234, 0");
+    expect(handWritten).toContain("1.234");
+    const withRock = (displayed: EditSnapshot, sceneSize: typeof SCENE_SIZE): string | null => terrainTextAfterPaint(displayed.terrainText, sceneSize, COVERS);
+    const onDisk = createEditSessionState({ ...EXISTING, terrainText: handWritten, masks: PAINTED });
+    const repainted = { "terrain/rock.png": { width: 8, height: 4, pixels: new Uint8Array(32).fill(9) } };
+
+    const plan = await planTerrainEdit(onDisk, WITH_FILE_JSON, NO_FILES, withRock, repainted);
+
+    const state = plan?.state as NonNullable<typeof plan>["state"];
+    expect(state.displayed.terrainText).toBe(handWritten);
+    expect(dirtyFiles(state).terrain).toBe(false);
+    expect(dirtyMaskPaths(state)).toEqual(["terrain/rock.png"]);
+  });
+
+  it("слои изменились — текст рельефа пересобран со слоями, слои те же — прежний текст", () => {
+    const handWritten = FLAT_WITH_GRASS.replace("0, 0", "1.234, 0");
+
+    expect(terrainTextAfterPaint(handWritten, SCENE_SIZE, [{ material: "grass" }])).toBe(handWritten);
+    expect(terrainTextAfterPaint(handWritten, SCENE_SIZE, COVERS)).toBe(terrainTextWithCovers(handWritten, SCENE_SIZE, COVERS));
+    expect(terrainTextAfterPaint(null, SCENE_SIZE, COVERS)).toBe(terrainTextWithCovers(null, SCENE_SIZE, COVERS));
+  });
+
+  it("ни слои, ни маски не изменились — действия нет", async () => {
+    const same = await planTerrainEdit(createEditSessionState(EXISTING), WITH_FILE_JSON, NO_FILES, (displayed) => displayed.terrainText);
+
+    expect(same).toBeNull();
+  });
+
+  it("новые маски ложатся поверх прежних, остальные остаются", async () => {
+    const base: EditSnapshot = { ...EXISTING, masks: { "terrain/scree.png": { width: 1, height: 1, pixels: Uint8Array.of(3) } } };
+
+    const plan = await planTerrainEdit(createEditSessionState(base), WITH_FILE_JSON, NO_FILES, withCovers, PAINTED);
+
+    expect(Object.keys(plan?.state.displayed.masks ?? {}).sort()).toEqual(["terrain/rock.png", "terrain/scree.png"]);
+  });
+
+  it("первый мазок в проекте без рельефа заводит terrain.json и files.terrain; отмена оставляет их, но слоёв нет", async () => {
+    const grassOnly = (displayed: EditSnapshot, sceneSize: typeof SCENE_SIZE): string | null => terrainTextWithCovers(displayed.terrainText, sceneSize, [{ material: "grass" }]);
+
+    const plan = await planTerrainEdit(sessionWithoutTerrain(), GAME_JSON, NO_FILES, grassOnly);
+
+    const state = plan?.state as NonNullable<typeof plan>["state"];
+    expect(parseProjectFilePaths(plan?.gameJsonText ?? null)?.terrain).toBe("terrain.json");
+    expect(parseTerrainText(state.displayed.terrainText ?? "")?.covers).toEqual([{ material: "grass" }]);
+    expect(parseTerrainText(state.displayed.terrainText ?? "")?.water).toBeNull();
+    const undone = beginUndo(state);
+    expect(parseTerrainText(undone?.candidate.terrainText ?? "")?.covers).toBeNull();
+    expect(parseTerrainText(undone?.candidate.terrainText ?? "")?.heights.every((height) => height === 0)).toBe(true);
   });
 });

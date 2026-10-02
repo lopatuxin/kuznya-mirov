@@ -58,7 +58,7 @@ type TerrainBrushFieldsProps = {
   onWaterChange: (water: TerrainWater | null) => void;
 };
 
-function clampedTo(limits: BrushLimits): (typed: number) => number {
+export function clampedTo(limits: BrushLimits): (typed: number) => number {
   return (typed) => clampToLimits(typed, limits);
 }
 

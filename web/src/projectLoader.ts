@@ -4,6 +4,8 @@ import { buildImagePayload, fetchImageBytes, type ImageEntry, type ImageFileEntr
 import { probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import type { EngineError } from "./engineErrors";
 
+const RGBA_CHANNELS = 4;
+
 type FontEntry = { name: string; path: string };
 type SoundEntry = { index: number; name: string; path: string };
 type MusicEntry = { index: number; name: string; path: string };
@@ -50,6 +52,9 @@ type LoadedMusic = { index: number; path: string; bytes: Uint8Array | null };
 export type LoadedMusicVerdict = LoadedMusic & { verdict: MusicVerdict };
 type MusicVerdictEntry = { index: number; verdict: MusicVerdict };
 
+/** Маска покрытия, как её прочитала страница: путь файла и байт на точку — красный канал картинки, как его читает движок. */
+export type LoadedCoverMask = { path: string; width: number; height: number; pixels: Uint8Array };
+
 /** Подмножество `Engine`, которого хватает трём заходам загрузки — тестам достаточно подделать эти три метода. */
 export type ProjectLoadEngine = Pick<Engine, "read_entry" | "read_texts" | "load">;
 
@@ -73,11 +78,20 @@ export type ProjectLoadResult =
       musicTracks: LoadedMusicVerdict[];
       /** Штампы `files.stamps` в порядке объявления с прочитанными текстами — редактор берёт из них пропорции новой горы. */
       stamps: LoadedStamp[];
+      /** Маски `covers` рельефа, что страница разжала для движка, — редактор красит по ним («Покраска»); не прочитанные или не разжатые не входят. */
+      coverMasks: LoadedCoverMask[];
       audioContext: AudioContext;
     }
   /** `game.json` не читается вовсе — вызывающая сторона сама знает, как это назвать (имя игры или проекта). */
   | { status: "entry-missing" }
   | { status: "rejected"; errors: EngineError[]; warnings: EngineError[]; gameJsonText: string; sceneText: string | null };
+
+/** Красный канал точек RGBA — значение маски покрытия, как его читает движок. */
+function redChannelOf(rgba: Uint8Array): Uint8Array {
+  const red = new Uint8Array(rgba.length / RGBA_CHANNELS);
+  for (let point = 0; point < red.length; point += 1) red[point] = rgba[point * RGBA_CHANNELS] as number;
+  return red;
+}
 
 async function fetchFonts(reader: ProjectFileReader, fonts: FontEntry[]): Promise<LoadedFont[]> {
   const bytesList = await Promise.all(fonts.map((font) => reader.readBinary(font.path)));
@@ -192,7 +206,12 @@ export async function loadProject(
     return { status: "rejected", errors: loadResult.errors, warnings, gameJsonText, sceneText };
   }
 
-  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, audioContext };
+  const coverMasks = loadedMasks.flatMap((image, index): LoadedCoverMask[] => {
+    const decoded = coverMasksPayload[index];
+    if (decoded?.verdict !== "ok") return [];
+    return [{ path: image.path, width: decoded.width, height: decoded.height, pixels: redChannelOf(decoded.pixels) }];
+  });
+  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, coverMasks, audioContext };
 }
 
 /**

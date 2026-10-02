@@ -11,8 +11,8 @@ import { ObjectList } from "./ObjectList";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
-import { readTerrainMountains, readTerrainWater } from "./terrainFile";
-import { parseProjectImageNames } from "./projectFiles";
+import { readTerrainCovers, readTerrainMountains, readTerrainTint, readTerrainWater } from "./terrainFile";
+import { parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { SceneCanvas, type BrushFields } from "./SceneCanvas";
@@ -124,6 +124,9 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
   const mountains = useMemo(() => readTerrainMountains(terrainText), [terrainText]);
+  const terrainCovers = useMemo(() => readTerrainCovers(terrainText), [terrainText]);
+  const terrainTintPath = useMemo(() => readTerrainTint(terrainText), [terrainText]);
+  const materialNames = useMemo(() => parseProjectMaterialNames(gameJsonText), [gameJsonText]);
   const stampShapes = useMemo(() => (result?.status === "ok" ? result.stamps.flatMap(({ name, text }) => parseStampShape(name, text) ?? []) : []), [result]);
   const selectedObject = selectedIndex !== null ? (objectSummaries[selectedIndex] ?? null) : null;
 
@@ -353,6 +356,13 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           onSelectMountain={sceneEditing.setSelectedMountainIndex}
           onPlaceMountain={sceneEditing.placeMountain}
           onCommitMountain={sceneEditing.replaceMountain}
+          materialNames={materialNames}
+          terrainCovers={terrainCovers}
+          terrainMasks={sceneEditing.masks}
+          hasTerrainFile={terrainText !== null}
+          terrainTintPath={terrainTintPath}
+          onCommitPaint={sceneEditing.paintCovers}
+          onRestorePaint={sceneEditing.reloadDisplayed}
         />
         {!sceneAvailable && !isLive && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
       </main>

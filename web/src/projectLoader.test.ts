@@ -294,6 +294,33 @@ describe("loadProject", () => {
       expect(load.mock.calls[0]?.[12]).toEqual([{ index: 7, ...decoded }]);
     });
 
+    it("в итоге загрузки маски покрытий — путь и красный канал точек; не найденная маска не входит («Покраска»)", async () => {
+      stubBrowserDecoder();
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [], terrain: "terrain.json" },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: vi.fn(() => ({
+          fonts: [],
+          sounds: [],
+          music: [],
+          images: [],
+          materials: [],
+          masks: [
+            { index: 0, path: "terrain/earth.png" },
+            { index: 1, path: "terrain/absent.png" },
+          ],
+        })),
+        load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
+      };
+
+      const result = await loadProject(engine, createReader(files), "{}", stubAudioContext);
+
+      expect(result.status === "ok" && result.coverMasks).toEqual([{ path: "terrain/earth.png", width: 1, height: 1, pixels: new Uint8Array([9]) }]);
+    });
+
     it("без файла рельефа в read_texts идёт undefined", async () => {
       const readTexts = vi.fn((..._args: unknown[]) => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] }));
       const engine: ProjectLoadEngine = {

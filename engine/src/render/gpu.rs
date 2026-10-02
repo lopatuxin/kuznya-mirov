@@ -5,6 +5,8 @@ use super::atlas::{self, ATLAS_SIZE};
 use super::gpu3d;
 use super::materials::Relief;
 use crate::core::screens::{Align, FontId};
+use crate::core::terrain::Cover;
+use crate::data::load::{CoverMask, MaterialDecl};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -708,6 +710,30 @@ impl Renderer {
         self.materials =
             gpu3d::MaterialGpu::new(&self.device, &self.queue, self.material_options, relief);
         self.scene3d = None;
+    }
+
+    /// «Свет и материалы», `set_covers`: таблица слоёв и маски покрытий на видеокарте заменяются новыми,
+    /// материалы и карта цвета остаются. Ресурсы трёхмерной сцены пересоздаются, только если массив
+    /// масок создан заново: их раскладка ссылается на него.
+    pub fn set_covers(
+        &mut self,
+        covers: &[Cover],
+        decls: &[MaterialDecl],
+        scene: [u32; 2],
+        masks: &[CoverMask],
+    ) {
+        let rebuilt = self.materials.set_covers(
+            &self.device,
+            &self.queue,
+            self.material_options,
+            covers,
+            decls,
+            scene,
+            masks,
+        );
+        if rebuilt {
+            self.scene3d = None;
+        }
     }
 
     /// The game's scene size and background become known only once it has loaded, well after

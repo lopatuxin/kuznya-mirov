@@ -2,13 +2,9 @@
   "water": { "level": -2.2, "color": "#3f7fd0" },
   "covers": [
     { "material": "grass" },
-    { "material": "grass_lush", "mask": "terrain/grass_lush.png" },
-    { "material": "earth", "mask": "terrain/earth.png" },
-    { "material": "pebbles", "mask": "terrain/pebbles.png" },
-    { "material": "path", "mask": "terrain/path.png" },
-    { "material": "scree", "slope": 30 },
-    { "material": "rock_moss", "slope": 36 },
-    { "material": "rock", "slope": 44 }
+    { "material": "scree", "slope": 30, "mask": "terrain/scree.png" },
+    { "material": "rock_moss", "slope": 36, "mask": "terrain/rock_moss.png" },
+    { "material": "rock", "slope": 44, "mask": "terrain/rock.png" }
   ],
   "stamps": [
     { "stamp": "beluha", "position": [64, -6], "size": [50, 40], "height": 21 },

@@ -40,10 +40,6 @@
     },
     "materials": {
       "grass": { "size": 3, "color": "materials/grass/color.jpg", "normal": "materials/grass/normal.jpg", "roughness": "materials/grass/roughness.jpg", "height": "materials/grass/height.jpg", "ao": "materials/grass/ao.jpg" },
-      "grass_lush": { "size": 3, "color": "materials/grass_lush/color.jpg", "normal": "materials/grass_lush/normal.jpg", "roughness": "materials/grass_lush/roughness.jpg", "height": "materials/grass_lush/height.jpg", "ao": "materials/grass_lush/ao.jpg" },
-      "earth": { "size": 3, "color": "materials/earth/color.jpg", "normal": "materials/earth/normal.jpg", "roughness": "materials/earth/roughness.jpg", "height": "materials/earth/height.jpg", "ao": "materials/earth/ao.jpg" },
-      "pebbles": { "size": 2.5, "color": "materials/pebbles/color.jpg", "normal": "materials/pebbles/normal.jpg", "roughness": "materials/pebbles/roughness.jpg", "height": "materials/pebbles/height.jpg", "ao": "materials/pebbles/ao.jpg" },
-      "path": { "size": 2, "color": "materials/path/color.jpg", "normal": "materials/path/normal.jpg", "roughness": "materials/path/roughness.jpg", "height": "materials/path/height.jpg", "ao": "materials/path/ao.jpg" },
       "rock_moss": { "size": 5, "color": "materials/rock_moss/color.jpg", "normal": "materials/rock_moss/normal.jpg", "roughness": "materials/rock_moss/roughness.jpg", "height": "materials/rock_moss/height.jpg", "ao": "materials/rock_moss/ao.jpg" },
       "scree": { "size": 2.5, "color": "materials/scree/color.png", "normal": "materials/scree/normal.png", "roughness": "materials/scree/roughness.png", "height": "materials/scree/height.png", "ao": "materials/scree/ao.png" },
       "rock": { "size": 8, "color": "materials/rock/color.png", "normal": "materials/rock/normal.png", "roughness": "materials/rock/roughness.png", "height": "materials/rock/height.png", "ao": "materials/rock/ao.png" }

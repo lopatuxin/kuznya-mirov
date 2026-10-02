@@ -86,15 +86,16 @@ export type PutTargetResult =
   | { status: "ok"; filePath: string; createDirectory: boolean };
 
 /**
- * Проверка пути записи — «Редактор», требования 28 (фаза 09) и 34 (фаза 10): пишутся только
- * `.json` внутри `games/<имя>/`, на любой глубине — файлы из `files.scene`/`files.properties`
+ * Проверка пути записи — «Редактор», требования 28 (фаза 09) и 34 (фаза 10), «Покраска», требование 18: пишутся только
+ * `.json` и `.png` (маски покрытий) внутри `games/<имя>/`, на любой глубине — файлы из `files.scene`/`files.properties`
  * могут лежать в подпапке проекта (фаза 09), а `replays/` вдобавок разрешена самим этим кодом.
  * `..`, абсолютный путь и битая процентная кодировка сводятся к тому же выходу за `directoryPath`,
- * что и у чтения (`isPathWithinDirectory`), — 403; путь внутри каталога, но не `.json` или без
- * имени проекта — 405. Ни одна папка, кроме `replays/` проекта, сама не создаётся (фаза 09: «без
+ * что и у чтения (`isPathWithinDirectory`), — 403; путь внутри каталога, но не `.json`/`.png` или без
+ * имени проекта — 405. Ни одна папка, кроме `replays/` проекта и папки маски, сама не создаётся (фаза 09: «без
  * папки запись не делается») — `createDirectory` говорит `writeGamesFileAtomically`, можно ли
  * создать недостающую папку для этого пути; `replays/` несуществующего проекта — 403, а не тихое
- * создание заодно и его самого.
+ * создание заодно и его самого. Маске покрытия (`.png`) папка создаётся так же: новый слой кладёт
+ * `terrain/<материал>.png`, а папки `terrain/` у проекта может ещё не быть; проекта нет — 403.
  */
 export function resolvePutTarget(requestUrl: string, directoryPath: string): PutTargetResult {
   let requestPath: string;
@@ -113,15 +114,17 @@ export function resolvePutTarget(requestUrl: string, directoryPath: string): Put
 
   const relativeSegments = filePath.slice(directoryPath.length + 1).split(sep);
   const isProjectFile = relativeSegments.length >= 2 && relativeSegments.every((segment) => segment !== "");
-  if (!isProjectFile || extname(filePath) !== ".json") {
+  const extension = extname(filePath);
+  if (!isProjectFile || (extension !== ".json" && extension !== ".png")) {
     return { status: "not-allowed" };
   }
 
   const isReplayFile = relativeSegments.length === 3 && relativeSegments[1] === "replays";
-  if (isReplayFile && !existsSync(join(directoryPath, relativeSegments[0] as string))) {
+  const canCreateDirectory = isReplayFile || extension === ".png";
+  if (canCreateDirectory && !existsSync(join(directoryPath, relativeSegments[0] as string))) {
     return { status: "forbidden" };
   }
-  return { status: "ok", filePath, createDirectory: isReplayFile };
+  return { status: "ok", filePath, createDirectory: canCreateDirectory };
 }
 
 /** Предел записи файла проекта — как `client_max_body_size` в `deploy/nginx.conf`: рельеф сцены 256 × 256 клеток — около 1,6 МБ. */

@@ -24,6 +24,7 @@ import {
   type StampShape,
 } from "./mountainGeometry";
 import type { Vec2 } from "./objectPlacement";
+import type { PaintContext } from "./paintSceneController";
 import { drawSelectionQuad } from "./selectionDrawing";
 import type { BrushSettings } from "./terrainBrush";
 import type { MountainEntry } from "./terrainFile";
@@ -53,7 +54,7 @@ export type MountainContext = {
 };
 
 /** Что гора узнаёт у основного контроллера при каждом событии; контекст трёхмерной сцены подходит как есть. */
-export type MountainSceneContext = { engine: MountainSceneEngine; handleMode: HandleMode; brush: BrushSettings | null; mountains: MountainContext };
+export type MountainSceneContext = { engine: MountainSceneEngine; handleMode: HandleMode; brush: BrushSettings | null; paint: PaintContext | null; mountains: MountainContext };
 
 type MountainPointer = { pointerId: number; button: number; buttons: number; x: number; y: number; ctrlKey: boolean };
 
@@ -131,7 +132,7 @@ export function createMountainSceneController(): MountainSceneController {
   let hovered: HandleHit | null = null;
 
   function areHandlesShown(context: MountainSceneContext): boolean {
-    return context.mountains.isEditable && context.brush === null && context.mountains.placing === null;
+    return context.mountains.isEditable && context.brush === null && context.paint === null && context.mountains.placing === null;
   }
 
   function selectedMountain(context: MountainSceneContext): { index: number; mountain: Mountain } | null {

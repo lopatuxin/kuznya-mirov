@@ -76,6 +76,7 @@ function setup(options: SetupOptions = {}) {
     engine,
     handleMode: options.handleMode ?? "translate",
     brush: options.hasBrush === true ? { kind: "raise", size: 4, strength: 50 } : null,
+    paint: null,
     mountains,
   };
   const controller = createMountainSceneController();

@@ -7,6 +7,7 @@ import {
   beginUndo,
   createEditSessionState,
   dirtyFiles,
+  dirtyMaskPaths,
   isReloadStale,
   markUnsaved,
   markWritten,
@@ -15,7 +16,10 @@ import {
   type SaveState,
 } from "./editSession";
 import type { EditorCameraStore } from "./editorCamera";
+import { NO_MASKS, type MaskBytes, type MaskSet } from "./maskBytes";
 import type { PlacementChange } from "./objectPlacement";
+import type { PaintResult } from "./paintStroke";
+import { encodeMaskPng } from "./pngCodec";
 import type { PropertyKind } from "./propertiesDeclarations";
 import { parseProjectFilePaths } from "./projectFiles";
 import { writeProjectFile } from "./projectFileWriter";
@@ -39,7 +43,7 @@ import {
 import { parseSceneObjects, resolveSelectionAfterReload, type SceneSize } from "./sceneObjects";
 import { createSerialQueue } from "./serialQueue";
 import type { ProjectSource } from "./projectSource";
-import { planTerrainEdit } from "./terrainEditing";
+import { planTerrainEdit, terrainTextAfterPaint } from "./terrainEditing";
 import {
   readTerrainMountains,
   terrainTextWithHeights,
@@ -66,6 +70,8 @@ export type SceneEditingState = {
   propertiesText: string | null;
   /** Текст файла рельефа, показанный сейчас; `null` — у проекта нет файла рельефа. */
   terrainText: string | null;
+  /** Маски слоёв покрытий, показанные сейчас, по путям файлов («Покраска»). */
+  masks: MaskSet;
   saveState: SaveState;
   canUndo: boolean;
   /** Выбран либо один объект, либо одна гора: выбор одного снимает выбор другого («Редактор», «Сцена»). */
@@ -80,6 +86,10 @@ export type SceneEditingState = {
   transformObject: (objectIndex: number, changes: PlacementChange[]) => void;
   /** Кисти рельефа: мазок — высоты всей сетки, одно действие; первый мазок в проекте без рельефа заводит файл («Кисти рельефа», требования 18–19). */
   paintTerrain: (grid: TerrainGrid) => void;
+  /** Покраска: слои покрытий и изменившиеся маски — одно действие; новый слой и первый мазок в проекте без рельефа заводят файлы («Покраска», требования 12, 15). */
+  paintCovers: (result: PaintResult) => void;
+  /** Мазок покраски брошен, а движок нечем вернуть вызовом: мир собирается заново из показанных файлов. */
+  reloadDisplayed: () => void;
   /** Вода рельефа: `null` — воды нет; каждое принятое значение — одно действие (требование 23). */
   setTerrainWater: (water: TerrainWater | null) => void;
   /** Горы — «Лепка рельефа»: каждое действие — одна правка файла рельефа, первая гора в проекте без файла заводит его. */
@@ -101,6 +111,11 @@ export type SceneEditingState = {
 const REJECTED_REASON = "в проекте ошибки";
 
 const GAME_JSON_PATH = "game.json";
+
+/** Маски, как их прочитала загрузка: путь → точки. */
+function masksOfLoad(loaded: readonly { path: string; width: number; height: number; pixels: Uint8Array }[]): MaskSet {
+  return Object.fromEntries(loaded.map(({ path, width, height, pixels }) => [path, { width, height, pixels }]));
+}
 
 function shiftCopiedPosition(object: Record<string, unknown>): Record<string, unknown> {
   const position = object.position;
@@ -131,10 +146,11 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   // начинается после проверки и записи предыдущего, отмена и внешняя правка встают в ту же очередь.
   const actionQueue = useMemo(() => createSerialQueue(), [source]);
 
-  const engineApiRef = useRef<Pick<ReturnType<typeof useProjectEngine>, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount" | "isFilePresent">>({
+  const engineApiRef = useRef<Pick<ReturnType<typeof useProjectEngine>, "runEditedLoad" | "getCachedText" | "setCachedText" | "setCachedBytes" | "getWriteCount" | "isFilePresent">>({
     runEditedLoad: null,
     getCachedText: () => undefined,
     setCachedText: () => {},
+    setCachedBytes: () => {},
     getWriteCount: () => 0,
     isFilePresent: () => Promise.resolve(false),
   });
@@ -149,11 +165,17 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     const runEditedLoad = engineApiRef.current.runEditedLoad;
     if (runEditedLoad === null) return;
 
+    // Маски, что ещё не на диске, идут PNG и в проверку загрузкой, и в запись («Покраска», требование 12).
+    const dirtyMasks = dirtyMaskPaths(current);
+    const maskFiles: Record<string, Uint8Array> = {};
+    for (const path of dirtyMasks) maskFiles[path] = await encodeMaskPng(current.displayed.masks[path] as MaskBytes);
+
     const result = await runEditedLoad({
       gameJsonText: gameJsonTextRef.current ?? undefined,
       sceneText: current.displayed.sceneText,
       propertiesText: current.displayed.propertiesText,
       terrainText: current.displayed.terrainText,
+      maskFiles,
     });
     const afterLoad = sessionRef.current;
     if (afterLoad === null) return;
@@ -167,8 +189,9 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     const dirty = paths === null ? { scene: false, properties: false, terrain: false } : dirtyFiles(afterLoad);
     let failureReason: string | null = paths === null ? "не удалось определить пути файлов проекта" : null;
 
-    // Рельеф раньше `game.json`: ключ `files.terrain` не должен указывать на файл, которого ещё нет.
-    const writes = [
+    // Маски раньше рельефа, а рельеф раньше `game.json`: слой не должен указывать на маску, а ключ `files.terrain` — на файл, которых ещё нет.
+    const writes: { path: string | null | undefined; text: string | Uint8Array | null; isDirty: boolean }[] = [
+      ...dirtyMasks.map((path) => ({ path, text: maskFiles[path] as Uint8Array, isDirty: true })),
       { path: paths?.scene, text: afterLoad.displayed.sceneText, isDirty: dirty.scene },
       { path: paths?.properties, text: afterLoad.displayed.propertiesText, isDirty: dirty.properties },
       { path: paths?.terrain, text: afterLoad.displayed.terrainText, isDirty: dirty.terrain },
@@ -179,6 +202,10 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       const writeResult = await writeProjectFile(source, write.path, write.text);
       if (!writeResult.ok) {
         failureReason = writeResult.reason;
+        continue;
+      }
+      if (typeof write.text !== "string") {
+        engineApiRef.current.setCachedBytes(write.path, write.text);
         continue;
       }
       engineApiRef.current.setCachedText(write.path, write.text);
@@ -233,7 +260,9 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
         updateSession(null);
         return;
       }
-      const disk: EditSnapshot = { sceneText, propertiesText, terrainText };
+      // Маски читает сама загрузка; отказавшая загрузка их не отдаёт — тогда по ним прежняя «правда диска».
+      const masks = result.status === "ok" ? masksOfLoad(result.coverMasks) : (sessionRef.current?.diskTruth.masks ?? NO_MASKS);
+      const disk: EditSnapshot = { sceneText, propertiesText, terrainText, masks };
       const current = sessionRef.current;
       if (current === null) {
         updateSession(createEditSessionState(disk));
@@ -252,6 +281,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       runEditedLoad: engineState.runEditedLoad,
       getCachedText: engineState.getCachedText,
       setCachedText: engineState.setCachedText,
+      setCachedBytes: engineState.setCachedBytes,
       getWriteCount: engineState.getWriteCount,
       isFilePresent: engineState.isFilePresent,
     };
@@ -326,12 +356,12 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   }
 
   /** Действие с рельефом: проект без файла рельефа получает его первым действием («Кисти рельефа», требование 19). */
-  function dispatchTerrainEdit(build: (displayed: EditSnapshot, sceneSize: SceneSize) => string | null): void {
+  function dispatchTerrainEdit(build: (displayed: EditSnapshot, sceneSize: SceneSize) => string | null, maskChanges?: MaskSet): void {
     void actionQueue.run(async () => {
       const current = sessionRef.current;
       const gameJsonText = gameJsonTextRef.current;
       if (current === null || gameJsonText === null) return;
-      const plan = await planTerrainEdit(current, gameJsonText, engineApiRef.current.isFilePresent, build);
+      const plan = await planTerrainEdit(current, gameJsonText, engineApiRef.current.isFilePresent, build, maskChanges);
       if (plan === null) return;
       gameJsonTextRef.current = plan.gameJsonText;
       updateSession(plan.state);
@@ -341,6 +371,14 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
 
   function paintTerrain(grid: TerrainGrid): void {
     dispatchTerrainEdit((displayed) => terrainTextWithHeights(displayed.terrainText, grid));
+  }
+
+  function paintCovers(result: PaintResult): void {
+    dispatchTerrainEdit((displayed, sceneSize) => terrainTextAfterPaint(displayed.terrainText, sceneSize, result.covers), result.masks);
+  }
+
+  function reloadDisplayed(): void {
+    void actionQueue.run(syncCurrent);
   }
 
   function setTerrainWater(water: TerrainWater | null): void {
@@ -457,6 +495,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     sceneText: session?.displayed.sceneText ?? null,
     propertiesText: session?.displayed.propertiesText ?? null,
     terrainText,
+    masks: session?.displayed.masks ?? NO_MASKS,
     saveState: session?.saveState ?? { status: "saved" },
     canUndo: (session?.history.length ?? 0) > 0,
     selectedIndex,
@@ -467,6 +506,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     moveObject,
     transformObject,
     paintTerrain,
+    paintCovers,
+    reloadDisplayed,
     setTerrainWater,
     placeMountain,
     replaceMountain,

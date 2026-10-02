@@ -2,10 +2,10 @@ import type { HandleMode } from "./handleGeometry";
 import type { BrushKind } from "./terrainBrush";
 
 /**
- * Выбран всегда один инструмент: вид ручек (`brushKind === null` и `isMountainTool` ложно), кисть —
- * «Кисти рельефа», требование 1, или «Гора» — «Редактор», «Правка сцены», требование 22.
+ * Выбран всегда один инструмент: вид ручек (`brushKind === null`, `isMountainTool` и `isPaintTool` ложны), кисть —
+ * «Кисти рельефа», требование 1, «Гора» — «Редактор», «Правка сцены», требование 22, или «Покрасить» — «Покраска», требование 1.
  */
-export type SelectedTool = { handleMode: HandleMode; brushKind: BrushKind | null; isMountainTool: boolean };
+export type SelectedTool = { handleMode: HandleMode; brushKind: BrushKind | null; isMountainTool: boolean; isPaintTool: boolean };
 
 export type SceneToolContext = {
   isThreeDimensionalScene: boolean;
@@ -34,25 +34,35 @@ export function isMountainToolEnabled(areBrushesAvailable: boolean, hasStamps: b
   return areBrushesAvailable && hasStamps;
 }
 
-/** Виды ручек выбираются вместо кисти и «Горы» («Кисти рельефа», требование 1). */
+/** Кнопка «Покрасить» нажимается там же, где кисти, и только когда в игре объявлены материалы («Покраска», требование 4). */
+export function isPaintToolEnabled(areBrushesAvailable: boolean, hasMaterials: boolean): boolean {
+  return areBrushesAvailable && hasMaterials;
+}
+
+/** Виды ручек выбираются вместо кисти, «Горы» и «Покрасить» («Кисти рельефа», требование 1). */
 export function selectHandleModeTool(handleMode: HandleMode): SelectedTool {
-  return { handleMode, brushKind: null, isMountainTool: false };
+  return { handleMode, brushKind: null, isMountainTool: false, isPaintTool: false };
 }
 
 export function selectBrushTool(handleMode: HandleMode, brushKind: BrushKind): SelectedTool {
-  return { handleMode, brushKind, isMountainTool: false };
+  return { handleMode, brushKind, isMountainTool: false, isPaintTool: false };
 }
 
 export function selectMountainTool(handleMode: HandleMode): SelectedTool {
-  return { handleMode, brushKind: null, isMountainTool: true };
+  return { handleMode, brushKind: null, isMountainTool: true, isPaintTool: false };
+}
+
+export function selectPaintTool(handleMode: HandleMode): SelectedTool {
+  return { handleMode, brushKind: null, isMountainTool: false, isPaintTool: true };
 }
 
 /**
- * Кисти или «Гора» пропали (партия, пауза, повтор, плоская сцена, штампов нет) — вместо них выбран
- * «Перенос»; иначе выбор остаётся.
+ * Кисти, «Гора» или «Покрасить» пропали (партия, пауза, повтор, плоская сцена, штампов или материалов нет) —
+ * вместо них выбран «Перенос»; иначе выбор остаётся.
  */
-export function settleSelectedTool(tool: SelectedTool, areBrushesAvailable: boolean, isMountainEnabled: boolean): SelectedTool {
+export function settleSelectedTool(tool: SelectedTool, areBrushesAvailable: boolean, isMountainEnabled: boolean, isPaintEnabled: boolean): SelectedTool {
   const isBrushLost = tool.brushKind !== null && !areBrushesAvailable;
   const isMountainLost = tool.isMountainTool && !isMountainEnabled;
-  return isBrushLost || isMountainLost ? selectHandleModeTool("translate") : tool;
+  const isPaintLost = tool.isPaintTool && !isPaintEnabled;
+  return isBrushLost || isMountainLost || isPaintLost ? selectHandleModeTool("translate") : tool;
 }

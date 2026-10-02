@@ -9,6 +9,8 @@ export type CachingProjectFileReader = {
   getCachedText(relativePath: string): string | null | undefined;
   /** Отмечает путь как прочитанный с данным текстом — своя запись становится новой «правдой диска». */
   setCachedText(relativePath: string, text: string): void;
+  /** Отмечает путь как прочитанный с данными байтами — своя запись маски становится новой «правдой диска». */
+  setCachedBytes(relativePath: string, bytes: Uint8Array): void;
   /** Сколько раз редактор записал файл — требование 24: метка «перезагрузка начата до записи N». */
   getWriteCount(): number;
 };
@@ -45,17 +47,26 @@ export function createCachingProjectFileReader(baseReader: ProjectFileReader): C
       texts.set(relativePath, text);
       writeCount += 1;
     },
+    setCachedBytes: (relativePath, bytes) => {
+      binaries.set(relativePath, bytes);
+      writeCount += 1;
+    },
     getWriteCount: () => writeCount,
   };
 }
 
 /**
  * Читалка для загрузки по правке — «Редактор», требование 1: `scene.json`/`properties.json` идут
- * из переданных текстов правки, остальное — из кэша обычной загрузки, без сети и диска.
+ * из переданных текстов правки, маски, что правка ещё не записала, — из переданных байтов, остальное — из кэша
+ * обычной загрузки, без сети и диска.
  */
-export function createOverridingReader(cachedReader: ProjectFileReader, overrides: Readonly<Record<string, string>>): ProjectFileReader {
+export function createOverridingReader(
+  cachedReader: ProjectFileReader,
+  overrides: Readonly<Record<string, string>>,
+  binaryOverrides: Readonly<Record<string, Uint8Array>> = {},
+): ProjectFileReader {
   return {
     readText: (relativePath) => (relativePath in overrides ? Promise.resolve(overrides[relativePath] as string) : cachedReader.readText(relativePath)),
-    readBinary: (relativePath) => cachedReader.readBinary(relativePath),
+    readBinary: (relativePath) => (relativePath in binaryOverrides ? Promise.resolve(binaryOverrides[relativePath] as Uint8Array) : cachedReader.readBinary(relativePath)),
   };
 }

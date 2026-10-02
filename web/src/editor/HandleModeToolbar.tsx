@@ -1,6 +1,7 @@
 import { EditorIcon, type EditorIconName } from "./EditorIcon";
 import type { HandleMode } from "./handleGeometry";
 import { MountainToolFields, type MountainToolFieldsProps } from "./MountainToolFields";
+import { PaintBrushFields, type PaintBrushFieldsProps } from "./PaintBrushFields";
 import { TerrainBrushFields } from "./TerrainBrushFields";
 import type { BrushKind } from "./terrainBrush";
 import type { TerrainWater } from "./terrainFile";
@@ -14,7 +15,17 @@ export type MountainToolbar = {
   onSelect: () => void;
 };
 
+/** Кнопка «Покрасить» и её поля («Покраска», требования 1–4). */
+export type PaintToolbar = {
+  isSelected: boolean;
+  /** Кнопка нажимается, когда в игре объявлены материалы. */
+  isEnabled: boolean;
+  fields: PaintBrushFieldsProps;
+  onSelect: () => void;
+};
+
 const NO_STAMPS_TITLE = "Нет штампов: объяви files.stamps в game.json";
+const NO_MATERIALS_TITLE = "Нет материалов: объяви files.materials в game.json";
 
 type HandleModeToolbarProps = {
   mode: HandleMode;
@@ -26,6 +37,7 @@ type HandleModeToolbarProps = {
   brushStrength: number;
   water: TerrainWater | null;
   mountainTool: MountainToolbar;
+  paintTool: PaintToolbar;
   onChange: (mode: HandleMode) => void;
   onBrushChange: (kind: BrushKind) => void;
   onBrushSizeChange: (size: number) => void;
@@ -67,8 +79,8 @@ function ToolButton({ title, isActive, isDisabled = false, onClick, children }: 
 
 /**
  * Инструменты над сценой — «Редактор», требование 10, и «Кисти рельефа», требования 1–3: виды ручек
- * (те же режимы, что клавиши `W`, `E`, `R`), кисти рельефа, «Гора» и, пока выбрана кисть, поля размера, силы и воды,
- * пока выбрана «Гора» — поля штампа, ширины и высоты.
+ * (те же режимы, что клавиши `W`, `E`, `R`), кисти рельефа, «Гора», «Покрасить» и, пока выбрана кисть, поля размера, силы и воды,
+ * пока выбрана «Гора» — поля штампа, ширины и высоты, пока выбрана «Покрасить» — размера, силы и материала.
  */
 export function HandleModeToolbar({
   mode,
@@ -78,6 +90,7 @@ export function HandleModeToolbar({
   brushStrength,
   water,
   mountainTool,
+  paintTool,
   onChange,
   onBrushChange,
   onBrushSizeChange,
@@ -90,7 +103,7 @@ export function HandleModeToolbar({
         <div className="scene-view__panel" role="group" aria-label="Ручки объекта">
           <span className="scene-view__panel-caption">Объект</span>
           {MODE_BUTTONS.map((button) => (
-            <ToolButton key={button.mode} title={button.title} isActive={brushKind === null && !mountainTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
+            <ToolButton key={button.mode} title={button.title} isActive={brushKind === null && !mountainTool.isSelected && !paintTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
               <EditorIcon name={button.icon} size={14} />
             </ToolButton>
           ))}
@@ -113,12 +126,26 @@ export function HandleModeToolbar({
             </ToolButton>
           </div>
         )}
+        {areBrushesAvailable && (
+          <div className="scene-view__panel" role="group" aria-label="Покраска">
+            <span className="scene-view__panel-caption">Покраска</span>
+            <ToolButton
+              title={paintTool.isEnabled ? "Покрасить землю материалом (с Shift — стереть)" : NO_MATERIALS_TITLE}
+              isActive={paintTool.isSelected}
+              isDisabled={!paintTool.isEnabled}
+              onClick={paintTool.onSelect}
+            >
+              <EditorIcon name="terrain-paint" size={14} />
+            </ToolButton>
+          </div>
+        )}
       </div>
       {areBrushesAvailable && mountainTool.isSelected && (
         <div className="scene-view__tool-row">
           <MountainToolFields {...mountainTool.fields} />
         </div>
       )}
+      {areBrushesAvailable && paintTool.isSelected && <PaintBrushFields {...paintTool.fields} />}
       {areBrushesAvailable && brushKind !== null && (
         <TerrainBrushFields
           size={brushSize}

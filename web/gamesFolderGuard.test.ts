@@ -155,8 +155,54 @@ describe("resolvePutTarget", () => {
     expect(resolvePutTarget("/index.json", gamesDir)).toEqual({ status: "not-allowed" });
   });
 
-  it("не .json — not-allowed", () => {
-    expect(resolvePutTarget("/tetris/wall.png", gamesDir)).toEqual({ status: "not-allowed" });
+  it("не .json и не .png — not-allowed", () => {
+    expect(resolvePutTarget("/tetris/wall.txt", gamesDir)).toEqual({ status: "not-allowed" });
+  });
+
+  it(".png прямо в games/, без папки проекта — not-allowed", () => {
+    expect(resolvePutTarget("/mask.png", gamesDir)).toEqual({ status: "not-allowed" });
+  });
+
+  it(".png за пределами games/ — forbidden", () => {
+    expect(resolvePutTarget("/tetris/../../terrain/rock.png", gamesDir)).toEqual({ status: "forbidden" });
+  });
+
+  describe("маски .png (Покраска, требование 18)", () => {
+    let projectsDir: string | null = null;
+
+    afterEach(() => {
+      if (projectsDir !== null) rmSync(projectsDir, { recursive: true, force: true });
+      projectsDir = null;
+    });
+
+    it("маска в папке существующего проекта — ok, недостающую папку terrain/ можно создать", () => {
+      projectsDir = mkdtempSync(join(tmpdir(), "kuznya-games-put-mask-"));
+      mkdirSync(join(projectsDir, "rpg"));
+
+      expect(resolvePutTarget("/rpg/terrain/rock.png", projectsDir)).toEqual({
+        status: "ok",
+        filePath: resolve(projectsDir, "rpg/terrain/rock.png"),
+        createDirectory: true,
+      });
+    });
+
+    it("маска несуществующего проекта — forbidden: проект сам не создаётся", () => {
+      projectsDir = mkdtempSync(join(tmpdir(), "kuznya-games-put-mask-"));
+
+      expect(resolvePutTarget("/rpg/terrain/rock.png", projectsDir)).toEqual({ status: "forbidden" });
+    });
+
+    it("запись создаёт terrain/ и кладёт байты PNG как есть", async () => {
+      projectsDir = mkdtempSync(join(tmpdir(), "kuznya-games-put-mask-"));
+      mkdirSync(join(projectsDir, "rpg"));
+      const target = resolvePutTarget("/rpg/terrain/rock.png", projectsDir);
+      const bytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 255, 128]);
+
+      if (target.status !== "ok") throw new Error("путь маски не принят");
+      await writeGamesFileAtomically(target.filePath, bytes, target.createDirectory);
+
+      expect(readFileSync(join(projectsDir, "rpg/terrain/rock.png")).equals(bytes)).toBe(true);
+    });
   });
 
   describe("replays/", () => {

@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from "vitest";
 import { createEditorCameraStore, type EditorCameraRequest, type EditorCameraState } from "./editorCamera";
 import type { MountainContext } from "./mountainSceneController";
+import type { PaintContext } from "./paintSceneController";
+import type { PaintResult } from "./paintStroke";
 import type { PlacementChange } from "./objectPlacement";
 import {
   createSpaceSceneController,
@@ -42,6 +44,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const cameras: EditorCameraRequest[] = [];
   const terrainSets: { heights: Float64Array; water: unknown; stamps: unknown }[] = [];
   const fitCalls: unknown[] = [];
+  const coverSets: { covers: unknown; masks: unknown }[] = [];
   const state = {
     pickedId: undefined as number | undefined,
     fitted: START_CAMERA as EditorCameraState | undefined,
@@ -89,6 +92,10 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
       terrainSets.push({ heights: Float64Array.from(heights), water, stamps });
       return state.setTerrainError;
     },
+    set_covers: (covers: unknown, masks: unknown) => {
+      coverSets.push({ covers, masks });
+      return undefined;
+    },
     stamp_at: () => state.pickedStamp,
     fit_camera: (id?: number | null) => {
       fitCalls.push(id);
@@ -123,6 +130,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     selectedLabel: "izba",
     handleMode: "translate",
     brush: null,
+    paint: null,
     getObjectProperties: (id) => worldObjects[id] ?? null,
     onSelect: (index) => selections.push(index),
     onHandleModeChange: (mode) => modes.push(mode),
@@ -133,7 +141,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     ...overrides,
   };
   const controller = createSpaceSceneController(() => context);
-  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, terrainCommits, strokeStates, mountainSelections, mountainPlaced, engine };
+  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, coverSets, terrainCommits, strokeStates, mountainSelections, mountainPlaced, engine };
 }
 
 describe("выбор щелчком", () => {
@@ -925,5 +933,97 @@ describe("круг кисти, рамка и ручки", () => {
     const screenPoint = vi.spyOn(scene.engine, "screen_point");
     scene.controller.draw(recordingCanvasContext(), 1);
     expect(screenPoint).toHaveBeenCalled();
+  });
+});
+
+describe("мазок «Покрасить»", () => {
+  function paintSetup() {
+    const commits: PaintResult[] = [];
+    const restores: string[] = [];
+    const paint: PaintContext = {
+      material: "rock",
+      size: 4,
+      strength: 50,
+      covers: [{ material: "grass" }],
+      masks: {},
+      sceneSize: { width: 12, height: 12 },
+      hasTerrainFile: true,
+      tintPath: null,
+      onCommit: (result) => commits.push(result),
+      onRestore: () => restores.push("restore"),
+    };
+    return { scene: setup({ paint }), commits, restores };
+  }
+
+  it("нажатие красит, а не выбирает: объект не выбирается, выбор не снимается", () => {
+    const { scene } = paintSetup();
+    scene.state.pickedId = 9;
+
+    expect(scene.controller.pointerDown(pointer(150, 100))).toBe(true);
+
+    expect(scene.selections).toEqual([]);
+    expect(scene.strokeStates).toEqual([true]);
+    expect(scene.terrainSets).toEqual([]);
+  });
+
+  it("кадры страницы красят, пока кнопка нажата: новый слой уходит движку, а отпускание отдаёт мазок странице одним действием", () => {
+    const { scene, commits } = paintSetup();
+    scene.controller.pointerDown(pointer(100, 100));
+
+    runFrames(scene, 100, 300);
+    scene.controller.pointerUp(release(100, 100));
+
+    expect(scene.coverSets).toHaveLength(3);
+    expect(scene.coverSets[2]?.covers).toEqual([{ material: "grass" }, { material: "rock", mask: "terrain/rock.png" }]);
+    expect(commits).toHaveLength(1);
+    expect(Object.keys(commits[0]?.masks ?? {})).toEqual(["terrain/rock.png"]);
+    expect(scene.strokeStates).toEqual([true, false]);
+  });
+
+  it("Esc во время мазка откатывает его; Esc без мазка снимает «Покрасить» — вместо неё вид ручек", () => {
+    const { scene, commits } = paintSetup();
+    scene.controller.pointerDown(pointer(100, 100));
+    runFrames(scene, 100, 100);
+
+    expect(scene.controller.keyDown(key("Escape"))).toBe(true);
+
+    expect(scene.coverSets.at(-1)?.covers).toEqual([{ material: "grass" }]);
+    expect(commits).toEqual([]);
+    expect(scene.modes).toEqual([]);
+    expect(scene.controller.keyDown(key("Escape"))).toBe(true);
+    expect(scene.modes).toEqual(["translate"]);
+  });
+
+  it("во время мазка W, E, R вид ручек не меняют", () => {
+    const { scene } = paintSetup();
+    scene.controller.pointerDown(pointer(100, 100));
+
+    expect(scene.controller.keyDown(key("KeyE"))).toBe(false);
+
+    expect(scene.modes).toEqual([]);
+  });
+
+  it("ручки не рисуются и не берутся, круг кисти рисуется", () => {
+    const { scene } = paintSetup();
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    const terrainHeight = vi.spyOn(scene.engine, "terrain_height");
+    scene.controller.pointerMove(pointer(100, 100, { buttons: 0 }));
+
+    scene.controller.draw(recordingCanvasContext(), 1);
+
+    expect(terrainHeight).toHaveBeenCalled();
+    expect(screenPoint.mock.calls.every(([, , z]) => z === 0)).toBe(true);
+  });
+
+  it("мир собран заново (правка файла снаружи) — мазок бросается и сообщает об этом странице", () => {
+    const { scene, commits } = paintSetup();
+    scene.controller.pointerDown(pointer(100, 100));
+
+    scene.controller.abandonGesture();
+
+    scene.controller.pointerUp(release(100, 100));
+
+    expect(scene.strokeStates).toEqual([true, false]);
+    expect(commits).toEqual([]);
   });
 });

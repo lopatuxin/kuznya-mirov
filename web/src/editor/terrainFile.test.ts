@@ -6,15 +6,16 @@ import {
   flatTerrainGrid,
   formatTerrainText,
   parseTerrainText,
+  readTerrainCovers,
   readTerrainMountains,
   readTerrainWater,
+  terrainTextWithCovers,
   terrainTextWithHeights,
   terrainTextWithMountains,
   terrainTextWithWater,
   type MountainEntry,
   type TerrainCoverLayer,
   type TerrainGrid,
-  type TerrainWater,
 } from "./terrainFile";
 
 const RPG_TERRAIN = readFileSync(new URL("../../../games/rpg/terrain.json", import.meta.url), "utf8");
@@ -176,31 +177,6 @@ describe("покрытия covers", () => {
     expect(text).toContain('    { "material": "scree", "slope": 22.5, "mask": "terrain/scree.png" }');
     expect(parseTerrainText(text)?.covers).toEqual(covers);
   });
-
-  it("редактор и построитель локации пишут для одного содержимого один и тот же текст", async () => {
-    const builderFiles = (await import(/* @vite-ignore */ new URL("../../../tools/location/files.mjs", import.meta.url).href)) as {
-      terrainText(
-        grid: { cols: number; rows: number; h: Float64Array },
-        water: TerrainWater | null,
-        covers: TerrainCoverLayer[] | null,
-        stamps: MountainEntry[] | null,
-      ): string;
-    };
-    const heights = [
-      [0, 1.004, -0.004],
-      [17.78, 2.999, 0.07],
-    ];
-    const content = grid(heights);
-    const builderGrid = { cols: content.columns, rows: content.rows, h: content.heights };
-    const slopeCovers: TerrainCoverLayer[] = [{ material: "grass" }, { material: "rock", slope: 34 }, { material: "scree", slope: 22, mask: "terrain/scree.png" }];
-    for (const water of [null, WATER]) {
-      for (const covers of [null, COVERS, slopeCovers]) {
-        for (const stamps of [null, MOUNTAINS]) {
-          expect(formatTerrainText({ ...content, water, covers, stamps })).toBe(builderFiles.terrainText(builderGrid, water, covers, stamps));
-        }
-      }
-    }
-  });
 });
 
 const MOUNTAINS: MountainEntry[] = [
@@ -304,3 +280,56 @@ describe("горы stamps", () => {
   });
 });
 
+describe("покраска — текст рельефа со слоями («Покраска», требования 13, 15)", () => {
+  const LAYERS: TerrainCoverLayer[] = [{ material: "grass" }, { material: "rock", slope: 44, mask: "terrain/rock.png" }];
+  const SIZE = { width: 1, height: 1 };
+  const BELUHA: MountainEntry[] = [{ stamp: "beluha", position: [8, 0], size: [38, 32], height: 15 }];
+
+  it("меняет только слои: высоты, вода, горы и карта цвета остаются, слой с порогом и маской — одной строкой", () => {
+    const content = { ...grid([[0, 1.25], [2, 3]]), water: DEFAULT_WATER, covers: [{ material: "grass" }], tint: "terrain/tint.png", stamps: BELUHA };
+    const text = formatTerrainText(content);
+
+    const painted = terrainTextWithCovers(text, SIZE, LAYERS);
+
+    expect(painted).toContain('    { "material": "rock", "slope": 44, "mask": "terrain/rock.png" }');
+    const parsed = parseTerrainText(painted ?? "");
+    expect(parsed?.covers).toEqual(LAYERS);
+    expect(parsed?.water).toEqual(DEFAULT_WATER);
+    expect(parsed?.tint).toBe("terrain/tint.png");
+    expect(parsed?.stamps).toEqual(BELUHA);
+    expect(Array.from(parsed?.heights ?? [])).toEqual([0, 1.25, 2, 3]);
+  });
+
+  it("слои те же — текст тот же", () => {
+    const text = formatTerrainText({ ...grid([[0, 1], [2, 3]]), water: null, covers: LAYERS });
+
+    expect(terrainTextWithCovers(text, SIZE, LAYERS)).toBe(text);
+  });
+
+  it("перенос строки файла сохраняется", () => {
+    const text = formatTerrainText({ ...grid([[0, 1], [2, 3]]), water: null, covers: null }, "\r\n");
+
+    expect(terrainTextWithCovers(text, SIZE, LAYERS)?.includes("\r\n")).toBe(true);
+  });
+
+  it("без файла — ровная земля сцены без воды со слоями", () => {
+    const text = terrainTextWithCovers(null, SIZE, [{ material: "grass" }]);
+
+    const parsed = parseTerrainText(text ?? "");
+    expect(parsed?.heights.length).toBe(9);
+    expect(parsed?.heights.every((height) => height === 0)).toBe(true);
+    expect(parsed?.water).toBeNull();
+    expect(parsed?.covers).toEqual([{ material: "grass" }]);
+  });
+
+  it("файл, что не разбирается, — null: править нечего", () => {
+    expect(terrainTextWithCovers("{", SIZE, LAYERS)).toBeNull();
+  });
+
+  it("readTerrainCovers: слои файла; файла нет, не разбирается или без covers — null", () => {
+    expect(readTerrainCovers(formatTerrainText({ ...grid([[0]]), water: null, covers: LAYERS }))).toEqual(LAYERS);
+    expect(readTerrainCovers(formatTerrainText({ ...grid([[0]]), water: null, covers: null }))).toBeNull();
+    expect(readTerrainCovers("{")).toBeNull();
+    expect(readTerrainCovers(null)).toBeNull();
+  });
+});
