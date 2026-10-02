@@ -112,3 +112,27 @@ export function applyBrushFrame(grid: BrushGrid, path: readonly Vec2[], frame: B
     }
   }
 }
+
+/**
+ * Высота земли в месте сцены — как её считает движок: сетка режется на треугольники, место за краем сцены
+ * берёт высоту ближайшей точки края. По ней «Выровнять» берёт цель, когда у мазка нет указателя.
+ */
+export function sampleGridHeight(grid: BrushGrid, heights: Float64Array, point: Vec2): number {
+  const { density, columns, rows } = grid;
+  const x = Math.min(Math.max(point[0], 0), (columns - 1) / density);
+  const y = Math.min(Math.max(point[1], 0), (rows - 1) / density);
+  const column = Math.min(Math.floor(x * density), Math.max(columns - 2, 0));
+  const row = Math.min(Math.floor(y * density), Math.max(rows - 2, 0));
+  const u = x * density - column;
+  const v = y * density - row;
+  const at = (columnShift: number, rowShift: number): number => heights[(row + rowShift) * columns + column + columnShift] as number;
+  const base = at(0, 0);
+  return u >= v ? base + u * (at(1, 0) - base) + v * (at(1, 1) - at(1, 0)) : base + v * (at(0, 1) - base) + u * (at(1, 1) - at(0, 1));
+}
+
+/** Высоты файла после кадра мазка — «Лепка рельефа», требование 20: прежние плюс то, на сколько кисть изменила итоговую землю. */
+export function syncFileHeights(fileHeights: Float64Array, start: Float64Array, effective: Float64Array, startEffective: Float64Array): void {
+  for (let index = 0; index < fileHeights.length; index += 1) {
+    fileHeights[index] = (start[index] as number) + (effective[index] as number) - (startEffective[index] as number);
+  }
+}

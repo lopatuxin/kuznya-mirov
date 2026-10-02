@@ -30,7 +30,9 @@ mod materials;
 mod stamps;
 
 pub use super::error::{GameError, LoadFailure};
-pub use materials::{MaterialDecl, terrain_image_paths};
+pub use materials::{
+    CoverMask, MaterialDecl, check_cover_masks, parse_edit_covers, terrain_image_paths,
+};
 use materials::{
     declaration_order, parse_covers, parse_materials_table, validate_material_files,
     warn_unused_materials,
@@ -1373,6 +1375,52 @@ pub fn terrain_from_numbers(
         .transpose()?;
     let rows: Vec<Vec<f64>> = heights.chunks(want_columns).map(<[f64]>::to_vec).collect();
     Terrain::from_rows([scene.width, scene.height], &rows, water)
+}
+
+/// «Редактор», `terrain_readings`: сцена и рельеф игры из текстов `game.json`, файла рельефа и штампов
+/// — теми же функциями разбора, что `load`, но без картинок, мира и видеокарты. `None` вместо рельефа,
+/// если у игры нет `files.terrain`. Ошибки — как при загрузке; сцена плоская — тоже ошибка.
+pub fn read_terrain(
+    game_json: &str,
+    terrain_text: Option<&str>,
+    stamp_texts: &[(String, Option<String>)],
+) -> Result<(SceneConfig, Option<Terrain>), Vec<GameError>> {
+    let (config, _) = read_entry(game_json).map_err(|failure| failure.errors)?;
+    if !config.scene.is_3d() {
+        return Err(vec![GameError::new(
+            "game.json",
+            "scene",
+            "рельеф есть только у трёхмерной сцены: у scene в game.json нет camera",
+        )]);
+    }
+    let mut errors = ErrorSink::new();
+    let stamps = parse_stamp_table(&config.files.stamps, stamp_texts, &mut errors);
+    let terrain = match (&config.files.terrain, terrain_text) {
+        (Some(path), Some(text)) => parse_terrain(
+            text,
+            path,
+            &config.scene,
+            &config.files.materials,
+            None,
+            &stamps,
+            &mut errors,
+        ),
+        (Some(path), None) => {
+            errors.push(
+                path,
+                "",
+                "файл не найден; ожидался JSON-файл, названный в game.json → files → terrain",
+            );
+            None
+        }
+        (None, _) => None,
+    };
+    let (errs, _) = errors.into_parts();
+    if errs.is_empty() {
+        Ok((config.scene, terrain))
+    } else {
+        Err(errs)
+    }
 }
 
 fn parse_properties_json(text: &str, file: &str, errors: &mut ErrorSink) -> PropertyTable {

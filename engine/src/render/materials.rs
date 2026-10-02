@@ -4,7 +4,7 @@
 //! видеокарту не держатся.
 
 use crate::core::terrain::{Cover, MAX_COVERS};
-use crate::data::load::{ImageVerdict, MaterialDecl};
+use crate::data::load::{CoverMask, ImageVerdict, MaterialDecl};
 
 /// Самая большая сторона слоя масок: предел `downlevel_webgl2_defaults`.
 const MAX_MASK_SIDE: u32 = 2048;
@@ -350,5 +350,49 @@ pub fn pack_masks(masks: &[MapView<'_>], tint: Option<&MapView<'_>>) -> PackedMa
         width,
         height,
         layers,
+    }
+}
+
+/// Что уходит на видеокарту, когда меняются слои покрытий и их маски: таблица слоёв и маски в слоях по
+/// четыре вместе с картой цвета, которую движок держит с загрузки.
+#[derive(Debug, PartialEq)]
+pub struct CoverUpdate {
+    pub table: [[f32; 4]; COVER_TABLE_LEN],
+    pub masks: PackedMasks,
+}
+
+impl CoverUpdate {
+    /// Слои `covers` материалов `decls` и маски `masks` страницы — по байту на точку, по порядку слоёв.
+    /// `tint` — карта цвета, если она есть: её слой идёт после слоёв масок.
+    pub fn new(
+        covers: &[Cover],
+        decls: &[MaterialDecl],
+        scene: [u32; 2],
+        masks: &[CoverMask],
+        tint: Option<&MapView<'_>>,
+    ) -> CoverUpdate {
+        let expanded: Vec<Vec<u8>> = masks
+            .iter()
+            .map(|mask| {
+                mask.pixels
+                    .iter()
+                    .flat_map(|&value| [value, value, value, 255])
+                    .collect()
+            })
+            .collect();
+        let views: Vec<MapView<'_>> = masks
+            .iter()
+            .zip(&expanded)
+            .map(|(mask, pixels)| MapView {
+                width: mask.width,
+                height: mask.height,
+                pixels,
+            })
+            .collect();
+        let tint_layer = tint.map(|_| mask_layers(views.len()));
+        CoverUpdate {
+            table: cover_table(covers, decls, scene, tint_layer),
+            masks: pack_masks(&views, tint),
+        }
     }
 }

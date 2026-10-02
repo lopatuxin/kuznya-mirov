@@ -15,7 +15,7 @@ export type TerrainCoverLayer = { material: string; slope?: number; mask?: strin
  */
 export type MountainEntry = Record<string, unknown>;
 
-/** Что лежит в файле рельефа: сетка высот, вода, покрытия, путь карты цвета `tint` и горы `stamps`, если они есть. Покрытия и карту цвета редактор не правит, только переносит. */
+/** Что лежит в файле рельефа: сетка высот, вода, покрытия, путь карты цвета `tint` и горы `stamps`, если они есть. Карту цвета редактор не правит, только переносит. */
 export type TerrainContent = TerrainGrid & {
   water: TerrainWater | null;
   covers: TerrainCoverLayer[] | null;
@@ -64,7 +64,6 @@ function lineBreakOf(text: string | null): string {
  * Текст файла рельефа — «Кисти рельефа», требование 18, «Свет и материалы», требование 27, и «Лепка
  * рельефа», требование 33: `water` первой строкой, если вода есть, затем `covers` — по слою на строку,
  * если они есть, затем путь карты цвета `tint`, если он есть, затем `stamps` — по горе на строку, затем `heights` — по строке сетки на строку файла, числа через запятую с пробелом, как лежит `games/rpg/terrain.json`.
- * Тот же вид пишет построитель локации (`tools/location/files.mjs`).
  */
 export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): string {
   const lines: string[] = ["{"];
@@ -159,6 +158,16 @@ export function readTerrainMountains(text: string | null): MountainEntry[] {
   return text === null ? [] : (parseTerrainText(text)?.stamps ?? []);
 }
 
+/** Слои покрытий из файла рельефа: файла нет, он не разбирается или в нём нет `covers` — `null`. */
+export function readTerrainCovers(text: string | null): TerrainCoverLayer[] | null {
+  return text === null ? null : (parseTerrainText(text)?.covers ?? null);
+}
+
+/** Путь карты цвета `tint` из файла рельефа: файла нет, он не разбирается или в нём нет `tint` — `null`. */
+export function readTerrainTint(text: string | null): string | null {
+  return text === null ? null : (parseTerrainText(text)?.tint ?? null);
+}
+
 /** Вода из файла рельефа: файла нет или в нём нет `water` — `null`. */
 export function readTerrainWater(text: string | null): TerrainWater | null {
   return text === null ? null : (parseTerrainText(text)?.water ?? null);
@@ -202,6 +211,15 @@ export function terrainTextWithWater(previousText: string | null, sceneSize: Sce
 export function terrainTextWithMountains(previousText: string | null, sceneSize: SceneSize, mountains: readonly MountainEntry[]): string | null {
   const previous = previousContentOrFlat(previousText, sceneSize);
   return previous === null ? null : formatTerrainText({ ...previous, stamps: mountains.length === 0 ? null : [...mountains] }, lineBreakOf(previousText));
+}
+
+/**
+ * Текст рельефа после покраски — «Покраска», требования 12–13, 15: слои покрытий новые, высоты, вода, горы и
+ * карта цвета — как в файле, без файла — ровная земля без воды. Файл, что не разбирается, — `null`: править нечего.
+ */
+export function terrainTextWithCovers(previousText: string | null, sceneSize: SceneSize, covers: readonly TerrainCoverLayer[]): string | null {
+  const previous = previousContentOrFlat(previousText, sceneSize);
+  return previous === null ? null : formatTerrainText({ ...previous, covers: [...covers] }, lineBreakOf(previousText));
 }
 
 /** Хоть одна высота отличается после округления до сотых — иначе мазок не действие (требование 18). */

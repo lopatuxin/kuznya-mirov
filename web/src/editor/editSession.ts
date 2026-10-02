@@ -1,5 +1,11 @@
-/** Текст файлов, которые правит редактор; `terrainText` — `null`, пока у проекта нет файла рельефа («Кисти рельефа», требование 19). */
-export type EditSnapshot = { sceneText: string; propertiesText: string; terrainText: string | null };
+import { areMaskSetsEqual, changedMaskPaths, type MaskSet } from "./maskBytes";
+
+/**
+ * Текст файлов, которые правит редактор, и маски покрытий; `terrainText` — `null`, пока у проекта нет файла рельефа
+ * («Кисти рельефа», требование 19). `masks` — маски слоёв из `covers` файла рельефа по путям, байты которых история
+ * хранит рядом с текстами («Покраска», требование 16).
+ */
+export type EditSnapshot = { sceneText: string; propertiesText: string; terrainText: string | null; masks: MaskSet };
 export type SaveState = { status: "saved" } | { status: "unsaved"; reason: string };
 
 export type EditSessionState = {
@@ -63,6 +69,11 @@ export function dirtyFiles(state: EditSessionState): { scene: boolean; propertie
   };
 }
 
+/** Какие маски отличаются от `diskTruth` и поэтому должны быть записаны — как `dirtyFiles`, но по путям файлов масок. */
+export function dirtyMaskPaths(state: EditSessionState): string[] {
+  return changedMaskPaths(state.diskTruth.masks, state.displayed.masks);
+}
+
 /**
  * Перезагрузка прочитала файлы с диска — требования 22–24. Прочитанное совпадает с `diskTruth` по
  * всем файлам — не внешняя правка, состояние не меняется (несохранённая правка, если она есть,
@@ -86,7 +97,8 @@ export function applyExternalRead(state: EditSessionState, disk: EditSnapshot): 
   const sceneChanged = disk.sceneText !== state.diskTruth.sceneText;
   const propertiesChanged = disk.propertiesText !== state.diskTruth.propertiesText;
   const terrainChanged = disk.terrainText !== state.diskTruth.terrainText;
-  if (!sceneChanged && !propertiesChanged && !terrainChanged) return state;
+  const masksChanged = !areMaskSetsEqual(disk.masks, state.diskTruth.masks);
+  if (!sceneChanged && !propertiesChanged && !terrainChanged && !masksChanged) return state;
   return {
     ...state,
     history: [...state.history, state.displayed],
@@ -94,6 +106,7 @@ export function applyExternalRead(state: EditSessionState, disk: EditSnapshot): 
       sceneText: sceneChanged ? disk.sceneText : state.displayed.sceneText,
       propertiesText: propertiesChanged ? disk.propertiesText : state.displayed.propertiesText,
       terrainText: terrainChanged ? disk.terrainText : state.displayed.terrainText,
+      masks: masksChanged ? disk.masks : state.displayed.masks,
     },
     diskTruth: disk,
   };

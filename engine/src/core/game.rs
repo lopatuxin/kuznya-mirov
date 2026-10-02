@@ -12,7 +12,7 @@ use super::scene::{GroundLayer, ObjectSpec, SceneConfig};
 use super::sound::SoundWindow;
 use super::step;
 use super::surface;
-use super::terrain::Terrain;
+use super::terrain::{Cover, Terrain};
 use super::value::{Value, Vec2};
 use super::world::World;
 
@@ -474,6 +474,23 @@ impl Game {
         self.world_exists = true;
         self.forget_camera_and_paths();
         self.walk_paths.clear_navigation();
+    }
+
+    /// «Редактор», «Вызовы движка», `set_covers`: ставит слои покрытий `covers` на нынешний рельеф; высоты,
+    /// горы, вода, карта цвета и мир остаются, камера не двигается. Без рельефа сцены не делает ничего
+    /// и говорит `false`.
+    pub fn set_covers(&mut self, covers: Vec<Cover>) -> bool {
+        let Some(current) = self.properties.terrain() else {
+            return false;
+        };
+        let terrain = current
+            .as_ref()
+            .clone()
+            .with_covers(covers, current.has_tint());
+        self.properties.set_terrain(terrain);
+        self.world
+            .replace_terrain(self.properties.terrain().cloned());
+        true
     }
 
     /// «Экраны и состояние»: `quit` throws the run away entirely — the world empties and there

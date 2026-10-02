@@ -293,6 +293,54 @@ pub(super) fn parse_covers(
     sound.then_some(covers)
 }
 
+/// «Редактор», `set_covers`: слои покрытий от страницы, проверенные, как в файле рельефа, но без
+/// файлов масок. Ошибка — текстом: путь к полю и что с ним не так.
+pub fn parse_edit_covers(value: &Json, materials: &[MaterialDecl]) -> Result<Vec<Cover>, String> {
+    let mut errors = ErrorSink::new();
+    let covers = parse_covers(value, "", materials, None, &mut errors);
+    let (errs, _) = errors.into_parts();
+    match errs.first() {
+        Some(error) => Err(format!("{}: {}", error.path, error.message)),
+        None => covers.ok_or_else(|| "покрытия не подходят".to_string()),
+    }
+}
+
+/// Маска покрытия от страницы: по байту на точку, строками сверху вниз.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CoverMask {
+    pub width: u32,
+    pub height: u32,
+    pub pixels: Vec<u8>,
+}
+
+/// «Редактор», `set_covers`: масок столько, сколько слоёв с маской, и у каждой размер больше нуля и
+/// байтов `width × height`.
+pub fn check_cover_masks(covers: &[Cover], masks: &[CoverMask]) -> Result<(), String> {
+    let wanted = covers.iter().filter(|cover| cover.mask.is_some()).count();
+    if masks.len() != wanted {
+        return Err(format!(
+            "masks: {} масок, а слоёв с маской {wanted}",
+            masks.len()
+        ));
+    }
+    for (index, mask) in masks.iter().enumerate() {
+        let (width, height) = (mask.width, mask.height);
+        if width == 0 || height == 0 {
+            return Err(format!(
+                "masks[{index}]: ширина и высота должны быть больше нуля, получено {width}×{height}"
+            ));
+        }
+        let points = u64::from(width) * u64::from(height);
+        if mask.pixels.len() as u64 != points {
+            return Err(format!(
+                "masks[{index}]: {} байт, а при {width}×{height} нужно {points}",
+                mask.pixels.len()
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Слой `index`; `mask_index` — сколько масок уже названо ниже.
 fn parse_cover(
     index: usize,

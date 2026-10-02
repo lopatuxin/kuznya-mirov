@@ -16,5 +16,5 @@
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true
   },
-  "include": ["src", "vite.config.ts", "gamesFolderGuard.test.ts"]
+  "include": ["src", "scripts/stroke.ts", "scripts/strokeFiles.test.ts", "vite.config.ts", "gamesFolderGuard.test.ts"]
 }

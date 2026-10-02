@@ -72,3 +72,24 @@ describe("createOverridingReader", () => {
     expect(base.readText).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("маски покрытий — байты («Покраска», требование 16)", () => {
+  it("setCachedBytes делает свою запись маски новой правдой диска и считается записью", async () => {
+    const cache = createCachingProjectFileReader(fakeBaseReader({}));
+
+    cache.setCachedBytes("terrain/rock.png", Uint8Array.of(1, 2, 3));
+
+    expect(Array.from((await cache.cachedReader.readBinary("terrain/rock.png")) ?? [])).toEqual([1, 2, 3]);
+    expect(cache.getWriteCount()).toBe(1);
+  });
+
+  it("загрузка по правке берёт маски правки, остальные — из кэша", async () => {
+    const cache = createCachingProjectFileReader(fakeBaseReader({}));
+    cache.setCachedBytes("terrain/scree.png", Uint8Array.of(9));
+    const reader = createOverridingReader(cache.cachedReader, {}, { "terrain/rock.png": Uint8Array.of(5, 6) });
+
+    expect(Array.from((await reader.readBinary("terrain/rock.png")) ?? [])).toEqual([5, 6]);
+    expect(Array.from((await reader.readBinary("terrain/scree.png")) ?? [])).toEqual([9]);
+    expect(await reader.readBinary("terrain/absent.png")).toBeNull();
+  });
+});

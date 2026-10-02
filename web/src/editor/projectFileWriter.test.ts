@@ -101,3 +101,44 @@ describe("writeProjectFile — папка с диска", () => {
     expect(handle.getFileHandle).not.toHaveBeenCalled();
   });
 });
+
+describe("writeProjectFile — маска PNG байтами («Покраска», требования 13, 18)", () => {
+  const png = Uint8Array.of(0x89, 0x50, 0x4e, 0x47, 1, 2, 3);
+
+  it("проект из списка: тот же PUT, тело — байты, тип image/png", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, status: 204 }) as Response);
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await writeProjectFile({ kind: "listed", name: "rpg" }, "terrain/rock.png", png);
+
+    expect(result).toEqual({ ok: true });
+    expect(fetchMock).toHaveBeenCalledWith("/games/rpg/terrain/rock.png", { method: "PUT", headers: { "Content-Type": "image/png" }, body: png });
+  });
+
+  it("папка с диска: пишет байты через createWritable, недостающую папку terrain/ и файл создаёт", async () => {
+    const written: unknown[] = [];
+    const fileHandle = { createWritable: async () => ({ write: async (chunk: unknown) => written.push(chunk), close: async () => {} }) } as unknown as FileSystemFileHandle;
+    const terrainFolder = { getFileHandle: vi.fn(async () => fileHandle) } as unknown as FileSystemDirectoryHandle;
+    const getDirectoryHandle = vi.fn(async () => terrainFolder);
+    const handle = { getDirectoryHandle } as unknown as FileSystemDirectoryHandle;
+
+    const result = await writeProjectFile({ kind: "folder", handle, displayName: "проект" }, "terrain/rock.png", png);
+
+    expect(result).toEqual({ ok: true });
+    expect(getDirectoryHandle).toHaveBeenCalledWith("terrain", { create: true });
+    expect(terrainFolder.getFileHandle).toHaveBeenCalledWith("rock.png", { create: true });
+    expect(written).toEqual([png]);
+  });
+
+  it("текст не создаёт недостающих папок — как раньше", async () => {
+    const getDirectoryHandle = vi.fn(async () => {
+      throw new Error("NotFoundError");
+    });
+    const handle = { getDirectoryHandle } as unknown as FileSystemDirectoryHandle;
+
+    const result = await writeProjectFile({ kind: "folder", handle, displayName: "проект" }, "world/terrain.json", "{}");
+
+    expect(result).toEqual({ ok: false, reason: "NotFoundError" });
+    expect(getDirectoryHandle).toHaveBeenCalledWith("world", { create: false });
+  });
+});

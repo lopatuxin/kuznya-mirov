@@ -376,32 +376,32 @@ fn rpg_loads_without_errors_or_warnings() {
     assert!(!game.scene.y_sort);
 }
 
-/// Требования 28–29 и 31 фазы 19 с поправкой требования 9 фазы 20: деревня одета материалами —
-/// слоями покрытий, у каждого, кроме нижнего, маска или правило крутизны, — и плиток травы на сцене
-/// нет; её карты и маски собираются в текстуры видеокарты.
+/// Требования 28–29 и 31 фазы 19 с поправками требования 9 фазы 20 и требования 29 фазы 21: деревня
+/// одета материалами — травой по всей земле и камнем по крутизне, без масок, — и плиток травы на сцене
+/// нет; её карты собираются в текстуры видеокарты.
 #[test]
 fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
     let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
     let game = load_village(&read("scene.json"));
     assert!(game.ground.is_empty(), "плитки травы ушли");
     let covers = game.world.terrain().covers();
-    assert!(covers.len() > 1, "у деревни есть слои поверх нижнего");
+    let layers: Vec<(&str, Option<f64>)> = covers
+        .iter()
+        .map(|cover| {
+            let name = &config.files.materials[cover.material].name;
+            assert_eq!(cover.mask, None, "у слоя {name} маски нет");
+            (name.as_str(), cover.slope)
+        })
+        .collect();
     assert_eq!(
-        (covers[0].mask, covers[0].slope),
-        (None, None),
-        "нижний слой — на всём"
-    );
-    let mut masks = 0;
-    for cover in &covers[1..] {
-        assert!(cover.mask.is_some() || cover.slope.is_some(), "{cover:?}");
-        if let Some(mask) = cover.mask {
-            assert_eq!(mask, masks, "маски нумеруются по слоям, у которых они есть");
-            masks += 1;
-        }
-    }
-    assert!(
-        covers.iter().any(|cover| cover.slope.is_some()),
-        "горы одеты по крутизне"
+        layers,
+        [
+            ("grass", None),
+            ("scree", Some(30.0)),
+            ("rock_moss", Some(36.0)),
+            ("rock", Some(44.0)),
+        ],
+        "трава на всём, камень по крутизне"
     );
 
     let terrain = read("terrain.json");
@@ -409,13 +409,9 @@ fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
     let image_paths = terrain_image_paths(&terrain);
     assert!(
         !game.world.terrain().has_tint(),
-        "карта цвета ушла вместе с горами построителя"
+        "карты цвета у деревни нет"
     );
-    assert_eq!(
-        image_paths.len(),
-        masks,
-        "картинки рельефа — только маски слоёв"
-    );
+    assert_eq!(image_paths, Vec::<String>::new(), "картинок рельефа нет");
     let scene = [game.scene.width, game.scene.height];
     let relief = Relief::new(
         &config.files.materials,
@@ -426,14 +422,13 @@ fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
         &mask_verdicts,
         scene,
     )
-    .expect("карты и маски деревни собираются");
+    .expect("карты деревни собираются");
     assert_eq!(
         (relief.side, relief.materials.len(), relief.masks.len()),
-        (1024, config.files.materials.len(), masks)
+        (1024, config.files.materials.len(), 0)
     );
     let packed = pack_masks(&relief.masks, relief.tint.as_ref());
-    assert_eq!((packed.width, packed.height), (512, 384));
-    assert_eq!(packed.layers.len(), masks.div_ceil(4), "слои масок");
+    assert_eq!(packed.layers.len(), 1, "слой масок есть всегда");
 }
 
 /// Фаза 20: каждый штамп деревни поставлен горой, и горы поднимают землю над высотами файла.

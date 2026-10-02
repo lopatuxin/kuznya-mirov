@@ -159,6 +159,12 @@ impl World {
         }
     }
 
+    /// Меняет землю мира на `terrain` из таблицы свойств, ничего не пересаживая: годится, когда высоты
+    /// и горы те же, а другое — например, покрытия.
+    pub fn replace_terrain(&mut self, terrain: Option<Arc<Terrain>>) {
+        self.terrain = terrain;
+    }
+
     /// Высота основания объекта; 0, пока ничего не ставило её.
     pub fn base_z(&self, id: u32) -> f64 {
         self.base_z.get(id as usize).copied().unwrap_or(0.0)

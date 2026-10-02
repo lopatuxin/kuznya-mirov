@@ -47,3 +47,26 @@ export async function chooseTerrainFilePath(scenePath: string, isTaken: (path: s
     if (!(await isTaken(path))) return path;
   }
 }
+
+function readFilesSection(gameJsonText: string | null): Record<string, unknown> | null {
+  if (gameJsonText === null) return null;
+  try {
+    const files = (JSON.parse(gameJsonText) as { files?: unknown } | null)?.files;
+    return files !== null && typeof files === "object" && !Array.isArray(files) ? (files as Record<string, unknown>) : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Материалы из `files.materials` в порядке объявления — «Покраска», требование 2: набор выпадающего списка «Материал». */
+export function parseProjectMaterialNames(gameJsonText: string | null): string[] {
+  const materials = readFilesSection(gameJsonText)?.materials;
+  return materials !== null && typeof materials === "object" && !Array.isArray(materials) ? Object.keys(materials) : [];
+}
+
+/** Штампы из `files.stamps`: имя и путь файла — команде мазков их тексты нужны движку для итоговых высот. */
+export function parseProjectStamps(gameJsonText: string | null): { name: string; path: string }[] {
+  const stamps = readFilesSection(gameJsonText)?.stamps;
+  if (stamps === null || typeof stamps !== "object" || Array.isArray(stamps)) return [];
+  return Object.entries(stamps).flatMap(([name, path]) => (typeof path === "string" ? [{ name, path }] : []));
+}

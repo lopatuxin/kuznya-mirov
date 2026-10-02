@@ -5,22 +5,27 @@ import { cellSizeFromObjectRect, computeDragPosition, hasCrossedDragThreshold } 
 import type { EditorCameraStore } from "./editorCamera";
 import type { HandleMode } from "./handleGeometry";
 import { HandleModeToolbar } from "./HandleModeToolbar";
+import type { MaskSet } from "./maskBytes";
 import type { StampShape } from "./mountainGeometry";
 import type { PlacementChange } from "./objectPlacement";
+import { canPaintMaterial } from "./paintLayers";
+import type { PaintResult } from "./paintStroke";
 import type { SceneSize } from "./sceneObjects";
 import { drawSelection, type CanvasRect } from "./selectionDrawing";
 import { fitSceneStage } from "./sceneStageLayout";
 import {
   isMountainToolEnabled,
+  isPaintToolEnabled,
   resolveSceneToolAvailability,
   selectBrushTool,
   selectHandleModeTool,
   selectMountainTool,
+  selectPaintTool,
   settleSelectedTool,
   type SelectedTool,
 } from "./sceneTools";
 import type { SpaceSceneContext } from "./spaceSceneController";
-import type { MountainEntry, TerrainGrid, TerrainWater } from "./terrainFile";
+import type { MountainEntry, TerrainCoverLayer, TerrainGrid, TerrainWater } from "./terrainFile";
 import { useSpaceSceneInput } from "./useSpaceSceneInput";
 
 type ObjectGeometry = { position: readonly [number, number]; size: readonly [number, number] };
@@ -89,6 +94,18 @@ type SceneCanvasProps = {
   onPlaceMountain: (entry: MountainEntry) => void;
   /** Отпускание после жеста горы: гора целиком — одно действие. */
   onCommitMountain: (index: number, entry: MountainEntry) => void;
+  /** Материалы `files.materials` в порядке объявления — поле «Материал» кнопки «Покрасить». */
+  materialNames: readonly string[];
+  /** Слои покрытий и их маски из показанных файлов; покрытий нет — `null`. У проекта без файла рельефа `hasTerrainFile` ложно. */
+  terrainCovers: readonly TerrainCoverLayer[] | null;
+  terrainMasks: MaskSet;
+  hasTerrainFile: boolean;
+  /** Путь карты цвета `tint` файла рельефа — маска нового слоя его не занимает; карты нет — `null`. */
+  terrainTintPath: string | null;
+  /** Отпускание после мазка покраски: слои и изменившиеся маски — одно действие. */
+  onCommitPaint: (result: PaintResult) => void;
+  /** Мазок покраски брошен, а движок нечем вернуть к слоям файла — мир собирается заново. */
+  onRestorePaint: () => void;
 };
 
 /** Числа новой горы по умолчанию — «Правка сцены», требование 22: ширина и высота в клетках. */
@@ -154,6 +171,13 @@ export function SceneCanvas({
   onSelectMountain,
   onPlaceMountain,
   onCommitMountain,
+  materialNames,
+  terrainCovers,
+  terrainMasks,
+  hasTerrainFile,
+  terrainTintPath,
+  onCommitPaint,
+  onRestorePaint,
 }: SceneCanvasProps): React.JSX.Element {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -177,6 +201,7 @@ export function SceneCanvas({
   const [mountainStampName, setMountainStampName] = useState<string | null>(null);
   const [mountainWidth, setMountainWidth] = useState(DEFAULT_MOUNTAIN_WIDTH);
   const [mountainHeight, setMountainHeight] = useState(DEFAULT_MOUNTAIN_HEIGHT);
+  const [paintMaterialName, setPaintMaterialName] = useState<string | null>(null);
   const { handleMode, brushKind } = selectedTool;
   const { size: brushSize, strength: brushStrength } = brushFields;
   const { areHandlesAvailable, areBrushesAvailable } = resolveSceneToolAvailability({
@@ -189,6 +214,10 @@ export function SceneCanvas({
   const isMountainEnabled = isMountainToolEnabled(areBrushesAvailable, stampShapes.length > 0);
   // Штамп по умолчанию — первый; объявление, что пропало из `files.stamps`, выбор тоже уводит на первый.
   const mountainStamp = stampShapes.find((shape) => shape.name === mountainStampName) ?? stampShapes[0];
+  const isPaintEnabled = isPaintToolEnabled(areBrushesAvailable, materialNames.length > 0);
+  // Материал по умолчанию — первый; объявление, что пропало из `files.materials`, выбор тоже уводит на первый.
+  const paintMaterial = materialNames.find((name) => name === paintMaterialName) ?? materialNames[0];
+  const blockedMaterials = new Set(materialNames.filter((name) => !canPaintMaterial(terrainCovers, name)));
   const selectHandleMode = (mode: HandleMode): void => setSelectedTool(selectHandleModeTool(mode));
   const spaceContext: SpaceSceneContext | null =
     engine !== null && isThreeDimensionalScene
@@ -202,6 +231,21 @@ export function SceneCanvas({
           selectedLabel,
           handleMode,
           brush: areBrushesAvailable && brushKind !== null ? { kind: brushKind, size: brushSize, strength: brushStrength } : null,
+          paint:
+            selectedTool.isPaintTool && isPaintEnabled && paintMaterial !== undefined && sceneSize !== null
+              ? {
+                  material: paintMaterial,
+                  size: brushSize,
+                  strength: brushStrength,
+                  covers: terrainCovers,
+                  masks: terrainMasks,
+                  sceneSize,
+                  hasTerrainFile,
+                  tintPath: terrainTintPath,
+                  onCommit: onCommitPaint,
+                  onRestore: onRestorePaint,
+                }
+              : null,
           getObjectProperties,
           onSelect,
           onHandleModeChange: selectHandleMode,
@@ -229,9 +273,9 @@ export function SceneCanvas({
 
   // «Запуск» и всё, что убирает кисти или «Гору», — вместо них ручки «Перенос»; после «Стопа» остаются ручки.
   useEffect(() => {
-    const settledTool = settleSelectedTool(selectedTool, areBrushesAvailable, isMountainEnabled);
+    const settledTool = settleSelectedTool(selectedTool, areBrushesAvailable, isMountainEnabled, isPaintEnabled);
     if (settledTool !== selectedTool) setSelectedTool(settledTool);
-  }, [areBrushesAvailable, isMountainEnabled, selectedTool]);
+  }, [areBrushesAvailable, isMountainEnabled, isPaintEnabled, selectedTool]);
 
   // Внешняя правка или другое действие поменяли объекты во время переноса — «Редактор», крайний
   // случай: перенос отменяется, мир движок уже собрал заново из показанного своей перезагрузкой.
@@ -505,6 +549,21 @@ export function SceneCanvas({
               onHeightChange: setMountainHeight,
             },
             onSelect: () => setSelectedTool(selectMountainTool(handleMode)),
+          }}
+          paintTool={{
+            isSelected: selectedTool.isPaintTool,
+            isEnabled: isPaintEnabled,
+            fields: {
+              size: brushSize,
+              strength: brushStrength,
+              materialNames,
+              material: paintMaterial ?? "",
+              blockedMaterials,
+              onSizeChange: brushFields.onSizeChange,
+              onStrengthChange: brushFields.onStrengthChange,
+              onMaterialChange: setPaintMaterialName,
+            },
+            onSelect: () => setSelectedTool(selectPaintTool(handleMode)),
           }}
           onChange={selectHandleMode}
           onBrushChange={(kind) => setSelectedTool(selectBrushTool(handleMode, kind))}

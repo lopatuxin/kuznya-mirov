@@ -15,8 +15,15 @@ import { createSerialQueue } from "./serialQueue";
 /**
  * Тексты, которые правка держит в памяти вместо прочитанных с диска: `game.json` (первый мазок дописывает
  * в него `files.terrain`), `scene.json`, `properties.json` и рельеф. `terrainText` `null` — файла рельефа нет.
+ * `maskFiles` — PNG масок покрытий, что правка ещё не записала, по путям файлов.
  */
-export type EditedTexts = { gameJsonText?: string; sceneText?: string; propertiesText?: string; terrainText?: string | null };
+export type EditedTexts = {
+  gameJsonText?: string;
+  sceneText?: string;
+  propertiesText?: string;
+  terrainText?: string | null;
+  maskFiles?: Readonly<Record<string, Uint8Array>>;
+};
 
 export type ProjectEngineState = {
   engine: Engine | null;
@@ -47,6 +54,8 @@ export type ProjectEngineState = {
   getCachedText: (relativePath: string) => string | null | undefined;
   /** Отмечает путь как только что записанный — своя запись становится новой «правдой диска». */
   setCachedText: (relativePath: string, text: string) => void;
+  /** Отмечает путь маски как только что записанный — своя запись становится новой «правдой диска». */
+  setCachedBytes: (relativePath: string, bytes: Uint8Array) => void;
   /** Сколько раз редактор записал файл — требование 24, сравнивается с меткой из `onFullReload`. */
   getWriteCount: () => number;
   /** Файл по пути есть в проекте — имя нового файла рельефа не должно затереть чужой («Кисти рельефа», требование 19). */
@@ -57,6 +66,7 @@ const NO_EDITING_API = {
   runEditedLoad: null,
   getCachedText: () => undefined,
   setCachedText: () => {},
+  setCachedBytes: () => {},
   getWriteCount: () => 0,
   isFilePresent: () => Promise.resolve(false),
   setReloadGateOpen: () => {},
@@ -94,7 +104,7 @@ export function useProjectEngine(
   const [engineError, setEngineError] = useState<string | null>(null);
   const [hasQueuedReload, setHasQueuedReload] = useState(false);
   const [editingApi, setEditingApi] = useState<
-    Pick<ProjectEngineState, "runEditedLoad" | "getCachedText" | "setCachedText" | "getWriteCount" | "isFilePresent" | "setReloadGateOpen">
+    Pick<ProjectEngineState, "runEditedLoad" | "getCachedText" | "setCachedText" | "setCachedBytes" | "getWriteCount" | "isFilePresent" | "setReloadGateOpen">
   >(NO_EDITING_API);
 
   // Обёртка над последним `onFullReload`, чтобы её не пришлось класть в зависимости эффекта —
@@ -233,7 +243,7 @@ export function useProjectEngine(
           if (edited.sceneText !== undefined) overrides[paths.scene] = edited.sceneText;
           if (edited.propertiesText !== undefined) overrides[paths.properties] = edited.propertiesText;
           if (edited.terrainText !== undefined && edited.terrainText !== null && paths.terrain !== null) overrides[paths.terrain] = edited.terrainText;
-          const overrideReader = createOverridingReader(cache.cachedReader, overrides);
+          const overrideReader = createOverridingReader(cache.cachedReader, overrides, edited.maskFiles);
           const loadResult = await loadProject(engineInstance, overrideReader, gameJsonText, () => audioContext);
           if (cancelled) return loadResult;
           if (loadResult.status === "ok") showScene();
@@ -277,6 +287,7 @@ export function useProjectEngine(
         runEditedLoad,
         getCachedText: cache.getCachedText,
         setCachedText: cache.setCachedText,
+        setCachedBytes: cache.setCachedBytes,
         getWriteCount: cache.getWriteCount,
         // Мимо кэша и записи путей опроса: чужой файл, которого проект не читает, не должен попасть в опрос.
         isFilePresent: async (relativePath) => (await baseReader.readText(relativePath)) !== null,

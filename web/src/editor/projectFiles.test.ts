@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { chooseTerrainFilePath, parseProjectFilePaths } from "./projectFiles";
+import { chooseTerrainFilePath, parseProjectFilePaths, parseProjectMaterialNames, parseProjectStamps } from "./projectFiles";
 
 describe("parseProjectFilePaths", () => {
   it("путь рельефа — из files.terrain, без него null", () => {
@@ -25,5 +25,34 @@ describe("chooseTerrainFilePath", () => {
   it("занятое имя — terrain-2.json, terrain-3.json и так далее, чужой файл не затирается", async () => {
     const taken = new Set(["terrain.json", "terrain-2.json"]);
     expect(await chooseTerrainFilePath("scene.json", async (path) => taken.has(path))).toBe("terrain-3.json");
+  });
+});
+
+describe("parseProjectMaterialNames", () => {
+  it("имена из files.materials в порядке объявления", () => {
+    const text = '{ "files": { "materials": { "grass": { "size": 3 }, "rock": { "size": 8 }, "scree": {} } } }';
+
+    expect(parseProjectMaterialNames(text)).toEqual(["grass", "rock", "scree"]);
+  });
+
+  it("без files.materials, не объект и непонятный текст — материалов нет", () => {
+    expect(parseProjectMaterialNames('{ "files": {} }')).toEqual([]);
+    expect(parseProjectMaterialNames('{ "files": { "materials": [] } }')).toEqual([]);
+    expect(parseProjectMaterialNames('{ "files": { "materials": "x" } }')).toEqual([]);
+    expect(parseProjectMaterialNames("{")).toEqual([]);
+    expect(parseProjectMaterialNames(null)).toEqual([]);
+  });
+});
+
+describe("parseProjectStamps", () => {
+  it("имя и путь файла штампа, не строки пропускаются", () => {
+    const text = '{ "files": { "stamps": { "beluha": "stamps/beluha.json", "bad": 5 } } }';
+
+    expect(parseProjectStamps(text)).toEqual([{ name: "beluha", path: "stamps/beluha.json" }]);
+  });
+
+  it("без files.stamps — пусто", () => {
+    expect(parseProjectStamps('{ "files": {} }')).toEqual([]);
+    expect(parseProjectStamps(null)).toEqual([]);
   });
 });

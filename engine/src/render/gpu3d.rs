@@ -7,7 +7,9 @@
 use wgpu::util::DeviceExt;
 
 use crate::core::shapes::{self, MeshVertex};
+use crate::core::terrain::Cover;
 use crate::core::value::Shape;
+use crate::data::load::{CoverMask, MaterialDecl};
 
 use super::atlas::webgl2_safe_layer_count;
 use super::materials::{self, COVER_TABLE_LEN, Relief};
@@ -111,15 +113,38 @@ pub struct MaterialOptions {
     pub anisotropic: bool,
 }
 
+/// Карта цвета рельефа, какой её разжала страница: её слой в массиве масок собирается заново, когда
+/// меняются маски покрытий.
+struct TintMap {
+    width: u32,
+    height: u32,
+    pixels: Vec<u8>,
+}
+
 /// Материалы и маски покрытий на видеокарте: два массива текстур материалов со ступенями уменьшения,
-/// массив масок по четыре в слой и таблица слоёв. Байты, из которых они собраны, остаются у
-/// вызывающего и здесь не держатся.
+/// массив масок по четыре в слой и таблица слоёв. Байты карт и масок остаются у вызывающего и здесь не
+/// держатся, кроме карты цвета.
 pub struct MaterialGpu {
     covers: wgpu::Buffer,
     colors: wgpu::TextureView,
     data: wgpu::TextureView,
+    mask_texture: wgpu::Texture,
     masks: wgpu::TextureView,
+    /// Сторона слоя массива масок в точках и число его слоёв.
+    mask_side: [u32; 2],
+    mask_layers: u32,
+    tint: Option<TintMap>,
     sampler: wgpu::Sampler,
+}
+
+/// Число слоёв массива под `needed` слоёв: WebGL2 не берёт любое.
+fn layer_count(options: MaterialOptions, needed: usize) -> u32 {
+    let needed = needed as u32;
+    if options.webgl2 {
+        webgl2_safe_layer_count(needed)
+    } else {
+        needed.max(1)
+    }
 }
 
 fn array_texture(
@@ -186,7 +211,63 @@ fn array_view(texture: &wgpu::Texture) -> wgpu::TextureView {
     })
 }
 
+fn mask_array(device: &wgpu::Device, side: [u32; 2], layers: u32) -> wgpu::Texture {
+    array_texture(
+        device,
+        "cover_masks",
+        wgpu::TextureFormat::Rgba8Unorm,
+        side,
+        1,
+        layers,
+    )
+}
+
+fn write_mask_layers(
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    side: [u32; 2],
+    layers: &[Vec<u8>],
+) {
+    for (layer, bytes) in layers.iter().enumerate() {
+        write_layer(queue, texture, layer as u32, 0, side, bytes);
+    }
+}
+
 impl MaterialGpu {
+    /// «Свет и материалы», `set_covers`: таблица слоёв и массив масок под новые покрытия; текстуры
+    /// материалов и карта цвета остаются. Массив масок создаётся заново, если его слой стал другого
+    /// размера или слоёв стало больше, — тогда `true`: привязка, что на него ссылалась, устарела.
+    #[allow(clippy::too_many_arguments)]
+    pub fn set_covers(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        options: MaterialOptions,
+        covers: &[Cover],
+        decls: &[MaterialDecl],
+        scene: [u32; 2],
+        masks: &[CoverMask],
+    ) -> bool {
+        let tint = self.tint.as_ref().map(|tint| materials::MapView {
+            width: tint.width,
+            height: tint.height,
+            pixels: &tint.pixels,
+        });
+        let update = materials::CoverUpdate::new(covers, decls, scene, masks, tint.as_ref());
+        queue.write_buffer(&self.covers, 0, bytemuck::cast_slice(&update.table));
+        let side = [update.masks.width, update.masks.height];
+        let layers = layer_count(options, update.masks.layers.len());
+        let rebuilt = side != self.mask_side || layers > self.mask_layers;
+        if rebuilt {
+            self.mask_texture = mask_array(device, side, layers);
+            self.masks = array_view(&self.mask_texture);
+            self.mask_side = side;
+            self.mask_layers = layers;
+        }
+        write_mask_layers(queue, &self.mask_texture, side, &update.masks.layers);
+        rebuilt
+    }
+
     /// Собирает текстуры из `relief` и отправляет их на видеокарту материал за материалом; без
     /// `relief` — пустые текстуры безопасного размера, которые шейдер не читает.
     pub fn new(
@@ -195,17 +276,10 @@ impl MaterialGpu {
         options: MaterialOptions,
         relief: Option<&Relief<'_>>,
     ) -> MaterialGpu {
-        let safe_layers = |needed: usize| {
-            let needed = needed as u32;
-            if options.webgl2 {
-                webgl2_safe_layer_count(needed)
-            } else {
-                needed.max(1)
-            }
-        };
         let side = relief.map_or(1, |relief| relief.side);
         let mips = materials::level_count(side);
-        let material_layers = safe_layers(relief.map_or(0, |relief| relief.materials.len()));
+        let material_layers =
+            layer_count(options, relief.map_or(0, |relief| relief.materials.len()));
         let colors = array_texture(
             device,
             "material_color",
@@ -236,28 +310,30 @@ impl MaterialGpu {
             relief.and_then(|relief| relief.tint.as_ref()),
         );
         let mask_side = [packed_masks.width, packed_masks.height];
-        let masks = array_texture(
-            device,
-            "cover_masks",
-            wgpu::TextureFormat::Rgba8Unorm,
-            mask_side,
-            1,
-            safe_layers(packed_masks.layers.len()),
-        );
-        for (layer, bytes) in packed_masks.layers.iter().enumerate() {
-            write_layer(queue, &masks, layer as u32, 0, mask_side, bytes);
-        }
+        let mask_layers = layer_count(options, packed_masks.layers.len());
+        let mask_texture = mask_array(device, mask_side, mask_layers);
+        write_mask_layers(queue, &mask_texture, mask_side, &packed_masks.layers);
 
         let table = relief.map_or([[0.0; 4]; COVER_TABLE_LEN], |relief| relief.table);
         MaterialGpu {
             covers: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("cover_table"),
                 contents: bytemuck::cast_slice(&table),
-                usage: wgpu::BufferUsages::UNIFORM,
+                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
             }),
             colors: array_view(&colors),
             data: array_view(&data),
-            masks: array_view(&masks),
+            masks: array_view(&mask_texture),
+            mask_texture,
+            mask_side,
+            mask_layers,
+            tint: relief
+                .and_then(|relief| relief.tint.as_ref())
+                .map(|tint| TintMap {
+                    width: tint.width,
+                    height: tint.height,
+                    pixels: tint.pixels.to_vec(),
+                }),
             sampler: device.create_sampler(&wgpu::SamplerDescriptor {
                 label: Some("material_sampler"),
                 address_mode_u: wgpu::AddressMode::Repeat,

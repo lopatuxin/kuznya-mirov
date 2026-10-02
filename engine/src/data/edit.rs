@@ -7,14 +7,17 @@ use serde_json::Value as Json;
 
 use crate::core::game::Game;
 use crate::core::property::{self, PropertyId, PropertyTable};
+use crate::core::scene::SceneConfig;
 use crate::core::surface;
+use crate::core::terrain::Terrain;
 use crate::core::value::{GridSpec, PropKind, Value};
 use crate::core::world::World;
 
 use super::load::{
-    ImageDecl, parse_edit_mountains, parse_grid, parse_scalar_value, terrain_from_numbers,
+    CoverMask, ImageDecl, MaterialDecl, check_cover_masks, parse_edit_covers, parse_edit_mountains,
+    parse_grid, parse_scalar_value, read_terrain, terrain_from_numbers,
 };
-use crate::data::error::ErrorSink;
+use crate::data::error::{ErrorSink, GameError};
 
 /// «Редактор», требование 14: «не больше трёх знаков после запятой и без хвоста машинного
 /// округления».
@@ -280,6 +283,7 @@ pub fn set_terrain(
 }
 
 /// «Редактор», «Вызовы движка», `terrain_heights`: рельеф сцены как его принимает `set_terrain`.
+#[derive(Debug)]
 pub struct TerrainHeights {
     /// Точек высот на клетку сцены.
     pub density: usize,
@@ -298,22 +302,25 @@ pub fn terrain_heights(game: &Game) -> Option<TerrainHeights> {
     if !game.scene.is_3d() {
         return None;
     }
-    let terrain = game.world.terrain();
+    Some(readings_of(&game.scene, game.world.terrain()))
+}
+
+fn readings_of(scene: &SceneConfig, terrain: &Terrain) -> TerrainHeights {
     let density = if terrain.heights().is_empty() {
         2
     } else {
         terrain.density()
     };
     let (columns, rows) = (
-        density * game.scene.width as usize + 1,
-        density * game.scene.height as usize + 1,
+        density * scene.width as usize + 1,
+        density * scene.height as usize + 1,
     );
     let (heights, effective) = if terrain.heights().is_empty() {
         (vec![0.0; columns * rows], vec![0.0; columns * rows])
     } else {
         (terrain.base_heights().to_vec(), terrain.heights().to_vec())
     };
-    Some(TerrainHeights {
+    TerrainHeights {
         density,
         columns,
         rows,
@@ -322,7 +329,46 @@ pub fn terrain_heights(game: &Game) -> Option<TerrainHeights> {
         water: terrain
             .water()
             .map(|water| (water.level, format_hex_color(water.color))),
-    })
+    }
+}
+
+/// «Редактор», «Вызовы движка», `terrain_readings`: то же, что `terrain_heights` после загрузки игры,
+/// но из текстов `game.json`, файла рельефа и штампов — без мира и видеокарты. Ошибки — как при загрузке.
+pub fn terrain_readings(
+    game_json: &str,
+    terrain_text: Option<&str>,
+    stamp_texts: &[(String, Option<String>)],
+) -> Result<TerrainHeights, Vec<GameError>> {
+    let (scene, terrain) = read_terrain(game_json, terrain_text, stamp_texts)?;
+    Ok(readings_of(
+        &scene,
+        terrain.as_ref().unwrap_or(Terrain::flat()),
+    ))
+}
+
+/// «Редактор», «Вызовы движка», `set_covers`: ставит слои покрытий `covers` в виде файла рельефа и их
+/// маски `masks` — по одной на каждый слой с маской, по порядку слоёв. Ошибка — текстом, и ничего не
+/// меняется: слой не проходит проверку загрузки, масок не столько или размер маски не тот, сцена
+/// плоская, у неё нет файла рельефа или идёт партия. `materials` — `files.materials` игры.
+pub fn set_covers(
+    game: &mut Game,
+    materials: &[MaterialDecl],
+    covers: &Json,
+    masks: &[CoverMask],
+) -> Result<(), String> {
+    if !game.scene.is_3d() {
+        return Err("рельеф есть только у трёхмерной сцены: у scene в game.json нет camera".into());
+    }
+    if game.session_active() {
+        return Err("идёт партия: покрытия правятся вне партии".into());
+    }
+    if game.properties.terrain().is_none() {
+        return Err("у сцены нет файла рельефа: покрытия кладутся на рельеф".into());
+    }
+    let covers = parse_edit_covers(covers, materials)?;
+    check_cover_masks(&covers, masks)?;
+    game.set_covers(covers);
+    Ok(())
 }
 
 #[cfg(test)]

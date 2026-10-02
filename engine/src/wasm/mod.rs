@@ -18,7 +18,9 @@ use crate::core::world::World;
 use crate::core::world_elements;
 use crate::data::edit;
 use crate::data::error::GameError;
-use crate::data::load::{self, GameConfig, ImageDecl, ImageVerdict, MusicVerdict, NeededMedia};
+use crate::data::load::{
+    self, CoverMask, GameConfig, ImageDecl, ImageVerdict, MaterialDecl, MusicVerdict, NeededMedia,
+};
 use crate::data::session::{self, PlaySession};
 use crate::render::atlas::{self, AtlasRect};
 use crate::render::materials::Relief;
@@ -1137,6 +1139,81 @@ fn render_world(
     }
 }
 
+/// `set_covers`'s `masks`: `[{width, height, pixels: Uint8Array}]`. Что не число, не больше нуля или не
+/// байты, доходит до ядра как нулевой размер или пустые байты — оно отвечает на это ошибкой.
+fn parse_cover_masks(masks: &JsValue) -> Vec<CoverMask> {
+    if masks.is_undefined() || masks.is_null() {
+        return Vec::new();
+    }
+    Array::from(masks)
+        .iter()
+        .map(|item| CoverMask {
+            width: js_finite(&item, "width").map_or(0, |v| v as u32),
+            height: js_finite(&item, "height").map_or(0, |v| v as u32),
+            pixels: Reflect::get(&item, &JsValue::from_str("pixels"))
+                .ok()
+                .map(|v| Uint8Array::new(&v).to_vec())
+                .unwrap_or_default(),
+        })
+        .collect()
+}
+
+/// `terrain_heights`'s answer and `terrain_readings`'s: `{density, columns, rows, heights, effective,
+/// water}`.
+fn js_terrain_readings(terrain: &edit::TerrainHeights) -> JsValue {
+    let obj = Object::new();
+    set(&obj, "density", &JsValue::from_f64(terrain.density as f64));
+    set(&obj, "columns", &JsValue::from_f64(terrain.columns as f64));
+    set(&obj, "rows", &JsValue::from_f64(terrain.rows as f64));
+    set(
+        &obj,
+        "heights",
+        &Float64Array::from(terrain.heights.as_slice()),
+    );
+    set(
+        &obj,
+        "effective",
+        &Float64Array::from(terrain.effective.as_slice()),
+    );
+    let water = terrain
+        .water
+        .as_ref()
+        .map_or(JsValue::NULL, |(level, color)| {
+            let water = Object::new();
+            set(&water, "level", &JsValue::from_f64(*level));
+            set(&water, "color", &JsValue::from_str(color));
+            water.into()
+        });
+    set(&obj, "water", &water);
+    obj.into()
+}
+
+/// «Редактор», «Вызовы движка»: рельеф игры без видеокарты и без `Engine.create` — для команды мазков.
+/// `game_json` — текст `game.json`, `terrain_json` — текст файла рельефа или `null`, `stamps` —
+/// `[{name, text}]`, как в `load`. Возвращает то же, что `terrain_heights` после загрузки: `{density,
+/// columns, rows, heights, effective, water}`; без файла рельефа — нули сетки сцены и `null` вместо
+/// воды. Ошибка — `{error}` с текстом: каждая строка — `файл → путь: сообщение`, как при загрузке.
+#[wasm_bindgen]
+pub fn terrain_readings(game_json: &str, terrain_json: Option<String>, stamps: JsValue) -> JsValue {
+    let stamp_texts = parse_table_texts(&stamps);
+    match edit::terrain_readings(game_json, terrain_json.as_deref(), &stamp_texts) {
+        Ok(terrain) => js_terrain_readings(&terrain),
+        Err(errors) => {
+            let text = errors
+                .iter()
+                .map(|e| match e.path.is_empty() {
+                    true => format!("{}: {}", e.file, e.message),
+                    false => format!("{} → {}: {}", e.file, e.path, e.message),
+                })
+                .collect::<Vec<_>>()
+                .join("\n");
+            let obj = Object::new();
+            set(&obj, "error", &JsValue::from_str(&text));
+            obj.into()
+        }
+    }
+}
+
 /// The engine, one per canvas. See the crate's README / contract notes for the exact JS-side
 /// call sequence: `create` once, then loading in three passes — `read_entry`, `read_texts`,
 /// `load` — «Звук» → «Загрузка и проверка», then `key_down`/
@@ -1161,6 +1238,9 @@ pub struct Engine {
     /// «Рельеф» → «Вид»: сетка рельефа и воды, построенная при загрузке; `None`, пока в сцене нет файла
     /// высот.
     terrain_mesh: Option<TerrainMesh>,
+    /// «Свет и материалы»: `files.materials` загруженной игры — слои покрытий, которые ставит `set_covers`,
+    /// называют материалы по ним, а таблица слоёв берёт из них размер карты.
+    material_decls: Vec<MaterialDecl>,
     /// «Код игры» → требование 20: `files.rules` of the loaded game — a code error names the rule
     /// that called the function as `rules.json → rules[N]`, and the core only knows `rules[N]`.
     rules_path: String,
@@ -1210,6 +1290,7 @@ impl Engine {
             images: Vec::new(),
             atlas_rects: Vec::new(),
             terrain_mesh: None,
+            material_decls: Vec::new(),
             rules_path: String::new(),
             ui_clock: UiClock::new(),
             last_ui_elapsed_steps: 0.0,
@@ -1432,6 +1513,7 @@ impl Engine {
                 );
                 self.renderer.set_relief(relief.as_ref());
                 self.images = image_order;
+                self.material_decls = material_decls;
                 self.rules_path = rules_path;
                 self.ui_clock.reset();
                 self.renderer
@@ -1476,6 +1558,7 @@ impl Engine {
         self.screen_state = None;
         self.images = Vec::new();
         self.atlas_rects = Vec::new();
+        self.material_decls = Vec::new();
         self.rules_path = String::new();
         self.renderer.reset_fonts();
         self.renderer.set_relief(None);
@@ -1732,6 +1815,37 @@ impl Engine {
         None
     }
 
+    /// «Редактор», «Вызовы движка»: ставит слои покрытий рельефа — `covers` в виде файла рельефа,
+    /// `[{material, mask?, slope?}]`, и `masks`, `[{width, height, pixels: Uint8Array}]`, по одной на
+    /// каждый слой с `mask`, по порядку слоёв, байт на точку. Слои проверяются, как при загрузке, масок
+    /// должно быть столько, сколько слоёв с маской, а у каждой `width` и `height` больше нуля и
+    /// `width × height` байтов. Мир не собирается заново, камера не двигается, карты материалов и карта
+    /// цвета остаются на видеокарте — обновляются таблица слоёв и массив масок. `undefined` — поставлены;
+    /// иначе текст ошибки, и ничего не меняется: кроме проверок слоёв и масок — игра не загружена, сцена
+    /// плоская, у неё нет файла рельефа (сперва `set_terrain`) или идёт партия, в том числе на паузе и в
+    /// повторе.
+    pub fn set_covers(&mut self, covers: JsValue, masks: JsValue) -> Option<String> {
+        let Some(game) = self.game.as_mut() else {
+            return Some("игра не загружена".to_string());
+        };
+        let covers = JSON::stringify(&covers)
+            .ok()
+            .and_then(|text| text.as_string())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null);
+        let masks = parse_cover_masks(&masks);
+        if let Err(message) = edit::set_covers(game, &self.material_decls, &covers, &masks) {
+            return Some(message);
+        }
+        self.renderer.set_covers(
+            game.world.terrain().covers(),
+            &self.material_decls,
+            [game.scene.width, game.scene.height],
+            &masks,
+        );
+        None
+    }
+
     /// «Редактор», «Вызовы движка»: нынешний рельеф `{density, columns, rows, heights, effective, water}` —
     /// `density` — точек высот на клетку, `heights` (`Float64Array`) строками сверху вниз, как в
     /// `set_terrain`, — высоты файла без гор, `effective` — итоговые высоты с горами той же сетки, `water` —
@@ -1740,28 +1854,7 @@ impl Engine {
         let Some(terrain) = self.game.as_ref().and_then(edit::terrain_heights) else {
             return JsValue::UNDEFINED;
         };
-        let obj = Object::new();
-        set(&obj, "density", &JsValue::from_f64(terrain.density as f64));
-        set(&obj, "columns", &JsValue::from_f64(terrain.columns as f64));
-        set(&obj, "rows", &JsValue::from_f64(terrain.rows as f64));
-        set(
-            &obj,
-            "heights",
-            &Float64Array::from(terrain.heights.as_slice()),
-        );
-        set(
-            &obj,
-            "effective",
-            &Float64Array::from(terrain.effective.as_slice()),
-        );
-        let water = terrain.water.map_or(JsValue::NULL, |(level, color)| {
-            let water = Object::new();
-            set(&water, "level", &JsValue::from_f64(level));
-            set(&water, "color", &JsValue::from_str(&color));
-            water.into()
-        });
-        set(&obj, "water", &water);
-        obj.into()
+        js_terrain_readings(&terrain)
     }
 
     /// «Редактор», «Вызовы движка»: место под точкой холста `(x, y)` (CSS-пиксели) камерой, которой
