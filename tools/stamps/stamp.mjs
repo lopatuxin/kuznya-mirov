@@ -1,10 +1,9 @@
 // Вырез штампа из плиток высот: прямоугольник на земле, сжатый до сетки точек, с вычтенным основанием
 // и плавно погашенным краем. Штамп — высоты от 0 до 1, строки сверху вниз, первая строка — север.
 
-import { TILE_SIZE, ZOOM } from "./tiles.mjs";
+import { TILE_SIZE } from "./tiles.mjs";
 
 const EARTH_RADIUS = 6378137; // метров, сфера Web Mercator
-const WORLD_PIXELS = TILE_SIZE * 2 ** ZOOM;
 const EDGE_POWER = 2.5; // степень, по которой края выреза закруглены между кругом и прямоугольником
 const THOUSANDTHS = 1000;
 
@@ -13,11 +12,11 @@ function smoothstep(t) {
   return clamped * clamped * (3 - 2 * clamped);
 }
 
-/** Точка мира в пикселях плиток масштаба `ZOOM`: x растёт на восток, y — на юг. */
-function worldPoint(lat, lon) {
+/** Точка мира в пикселях плиток, если мир — `worldPixels` пикселей по краю: x растёт на восток, y — на юг. */
+function worldPoint(lat, lon, worldPixels) {
   return {
-    x: ((lon + 180) / 360) * WORLD_PIXELS,
-    y: ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * WORLD_PIXELS,
+    x: ((lon + 180) / 360) * worldPixels,
+    y: ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * worldPixels,
   };
 }
 
@@ -34,23 +33,24 @@ function gridSize({ km: [width, depth], points }) {
 }
 
 /**
- * Режет штамп `cut` (поле списка с умолчаниями) из плиток, которые отдаёт `readTile(x, y)`. Возвращает
+ * Режет штамп `cut` (поле списка с умолчаниями) из плиток, которые отдаёт `readTile(x, y, zoom)`. Возвращает
  * `{ heights }`: строки чисел от 0 до 1 с точностью до тысячных, наибольшее — 1.
  */
 export async function cutStamp(cut, readTile) {
-  const { lat, lon, km, base, fade } = cut;
+  const { lat, lon, km, base, fade, zoom, invert } = cut;
   const { cols, rows } = gridSize(cut);
-  const groundPerPixel = ((2 * Math.PI * EARTH_RADIUS) / WORLD_PIXELS) * Math.cos((lat * Math.PI) / 180);
+  const worldPixels = TILE_SIZE * 2 ** zoom;
+  const groundPerPixel = ((2 * Math.PI * EARTH_RADIUS) / worldPixels) * Math.cos((lat * Math.PI) / 180);
   const width = (km[0] * 1000) / groundPerPixel;
   const depth = (km[1] * 1000) / groundPerPixel;
-  const center = worldPoint(lat, lon);
+  const center = worldPoint(lat, lon, worldPixels);
   const left = center.x - width / 2;
   const top = center.y - depth / 2;
 
   const tiles = new Map();
   for (let tileY = Math.floor(top / TILE_SIZE); tileY <= Math.floor((top + depth) / TILE_SIZE); tileY++) {
     for (let tileX = Math.floor(left / TILE_SIZE); tileX <= Math.floor((left + width) / TILE_SIZE); tileX++) {
-      tiles.set(`${tileX}/${tileY}`, await readTile(tileX, tileY));
+      tiles.set(`${tileX}/${tileY}`, await readTile(tileX, tileY, zoom));
     }
   }
   const metersAt = (x, y) => {
@@ -72,6 +72,10 @@ export async function cutStamp(cut, readTile) {
     }
   }
 
+  if (invert) {
+    const highest = meters.reduce((most, value) => Math.max(most, value), -Infinity);
+    for (let i = 0; i < meters.length; i++) meters[i] = highest - meters[i];
+  }
   const floor = Float64Array.from(meters).sort()[Math.min(meters.length - 1, Math.floor(base * meters.length))];
   let peak = 0;
   for (let row = 0; row < rows; row++) {

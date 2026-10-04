@@ -1,19 +1,19 @@
 import { describe, expect, it, vi } from "vitest";
 import type { HandleMode } from "./handleGeometry";
-import { mountainHandleGeometry, readMountain, type Mountain } from "./mountainGeometry";
+import { imprintHandleGeometry, readImprint, type Imprint } from "./imprintGeometry";
 import {
-  createMountainSceneController,
-  type MountainContext,
-  type MountainPlacement,
-  type MountainSceneContext,
-  type MountainSceneEngine,
-} from "./mountainSceneController";
+  createImprintSceneController,
+  type ImprintContext,
+  type ImprintPlacement,
+  type ImprintSceneContext,
+  type ImprintSceneEngine,
+} from "./imprintSceneController";
 import type { Vec2 } from "./objectPlacement";
 import { pinholeCamera } from "./pinholeCamera";
-import type { MountainEntry } from "./terrainFile";
+import type { ImprintEntry } from "./terrainFile";
 
-const FIRST: MountainEntry = { stamp: "beluha", position: [20, 15], size: [20, 10], height: 6 };
-const SECOND: MountainEntry = { stamp: "chuya", position: [40, 30], size: [10, 10], height: 3, rotation: 30 };
+const FIRST: ImprintEntry = { stamp: "beluha", position: [20, 15], size: [20, 10], height: 6 };
+const SECOND: ImprintEntry = { stamp: "chuya", position: [40, 30], size: [10, 10], height: 3, rotation: 30 };
 const FILE_HEIGHTS = new Float64Array(25).fill(0.5);
 
 type Pointer = { pointerId: number; button: number; buttons: number; x: number; y: number; ctrlKey: boolean };
@@ -26,7 +26,7 @@ function release(at: Vec2, extra: Partial<Pointer> = {}): Pointer {
   return pointer(at, { buttons: 0, ...extra });
 }
 
-type SetupOptions = { pitch?: number; handleMode?: HandleMode; selectedIndex?: number | null; placing?: MountainPlacement | null; isEditable?: boolean; hasBrush?: boolean };
+type SetupOptions = { pitch?: number; handleMode?: HandleMode; selectedIndex?: number | null; placing?: ImprintPlacement | null; isEditable?: boolean; hasBrush?: boolean; entries?: ImprintEntry[] };
 
 function setup(options: SetupOptions = {}) {
   const camera = pinholeCamera([30, 20], 15, options.pitch ?? 55, 60);
@@ -37,7 +37,7 @@ function setup(options: SetupOptions = {}) {
     pickedStamp: undefined as number | undefined,
     setError: undefined as string | undefined,
   };
-  const setCalls: { heights: Float64Array; water: unknown; stamps: MountainEntry[] }[] = [];
+  const setCalls: { heights: Float64Array; water: unknown; stamps: ImprintEntry[] }[] = [];
   const groundUnder = (at: Vec2, z: number): [number, number] => {
     const direction = camera.rayDirection(at);
     const depth = (z - camera.eye[2]) / (direction[2] as number);
@@ -51,20 +51,20 @@ function setup(options: SetupOptions = {}) {
       return state.isSky ? undefined : [place[0], place[1], state.groundZ];
     },
     terrain_heights: () => ({ density: 2, columns: 5, rows: 5, heights: Float64Array.from(FILE_HEIGHTS), effective: Float64Array.from(FILE_HEIGHTS), water: { level: -1, color: "#112233" } }),
-    set_terrain: (heights: Float64Array, water: unknown, stamps: MountainEntry[]) => {
+    set_terrain: (heights: Float64Array, water: unknown, stamps: ImprintEntry[]) => {
       setCalls.push({ heights: Float64Array.from(heights), water, stamps });
       return state.setError;
     },
     stamp_at: () => state.pickedStamp,
-  } as unknown as MountainSceneEngine;
+  } as unknown as ImprintSceneEngine;
 
   const selections: number[] = [];
-  const placed: MountainEntry[] = [];
-  const commits: [number, MountainEntry][] = [];
+  const placed: ImprintEntry[] = [];
+  const commits: [number, ImprintEntry][] = [];
   const activity: boolean[] = [];
-  const mountains: MountainContext = {
+  const imprints: ImprintContext = {
     isEditable: options.isEditable ?? true,
-    entries: [FIRST, SECOND],
+    entries: options.entries ?? [FIRST, SECOND],
     selectedIndex: options.selectedIndex === undefined ? 0 : options.selectedIndex,
     placing: options.placing ?? null,
     onSelect: (index) => selections.push(index),
@@ -72,16 +72,16 @@ function setup(options: SetupOptions = {}) {
     onCommit: (index, entry) => commits.push([index, entry]),
     onActiveChange: (isActive) => activity.push(isActive),
   };
-  const context: MountainSceneContext = {
+  const context: ImprintSceneContext = {
     engine,
     handleMode: options.handleMode ?? "translate",
     brush: options.hasBrush === true ? { kind: "raise", size: 4, strength: 50 } : null,
     paint: null,
-    mountains,
+    imprints,
   };
-  const controller = createMountainSceneController();
+  const controller = createImprintSceneController();
   const screen = (x: number, y: number, z = 0): Vec2 => camera.projection.screenPoint(x, y, z) as Vec2;
-  const geometry = (mode: HandleMode, mountain: Mountain = readMountain(FIRST) as Mountain) => mountainHandleGeometry(camera.projection, mountain, mode, 0);
+  const geometry = (mode: HandleMode, imprint: Imprint = readImprint(FIRST) as Imprint) => imprintHandleGeometry(camera.projection, imprint, mode, 0);
   return { controller, context, engine, state, setCalls, selections, placed, commits, activity, screen, geometry, groundUnder, camera };
 }
 
@@ -91,19 +91,19 @@ function alongArrow(center: Vec2, tip: Vec2 | null, share: number): Vec2 {
   return [center[0] + (end[0] - center[0]) * share, center[1] + (end[1] - center[1]) * share];
 }
 
-function lastMountain(scene: ReturnType<typeof setup>): Mountain {
-  return readMountain(scene.setCalls.at(-1)?.stamps[0]) as Mountain;
+function lastImprint(scene: ReturnType<typeof setup>): Imprint {
+  return readImprint(scene.setCalls.at(-1)?.stamps[0]) as Imprint;
 }
 
-describe("кнопка «Гора»", () => {
-  const PLACING: MountainPlacement = { stamp: { name: "chuya", columns: 192, rows: 144 }, width: 30, height: 10 };
+describe("кнопка «Отпечаток»", () => {
+  const PLACING: ImprintPlacement = { stamp: { name: "chuya", columns: 192, rows: 144 }, width: 30, height: 10 };
 
-  it("щелчок по земле ставит гору: середина — место под указателем, глубина по пропорции штампа, rotation нет", () => {
+  it("щелчок по земле ставит отпечаток: середина — место под указателем, глубина по пропорции штампа, rotation нет", () => {
     const scene = setup({ placing: PLACING });
     const at = scene.screen(22.126, 14.004);
     scene.controller.place(scene.context, pointer(at));
     expect(scene.placed).toHaveLength(1);
-    const entry = scene.placed[0] as MountainEntry;
+    const entry = scene.placed[0] as ImprintEntry;
     expect(entry.stamp).toBe("chuya");
     expect((entry.position as number[])[0]).toBeCloseTo(22.13, 2);
     expect((entry.position as number[])[1]).toBeCloseTo(14, 2);
@@ -112,7 +112,7 @@ describe("кнопка «Гора»", () => {
     expect(entry).not.toHaveProperty("rotation");
   });
 
-  it("луч мимо рельефа — горы нет", () => {
+  it("луч мимо рельефа — отпечатка нет", () => {
     const scene = setup({ placing: PLACING });
     scene.state.isSky = true;
     scene.controller.place(scene.context, pointer([100, 100]));
@@ -120,8 +120,8 @@ describe("кнопка «Гора»", () => {
   });
 });
 
-describe("выбор горы щелчком", () => {
-  it("гора под указателем выбирается и берётся за тело", () => {
+describe("выбор отпечатка щелчком", () => {
+  it("отпечаток под указателем выбирается и берётся за тело", () => {
     const scene = setup({ selectedIndex: null });
     scene.state.pickedStamp = 1;
     expect(scene.controller.pickAt(scene.context, pointer(scene.screen(40, 30)))).toBe(true);
@@ -129,13 +129,13 @@ describe("выбор горы щелчком", () => {
     expect(scene.activity).toEqual([true]);
   });
 
-  it("гор под указателем нет — null: основной контроллер снимет выбор сам", () => {
+  it("отпечатков под указателем нет — null: основной контроллер снимет выбор сам", () => {
     const scene = setup();
     expect(scene.controller.pickAt(scene.context, pointer([10, 10]))).toBe(null);
     expect(scene.selections).toEqual([]);
   });
 
-  it("в партии, на паузе и в повторе горы не выбираются: движок и не спрашивается", () => {
+  it("в партии, на паузе и в повторе отпечатки не выбираются: движок и не спрашивается", () => {
     const scene = setup({ isEditable: false });
     scene.state.pickedStamp = 1;
     const stampAt = vi.spyOn(scene.engine, "stamp_at");
@@ -143,9 +143,9 @@ describe("выбор горы щелчком", () => {
     expect(stampAt).not.toHaveBeenCalled();
   });
 
-  it("гора, у которой не все поля числа, выбирается, но жеста нет", () => {
+  it("отпечаток, у которого не все поля числа, выбирается, но жеста нет", () => {
     const scene = setup({ selectedIndex: null });
-    scene.context.mountains.entries = [{ stamp: "a", position: "abc", size: [1, 1], height: 1 }];
+    scene.context.imprints.entries = [{ stamp: "a", position: "abc", size: [1, 1], height: 1 }];
     scene.state.pickedStamp = 0;
     expect(scene.controller.pickAt(scene.context, pointer([10, 10]))).toBe(false);
     expect(scene.selections).toEqual([0]);
@@ -164,16 +164,16 @@ describe("перенос за тело", () => {
     expect(scene.controller.pointerMove(scene.context, pointer(scene.screen(25, 19, 4)))).toBe(true);
     expect(terrainAt).toHaveBeenCalledTimes(1);
     expect(scene.setCalls).toHaveLength(1);
-    const moved = lastMountain(scene);
+    const moved = lastImprint(scene);
     expect(moved.position[0]).toBeCloseTo(23, 2);
     expect(moved.position[1]).toBeCloseTo(18, 2);
-    // Горы остальные, высоты файла и вода — как на начало жеста.
+    // Отпечатки остальные, высоты файла и вода — как на начало жеста.
     expect(scene.setCalls[0]?.stamps[1]).toBe(SECOND);
     expect(Array.from(scene.setCalls[0]?.heights ?? [])).toEqual(Array.from(FILE_HEIGHTS));
     expect(scene.setCalls[0]?.water).toEqual({ level: -1, color: "#112233" });
   });
 
-  it("отпускание — одно действие с новой горой целиком; движение меньше 4 точек не действие", () => {
+  it("отпускание — одно действие с новым отпечатком целиком; движение меньше 4 точек не действие", () => {
     const scene = setup();
     scene.state.pickedStamp = 0;
     const start = scene.screen(22, 16);
@@ -183,7 +183,7 @@ describe("перенос за тело", () => {
     scene.controller.pointerMove(scene.context, pointer(scene.screen(25, 19)));
     expect(scene.controller.pointerUp(scene.context, release(scene.screen(25, 19)))).toBe(true);
     expect(scene.commits).toHaveLength(1);
-    const [index, entry] = scene.commits[0] as [number, MountainEntry];
+    const [index, entry] = scene.commits[0] as [number, ImprintEntry];
     expect(index).toBe(0);
     expect(entry).toEqual({ stamp: "beluha", position: [23, 18], size: [20, 10], height: 6 });
     expect(scene.activity).toEqual([true, false]);
@@ -205,10 +205,10 @@ describe("перенос за тело", () => {
     scene.state.pickedStamp = 0;
     scene.controller.pickAt(scene.context, pointer(scene.screen(22, 16)));
     scene.controller.pointerMove(scene.context, pointer(scene.screen(24.6, 18.4), { ctrlKey: true }));
-    expect(lastMountain(scene).position).toEqual([23, 17]);
+    expect(lastImprint(scene).position).toEqual([23, 17]);
   });
 
-  it("Esc возвращает гору на место: движок получает прежние горы, действия нет", () => {
+  it("Esc возвращает отпечаток на место: движок получает прежние отпечатки, действия нет", () => {
     const scene = setup();
     scene.state.pickedStamp = 0;
     scene.controller.pickAt(scene.context, pointer(scene.screen(22, 16)));
@@ -220,11 +220,11 @@ describe("перенос за тело", () => {
     expect(scene.activity).toEqual([true, false]);
   });
 
-  it("Esc без жеста — не жест горы", () => {
+  it("Esc без жеста — не жест отпечатка", () => {
     expect(setup().controller.cancel(setup().context)).toBe(false);
   });
 
-  it("сброс указателя браузером возвращает гору, как Esc", () => {
+  it("сброс указателя браузером возвращает отпечаток, как Esc", () => {
     const scene = setup();
     scene.state.pickedStamp = 0;
     scene.controller.pickAt(scene.context, pointer(scene.screen(22, 16)));
@@ -234,7 +234,7 @@ describe("перенос за тело", () => {
     expect(scene.commits).toEqual([]);
   });
 
-  it("жест бросается извне: гора не возвращается, действия нет, страница узнаёт о конце жеста", () => {
+  it("жест бросается извне: отпечаток не возвращается, действия нет, страница узнаёт о конце жеста", () => {
     const scene = setup();
     scene.state.pickedStamp = 0;
     scene.controller.pickAt(scene.context, pointer(scene.screen(22, 16)));
@@ -267,7 +267,7 @@ describe("перенос за тело", () => {
     expect(scene.controller.isActive()).toBe(true);
   });
 
-  it("луч указателя не пересекает плоскость переноса — гора стоит, пока луч не вернётся", () => {
+  it("луч указателя не пересекает плоскость переноса — отпечаток стоит, пока луч не вернётся", () => {
     const scene = setup({ pitch: 10 });
     scene.state.pickedStamp = 0;
     scene.controller.pickAt(scene.context, pointer(scene.screen(22, 16)));
@@ -287,7 +287,7 @@ describe("перенос за тело", () => {
   });
 });
 
-describe("ручки выбранной горы", () => {
+describe("ручки выбранного отпечатка", () => {
   it("стрелка оси x меняет одну координату", () => {
     const scene = setup();
     const geometry = scene.geometry("translate");
@@ -295,18 +295,18 @@ describe("ручки выбранной горы", () => {
     expect(scene.controller.startHandle(scene.context, pointer(start))).toBe(true);
     const ground = scene.groundUnder(start, 0);
     scene.controller.pointerMove(scene.context, pointer(scene.screen(ground[0] + 3, ground[1] + 2)));
-    expect(lastMountain(scene).position[0]).toBeCloseTo(23, 2);
-    expect(lastMountain(scene).position[1]).toBe(15);
+    expect(lastImprint(scene).position[0]).toBeCloseTo(23, 2);
+    expect(lastImprint(scene).position[1]).toBe(15);
   });
 
-  it("середина двигает гору свободно по горизонтальной плоскости середины", () => {
+  it("середина двигает отпечаток свободно по горизонтальной плоскости середины", () => {
     const scene = setup();
     const geometry = scene.geometry("translate");
     const start = geometry?.center as Vec2;
     expect(scene.controller.startHandle(scene.context, pointer(start))).toBe(true);
     scene.controller.pointerMove(scene.context, pointer(scene.screen(23, 18)));
-    expect(lastMountain(scene).position[0]).toBeCloseTo(23, 2);
-    expect(lastMountain(scene).position[1]).toBeCloseTo(18, 2);
+    expect(lastImprint(scene).position[0]).toBeCloseTo(23, 2);
+    expect(lastImprint(scene).position[1]).toBeCloseTo(18, 2);
   });
 
   it("у переноса вертикальной стрелки нет: нажатие там, где она была бы, ручку не берёт", () => {
@@ -324,12 +324,12 @@ describe("ручки выбранной горы", () => {
     const [gx, gy] = scene.groundUnder(start, 0);
     const [cx, cy] = [20, 15];
     scene.controller.pointerMove(scene.context, pointer(scene.screen(cx - (gy - cy), cy + (gx - cx))));
-    expect(lastMountain(scene).rotation).toBe(90);
+    expect(lastImprint(scene).rotation).toBe(90);
     const turned = scene.groundUnder(start, 0);
     const angle = 0.3;
     const [dx, dy] = [turned[0] - cx, turned[1] - cy];
     scene.controller.pointerMove(scene.context, pointer(scene.screen(cx + dx * Math.cos(angle) - dy * Math.sin(angle), cy + dx * Math.sin(angle) + dy * Math.cos(angle)), { ctrlKey: true }));
-    expect(lastMountain(scene).rotation).toBe(15);
+    expect(lastImprint(scene).rotation).toBe(15);
     scene.controller.pointerUp(scene.context, release(start));
     expect(scene.commits[0]?.[1]).toMatchObject({ rotation: 15 });
   });
@@ -340,7 +340,7 @@ describe("ручки выбранной горы", () => {
     const center = geometry?.center as Vec2;
     expect(scene.controller.startHandle(scene.context, pointer(alongArrow(center, geometry?.tipX ?? null, 0.7)))).toBe(true);
     scene.controller.pointerMove(scene.context, pointer(alongArrow(center, geometry?.tipX ?? null, 1.4)));
-    const scaled = lastMountain(scene);
+    const scaled = lastImprint(scene);
     expect(scaled.size[0]).toBeCloseTo(40, 1);
     expect(scaled.size[1]).toBe(10);
     expect(scaled.position[0]).toBeCloseTo(20, 2);
@@ -348,14 +348,27 @@ describe("ручки выбранной горы", () => {
     expect(scaled.height).toBe(6);
   });
 
-  it("масштаб: зелёная ручка — высота горы", () => {
+  it("масштаб: зелёная ручка — высота отпечатка", () => {
     const scene = setup({ handleMode: "scale" });
     const geometry = scene.geometry("scale");
     const center = geometry?.center as Vec2;
     expect(scene.controller.startHandle(scene.context, pointer(alongArrow(center, geometry?.tipZ ?? null, 0.7)))).toBe(true);
     scene.controller.pointerMove(scene.context, pointer(alongArrow(center, geometry?.tipZ ?? null, 1.4)));
-    expect(lastMountain(scene).height).toBeCloseTo(12, 1);
-    expect(lastMountain(scene).size).toEqual([20, 10]);
+    expect(lastImprint(scene).height).toBeCloseTo(12, 1);
+    expect(lastImprint(scene).size).toEqual([20, 10]);
+  });
+
+  it("масштаб вдавливающего отпечатка: стрелка высоты смотрит вниз, тянут вниз — глубже, знак тот же", () => {
+    const scene = setup({ handleMode: "scale", entries: [{ ...FIRST, height: -4 }] });
+    const geometry = scene.geometry("scale", { ...(readImprint(FIRST) as Imprint), height: -4 });
+    const center = geometry?.center as Vec2;
+    expect(geometry?.tipZ?.[1]).toBeGreaterThan(center[1]);
+    expect(scene.controller.startHandle(scene.context, pointer(alongArrow(center, geometry?.tipZ ?? null, 0.7)))).toBe(true);
+    scene.controller.pointerMove(scene.context, pointer(alongArrow(center, geometry?.tipZ ?? null, 1.4)));
+    expect(lastImprint(scene).height).toBeCloseTo(-8, 1);
+    expect(lastImprint(scene).size).toEqual([20, 10]);
+    scene.controller.pointerMove(scene.context, pointer(alongArrow(center, geometry?.tipZ ?? null, 0.35)));
+    expect(lastImprint(scene).height).toBeCloseTo(-2, 1);
   });
 
   it("масштаб: общая ручка в середине меняет всё, не меньше 0,1 клетки", () => {
@@ -363,10 +376,10 @@ describe("ручки выбранной горы", () => {
     const center = scene.geometry("scale")?.center as Vec2;
     expect(scene.controller.startHandle(scene.context, pointer(center))).toBe(true);
     scene.controller.pointerMove(scene.context, pointer([center[0] - 5000, center[1] + 5000]));
-    expect(lastMountain(scene)).toMatchObject({ size: [0.1, 0.1], height: 0.1 });
+    expect(lastImprint(scene)).toMatchObject({ size: [0.1, 0.1], height: 0.1 });
   });
 
-  it("при кисти, при «Горе» и не вне партии ручек нет", () => {
+  it("при кисти, при «Отпечатке» и не вне партии ручек нет", () => {
     for (const options of [{ hasBrush: true }, { placing: { stamp: { name: "a", columns: 2, rows: 2 }, width: 1, height: 1 } }, { isEditable: false }, { selectedIndex: null }]) {
       const scene = setup(options);
       const center = scene.geometry("translate")?.center as Vec2;
@@ -404,6 +417,20 @@ describe("рамка и ручки", () => {
     }
   });
 
+  it("рамка подписана «Отпечаток N» с номером с единицы", () => {
+    const scene = setup({ selectedIndex: 1 });
+    const labels: string[] = [];
+    const canvas = new Proxy({ canvas: { width: 800, height: 600 } } as Record<string, unknown>, {
+      get: (record, name: string) => (name === "fillText" ? (text: string) => labels.push(text) : name in record ? record[name] : () => ({ width: 10 })),
+      set: (record, name: string, value: unknown) => {
+        record[name] = value;
+        return true;
+      },
+    }) as unknown as CanvasRenderingContext2D;
+    scene.controller.draw(scene.context, canvas, 1);
+    expect(labels).toContain("Отпечаток 2");
+  });
+
   it("при кисти рамка рисуется, а ручки нет", () => {
     const withHandles = setup();
     const withBrush = setup({ hasBrush: true });
@@ -415,7 +442,7 @@ describe("рамка и ручки", () => {
     expect(handleCalls.mock.calls.length).toBeGreaterThan(brushCalls.mock.calls.length);
   });
 
-  it("во время жеста рамка идёт за горой на новом месте", () => {
+  it("во время жеста рамка идёт за отпечатком на новом месте", () => {
     const scene = setup();
     scene.state.pickedStamp = 0;
     scene.controller.pickAt(scene.context, pointer(scene.screen(22, 16)));

@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
-  isMountainToolEnabled,
+  isImprintToolEnabled,
   isPaintToolEnabled,
   resolveSceneToolAvailability,
   selectBrushTool,
   selectHandleModeTool,
-  selectMountainTool,
+  selectImprintTool,
   selectPaintTool,
   settleSelectedTool,
   type SceneToolContext,
@@ -48,14 +48,14 @@ describe("resolveSceneToolAvailability", () => {
   });
 });
 
-describe("isMountainToolEnabled", () => {
-  it("кнопка «Гора» нажимается там, где есть кисти, и только со штампами", () => {
-    expect(isMountainToolEnabled(true, true)).toBe(true);
-    expect(isMountainToolEnabled(true, false)).toBe(false);
+describe("isImprintToolEnabled", () => {
+  it("кнопка «Отпечаток» нажимается там, где есть кисти, и только со штампами", () => {
+    expect(isImprintToolEnabled(true, true)).toBe(true);
+    expect(isImprintToolEnabled(true, false)).toBe(false);
   });
 
-  it("в партии, на паузе, в повторе и в плоской сцене кистей нет — «Горы» тоже", () => {
-    expect(isMountainToolEnabled(false, true)).toBe(false);
+  it("в партии, на паузе, в повторе и в плоской сцене кистей нет и кнопки «Отпечаток»", () => {
+    expect(isImprintToolEnabled(false, true)).toBe(false);
   });
 });
 
@@ -71,14 +71,14 @@ describe("isPaintToolEnabled", () => {
 });
 
 describe("выбор инструмента", () => {
-  it("вид ручек снимает кисть, «Гору» и «Покрасить»", () => {
-    expect(selectHandleModeTool("rotate")).toEqual({ handleMode: "rotate", brushKind: null, isMountainTool: false, isPaintTool: false });
+  it("вид ручек снимает кисть, «Отпечаток» и «Покрасить»", () => {
+    expect(selectHandleModeTool("rotate")).toEqual({ handleMode: "rotate", brushKind: null, isImprintTool: false, isPaintTool: false });
   });
 
-  it("кисть, «Гора» и «Покрасить» заменяют друг друга", () => {
-    expect(selectBrushTool("scale", "level")).toEqual({ handleMode: "scale", brushKind: "level", isMountainTool: false, isPaintTool: false });
-    expect(selectMountainTool("scale")).toEqual({ handleMode: "scale", brushKind: null, isMountainTool: true, isPaintTool: false });
-    expect(selectPaintTool("scale")).toEqual({ handleMode: "scale", brushKind: null, isMountainTool: false, isPaintTool: true });
+  it("кисть, «Отпечаток» и «Покрасить» заменяют друг друга", () => {
+    expect(selectBrushTool("scale", "level")).toEqual({ handleMode: "scale", brushKind: "level", isImprintTool: false, isPaintTool: false });
+    expect(selectImprintTool("scale")).toEqual({ handleMode: "scale", brushKind: null, isImprintTool: true, isPaintTool: false });
+    expect(selectPaintTool("scale")).toEqual({ handleMode: "scale", brushKind: null, isImprintTool: false, isPaintTool: true });
   });
 });
 
@@ -97,8 +97,8 @@ describe("settleSelectedTool", () => {
     expect(settleSelectedTool(tool, false, false, false)).toBe(tool);
   });
 
-  it("«Гора» уходит в «Перенос», когда пропали кисти или штампы, и остаётся, пока доступна", () => {
-    const tool = selectMountainTool("rotate");
+  it("«Отпечаток» уходит в «Перенос», когда пропали кисти или штампы, и остаётся, пока доступна", () => {
+    const tool = selectImprintTool("rotate");
     expect(settleSelectedTool(tool, true, true, true)).toBe(tool);
     expect(settleSelectedTool(tool, true, false, true)).toEqual(selectHandleModeTool("translate"));
     expect(settleSelectedTool(tool, false, false, false)).toEqual(selectHandleModeTool("translate"));

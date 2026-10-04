@@ -5,13 +5,13 @@ import { liveObjectListEmptyLabel } from "./battleSelection";
 import { isBattleTransportShortcut, isReplaySeekShortcut } from "./battleShortcuts";
 import { withCodeErrorLine } from "./battleTypes";
 import { EditorIcon } from "./EditorIcon";
-import { MountainPropertiesPanel } from "./MountainPropertiesPanel";
-import { parseStampShape } from "./mountainGeometry";
+import { ImprintPropertiesPanel } from "./ImprintPropertiesPanel";
+import { parseStampShape } from "./imprintGeometry";
 import { ObjectList } from "./ObjectList";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
-import { readTerrainCovers, readTerrainMountains, readTerrainTint, readTerrainWater } from "./terrainFile";
+import { readTerrainCovers, readTerrainImprints, readTerrainTint, readTerrainWater } from "./terrainFile";
 import { parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -98,7 +98,7 @@ function isEditableElementFocused(): boolean {
 export function ProjectWindow({ source, onBackToProjects, brushFields }: ProjectWindowProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneEditing = useSceneEditing(canvasRef, source);
-  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, terrainText, saveState, canUndo, selectedIndex, setSelectedIndex, selectedMountainIndex } = sceneEditing;
+  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, terrainText, saveState, canUndo, selectedIndex, setSelectedIndex, selectedImprintIndex } = sceneEditing;
   const [objectsWidth, setObjectsWidth] = useStoredPanelWidth("kuznya-editor.objects-width", 260);
   const [propertiesWidth, setPropertiesWidth] = useStoredPanelWidth("kuznya-editor.properties-width", 320);
   // Колбэк-реф вместо обычного — «Редактор», партия: элемент нужен движку звука сразу после
@@ -123,7 +123,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
-  const mountains = useMemo(() => readTerrainMountains(terrainText), [terrainText]);
+  const imprints = useMemo(() => readTerrainImprints(terrainText), [terrainText]);
   const terrainCovers = useMemo(() => readTerrainCovers(terrainText), [terrainText]);
   const terrainTintPath = useMemo(() => readTerrainTint(terrainText), [terrainText]);
   const materialNames = useMemo(() => parseProjectMaterialNames(gameJsonText), [gameJsonText]);
@@ -153,8 +153,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const displayedPropertiesView = isLive ? battle.livePropertiesView : propertiesView;
   const displayedCanEdit = isLive ? battle.canLiveEdit : canEdit;
   const displayedOnSelect = isLive ? battle.setLiveSelectedId : setSelectedIndex;
-  // Гора выбирается только вне партии, паузы и повтора («Лепка рельефа», «Редактор», требование 26).
-  const selectedMountain = !isLive && selectedMountainIndex !== null ? mountains[selectedMountainIndex] : undefined;
+  // Отпечаток выбирается только вне партии, паузы и повтора («Лепка рельефа», «Редактор», требование 26).
+  const selectedImprint = !isLive && selectedImprintIndex !== null ? imprints[selectedImprintIndex] : undefined;
 
   // Место и размер объекта по номеру для переноса мышью — из текста сцены вне партии, из живого
   // мира на паузе внутри неё («Редактор», требование 20).
@@ -176,12 +176,12 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   // Последний selectedIndex и действия правки — в ref, чтобы не переставлять слушатель на каждый рендер.
   const shortcutState = {
     selectedIndex,
-    selectedMountainIndex,
+    selectedImprintIndex,
     undo: sceneEditing.undo,
     copyObject: sceneEditing.copyObject,
     deleteObject: sceneEditing.deleteObject,
-    copyMountain: sceneEditing.copyMountain,
-    deleteMountain: sceneEditing.deleteMountain,
+    copyImprint: sceneEditing.copyImprint,
+    deleteImprint: sceneEditing.deleteImprint,
   };
   const shortcutStateRef = useRef(shortcutState);
   shortcutStateRef.current = shortcutState;
@@ -260,17 +260,17 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
         event.preventDefault();
         current.undo();
       } else if (isCtrlOnly && event.key.toLowerCase() === "d") {
-        if (current.selectedMountainIndex !== null) {
+        if (current.selectedImprintIndex !== null) {
           event.preventDefault();
-          current.copyMountain(current.selectedMountainIndex);
+          current.copyImprint(current.selectedImprintIndex);
         } else if (current.selectedIndex !== null) {
           event.preventDefault();
           current.copyObject(current.selectedIndex);
         }
       } else if (event.key === "Delete") {
-        if (current.selectedMountainIndex !== null) {
+        if (current.selectedImprintIndex !== null) {
           event.preventDefault();
-          current.deleteMountain(current.selectedMountainIndex);
+          current.deleteImprint(current.selectedImprintIndex);
         } else if (current.selectedIndex !== null) {
           event.preventDefault();
           current.deleteObject(current.selectedIndex);
@@ -350,12 +350,12 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           onWaterChange={sceneEditing.setTerrainWater}
           onStrokeActiveChange={handleStrokeActiveChange}
           brushFields={brushFields}
-          mountains={mountains}
+          imprints={imprints}
           stampShapes={stampShapes}
-          selectedMountainIndex={isLive ? null : selectedMountainIndex}
-          onSelectMountain={sceneEditing.setSelectedMountainIndex}
-          onPlaceMountain={sceneEditing.placeMountain}
-          onCommitMountain={sceneEditing.replaceMountain}
+          selectedImprintIndex={isLive ? null : selectedImprintIndex}
+          onSelectImprint={sceneEditing.setSelectedImprintIndex}
+          onPlaceImprint={sceneEditing.placeImprint}
+          onCommitImprint={sceneEditing.replaceImprint}
           materialNames={materialNames}
           terrainCovers={terrainCovers}
           terrainMasks={sceneEditing.masks}
@@ -369,16 +369,16 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
 
       <aside className="project-window__properties">
         <PanelResizeHandle edge="left" width={propertiesWidth} onWidthChange={setPropertiesWidth} label="Ширина панели свойств" />
-        {selectedMountain !== undefined && selectedMountainIndex !== null ? (
-          <MountainPropertiesPanel
-            key={`mountain-${selectedMountainIndex}`}
-            index={selectedMountainIndex}
-            entry={selectedMountain}
+        {selectedImprint !== undefined && selectedImprintIndex !== null ? (
+          <ImprintPropertiesPanel
+            key={`imprint-${selectedImprintIndex}`}
+            index={selectedImprintIndex}
+            entry={selectedImprint}
             stampNames={stampShapes.map((shape) => shape.name)}
             canEdit={canEdit}
-            onSetValue={(key, value) => sceneEditing.setMountainValue(selectedMountainIndex, key, value)}
-            onCopy={() => sceneEditing.copyMountain(selectedMountainIndex)}
-            onDelete={() => sceneEditing.deleteMountain(selectedMountainIndex)}
+            onSetValue={(key, value) => sceneEditing.setImprintValue(selectedImprintIndex, key, value)}
+            onCopy={() => sceneEditing.copyImprint(selectedImprintIndex)}
+            onDelete={() => sceneEditing.deleteImprint(selectedImprintIndex)}
           />
         ) : (
           <PropertiesPanel

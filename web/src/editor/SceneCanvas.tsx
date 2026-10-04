@@ -6,7 +6,7 @@ import type { EditorCameraStore } from "./editorCamera";
 import type { HandleMode } from "./handleGeometry";
 import { HandleModeToolbar } from "./HandleModeToolbar";
 import type { MaskSet } from "./maskBytes";
-import type { StampShape } from "./mountainGeometry";
+import type { StampShape } from "./imprintGeometry";
 import type { PlacementChange } from "./objectPlacement";
 import { canPaintMaterial } from "./paintLayers";
 import type { PaintResult } from "./paintStroke";
@@ -14,18 +14,18 @@ import type { SceneSize } from "./sceneObjects";
 import { drawSelection, type CanvasRect } from "./selectionDrawing";
 import { fitSceneStage } from "./sceneStageLayout";
 import {
-  isMountainToolEnabled,
+  isImprintToolEnabled,
   isPaintToolEnabled,
   resolveSceneToolAvailability,
   selectBrushTool,
   selectHandleModeTool,
-  selectMountainTool,
+  selectImprintTool,
   selectPaintTool,
   settleSelectedTool,
   type SelectedTool,
 } from "./sceneTools";
 import type { SpaceSceneContext } from "./spaceSceneController";
-import type { MountainEntry, TerrainCoverLayer, TerrainGrid, TerrainWater } from "./terrainFile";
+import type { ImprintEntry, TerrainCoverLayer, TerrainGrid, TerrainWater } from "./terrainFile";
 import { useSpaceSceneInput } from "./useSpaceSceneInput";
 
 type ObjectGeometry = { position: readonly [number, number]; size: readonly [number, number] };
@@ -85,15 +85,15 @@ type SceneCanvasProps = {
   onStrokeActiveChange: (isActive: boolean) => void;
   /** Размер и сила кисти — их держит страница редактора, а не окно проекта («Кисти рельефа», требование 2). */
   brushFields: BrushFields;
-  /** Горы файла рельефа как есть, штампы `files.stamps` и выбранная гора — «Лепка рельефа». */
-  mountains: readonly MountainEntry[];
+  /** Отпечатки файла рельефа как есть, штампы `files.stamps` и выбранный отпечаток — «Лепка рельефа». */
+  imprints: readonly ImprintEntry[];
   stampShapes: readonly StampShape[];
-  selectedMountainIndex: number | null;
-  onSelectMountain: (index: number) => void;
-  /** Кнопка «Гора» поставила гору: дописывается в конец файла и выбирается. */
-  onPlaceMountain: (entry: MountainEntry) => void;
-  /** Отпускание после жеста горы: гора целиком — одно действие. */
-  onCommitMountain: (index: number, entry: MountainEntry) => void;
+  selectedImprintIndex: number | null;
+  onSelectImprint: (index: number) => void;
+  /** Кнопка «Отпечаток» поставила отпечаток: дописывается в конец файла и выбирается. */
+  onPlaceImprint: (entry: ImprintEntry) => void;
+  /** Отпускание после жеста отпечатка: отпечаток целиком — одно действие. */
+  onCommitImprint: (index: number, entry: ImprintEntry) => void;
   /** Материалы `files.materials` в порядке объявления — поле «Материал» кнопки «Покрасить». */
   materialNames: readonly string[];
   /** Слои покрытий и их маски из показанных файлов; покрытий нет — `null`. У проекта без файла рельефа `hasTerrainFile` ложно. */
@@ -108,9 +108,9 @@ type SceneCanvasProps = {
   onRestorePaint: () => void;
 };
 
-/** Числа новой горы по умолчанию — «Правка сцены», требование 22: ширина и высота в клетках. */
-const DEFAULT_MOUNTAIN_WIDTH = 30;
-const DEFAULT_MOUNTAIN_HEIGHT = 10;
+/** Числа нового отпечатка по умолчанию — «Правка сцены», требование 22: ширина и высота в клетках. */
+const DEFAULT_IMPRINT_WIDTH = 30;
+const DEFAULT_IMPRINT_HEIGHT = 10;
 
 export type BrushFields = {
   size: number;
@@ -165,12 +165,12 @@ export function SceneCanvas({
   onWaterChange,
   onStrokeActiveChange,
   brushFields,
-  mountains,
+  imprints,
   stampShapes,
-  selectedMountainIndex,
-  onSelectMountain,
-  onPlaceMountain,
-  onCommitMountain,
+  selectedImprintIndex,
+  onSelectImprint,
+  onPlaceImprint,
+  onCommitImprint,
   materialNames,
   terrainCovers,
   terrainMasks,
@@ -198,9 +198,9 @@ export function SceneCanvas({
   onMoveObjectRef.current = onMoveObject;
   const dragRef = useRef<DragState | null>(null);
   const [selectedTool, setSelectedTool] = useState<SelectedTool>(selectHandleModeTool("translate"));
-  const [mountainStampName, setMountainStampName] = useState<string | null>(null);
-  const [mountainWidth, setMountainWidth] = useState(DEFAULT_MOUNTAIN_WIDTH);
-  const [mountainHeight, setMountainHeight] = useState(DEFAULT_MOUNTAIN_HEIGHT);
+  const [imprintStampName, setImprintStampName] = useState<string | null>(null);
+  const [imprintWidth, setImprintWidth] = useState(DEFAULT_IMPRINT_WIDTH);
+  const [imprintHeight, setImprintHeight] = useState(DEFAULT_IMPRINT_HEIGHT);
   const [paintMaterialName, setPaintMaterialName] = useState<string | null>(null);
   const { handleMode, brushKind } = selectedTool;
   const { size: brushSize, strength: brushStrength } = brushFields;
@@ -211,9 +211,9 @@ export function SceneCanvas({
     isGameInputActive,
     isEditorCameraActive,
   });
-  const isMountainEnabled = isMountainToolEnabled(areBrushesAvailable, stampShapes.length > 0);
+  const isImprintEnabled = isImprintToolEnabled(areBrushesAvailable, stampShapes.length > 0);
   // Штамп по умолчанию — первый; объявление, что пропало из `files.stamps`, выбор тоже уводит на первый.
-  const mountainStamp = stampShapes.find((shape) => shape.name === mountainStampName) ?? stampShapes[0];
+  const imprintStamp = stampShapes.find((shape) => shape.name === imprintStampName) ?? stampShapes[0];
   const isPaintEnabled = isPaintToolEnabled(areBrushesAvailable, materialNames.length > 0);
   // Материал по умолчанию — первый; объявление, что пропало из `files.materials`, выбор тоже уводит на первый.
   const paintMaterial = materialNames.find((name) => name === paintMaterialName) ?? materialNames[0];
@@ -252,17 +252,17 @@ export function SceneCanvas({
           onCommitPlacement,
           onCommitTerrain,
           onStrokeActiveChange,
-          mountains: {
+          imprints: {
             isEditable: areBrushesAvailable,
-            entries: mountains,
-            selectedIndex: selectedMountainIndex,
-            placing: selectedTool.isMountainTool && isMountainEnabled && mountainStamp !== undefined ? { stamp: mountainStamp, width: mountainWidth, height: mountainHeight } : null,
-            onSelect: onSelectMountain,
+            entries: imprints,
+            selectedIndex: selectedImprintIndex,
+            placing: selectedTool.isImprintTool && isImprintEnabled && imprintStamp !== undefined ? { stamp: imprintStamp, width: imprintWidth, height: imprintHeight } : null,
+            onSelect: onSelectImprint,
             onPlace: (entry) => {
-              onPlaceMountain(entry);
+              onPlaceImprint(entry);
               selectHandleMode("translate");
             },
-            onCommit: onCommitMountain,
+            onCommit: onCommitImprint,
             onActiveChange: onStrokeActiveChange,
           },
         }
@@ -271,11 +271,11 @@ export function SceneCanvas({
   const sceneWidth = sceneSize?.width ?? null;
   const sceneHeight = sceneSize?.height ?? null;
 
-  // «Запуск» и всё, что убирает кисти или «Гору», — вместо них ручки «Перенос»; после «Стопа» остаются ручки.
+  // «Запуск» и всё, что убирает кисти или «Отпечаток», — вместо них ручки «Перенос»; после «Стопа» остаются ручки.
   useEffect(() => {
-    const settledTool = settleSelectedTool(selectedTool, areBrushesAvailable, isMountainEnabled, isPaintEnabled);
+    const settledTool = settleSelectedTool(selectedTool, areBrushesAvailable, isImprintEnabled, isPaintEnabled);
     if (settledTool !== selectedTool) setSelectedTool(settledTool);
-  }, [areBrushesAvailable, isMountainEnabled, isPaintEnabled, selectedTool]);
+  }, [areBrushesAvailable, isImprintEnabled, isPaintEnabled, selectedTool]);
 
   // Внешняя правка или другое действие поменяли объекты во время переноса — «Редактор», крайний
   // случай: перенос отменяется, мир движок уже собрал заново из показанного своей перезагрузкой.
@@ -536,19 +536,19 @@ export function SceneCanvas({
           brushSize={brushSize}
           brushStrength={brushStrength}
           water={terrainWater}
-          mountainTool={{
-            isSelected: selectedTool.isMountainTool,
-            isEnabled: isMountainEnabled,
+          imprintTool={{
+            isSelected: selectedTool.isImprintTool,
+            isEnabled: isImprintEnabled,
             fields: {
               stampNames: stampShapes.map((shape) => shape.name),
-              stamp: mountainStamp?.name ?? "",
-              width: mountainWidth,
-              height: mountainHeight,
-              onStampChange: setMountainStampName,
-              onWidthChange: setMountainWidth,
-              onHeightChange: setMountainHeight,
+              stamp: imprintStamp?.name ?? "",
+              width: imprintWidth,
+              height: imprintHeight,
+              onStampChange: setImprintStampName,
+              onWidthChange: setImprintWidth,
+              onHeightChange: setImprintHeight,
             },
-            onSelect: () => setSelectedTool(selectMountainTool(handleMode)),
+            onSelect: () => setSelectedTool(selectImprintTool(handleMode)),
           }}
           paintTool={{
             isSelected: selectedTool.isPaintTool,

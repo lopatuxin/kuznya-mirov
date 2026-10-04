@@ -28,15 +28,15 @@ export type StrokeRunResult = { status: "ok"; message: string; writes: StrokeWri
 /** `terrain_readings` движка: тексты `game.json`, файла рельефа и штампов — рельеф без видеокарты, ответ `{error}` или рельеф как у `terrain_heights`. */
 export type TerrainReadingsFunction = (gameJsonText: string, terrainText: string | null, stamps: { name: string; text: string | null }[]) => unknown;
 
-/** Что мазки меняют: высоты файла, покрытия и их маски; итоговая земля — высоты файла плюс горы. */
+/** Что мазки меняют: высоты файла, покрытия и их маски; итоговая земля — высоты файла плюс отпечатки. */
 type StrokeWorld = {
   sceneSize: SceneSize;
   density: number;
   columns: number;
   rows: number;
   fileHeights: Float64Array;
-  /** На сколько горы поднимают землю в каждой точке сетки: мазки гор не меняют. */
-  mountainLift: Float64Array;
+  /** На сколько отпечатки меняют землю в каждой точке сетки: больше нуля — поднимают, меньше — вдавливают; мазки отпечатков не меняют. */
+  imprintLift: Float64Array;
   covers: TerrainCoverLayer[] | null;
   tintPath: string | null;
   masks: MaskSet;
@@ -73,7 +73,7 @@ function strokeSteps(stroke: BrushStroke, applyFrame: (path: Vec2[], seconds: nu
 
 /** Мазок кисти рельефа: итоговая земля лепится, в файл идёт разница — как у мазка мышью («Лепка рельефа», требование 20). */
 function runTerrainStroke(world: StrokeWorld, stroke: BrushStroke): void {
-  const startEffective = Float64Array.from(world.fileHeights, (height, index) => height + (world.mountainLift[index] as number));
+  const startEffective = Float64Array.from(world.fileHeights, (height, index) => height + (world.imprintLift[index] as number));
   const grid: BrushGrid = { density: world.density, columns: world.columns, rows: world.rows, heights: Float64Array.from(startEffective) };
   const levelTarget = sampleGridHeight(grid, startEffective, stroke.points[0] as Vec2);
   const settings = { kind: stroke.brush as BrushKind, size: stroke.size, strength: stroke.strength };
@@ -119,7 +119,7 @@ async function openWorld(files: ProjectFileReader, readTerrain: TerrainReadingsF
     columns: grid.columns,
     rows: grid.rows,
     fileHeights: Float64Array.from(grid.heights),
-    mountainLift: Float64Array.from(effective, (height, index) => height - (grid.heights[index] as number)),
+    imprintLift: Float64Array.from(effective, (height, index) => height - (grid.heights[index] as number)),
     covers,
     tintPath: parsed?.tint ?? null,
     masks: await readMasks(files, covers),

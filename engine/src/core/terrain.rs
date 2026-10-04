@@ -6,8 +6,8 @@
 use std::sync::OnceLock;
 
 use super::footprint::Footprint;
+use super::imprints::Imprint;
 use super::math3::{self, Vec3};
-use super::mountains::Mountain;
 use super::value::Vec2;
 
 /// Тангенс самого крутого склона, по которому идут: 45°.
@@ -56,11 +56,11 @@ pub struct Terrain {
     scene: [u32; 2],
     /// Точек высот на клетку сцены.
     density: usize,
-    /// Итоговые высоты: `base` плюс наибольшая из гор в точке.
+    /// Итоговые высоты: `base` плюс наибольший подъём минус наибольшая глубина отпечатков в точке.
     heights: Vec<f64>,
-    /// Высоты файла рельефа, без гор.
+    /// Высоты файла рельефа, без отпечатков.
     base: Vec<f64>,
-    mountains: Vec<Mountain>,
+    imprints: Vec<Imprint>,
     water: Option<Water>,
     covers: Vec<Cover>,
     /// Есть ли карта цвета `tint`: она идёт после масок покрытий.
@@ -75,7 +75,7 @@ static FLAT: Terrain = Terrain {
     density: 2,
     heights: Vec::new(),
     base: Vec::new(),
-    mountains: Vec::new(),
+    imprints: Vec::new(),
     water: None,
     covers: Vec::new(),
     tint: false,
@@ -136,7 +136,7 @@ impl Terrain {
             flat: heights.iter().all(|&h| h == 0.0),
             base: heights.clone(),
             heights,
-            mountains: Vec::new(),
+            imprints: Vec::new(),
             water,
             covers: Vec::new(),
             tint: false,
@@ -152,27 +152,35 @@ impl Terrain {
         self
     }
 
-    /// Тот же рельеф с горами `mountains`: итоговые высоты — `heights` файла плюс наибольшая из гор
-    /// в точке сетки; считаются только точки под прямоугольниками гор.
-    pub fn with_mountains(mut self, mountains: Vec<Mountain>) -> Terrain {
+    /// Тот же рельеф с отпечатками `imprints`: итоговые высоты — `heights` файла плюс наибольший подъём
+    /// минус наибольшая глубина в точке сетки; считаются только точки под прямоугольниками отпечатков.
+    pub fn with_imprints(mut self, imprints: Vec<Imprint>) -> Terrain {
         let mut lift = vec![0.0; self.base.len()];
-        for mountain in &mountains {
-            self.lift_under(mountain, &mut lift);
+        let mut dig = vec![0.0; self.base.len()];
+        for imprint in &imprints {
+            self.press_under(imprint, &mut lift, &mut dig);
         }
-        self.heights = self.base.iter().zip(&lift).map(|(h, up)| h + up).collect();
+        self.heights = self
+            .base
+            .iter()
+            .zip(lift.iter().zip(&dig))
+            .map(|(h, (up, down))| h + up - down)
+            .collect();
         self.flat = self.heights.iter().all(|&h| h == 0.0);
-        self.mountains = mountains;
+        self.imprints = imprints;
         self
     }
 
-    /// Поднимает `lift` в точках сетки под горой до её высоты, если та выше уже записанной.
-    fn lift_under(&self, mountain: &Mountain, lift: &mut [f64]) {
-        let [low, high] = mountain.bounds();
+    /// Поднимает `lift` в точках сетки под отпечатком с `height` больше нуля до его высоты, если та выше
+    /// уже записанной, а `dig` под отпечатком с `height` меньше нуля — до его глубины.
+    fn press_under(&self, imprint: &Imprint, lift: &mut [f64], dig: &mut [f64]) {
+        let [low, high] = imprint.bounds();
         let [columns, rows] = self.squares().map(|squares| squares + 1);
+        let slots = if imprint.height > 0.0 { lift } else { dig };
         for row in self.lattice_span(low[1], high[1], rows) {
             for column in self.lattice_span(low[0], high[0], columns) {
-                let height = mountain.height_at(self.point_place(column, row));
-                let slot = &mut lift[row * columns + column];
+                let height = imprint.height_at(self.point_place(column, row)).abs();
+                let slot = &mut slots[row * columns + column];
                 *slot = slot.max(height);
             }
         }
@@ -186,16 +194,17 @@ impl Terrain {
         first..last
     }
 
-    /// Горы файла рельефа, в порядке записи.
-    pub fn mountains(&self) -> &[Mountain] {
-        &self.mountains
+    /// Отпечатки файла рельефа, в порядке записи.
+    pub fn imprints(&self) -> &[Imprint] {
+        &self.imprints
     }
 
-    /// Номер горы с наибольшей высотой больше нуля в месте сцены; из равных — меньший.
-    pub fn mountain_at(&self, x: f64, y: f64) -> Option<usize> {
+    /// Номер отпечатка с наибольшей высотой или глубиной `|штамп × height|` больше нуля в месте сцены;
+    /// из равных — меньший.
+    pub fn imprint_at(&self, x: f64, y: f64) -> Option<usize> {
         let mut best: Option<(usize, f64)> = None;
-        for (index, mountain) in self.mountains.iter().enumerate() {
-            let height = mountain.height_at([x, y]);
+        for (index, imprint) in self.imprints.iter().enumerate() {
+            let height = imprint.height_at([x, y]).abs();
             if height > 0.0 && best.is_none_or(|(_, top)| height > top) {
                 best = Some((index, height));
             }
@@ -253,12 +262,12 @@ impl Terrain {
         self.water
     }
 
-    /// Итоговые высоты точек сетки с горами, строками сверху вниз; пусто у ровной земли без файла.
+    /// Итоговые высоты точек сетки с отпечатками, строками сверху вниз; пусто у ровной земли без файла.
     pub fn heights(&self) -> &[f64] {
         &self.heights
     }
 
-    /// Высоты точек сетки из файла рельефа, без гор; пусто у ровной земли без файла.
+    /// Высоты точек сетки из файла рельефа, без отпечатков; пусто у ровной земли без файла.
     pub fn base_heights(&self) -> &[f64] {
         &self.base
     }

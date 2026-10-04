@@ -45,7 +45,7 @@ function projectOf(entries: Record<string, string | Uint8Array>): Project {
   return { files, reader };
 }
 
-/** `terrain_readings` движка в миниатюре: высоты — из файла, итоговая земля — они плюс `lift` (горы). */
+/** `terrain_readings` движка в миниатюре: высоты — из файла, итоговая земля — они плюс `lift` (отпечатки). */
 function readingsWithLift(lift: number): TerrainReadingsFunction {
   return (_game, terrain) => {
     const parsed = terrain === null ? null : parseTerrainText(terrain);
@@ -175,14 +175,14 @@ describe("runStrokes — кисти рельефа", () => {
     expect(writes.map((write) => write.path)).toEqual(["terrain.json"]);
   });
 
-  it("на горе кисть лепит итоговую землю: в heights пишется та же разница, что на ровном месте", async () => {
+  it("на отпечатке кисть лепит итоговую землю: в heights пишется та же разница, что на ровном месте", async () => {
     const plain = writtenBy(await runStrokes(projectOf({ "game.json": GAME_JSON, "terrain.json": terrainText() }).reader, NO_LIFT, toJson([RAISE])));
-    const onMountain = writtenBy(await runStrokes(projectOf({ "game.json": GAME_JSON, "terrain.json": terrainText() }).reader, readingsWithLift(7.5), toJson([RAISE])));
+    const onImprint = writtenBy(await runStrokes(projectOf({ "game.json": GAME_JSON, "terrain.json": terrainText() }).reader, readingsWithLift(7.5), toJson([RAISE])));
 
-    expect(textWritten(onMountain, "terrain.json")).toBe(textWritten(plain, "terrain.json"));
+    expect(textWritten(onImprint, "terrain.json")).toBe(textWritten(plain, "terrain.json"));
   });
 
-  it("«Выровнять» ведёт итоговую землю к итоговой высоте первой точки: выровненная гора файл не меняет", async () => {
+  it("«Выровнять» ведёт итоговую землю к итоговой высоте первой точки: выровненный отпечаток файл не меняет", async () => {
     const project = projectOf({ "game.json": GAME_JSON, "terrain.json": terrainText() });
     const level = { brush: "level", size: 6, strength: 100, seconds: 1, points: [[2, 1.5], [3, 1.5]] };
 

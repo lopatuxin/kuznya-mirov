@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use super::mountains::StampTable;
+use super::imprints::StampTable;
 use super::terrain::Terrain;
 use super::value::PropKind;
 
@@ -76,7 +76,7 @@ pub struct PropertyTable {
     /// «Рельеф»: земля трёхмерной сцены — та же таблица, что знает про `three_d`, отдаёт её каждому
     /// миру, который строится по этим свойствам.
     terrain: Option<Arc<Terrain>>,
-    /// «Лепка рельефа»: штампы `files.stamps` — по ним ставятся горы файла рельефа и правки редактора.
+    /// «Лепка рельефа»: штампы `files.stamps` — по ним ставятся отпечатки файла рельефа и правки редактора.
     stamps: StampTable,
 }
 

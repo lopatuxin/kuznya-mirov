@@ -52,6 +52,25 @@ describe("вырезка по списку", () => {
     );
   });
 
+  it("вырез без zoom и invert режется как с zoom 13 и invert false, плитки просятся с масштабом выреза", async () => {
+    const asked = [];
+    const recording = async (tileX, tileY, zoom) => {
+      asked.push(zoom);
+      return hillTile(tileX, tileY);
+    };
+    const files = await cutFromFile(listPath, recording);
+    const plain = files.map((file) => readFileSync(file, "utf8"));
+    assert.ok(asked.length > 0 && asked.every((zoom) => zoom === 13));
+    const explicit = { ...LIST, stamps: LIST.stamps.map((cut) => ({ ...cut, zoom: 13, invert: false })) };
+    writeFileSync(listPath, JSON.stringify(explicit));
+    await cutFromFile(listPath, hillTile);
+    assert.deepEqual(files.map((file) => readFileSync(file, "utf8")), plain);
+    asked.length = 0;
+    writeFileSync(listPath, JSON.stringify({ ...LIST, stamps: [{ ...LIST.stamps[0], zoom: 15 }] }));
+    await cutFromFile(listPath, recording);
+    assert.ok(asked.length > 0 && asked.every((zoom) => zoom === 15));
+  });
+
   it("плитка не скачалась — программа останавливается с номером выреза и плитки, ни одного файла", async () => {
     let calls = 0;
     const failing = async (tileX, tileY) => {
@@ -61,6 +80,14 @@ describe("вырезка по списку", () => {
     };
     await assert.rejects(cutFromFile(listPath, failing), /вырез «.+»: плитка 13\/\d+\/\d+: ответ 403/);
     assert.equal(existsSync(join(dir, "result")), false);
+  });
+
+  it("zoom или invert с ошибкой — вырез назван, файлы не пишутся", async () => {
+    for (const [field, message] of [[{ zoom: 16 }, /вырез 2 «second»: «zoom»/], [{ invert: "да" }, /вырез 2 «second»: «invert»/]]) {
+      writeFileSync(listPath, JSON.stringify({ ...LIST, stamps: [LIST.stamps[0], { ...LIST.stamps[1], ...field }] }));
+      await assert.rejects(cutFromFile(listPath, hillTile), message);
+      assert.deepEqual(readdirSync(dir), ["list.json"]);
+    }
   });
 
   it("ошибка списка называет вырез и поле, файлы не пишутся", async () => {

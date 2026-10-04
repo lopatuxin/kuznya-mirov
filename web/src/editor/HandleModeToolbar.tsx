@@ -1,17 +1,17 @@
 import { EditorIcon, type EditorIconName } from "./EditorIcon";
 import type { HandleMode } from "./handleGeometry";
-import { MountainToolFields, type MountainToolFieldsProps } from "./MountainToolFields";
+import { ImprintToolFields, type ImprintToolFieldsProps } from "./ImprintToolFields";
 import { PaintBrushFields, type PaintBrushFieldsProps } from "./PaintBrushFields";
 import { TerrainBrushFields } from "./TerrainBrushFields";
 import type { BrushKind } from "./terrainBrush";
 import type { TerrainWater } from "./terrainFile";
 
-/** Кнопка «Гора» и её поля («Правка сцены», требования 22–23). */
-export type MountainToolbar = {
+/** Кнопка «Отпечаток» и её поля («Правка сцены», требования 22–23). */
+export type ImprintToolbar = {
   isSelected: boolean;
   /** Кнопка нажимается, когда в игре объявлены штампы. */
   isEnabled: boolean;
-  fields: MountainToolFieldsProps;
+  fields: ImprintToolFieldsProps;
   onSelect: () => void;
 };
 
@@ -36,7 +36,7 @@ type HandleModeToolbarProps = {
   brushSize: number;
   brushStrength: number;
   water: TerrainWater | null;
-  mountainTool: MountainToolbar;
+  imprintTool: ImprintToolbar;
   paintTool: PaintToolbar;
   onChange: (mode: HandleMode) => void;
   onBrushChange: (kind: BrushKind) => void;
@@ -79,8 +79,8 @@ function ToolButton({ title, isActive, isDisabled = false, onClick, children }: 
 
 /**
  * Инструменты над сценой — «Редактор», требование 10, и «Кисти рельефа», требования 1–3: виды ручек
- * (те же режимы, что клавиши `W`, `E`, `R`), кисти рельефа, «Гора», «Покрасить» и, пока выбрана кисть, поля размера, силы и воды,
- * пока выбрана «Гора» — поля штампа, ширины и высоты, пока выбрана «Покрасить» — размера, силы и материала.
+ * (те же режимы, что клавиши `W`, `E`, `R`), кисти рельефа, «Отпечаток», «Покрасить» и, пока выбрана кисть, поля размера, силы и воды,
+ * пока выбрана «Отпечаток» — поля штампа, ширины и высоты, пока выбрана «Покрасить» — размера, силы и материала.
  */
 export function HandleModeToolbar({
   mode,
@@ -89,7 +89,7 @@ export function HandleModeToolbar({
   brushSize,
   brushStrength,
   water,
-  mountainTool,
+  imprintTool,
   paintTool,
   onChange,
   onBrushChange,
@@ -103,7 +103,7 @@ export function HandleModeToolbar({
         <div className="scene-view__panel" role="group" aria-label="Ручки объекта">
           <span className="scene-view__panel-caption">Объект</span>
           {MODE_BUTTONS.map((button) => (
-            <ToolButton key={button.mode} title={button.title} isActive={brushKind === null && !mountainTool.isSelected && !paintTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
+            <ToolButton key={button.mode} title={button.title} isActive={brushKind === null && !imprintTool.isSelected && !paintTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
               <EditorIcon name={button.icon} size={14} />
             </ToolButton>
           ))}
@@ -117,12 +117,12 @@ export function HandleModeToolbar({
               </ToolButton>
             ))}
             <ToolButton
-              title={mountainTool.isEnabled ? "Поставить гору из штампа" : NO_STAMPS_TITLE}
-              isActive={mountainTool.isSelected}
-              isDisabled={!mountainTool.isEnabled}
-              onClick={mountainTool.onSelect}
+              title={imprintTool.isEnabled ? "Отпечаток" : NO_STAMPS_TITLE}
+              isActive={imprintTool.isSelected}
+              isDisabled={!imprintTool.isEnabled}
+              onClick={imprintTool.onSelect}
             >
-              <EditorIcon name="terrain-mountain" size={14} />
+              <EditorIcon name="terrain-imprint" size={14} />
             </ToolButton>
           </div>
         )}
@@ -140,9 +140,9 @@ export function HandleModeToolbar({
           </div>
         )}
       </div>
-      {areBrushesAvailable && mountainTool.isSelected && (
+      {areBrushesAvailable && imprintTool.isSelected && (
         <div className="scene-view__tool-row">
-          <MountainToolFields {...mountainTool.fields} />
+          <ImprintToolFields {...imprintTool.fields} />
         </div>
       )}
       {areBrushesAvailable && paintTool.isSelected && <PaintBrushFields {...paintTool.fields} />}

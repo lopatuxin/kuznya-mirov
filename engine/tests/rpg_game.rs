@@ -18,7 +18,6 @@ use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
 use engine::data::load::{
     GameConfig, ImageVerdict, load_rest_with_stamps, read_entry, terrain_image_paths,
 };
-use engine::render::materials::{Relief, pack_masks};
 use serde_json::json;
 
 const WINDOW: [f32; 2] = [1920.0, 1080.0];
@@ -376,73 +375,35 @@ fn rpg_loads_without_errors_or_warnings() {
     assert!(!game.scene.y_sort);
 }
 
-/// Требования 28–29 и 31 фазы 19 с поправками требования 9 фазы 20 и требования 29 фазы 21: деревня
-/// одета материалами — травой по всей земле и камнем по крутизне, без масок, — и плиток травы на сцене
-/// нет; её карты собираются в текстуры видеокарты.
+/// Требования 28–29 и 31 фазы 19 с поправками фаз 20, 21 и 21.5: материалов у деревни нет — трава и
+/// камень ушли до шага текстур, — покрытий, карты цвета и картинок рельефа нет, плиток травы на сцене нет.
 #[test]
-fn the_village_cover_layers_assemble_into_textures_and_no_grass_tiles_remain() {
+fn the_village_has_no_materials_until_the_texturing_step() {
     let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
     let game = load_village(&read("scene.json"));
     assert!(game.ground.is_empty(), "плитки травы ушли");
-    let covers = game.world.terrain().covers();
-    let layers: Vec<(&str, Option<f64>)> = covers
-        .iter()
-        .map(|cover| {
-            let name = &config.files.materials[cover.material].name;
-            assert_eq!(cover.mask, None, "у слоя {name} маски нет");
-            (name.as_str(), cover.slope)
-        })
-        .collect();
+    assert!(config.files.materials.is_empty(), "материалов нет");
+    assert!(game.world.terrain().covers().is_empty(), "покрытий нет");
+    assert!(!game.world.terrain().has_tint(), "карты цвета у деревни нет");
     assert_eq!(
-        layers,
-        [
-            ("grass", None),
-            ("scree", Some(30.0)),
-            ("rock_moss", Some(36.0)),
-            ("rock", Some(44.0)),
-        ],
-        "трава на всём, камень по крутизне"
+        terrain_image_paths(&read("terrain.json")),
+        Vec::<String>::new(),
+        "картинок рельефа нет"
     );
-
-    let terrain = read("terrain.json");
-    let (map_verdicts, mask_verdicts) = map_data(&config, Some(&terrain));
-    let image_paths = terrain_image_paths(&terrain);
-    assert!(
-        !game.world.terrain().has_tint(),
-        "карты цвета у деревни нет"
-    );
-    assert_eq!(image_paths, Vec::<String>::new(), "картинок рельефа нет");
-    let scene = [game.scene.width, game.scene.height];
-    let relief = Relief::new(
-        &config.files.materials,
-        &map_verdicts,
-        covers,
-        false,
-        &image_paths,
-        &mask_verdicts,
-        scene,
-    )
-    .expect("карты деревни собираются");
-    assert_eq!(
-        (relief.side, relief.materials.len(), relief.masks.len()),
-        (1024, config.files.materials.len(), 0)
-    );
-    let packed = pack_masks(&relief.masks, relief.tint.as_ref());
-    assert_eq!(packed.layers.len(), 1, "слой масок есть всегда");
 }
 
-/// Фаза 20: каждый штамп деревни поставлен горой, и горы поднимают землю над высотами файла.
+/// Фаза 20: каждый штамп деревни поставлен отпечатком, и отпечатки поднимают землю над высотами файла.
 #[test]
-fn every_stamp_of_the_village_stands_as_a_mountain_that_lifts_the_land() {
+fn every_stamp_of_the_village_stands_as_an_imprint_that_lifts_the_land() {
     let (config, _) = read_entry(&read("game.json")).expect("game.json должен разбираться");
     let game = load_village(&read("scene.json"));
     let terrain = game.world.terrain();
     for (index, (name, _)) in config.files.stamps.iter().enumerate() {
         assert!(
             terrain
-                .mountains()
+                .imprints()
                 .iter()
-                .any(|mountain| mountain.stamp == index),
+                .any(|imprint| imprint.stamp == index),
             "штамп \"{name}\" не поставлен"
         );
     }
@@ -452,7 +413,7 @@ fn every_stamp_of_the_village_stands_as_a_mountain_that_lifts_the_land() {
             .iter()
             .zip(terrain.base_heights())
             .any(|(effective, base)| effective > base),
-        "горы поднимают землю"
+        "отпечатки поднимают землю"
     );
 }
 

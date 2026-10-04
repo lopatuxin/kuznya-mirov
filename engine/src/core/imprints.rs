@@ -1,11 +1,12 @@
-//! «Лепка рельефа» → «Горы»: штамп — карта высот одной горы от 0 до 1, гора — штамп, растянутый на
-//! повёрнутый прямоугольник земли. Итоговая высота точки сетки — `heights` плюс наибольшая из гор.
+//! «Лепка рельефа» → «Отпечатки»: штамп — карта высот от 0 до 1, отпечаток — штамп, растянутый на
+//! повёрнутый прямоугольник земли. Итоговая высота точки сетки — `heights` плюс наибольший подъём
+//! минус наибольшая глубина отпечатков.
 
 use std::sync::Arc;
 
 use super::value::{Rotation, Vec2};
 
-/// Карта высот горы: строки сверху вниз, первая строка — северный край, первое число — западный.
+/// Карта высот штампа: строки сверху вниз, первая строка — северный край, первое число — западный.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Stamp {
     columns: usize,
@@ -38,7 +39,7 @@ impl Stamp {
 }
 
 /// Таблица `files.stamps` загруженной игры по порядку объявления; `None` — штамп с ошибкой, она уже
-/// записана, и горы с этим штампом молча выпадают, не плодя вторую ошибку.
+/// записана, и отпечатки с этим штампом молча выпадают, не плодя вторую ошибку.
 #[derive(Debug, Clone, Default)]
 pub struct StampTable {
     entries: Vec<(String, Option<Arc<Stamp>>)>,
@@ -58,10 +59,11 @@ impl StampTable {
     }
 }
 
-/// Гора: штамп `stamp` (номер в таблице), растянутый на прямоугольник `size` с серединой `position` и
-/// повёрнутый на `rotation` вокруг середины так же, как объект; 1 штампа становится `height` клеток.
+/// Отпечаток: штамп `stamp` (номер в таблице), растянутый на прямоугольник `size` с серединой `position` и
+/// повёрнутый на `rotation` вокруг середины так же, как объект; 1 штампа становится `height` клеток:
+/// вверх при `height` больше нуля, вниз при меньше.
 #[derive(Debug, Clone, PartialEq)]
-pub struct Mountain {
+pub struct Imprint {
     pub stamp: usize,
     pub shape: Arc<Stamp>,
     pub position: Vec2,
@@ -70,8 +72,8 @@ pub struct Mountain {
     pub rotation: Rotation,
 }
 
-impl Mountain {
-    /// Высота горы в месте сцены: вне прямоугольника — 0.
+impl Imprint {
+    /// Высота отпечатка со знаком `height` в месте сцены: вне прямоугольника — 0.
     pub fn height_at(&self, point: Vec2) -> f64 {
         let (sin, cos) = self.rotation.sin_cos();
         let (dx, dy) = (point[0] - self.position[0], point[1] - self.position[1]);
@@ -106,8 +108,8 @@ mod tests {
         Arc::new(Stamp::new(&[vec![0.0, 0.5], vec![0.5, 1.0]]))
     }
 
-    fn mountain(position: Vec2, size: Vec2, degrees: f64) -> Mountain {
-        Mountain {
+    fn imprint(position: Vec2, size: Vec2, degrees: f64) -> Imprint {
+        Imprint {
             stamp: 0,
             shape: wedge(),
             position,
@@ -128,18 +130,27 @@ mod tests {
     }
 
     #[test]
-    fn a_mountain_is_zero_outside_its_rectangle_and_scales_inside() {
-        let mountain = mountain([10.0, 10.0], [4.0, 2.0], 0.0);
-        assert_eq!(mountain.height_at([20.0, 10.0]), 0.0);
-        assert_eq!(mountain.height_at([10.0, 12.5]), 0.0);
-        assert_eq!(mountain.height_at([12.0, 11.0]), 10.0, "нижний правый угол");
-        assert_eq!(mountain.height_at([8.0, 9.0]), 0.0, "верхний левый угол");
-        assert_eq!(mountain.height_at([10.0, 10.0]), 5.0);
+    fn an_imprint_is_zero_outside_its_rectangle_and_scales_inside() {
+        let imprint = imprint([10.0, 10.0], [4.0, 2.0], 0.0);
+        assert_eq!(imprint.height_at([20.0, 10.0]), 0.0);
+        assert_eq!(imprint.height_at([10.0, 12.5]), 0.0);
+        assert_eq!(imprint.height_at([12.0, 11.0]), 10.0, "нижний правый угол");
+        assert_eq!(imprint.height_at([8.0, 9.0]), 0.0, "верхний левый угол");
+        assert_eq!(imprint.height_at([10.0, 10.0]), 5.0);
     }
 
     #[test]
-    fn a_mountain_turned_by_ninety_degrees_turns_clockwise_like_an_object() {
-        let turned = mountain([10.0, 10.0], [4.0, 2.0], 90.0);
+    fn an_imprint_with_a_negative_height_reads_below_zero_inside_its_rectangle() {
+        let mut gully = imprint([10.0, 10.0], [4.0, 2.0], 0.0);
+        gully.height = -10.0;
+        assert_eq!(gully.height_at([12.0, 11.0]), -10.0, "нижний правый угол");
+        assert_eq!(gully.height_at([10.0, 10.0]), -5.0);
+        assert_eq!(gully.height_at([20.0, 10.0]), 0.0);
+    }
+
+    #[test]
+    fn an_imprint_turned_by_ninety_degrees_turns_clockwise_like_an_object() {
+        let turned = imprint([10.0, 10.0], [4.0, 2.0], 90.0);
         assert_eq!(
             turned.height_at([11.0, 8.0]),
             0.0,
@@ -158,8 +169,8 @@ mod tests {
     }
 
     #[test]
-    fn the_bounds_of_a_turned_mountain_cover_its_corners() {
-        let [low, high] = mountain([10.0, 10.0], [4.0, 2.0], 90.0).bounds();
+    fn the_bounds_of_a_turned_imprint_cover_its_corners() {
+        let [low, high] = imprint([10.0, 10.0], [4.0, 2.0], 90.0).bounds();
         assert!((low[0] - 9.0).abs() < 1e-12 && (high[0] - 11.0).abs() < 1e-12);
         assert!((low[1] - 8.0).abs() < 1e-12 && (high[1] - 12.0).abs() < 1e-12);
     }

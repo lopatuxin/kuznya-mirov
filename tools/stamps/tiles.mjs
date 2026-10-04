@@ -1,4 +1,4 @@
-// Плитки высот Terrain Tiles (AWS Open Data) формата Terrarium: масштаб 13, PNG 256 × 256, высота в
+// Плитки высот Terrain Tiles (AWS Open Data) формата Terrarium: масштаб задаёт вырез, PNG 256 × 256, высота в
 // метрах кодируется цветом точки. Скачанная плитка лежит в кэше и второй раз не качается.
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
@@ -6,13 +6,12 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { decodePng } from "./png.mjs";
 
-export const ZOOM = 13;
 export const TILE_SIZE = 256;
 const DOWNLOAD_TIMEOUT_MS = 60000;
 export const CACHE_DIR = fileURLToPath(new URL("./.cache/", import.meta.url));
 
-export function tileUrl(x, y) {
-  return `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${ZOOM}/${x}/${y}.png`;
+export function tileUrl(x, y, zoom) {
+  return `https://s3.amazonaws.com/elevation-tiles-prod/terrarium/${zoom}/${x}/${y}.png`;
 }
 
 /** Высота в метрах из цвета точки плитки Terrarium. */
@@ -35,16 +34,16 @@ function tileHeights(buffer) {
 }
 
 /**
- * Читатель плиток: `(x, y)` → высоты плитки в метрах (`Float64Array`, строки сверху вниз). Плитка берётся
+ * Читатель плиток: `(x, y, zoom)` → высоты плитки в метрах (`Float64Array`, строки сверху вниз). Плитка берётся
  * из `cacheDir`, а если её там нет — скачивается через `download(url)` и ложится в кэш. Плитка, что не
  * скачалась или не разобралась, — ошибка с её номером и адресом.
  */
 export function createTileReader({ cacheDir = CACHE_DIR, download = downloadTile } = {}) {
   const loaded = new Map();
-  const read = async (x, y) => {
-    const file = join(cacheDir, `${ZOOM}-${x}-${y}.png`);
+  const read = async (x, y, zoom) => {
+    const file = join(cacheDir, `${zoom}-${x}-${y}.png`);
     const cached = await readFile(file).catch(() => null);
-    const buffer = cached ?? (await download(tileUrl(x, y)));
+    const buffer = cached ?? (await download(tileUrl(x, y, zoom)));
     const heights = tileHeights(buffer);
     if (cached === null) {
       await mkdir(cacheDir, { recursive: true });
@@ -52,13 +51,13 @@ export function createTileReader({ cacheDir = CACHE_DIR, download = downloadTile
     }
     return heights;
   };
-  return (x, y) => {
-    const key = `${x}/${y}`;
+  return (x, y, zoom) => {
+    const key = `${zoom}/${x}/${y}`;
     if (!loaded.has(key)) {
       loaded.set(
         key,
-        read(x, y).catch((error) => {
-          throw new Error(`плитка ${ZOOM}/${x}/${y} (${tileUrl(x, y)}): ${error.message}`);
+        read(x, y, zoom).catch((error) => {
+          throw new Error(`плитка ${zoom}/${x}/${y} (${tileUrl(x, y, zoom)}): ${error.message}`);
         }),
       );
     }

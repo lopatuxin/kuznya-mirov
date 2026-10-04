@@ -1,21 +1,21 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { DEFAULT_BASE, DEFAULT_FADE } from "./list.mjs";
+import { DEFAULT_BASE, DEFAULT_FADE, DEFAULT_ZOOM } from "./list.mjs";
 import { cutStamp, stampText } from "./stamp.mjs";
-import { TILE_SIZE, ZOOM } from "./tiles.mjs";
+import { TILE_SIZE } from "./tiles.mjs";
 
-const WORLD = TILE_SIZE * 2 ** ZOOM;
-const METERS_PER_PIXEL_AT_ZERO_LATITUDE = (156543.03392804097 * 256) / WORLD;
+const world = (zoom) => TILE_SIZE * 2 ** zoom;
+const METERS_PER_PIXEL_AT_ZERO_LATITUDE = (156543.03392804097 * 256) / world(DEFAULT_ZOOM);
 
 function cut(overrides = {}) {
-  return { name: "peak", place: "тест", lat: 50, lon: 87, km: [8, 6], points: 40, base: DEFAULT_BASE, fade: DEFAULT_FADE, ...overrides };
+  return { name: "peak", place: "тест", lat: 50, lon: 87, km: [8, 6], points: 40, base: DEFAULT_BASE, fade: DEFAULT_FADE, zoom: DEFAULT_ZOOM, invert: false, ...overrides };
 }
 
-/** Читатель плиток для поля `metersAt(x, y)` по пикселям мира; список запрошенных плиток — в `asked`. */
+/** Читатель плиток для поля `metersAt(x, y)` по пикселям мира; список запрошенных плиток `[x, y, zoom]` — в `asked`. */
 function fieldReader(metersAt) {
   const asked = [];
-  const read = async (tileX, tileY) => {
-    asked.push([tileX, tileY]);
+  const read = async (tileX, tileY, zoom) => {
+    asked.push([tileX, tileY, zoom]);
     const heights = new Float64Array(TILE_SIZE * TILE_SIZE);
     for (let y = 0; y < TILE_SIZE; y++) {
       for (let x = 0; x < TILE_SIZE; x++) heights[y * TILE_SIZE + x] = metersAt(tileX * TILE_SIZE + x, tileY * TILE_SIZE + y);
@@ -25,8 +25,8 @@ function fieldReader(metersAt) {
   return { read, asked };
 }
 
-function worldPixel(lat, lon) {
-  return { x: ((lon + 180) / 360) * WORLD, y: ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * WORLD };
+function worldPixel(lat, lon, zoom = DEFAULT_ZOOM) {
+  return { x: ((lon + 180) / 360) * world(zoom), y: ((1 - Math.asinh(Math.tan((lat * Math.PI) / 180)) / Math.PI) / 2) * world(zoom) };
 }
 
 /** Конус высотой 1000 м и радиусом `radius` точек с вершиной в `peak`. */
@@ -126,6 +126,47 @@ describe("cutStamp", () => {
     const first = stampText(await cutStamp(cut(), fieldReader(field).read));
     const second = stampText(await cutStamp(cut(), fieldReader(field).read));
     assert.equal(first, second);
+  });
+
+  it("масштаб выреза уходит в читатель плиток; на масштабе 15 тот же вырез — вчетверо больше плиток по краю, чем на 13", async () => {
+    const ramp = (x) => x * 0.01;
+    const columns = async (zoom) => {
+      const reader = fieldReader(ramp);
+      await cutStamp(cut({ zoom, km: [20, 10], points: 40 }), reader.read);
+      assert.ok(reader.asked.every(([, , asked]) => asked === zoom));
+      return new Set(reader.asked.map(([x]) => x)).size;
+    };
+    const coarse = await columns(13);
+    const fine = await columns(15);
+    assert.ok(fine >= 4 * coarse - 4 && fine <= 4 * coarse, `на 13 — ${coarse} колонок, на 15 — ${fine}`);
+  });
+
+  it("масштаб 15: вершина конуса в середине выреза — наибольшая точка в середине штампа", async () => {
+    const middle = worldPixel(50, 87, 15);
+    const [row, col] = cellOfPeak(await cutStamp(cut({ zoom: 15, points: 41, km: [8, 6] }), fieldReader(cone(middle, 2000)).read));
+    assert.deepEqual([row, col], [15, 20]);
+  });
+
+  it("invert: впадина становится холмом — самое низкое место 1, край 0, и это тот же штамп, что у конуса того же размера", async () => {
+    const bowl = (x, y) => 1000 - cone(center, 500)(x, y);
+    const inverted = await cutStamp(cut({ invert: true, base: 0, fade: 0.4 }), fieldReader(bowl).read);
+    const hill = await cutStamp(cut({ base: 0, fade: 0.4 }), fieldReader(cone(center, 500)).read);
+    assert.equal(inverted.heights[15][20], 1);
+    assert.ok(inverted.heights[0].every((value) => value === 0) && inverted.heights.every((row) => row[0] === 0 && row.at(-1) === 0));
+    inverted.heights.forEach((row, r) => row.forEach((value, c) => assert.ok(Math.abs(value - hill.heights[r][c]) <= 0.002, `строка ${r}, столбец ${c}: ${value} против ${hill.heights[r][c]}`)));
+  });
+
+  it("invert: холм без переворота и с ним — разные штампы, а без invert файл тот же, что с invert: false", async () => {
+    const field = cone(center, 500);
+    const plain = stampText(await cutStamp(cut(), fieldReader(field).read));
+    const { invert, ...withoutInvert } = cut();
+    assert.equal(invert, false);
+    assert.equal(stampText(await cutStamp(withoutInvert, fieldReader(field).read)), plain);
+    assert.notEqual(stampText(await cutStamp(cut({ invert: true }), fieldReader(field).read)), plain);
+  });
+
+  it("invert на ровном месте — та же ошибка, что без invert", async () => {
+    await assert.rejects(cutStamp(cut({ invert: true }), fieldReader(() => 120).read), /высот не осталось/);
   });
 
   it("ошибка чтения плитки доходит до вызывающего", async () => {

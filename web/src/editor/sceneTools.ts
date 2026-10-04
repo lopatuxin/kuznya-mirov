@@ -2,10 +2,10 @@ import type { HandleMode } from "./handleGeometry";
 import type { BrushKind } from "./terrainBrush";
 
 /**
- * Выбран всегда один инструмент: вид ручек (`brushKind === null`, `isMountainTool` и `isPaintTool` ложны), кисть —
- * «Кисти рельефа», требование 1, «Гора» — «Редактор», «Правка сцены», требование 22, или «Покрасить» — «Покраска», требование 1.
+ * Выбран всегда один инструмент: вид ручек (`brushKind === null`, `isImprintTool` и `isPaintTool` ложны), кисть —
+ * «Кисти рельефа», требование 1, «Отпечаток» — «Редактор», «Правка сцены», требование 22, или «Покрасить» — «Покраска», требование 1.
  */
-export type SelectedTool = { handleMode: HandleMode; brushKind: BrushKind | null; isMountainTool: boolean; isPaintTool: boolean };
+export type SelectedTool = { handleMode: HandleMode; brushKind: BrushKind | null; isImprintTool: boolean; isPaintTool: boolean };
 
 export type SceneToolContext = {
   isThreeDimensionalScene: boolean;
@@ -29,8 +29,8 @@ export function resolveSceneToolAvailability(context: SceneToolContext): SceneTo
   return { areHandlesAvailable, areBrushesAvailable: areHandlesAvailable && context.isEditorCameraActive };
 }
 
-/** Кнопка «Гора» нажимается там же, где кисти, и только когда в игре объявлены штампы («Редактор», «Правка сцены», требование 23). */
-export function isMountainToolEnabled(areBrushesAvailable: boolean, hasStamps: boolean): boolean {
+/** Кнопка «Отпечаток» нажимается там же, где кисти, и только когда в игре объявлены штампы («Редактор», «Правка сцены», требование 23). */
+export function isImprintToolEnabled(areBrushesAvailable: boolean, hasStamps: boolean): boolean {
   return areBrushesAvailable && hasStamps;
 }
 
@@ -39,30 +39,30 @@ export function isPaintToolEnabled(areBrushesAvailable: boolean, hasMaterials: b
   return areBrushesAvailable && hasMaterials;
 }
 
-/** Виды ручек выбираются вместо кисти, «Горы» и «Покрасить» («Кисти рельефа», требование 1). */
+/** Виды ручек выбираются вместо кисти, «Отпечатка» и «Покрасить» («Кисти рельефа», требование 1). */
 export function selectHandleModeTool(handleMode: HandleMode): SelectedTool {
-  return { handleMode, brushKind: null, isMountainTool: false, isPaintTool: false };
+  return { handleMode, brushKind: null, isImprintTool: false, isPaintTool: false };
 }
 
 export function selectBrushTool(handleMode: HandleMode, brushKind: BrushKind): SelectedTool {
-  return { handleMode, brushKind, isMountainTool: false, isPaintTool: false };
+  return { handleMode, brushKind, isImprintTool: false, isPaintTool: false };
 }
 
-export function selectMountainTool(handleMode: HandleMode): SelectedTool {
-  return { handleMode, brushKind: null, isMountainTool: true, isPaintTool: false };
+export function selectImprintTool(handleMode: HandleMode): SelectedTool {
+  return { handleMode, brushKind: null, isImprintTool: true, isPaintTool: false };
 }
 
 export function selectPaintTool(handleMode: HandleMode): SelectedTool {
-  return { handleMode, brushKind: null, isMountainTool: false, isPaintTool: true };
+  return { handleMode, brushKind: null, isImprintTool: false, isPaintTool: true };
 }
 
 /**
- * Кисти, «Гора» или «Покрасить» пропали (партия, пауза, повтор, плоская сцена, штампов или материалов нет) —
+ * Кисти, «Отпечаток» или «Покрасить» пропали (партия, пауза, повтор, плоская сцена, штампов или материалов нет) —
  * вместо них выбран «Перенос»; иначе выбор остаётся.
  */
-export function settleSelectedTool(tool: SelectedTool, areBrushesAvailable: boolean, isMountainEnabled: boolean, isPaintEnabled: boolean): SelectedTool {
+export function settleSelectedTool(tool: SelectedTool, areBrushesAvailable: boolean, isImprintEnabled: boolean, isPaintEnabled: boolean): SelectedTool {
   const isBrushLost = tool.brushKind !== null && !areBrushesAvailable;
-  const isMountainLost = tool.isMountainTool && !isMountainEnabled;
+  const isImprintLost = tool.isImprintTool && !isImprintEnabled;
   const isPaintLost = tool.isPaintTool && !isPaintEnabled;
-  return isBrushLost || isMountainLost || isPaintLost ? selectHandleModeTool("translate") : tool;
+  return isBrushLost || isImprintLost || isPaintLost ? selectHandleModeTool("translate") : tool;
 }

@@ -1,8 +1,8 @@
-//! Фаза 20 — горы-штампы. Игры собираются в коде теста, как в `phase19_light_materials.rs`:
-//! `files.stamps` и файлы штампов, горы `stamps` файла рельефа и все проверки перед запуском, итоговая
+//! Фаза 20 — отпечатки-штампы. Игры собираются в коде теста, как в `phase19_light_materials.rs`:
+//! `files.stamps` и файлы штампов, отпечатки `stamps` файла рельефа и все проверки перед запуском, итоговая
 //! высота земли и всё, что её читает, правило крутизны `slope` у слоя покрытий, вызовы редактора
 //! `set_terrain`, `terrain_heights`, `stamp_at`, заход `read_entry` и `read_texts`. Настоящая деревня
-//! с горами — в `rpg_game.rs`, шейдер — в `phase15_3d_scene_shapes.rs`.
+//! с отпечатками — в `rpg_game.rs`, шейдер — в `phase15_3d_scene_shapes.rs`.
 
 use engine::core::camera::Camera3d;
 use engine::core::game::Game;
@@ -62,7 +62,7 @@ fn terrain_text(base: f64, covers: Option<&str>, stamps: Option<&str>) -> String
     )
 }
 
-fn mountain(stamp: &str, position: [f64; 2], size: [f64; 2], height: f64) -> String {
+fn imprint(stamp: &str, position: [f64; 2], size: [f64; 2], height: f64) -> String {
     format!(
         r#"{{"stamp":"{stamp}","position":[{},{}],"size":[{},{}],"height":{height}}}"#,
         position[0], position[1], size[0], size[1]
@@ -74,7 +74,7 @@ fn list(items: &[String]) -> String {
 }
 
 /// Игра 20 × 12 клеток из двух штампов, `wedge` и `pyramid`, двух материалов и рельефа с покрытиями
-/// и по горе каждого штампа — по умолчанию исправная; каждый тест портит своё.
+/// и по отпечатку каждого штампа — по умолчанию исправная; каждый тест портит своё.
 struct Setup {
     camera: bool,
     /// Таблица `files.stamps` в тексте `game.json`; `None` — ключа нет.
@@ -99,8 +99,8 @@ impl Default for Setup {
             ],
             covers: Some(r#"[{"material":"grass"},{"material":"earth","slope":30}]"#.into()),
             stamps: Some(list(&[
-                mountain("wedge", [4.0, 6.0], [4.0, 4.0], 3.0),
-                mountain("pyramid", [14.0, 6.0], [8.0, 8.0], 4.0),
+                imprint("wedge", [4.0, 6.0], [4.0, 4.0], 3.0),
+                imprint("pyramid", [14.0, 6.0], [8.0, 8.0], 4.0),
             ])),
             base: 0.0,
             objects: String::new(),
@@ -120,8 +120,8 @@ impl Setup {
         self
     }
 
-    fn with_mountains(mut self, mountains: &str) -> Setup {
-        self.stamps = Some(mountains.to_string());
+    fn with_imprints(mut self, imprints: &str) -> Setup {
+        self.stamps = Some(imprints.to_string());
         self
     }
 
@@ -245,7 +245,7 @@ fn at(game: &Game, x: f64, y: f64) -> f64 {
 fn a_whole_setup_loads_without_errors_or_warnings() {
     let (game, warnings) = Setup::default().load().expect("исправная игра");
     assert_eq!(warnings, Vec::new());
-    assert_eq!(game.world.terrain().mountains().len(), 2);
+    assert_eq!(game.world.terrain().imprints().len(), 2);
 }
 
 // -------------------------------------------------------------------------------------------
@@ -358,23 +358,23 @@ refused!(
 
 #[test]
 fn a_stamp_of_two_by_two_is_a_wedge_and_a_stamp_of_zeros_lifts_nothing() {
-    let wedge = one_mountain(
+    let wedge = one_imprint(
         "wedge",
         WEDGE,
-        mountain("wedge", [10.0, 6.0], [4.0, 4.0], 2.0),
+        imprint("wedge", [10.0, 6.0], [4.0, 4.0], 2.0),
     );
     near(at(&wedge, 12.0, 8.0), 2.0, "юго-восточный угол клина");
     near(at(&wedge, 10.0, 6.0), 1.0, "середина клина");
-    let zeros = one_mountain(
+    let zeros = one_imprint(
         "pyramid",
         r#"{"heights":[[0,0],[0,0]]}"#,
-        mountain("pyramid", [10.0, 6.0], [4.0, 4.0], 5.0),
+        imprint("pyramid", [10.0, 6.0], [4.0, 4.0], 5.0),
     );
     assert!(zeros.world.terrain().heights().iter().all(|&h| h == 0.0));
 }
 
 #[test]
-fn a_broken_stamp_does_not_add_a_second_error_for_the_mountains_standing_on_it() {
+fn a_broken_stamp_does_not_add_a_second_error_for_the_imprints_standing_on_it() {
     let errors = errors_of(Setup::default().with_stamp("wedge", "{}").load());
     assert!(
         errors.iter().all(|e| !e.contains("не объявлен")),
@@ -388,102 +388,121 @@ fn a_broken_stamp_does_not_add_a_second_error_for_the_mountains_standing_on_it()
 
 refused!(
     stamps_that_are_not_a_list_are_an_error,
-    Setup::default().with_mountains(r#"{"stamp":"wedge"}"#),
+    Setup::default().with_imprints(r#"{"stamp":"wedge"}"#),
     ["stamps", "ожидался массив"]
 );
 
 refused!(
-    an_unknown_key_in_a_mountain_is_an_error_naming_it,
-    Setup::default().with_mountains(
-        r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":3,"scale":2}]"#
-    ),
+    an_unknown_key_in_an_imprint_is_an_error_naming_it,
+    Setup::default()
+        .with_imprints(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":3,"scale":2}]"#),
     ["stamps[0] → scale", "неизвестное поле"]
 );
 
 refused!(
-    a_mountain_without_a_stamp_is_an_error,
-    Setup::default().with_mountains(r#"[{"position":[4,6],"size":[4,4],"height":3}]"#),
+    an_imprint_without_a_stamp_is_an_error,
+    Setup::default().with_imprints(r#"[{"position":[4,6],"size":[4,4],"height":3}]"#),
     ["stamps[0]", "stamp"]
 );
 
 refused!(
-    a_mountain_without_a_position_is_an_error,
-    Setup::default().with_mountains(r#"[{"stamp":"wedge","size":[4,4],"height":3}]"#),
+    an_imprint_without_a_position_is_an_error,
+    Setup::default().with_imprints(r#"[{"stamp":"wedge","size":[4,4],"height":3}]"#),
     ["stamps[0]", "position"]
 );
 
 refused!(
-    a_mountain_without_a_size_is_an_error,
-    Setup::default().with_mountains(r#"[{"stamp":"wedge","position":[4,6],"height":3}]"#),
+    an_imprint_without_a_size_is_an_error,
+    Setup::default().with_imprints(r#"[{"stamp":"wedge","position":[4,6],"height":3}]"#),
     ["stamps[0]", "size"]
 );
 
 refused!(
-    a_mountain_without_a_height_is_an_error,
-    Setup::default().with_mountains(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4]}]"#),
+    an_imprint_without_a_height_is_an_error,
+    Setup::default().with_imprints(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4]}]"#),
     ["stamps[0]", "height"]
 );
 
 refused!(
-    a_mountain_of_an_undeclared_stamp_is_an_error,
-    Setup::default().with_mountains(&list(&[
-        mountain("wedge", [4.0, 6.0], [4.0, 4.0], 3.0),
-        mountain("alp", [4.0, 6.0], [4.0, 4.0], 3.0),
+    an_imprint_of_an_undeclared_stamp_is_an_error,
+    Setup::default().with_imprints(&list(&[
+        imprint("wedge", [4.0, 6.0], [4.0, 4.0], 3.0),
+        imprint("alp", [4.0, 6.0], [4.0, 4.0], 3.0),
     ])),
     ["stamps[1] → stamp", "alp", "не объявлен"]
 );
 
 refused!(
-    a_mountain_position_that_is_not_two_numbers_is_an_error,
-    Setup::default()
-        .with_mountains(r#"[{"stamp":"wedge","position":[4],"size":[4,4],"height":3}]"#),
+    an_imprint_position_that_is_not_two_numbers_is_an_error,
+    Setup::default().with_imprints(r#"[{"stamp":"wedge","position":[4],"size":[4,4],"height":3}]"#),
     ["stamps[0] → position", "пара чисел"]
 );
 
 refused!(
-    a_mountain_position_with_a_text_is_an_error,
+    an_imprint_position_with_a_text_is_an_error,
     Setup::default()
-        .with_mountains(r#"[{"stamp":"wedge","position":[4,"y"],"size":[4,4],"height":3}]"#),
+        .with_imprints(r#"[{"stamp":"wedge","position":[4,"y"],"size":[4,4],"height":3}]"#),
     ["stamps[0] → position → [1]", "ожидалось число"]
 );
 
 refused!(
-    a_mountain_size_that_is_not_two_numbers_is_an_error,
-    Setup::default().with_mountains(r#"[{"stamp":"wedge","position":[4,6],"size":4,"height":3}]"#),
+    an_imprint_size_that_is_not_two_numbers_is_an_error,
+    Setup::default().with_imprints(r#"[{"stamp":"wedge","position":[4,6],"size":4,"height":3}]"#),
     ["stamps[0] → size", "ожидался массив"]
 );
 
 refused!(
-    a_mountain_size_with_a_zero_side_is_an_error,
+    an_imprint_size_with_a_zero_side_is_an_error,
     Setup::default()
-        .with_mountains(r#"[{"stamp":"wedge","position":[4,6],"size":[4,0],"height":3}]"#),
+        .with_imprints(r#"[{"stamp":"wedge","position":[4,6],"size":[4,0],"height":3}]"#),
     ["stamps[0] → size", "больше нуля"]
 );
 
 refused!(
-    a_mountain_height_that_is_not_a_number_is_an_error,
+    an_imprint_height_that_is_not_a_number_is_an_error,
     Setup::default()
-        .with_mountains(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":"tall"}]"#),
+        .with_imprints(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":"tall"}]"#),
     ["stamps[0] → height", "ожидалось число"]
 );
 
 refused!(
-    a_mountain_height_of_zero_is_an_error,
+    an_imprint_height_of_zero_is_an_error,
     Setup::default()
-        .with_mountains(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":0}]"#),
-    ["stamps[0] → height", "больше нуля"]
+        .with_imprints(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":0}]"#),
+    [
+        "stamps[0] → height",
+        "height — число не ноль: больше нуля поднимает землю, меньше — вдавливает, получено 0"
+    ]
 );
 
 refused!(
-    a_mountain_rotation_that_is_not_a_number_is_an_error,
-    Setup::default().with_mountains(
+    an_imprint_height_of_minus_zero_is_an_error,
+    Setup::default()
+        .with_imprints(r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":-0.0}]"#),
+    ["stamps[0] → height", "получено 0"]
+);
+
+#[test]
+fn an_imprint_with_a_negative_height_is_accepted() {
+    let game = Setup::default()
+        .with_imprints(&list(&[
+            imprint("wedge", [4.0, 6.0], [4.0, 4.0], -3.0),
+            imprint("pyramid", [14.0, 6.0], [8.0, 8.0], 4.0),
+        ]))
+        .game();
+    assert_eq!(game.world.terrain().imprints()[0].height, -3.0);
+}
+
+refused!(
+    an_imprint_rotation_that_is_not_a_number_is_an_error,
+    Setup::default().with_imprints(
         r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":3,"rotation":"left"}]"#
     ),
     ["stamps[0] → rotation", "ожидалось число"]
 );
 
 refused!(
-    a_stamp_that_is_removed_from_files_stamps_while_a_mountain_stands_on_it_is_an_error,
+    a_stamp_that_is_removed_from_files_stamps_while_an_imprint_stands_on_it_is_an_error,
     Setup {
         declared: Some(r#""pyramid":"stamps/pyramid.json""#.into()),
         ..Setup::default()
@@ -492,17 +511,17 @@ refused!(
 );
 
 #[test]
-fn a_mountain_with_any_rotation_and_an_empty_list_of_mountains_are_fine() {
-    let turned = Setup::default().with_mountains(
+fn an_imprint_with_any_rotation_and_an_empty_list_of_imprints_are_fine() {
+    let turned = Setup::default().with_imprints(
         r#"[{"stamp":"wedge","position":[4,6],"size":[4,4],"height":3,"rotation":-725.5}]"#,
     );
     let (game, _) = turned.load().expect("поворот — любое число");
-    assert_eq!(game.world.terrain().mountains().len(), 1);
+    assert_eq!(game.world.terrain().imprints().len(), 1);
     let (game, warnings) = Setup::default()
-        .with_mountains("[]")
+        .with_imprints("[]")
         .load()
-        .expect("пустой список гор");
-    assert!(game.world.terrain().mountains().is_empty());
+        .expect("пустой список отпечатков");
+    assert!(game.world.terrain().imprints().is_empty());
     assert!(
         warnings.iter().any(|w| w.message.contains("не поставлен")),
         "{warnings:?}"
@@ -516,7 +535,7 @@ fn a_mountain_with_any_rotation_and_an_empty_list_of_mountains_are_fine() {
 #[test]
 fn a_stamp_that_is_declared_and_never_placed_is_a_warning_naming_it() {
     let setup =
-        Setup::default().with_mountains(&list(&[mountain("wedge", [4.0, 6.0], [4.0, 4.0], 3.0)]));
+        Setup::default().with_imprints(&list(&[imprint("wedge", [4.0, 6.0], [4.0, 4.0], 3.0)]));
     let (_, warnings) = setup.load().expect("игра идёт");
     let unused: Vec<&GameError> = warnings
         .iter()
@@ -524,7 +543,10 @@ fn a_stamp_that_is_declared_and_never_placed_is_a_warning_naming_it() {
         .collect();
     assert_eq!(unused.len(), 1, "{warnings:?}");
     assert_eq!(unused[0].path, "files → stamps → pyramid");
-    assert!(unused[0].message.contains("pyramid"));
+    assert_eq!(
+        unused[0].message,
+        "штамп \"pyramid\" объявлен и не поставлен ни одним отпечатком файла рельефа"
+    );
 }
 
 #[test]
@@ -544,23 +566,23 @@ fn a_game_without_stamps_in_the_terrain_file_warns_about_every_declared_stamp() 
 }
 
 // -------------------------------------------------------------------------------------------
-// Высота гор
+// Высота отпечатков
 // -------------------------------------------------------------------------------------------
 
-/// Игра с одной горой: штамп `stamp` переписан текстом `text`.
-fn one_mountain(stamp: &str, text: &str, mountain: String) -> Game {
+/// Игра с одним отпечатком: штамп `stamp` переписан текстом `text`.
+fn one_imprint(stamp: &str, text: &str, imprint: String) -> Game {
     Setup::default()
         .with_stamp(stamp, text)
-        .with_mountains(&list(&[mountain]))
+        .with_imprints(&list(&[imprint]))
         .game()
 }
 
 #[test]
 fn the_middle_of_a_stamp_the_corner_and_a_point_outside_the_rectangle() {
-    let game = one_mountain(
+    let game = one_imprint(
         "pyramid",
         PYRAMID,
-        mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
+        imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
     );
     near(at(&game, 10.0, 6.0), 4.0, "середина штампа — вершина");
     near(at(&game, 6.0, 2.0), 0.0, "угол прямоугольника");
@@ -570,20 +592,20 @@ fn the_middle_of_a_stamp_the_corner_and_a_point_outside_the_rectangle() {
 
 #[test]
 fn a_stamp_is_read_between_its_points() {
-    let game = one_mountain(
+    let game = one_imprint(
         "pyramid",
         PYRAMID,
-        mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
+        imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
     );
     near(at(&game, 8.0, 6.0), 2.0, "посреди пути от края до вершины");
     near(at(&game, 10.0, 4.0), 2.0, "то же по другой оси");
 }
 
 #[test]
-fn a_mountain_turned_by_ninety_degrees_stands_on_the_turned_rectangle() {
+fn an_imprint_turned_by_ninety_degrees_stands_on_the_turned_rectangle() {
     let turned =
         r#"{"stamp":"wedge","position":[10,6],"size":[8,4],"height":4,"rotation":90}"#.to_string();
-    let game = one_mountain("wedge", WEDGE, turned);
+    let game = one_imprint("wedge", WEDGE, turned);
     near(
         at(&game, 8.0, 10.0),
         4.0,
@@ -603,11 +625,11 @@ fn a_mountain_turned_by_ninety_degrees_stands_on_the_turned_rectangle() {
 }
 
 #[test]
-fn overlapping_mountains_merge_into_the_taller_one_rather_than_adding_up() {
+fn overlapping_imprints_merge_into_the_taller_one_rather_than_adding_up() {
     let game = Setup::default()
-        .with_mountains(&list(&[
-            mountain("pyramid", [8.0, 6.0], [8.0, 8.0], 4.0),
-            mountain("pyramid", [11.0, 6.0], [8.0, 8.0], 3.0),
+        .with_imprints(&list(&[
+            imprint("pyramid", [8.0, 6.0], [8.0, 8.0], 4.0),
+            imprint("pyramid", [11.0, 6.0], [8.0, 8.0], 3.0),
         ]))
         .game();
     near(at(&game, 9.5, 6.0), 2.5, "наибольшая, а не сумма 4,375");
@@ -624,40 +646,40 @@ fn overlapping_mountains_merge_into_the_taller_one_rather_than_adding_up() {
 }
 
 #[test]
-fn mountains_stand_on_top_of_the_heights_of_the_file() {
+fn imprints_stand_on_top_of_the_heights_of_the_file() {
     let game = Setup {
         base: 1.0,
         ..Setup::default()
     }
     .game();
-    near(at(&game, 14.0, 6.0), 5.0, "высота файла плюс гора");
-    near(at(&game, 1.0, 1.0), 1.0, "вне гор — высота файла");
+    near(at(&game, 14.0, 6.0), 5.0, "высота файла плюс отпечаток");
+    near(at(&game, 1.0, 1.0), 1.0, "вне отпечатков — высота файла");
     let terrain = game.world.terrain();
     assert!(terrain.base_heights().iter().all(|&h| h == 1.0));
 }
 
 #[test]
-fn a_mountain_beyond_the_edge_lifts_only_the_points_of_the_scene() {
+fn an_imprint_beyond_the_edge_lifts_only_the_points_of_the_scene() {
     let game = Setup::default()
-        .with_mountains(&list(&[mountain("pyramid", [0.0, 0.0], [8.0, 8.0], 4.0)]))
+        .with_imprints(&list(&[imprint("pyramid", [0.0, 0.0], [8.0, 8.0], 4.0)]))
         .game();
     near(at(&game, 0.0, 0.0), 4.0, "вершина на углу сцены");
-    near(at(&game, 4.0, 0.0), 0.0, "край горы на краю сцены");
+    near(at(&game, 4.0, 0.0), 0.0, "край отпечатка на краю сцены");
     let terrain = game.world.terrain();
     assert_eq!(terrain.heights().len(), terrain.base_heights().len());
 }
 
 #[test]
-fn a_mountain_wholly_beyond_the_scene_changes_nothing_and_stamp_at_does_not_find_it() {
+fn an_imprint_wholly_beyond_the_scene_changes_nothing_and_stamp_at_does_not_find_it() {
     let game = Setup::default()
-        .with_mountains(&list(&[mountain("pyramid", [60.0, 6.0], [8.0, 8.0], 4.0)]))
+        .with_imprints(&list(&[imprint("pyramid", [60.0, 6.0], [8.0, 8.0], 4.0)]))
         .game();
     assert!(game.world.terrain().heights().iter().all(|&h| h == 0.0));
-    assert_eq!(game.world.terrain().mountain_at(10.0, 6.0), None);
+    assert_eq!(game.world.terrain().imprint_at(10.0, 6.0), None);
 }
 
 #[test]
-fn a_terrain_without_mountains_and_without_slope_keeps_the_heights_of_the_file() {
+fn a_terrain_without_imprints_and_without_slope_keeps_the_heights_of_the_file() {
     let setup = Setup {
         stamps: None,
         base: 0.5,
@@ -668,7 +690,7 @@ fn a_terrain_without_mountains_and_without_slope_keeps_the_heights_of_the_file()
     let terrain = game.world.terrain();
     assert_eq!(terrain.heights(), terrain.base_heights());
     assert!(terrain.heights().iter().all(|&h| h == 0.5));
-    assert!(terrain.mountains().is_empty());
+    assert!(terrain.imprints().is_empty());
 }
 
 // -------------------------------------------------------------------------------------------
@@ -681,19 +703,19 @@ const BARREL: &str = r##"{"name":"barrel","position":[9.7,5.7],"size":[0.6,0.6],
 const PLATEAU: &str = r#"{"heights":[[0,0,0,0],[0,1,1,0],[0,1,1,0],[0,0,0,0]]}"#;
 
 #[test]
-fn an_object_without_z_stands_on_the_mountain() {
+fn an_object_without_z_stands_on_the_imprint() {
     let game = Setup::default()
         .with_stamp("pyramid", PLATEAU)
-        .with_mountains(&list(&[mountain("pyramid", [10.0, 6.0], [12.0, 8.0], 4.0)]))
+        .with_imprints(&list(&[imprint("pyramid", [10.0, 6.0], [12.0, 8.0], 4.0)]))
         .with_objects(BARREL)
         .game();
-    near(game.world.base_z(0), 4.0, "бочка на плато горы");
+    near(game.world.base_z(0), 4.0, "бочка на плато отпечатка");
 }
 
 #[test]
-fn a_steep_mountain_flank_is_shut_to_walking_and_a_gentle_one_is_not() {
+fn a_steep_imprint_flank_is_shut_to_walking_and_a_gentle_one_is_not() {
     let steep = Setup::default()
-        .with_mountains(&list(&[mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 20.0)]))
+        .with_imprints(&list(&[imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 20.0)]))
         .game();
     let blocked = steep.world.terrain().walk_blocked();
     assert!(
@@ -705,7 +727,7 @@ fn a_steep_mountain_flank_is_shut_to_walking_and_a_gentle_one_is_not() {
         "крутой склон закрыт"
     );
     let gentle = Setup::default()
-        .with_mountains(&list(&[mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 1.0)]))
+        .with_imprints(&list(&[imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 1.0)]))
         .game();
     assert!(gentle.world.terrain().walk_blocked().is_empty());
 }
@@ -719,14 +741,14 @@ fn pixel(camera: &Camera3d, point: [f64; 3]) -> [f64; 2] {
 }
 
 #[test]
-fn terrain_at_lands_on_the_top_of_the_mountain() {
+fn terrain_at_lands_on_the_top_of_the_imprint() {
     let game = Setup::default()
-        .with_mountains(&list(&[mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0)]))
+        .with_imprints(&list(&[imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0)]))
         .game();
     let camera = peak_camera();
     let window = pixel(&camera, [10.0, 6.0, 4.0]);
     let point = terrain_hit(&game.world, &game.scene, &camera, window).expect("луч вниз");
-    near(point[2], 4.0, "щелчок ловит вершину горы");
+    near(point[2], 4.0, "щелчок ловит вершину отпечатка");
     near(point[0], 10.0, "x вершины");
     near(point[1], 6.0, "y вершины");
 }
@@ -737,9 +759,9 @@ fn terrain_at_lands_on_the_top_of_the_mountain() {
 
 fn two_overlapping() -> Game {
     Setup::default()
-        .with_mountains(&list(&[
-            mountain("pyramid", [8.0, 6.0], [8.0, 8.0], 4.0),
-            mountain("pyramid", [12.0, 6.0], [8.0, 8.0], 6.0),
+        .with_imprints(&list(&[
+            imprint("pyramid", [8.0, 6.0], [8.0, 8.0], 4.0),
+            imprint("pyramid", [12.0, 6.0], [8.0, 8.0], 6.0),
         ]))
         .game()
 }
@@ -750,7 +772,7 @@ fn stamp_under(game: &Game, point: [f64; 3]) -> Option<usize> {
 }
 
 #[test]
-fn stamp_at_finds_the_mountain_under_the_pointer_and_nothing_beside_them() {
+fn stamp_at_finds_the_imprint_under_the_pointer_and_nothing_beside_them() {
     let game = Setup::default().game();
     let (first, second) = (
         stamp_under(&game, [4.0, 6.0, at(&game, 4.0, 6.0)]),
@@ -761,7 +783,7 @@ fn stamp_at_finds_the_mountain_under_the_pointer_and_nothing_beside_them() {
 }
 
 #[test]
-fn of_two_overlapping_mountains_stamp_at_gives_the_one_that_is_higher_at_the_point() {
+fn of_two_overlapping_imprints_stamp_at_gives_the_one_that_is_higher_at_the_point() {
     let game = two_overlapping();
     assert_eq!(
         stamp_under(&game, [8.5, 6.0, at(&game, 8.5, 6.0)]),
@@ -776,14 +798,14 @@ fn of_two_overlapping_mountains_stamp_at_gives_the_one_that_is_higher_at_the_poi
 }
 
 #[test]
-fn of_two_equally_high_mountains_stamp_at_gives_the_lower_number() {
+fn of_two_equally_high_imprints_stamp_at_gives_the_lower_number() {
     let game = Setup::default()
-        .with_mountains(&list(&[
-            mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
-            mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
+        .with_imprints(&list(&[
+            imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
+            imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0),
         ]))
         .game();
-    assert_eq!(game.world.terrain().mountain_at(9.0, 6.0), Some(0));
+    assert_eq!(game.world.terrain().imprint_at(9.0, 6.0), Some(0));
 }
 
 // -------------------------------------------------------------------------------------------
@@ -799,27 +821,27 @@ fn pyramid_json(height: f64) -> Json {
 }
 
 #[test]
-fn set_terrain_with_mountains_changes_the_effective_heights_and_not_the_heights() {
+fn set_terrain_with_imprints_changes_the_effective_heights_and_not_the_heights() {
     let mut game = Setup {
         stamps: None,
         ..Setup::default()
     }
     .game();
-    near(at(&game, 10.0, 6.0), 0.0, "гор нет");
+    near(at(&game, 10.0, 6.0), 0.0, "отпечатков нет");
     edit::set_terrain(&mut game, &flat_heights(), None, &[pyramid_json(4.0)])
         .expect("рельеф поставлен");
-    near(at(&game, 10.0, 6.0), 4.0, "гора поднимает итог");
+    near(at(&game, 10.0, 6.0), 4.0, "отпечаток поднимает итог");
     let terrain = game.world.terrain();
     assert!(terrain.base_heights().iter().all(|&h| h == 0.0));
-    assert_eq!(terrain.mountains().len(), 1);
-    edit::set_terrain(&mut game, &flat_heights(), None, &[]).expect("гор нет");
-    near(at(&game, 10.0, 6.0), 0.0, "пустой список — гор нет");
+    assert_eq!(terrain.imprints().len(), 1);
+    edit::set_terrain(&mut game, &flat_heights(), None, &[]).expect("отпечатков нет");
+    near(at(&game, 10.0, 6.0), 0.0, "пустой список — отпечатков нет");
 }
 
 #[test]
 fn set_terrain_puts_the_same_terrain_a_file_would() {
     let from_file = Setup {
-        stamps: Some(list(&[mountain("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0)])),
+        stamps: Some(list(&[imprint("pyramid", [10.0, 6.0], [8.0, 8.0], 4.0)])),
         ..Setup::default()
     }
     .game();
@@ -834,18 +856,18 @@ fn set_terrain_puts_the_same_terrain_a_file_would() {
 }
 
 #[test]
-fn set_terrain_keeps_the_covers_and_the_effective_heights_follow_a_moved_mountain() {
+fn set_terrain_keeps_the_covers_and_the_effective_heights_follow_a_moved_imprint() {
     let mut game = Setup::default().game();
     let covers = game.world.terrain().covers().to_vec();
     let moved = json!({"stamp": "pyramid", "position": [6, 6], "size": [8, 8], "height": 4, "rotation": 15});
     edit::set_terrain(&mut game, &flat_heights(), None, &[moved]).expect("рельеф поставлен");
     assert_eq!(game.world.terrain().covers(), covers);
-    near(at(&game, 6.0, 6.0), 4.0, "гора на новом месте");
+    near(at(&game, 6.0, 6.0), 4.0, "отпечаток на новом месте");
     near(at(&game, 14.0, 6.0), 0.0, "на старом месте пусто");
 }
 
 #[test]
-fn an_object_without_z_stands_on_a_mountain_set_by_set_terrain() {
+fn an_object_without_z_stands_on_an_imprint_set_by_set_terrain() {
     let mut game = Setup {
         stamps: None,
         ..Setup::default()
@@ -856,9 +878,9 @@ fn an_object_without_z_stands_on_a_mountain_set_by_set_terrain() {
     near(game.world.base_z(0), 0.0, "земля ровная");
     let plateau = json!({"stamp": "pyramid", "position": [10, 6], "size": [12, 8], "height": 4});
     edit::set_terrain(&mut game, &flat_heights(), None, &[plateau]).expect("рельеф поставлен");
-    near(game.world.base_z(0), 4.0, "бочка встала на гору");
-    edit::set_terrain(&mut game, &flat_heights(), None, &[]).expect("гор нет");
-    near(game.world.base_z(0), 0.0, "гору убрали — бочка внизу");
+    near(game.world.base_z(0), 4.0, "бочка встала на отпечаток");
+    edit::set_terrain(&mut game, &flat_heights(), None, &[]).expect("отпечатков нет");
+    near(game.world.base_z(0), 0.0, "отпечаток убрали — бочка внизу");
 }
 
 fn refused_text(game: &mut Game, items: &[Json]) -> String {
@@ -866,7 +888,7 @@ fn refused_text(game: &mut Game, items: &[Json]) -> String {
 }
 
 #[test]
-fn a_mountain_that_fails_the_check_returns_the_text_and_changes_nothing() {
+fn an_imprint_that_fails_the_check_returns_the_text_and_changes_nothing() {
     let mut game = Setup::default().game();
     let before = game.world.terrain().clone();
     let cases: [(Json, &[&str]); 5] = [
@@ -921,16 +943,16 @@ fn terrain_heights_gives_both_the_heights_and_the_effective_heights() {
     } = edit::terrain_heights(&game).expect("сцена трёхмерная");
     assert_eq!((density, columns, rows), (2, 41, 25));
     assert_eq!(heights.len(), effective.len());
-    assert!(heights.iter().all(|&h| h == 1.0), "без гор");
+    assert!(heights.iter().all(|&h| h == 1.0), "без отпечатков");
     let centre = 12 * columns + 28;
-    near(effective[centre], 5.0, "гора в точке (14, 6)");
+    near(effective[centre], 5.0, "отпечаток в точке (14, 6)");
     assert_eq!(effective[0], 1.0);
 }
 
 #[test]
 fn terrain_heights_without_a_terrain_file_gives_zeros_for_both() {
     let mut game = Setup::default().game();
-    edit::set_terrain(&mut game, &flat_heights(), None, &[]).expect("гор нет");
+    edit::set_terrain(&mut game, &flat_heights(), None, &[]).expect("отпечатков нет");
     let snapshot = edit::terrain_heights(&game).expect("сцена трёхмерная");
     assert!(snapshot.heights.iter().all(|&h| h == 0.0));
     assert!(snapshot.effective.iter().all(|&h| h == 0.0));
@@ -1066,13 +1088,174 @@ fn the_table_for_the_shader_carries_the_mask_number_and_the_slope_of_every_layer
 }
 
 // -------------------------------------------------------------------------------------------
-// Рельеф без гор и без slope остаётся прежним
+// Рельеф без отпечатков и без slope остаётся прежним
 // -------------------------------------------------------------------------------------------
 
 #[test]
-fn the_flat_terrain_type_has_no_mountains_and_no_base_heights() {
+fn the_flat_terrain_type_has_no_imprints_and_no_base_heights() {
     let flat = Terrain::flat();
-    assert!(flat.mountains().is_empty());
+    assert!(flat.imprints().is_empty());
     assert!(flat.base_heights().is_empty());
     assert!(flat.heights().is_empty());
+}
+
+// -------------------------------------------------------------------------------------------
+// Отпечатки, которые вдавливают землю
+// -------------------------------------------------------------------------------------------
+
+fn gully(position: [f64; 2], depth: f64) -> String {
+    imprint("pyramid", position, [8.0, 8.0], -depth)
+}
+
+fn hill(position: [f64; 2], height: f64) -> String {
+    imprint("pyramid", position, [8.0, 8.0], height)
+}
+
+fn game_of(imprints: &[String]) -> Game {
+    Setup::default().with_imprints(&list(imprints)).game()
+}
+
+#[test]
+fn an_imprint_with_a_negative_height_presses_the_ground_below_zero() {
+    let game = game_of(&[gully([10.0, 6.0], 4.0)]);
+    near(at(&game, 10.0, 6.0), -4.0, "дно оврага");
+    near(at(&game, 1.0, 1.0), 0.0, "вне оврага");
+    assert!(
+        game.world
+            .terrain()
+            .base_heights()
+            .iter()
+            .all(|&h| h == 0.0)
+    );
+    assert!(!game.world.terrain().is_flat());
+}
+
+#[test]
+fn a_gully_across_a_hill_cuts_the_hill_by_its_depth_from_its_surface() {
+    let game = Setup {
+        base: 1.0,
+        ..Setup::default()
+    }
+    .with_imprints(&list(&[hill([8.0, 6.0], 4.0), gully([8.0, 6.0], 3.0)]))
+    .game();
+    near(
+        at(&game, 8.0, 6.0),
+        2.0,
+        "heights + подъём − глубина = 1 + 4 − 3",
+    );
+    near(at(&game, 14.0, 6.0), 1.0, "вне обоих — высота файла");
+}
+
+#[test]
+fn overlapping_gullies_take_the_deeper_one_rather_than_adding_up() {
+    let game = game_of(&[gully([8.0, 6.0], 4.0), gully([11.0, 6.0], 3.0)]);
+    near(
+        at(&game, 9.5, 6.0),
+        -2.5,
+        "наибольшая глубина, а не сумма 4,375",
+    );
+    near(
+        at(&game, 8.0, 6.0),
+        -4.0,
+        "дно первого глубже склона второго",
+    );
+    near(
+        at(&game, 11.0, 6.0),
+        -3.0,
+        "дно второго глубже склона первого",
+    );
+}
+
+#[test]
+fn a_hill_and_a_gully_overlapping_keep_their_lift_and_dig_apart() {
+    let game = game_of(&[hill([8.0, 6.0], 4.0), gully([11.0, 6.0], 6.0)]);
+    near(
+        at(&game, 9.5, 6.0),
+        2.5 - 3.75,
+        "подъём 2,5 минус глубина 3,75",
+    );
+}
+
+#[test]
+fn stamp_at_finds_a_gully_under_the_pointer() {
+    let game = Setup::default()
+        .with_imprints(&list(&[hill([4.0, 6.0], 3.0), gully([14.0, 6.0], 4.0)]))
+        .game();
+    assert_eq!(
+        stamp_under(&game, [14.0, 6.0, at(&game, 14.0, 6.0)]),
+        Some(1)
+    );
+    assert_eq!(stamp_under(&game, [9.0, 1.0, 0.0]), None, "ровное место");
+}
+
+#[test]
+fn of_a_hill_and_a_gully_stamp_at_gives_the_one_that_changes_the_ground_more_at_the_point() {
+    let game = game_of(&[hill([8.0, 6.0], 4.0), gully([11.0, 6.0], 6.0)]);
+    let terrain = game.world.terrain();
+    assert_eq!(
+        terrain.imprint_at(8.5, 6.0),
+        Some(0),
+        "холм: 3,5 против 2,25"
+    );
+    assert_eq!(
+        terrain.imprint_at(9.5, 6.0),
+        Some(1),
+        "овраг: 3,75 против 2,5"
+    );
+}
+
+#[test]
+fn of_a_hill_and_a_gully_of_the_same_strength_stamp_at_gives_the_lower_number() {
+    let hill_first = game_of(&[hill([10.0, 6.0], 4.0), gully([10.0, 6.0], 4.0)]);
+    assert_eq!(hill_first.world.terrain().imprint_at(9.0, 6.0), Some(0));
+    let gully_first = game_of(&[gully([10.0, 6.0], 4.0), hill([10.0, 6.0], 4.0)]);
+    assert_eq!(gully_first.world.terrain().imprint_at(9.0, 6.0), Some(0));
+    near(
+        at(&gully_first, 10.0, 6.0),
+        0.0,
+        "холм и овраг одной силы гасят друг друга",
+    );
+}
+
+#[test]
+fn set_terrain_with_a_negative_height_changes_the_effective_heights_and_not_the_heights() {
+    let mut game = Setup {
+        stamps: None,
+        ..Setup::default()
+    }
+    .game();
+    edit::set_terrain(&mut game, &flat_heights(), None, &[pyramid_json(-4.0)])
+        .expect("рельеф поставлен");
+    near(at(&game, 10.0, 6.0), -4.0, "овраг вдавил итог");
+    let snapshot = edit::terrain_heights(&game).expect("сцена трёхмерная");
+    assert!(snapshot.heights.iter().all(|&h| h == 0.0));
+    assert_eq!(snapshot.effective.iter().copied().fold(0.0, f64::min), -4.0);
+}
+
+#[test]
+fn set_terrain_refuses_a_zero_height_with_the_text_of_the_check() {
+    let mut game = Setup::default().game();
+    let before = game.world.terrain().clone();
+    let text = refused_text(&mut game, &[pyramid_json(0.0)]);
+    assert!(
+        text.contains("stamps[0] → height") && text.contains("число не ноль"),
+        "{text}"
+    );
+    assert_eq!(game.world.terrain(), &before);
+}
+
+#[test]
+fn an_object_without_z_stands_on_the_bottom_of_a_gully() {
+    let game = Setup::default()
+        .with_stamp("pyramid", PLATEAU)
+        .with_imprints(&list(&[imprint("pyramid", [10.0, 6.0], [12.0, 8.0], -4.0)]))
+        .with_objects(BARREL)
+        .game();
+    near(game.world.base_z(0), -4.0, "бочка на дне оврага");
+}
+
+#[test]
+fn a_steep_gully_flank_is_shut_to_walking() {
+    let game = game_of(&[gully([10.0, 6.0], 20.0)]);
+    assert!(!game.world.terrain().walk_blocked().is_empty());
 }

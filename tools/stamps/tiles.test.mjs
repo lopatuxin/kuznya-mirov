@@ -28,8 +28,9 @@ describe("terrariumHeight", () => {
     assert.equal(terrariumHeight(127, 255, 255), -1 / 256);
   });
 
-  it("адрес плитки — масштаб 13, колонка и строка", () => {
-    assert.equal(tileUrl(6120, 2650), "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/13/6120/2650.png");
+  it("адрес плитки — масштаб, колонка и строка", () => {
+    assert.equal(tileUrl(6120, 2650, 13), "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/13/6120/2650.png");
+    assert.equal(tileUrl(24480, 10600, 15), "https://s3.amazonaws.com/elevation-tiles-prod/terrarium/15/24480/10600.png");
   });
 });
 
@@ -43,7 +44,7 @@ describe("createTileReader", () => {
   it("плитка из PNG — высоты в метрах строками сверху вниз, RGB и RGBA", async () => {
     for (const channels of [3, 4]) {
       const read = createTileReader({ cacheDir: join(cacheDir, String(channels)), download: async () => tilePng((x, y) => x * 2 + y * 0.5 - 100, channels) });
-      const heights = await read(1, 2);
+      const heights = await read(1, 2, 13);
       assert.equal(heights.length, TILE_SIZE * TILE_SIZE);
       assert.equal(heights[0], -100);
       assert.equal(heights[5 * TILE_SIZE + 3], 6 + 2.5 - 100);
@@ -56,12 +57,26 @@ describe("createTileReader", () => {
       asked.push(url);
       return tilePng(() => 7);
     };
-    const first = await createTileReader({ cacheDir, download })(10, 20);
-    await createTileReader({ cacheDir, download })(10, 20);
+    const first = await createTileReader({ cacheDir, download })(10, 20, 13);
+    await createTileReader({ cacheDir, download })(10, 20, 13);
     const reader = createTileReader({ cacheDir, download });
-    assert.deepEqual(await Promise.all([reader(10, 20), reader(10, 20)]), [first, first]);
-    assert.deepEqual(asked, [tileUrl(10, 20)]);
+    assert.deepEqual(await Promise.all([reader(10, 20, 13), reader(10, 20, 13)]), [first, first]);
+    assert.deepEqual(asked, [tileUrl(10, 20, 13)]);
     assert.deepEqual(readdirSync(cacheDir), ["13-10-20.png"]);
+  });
+
+  it("масштаб плитки — в адресе и в имени файла кэша: одна плитка на разных масштабах — два файла", async () => {
+    const asked = [];
+    const download = async (url) => {
+      asked.push(url);
+      return tilePng(() => 7);
+    };
+    const read = createTileReader({ cacheDir, download });
+    await read(10, 20, 15);
+    await read(10, 20, 11);
+    assert.deepEqual(asked, [tileUrl(10, 20, 15), tileUrl(10, 20, 11)]);
+    assert.ok(asked[0].includes("/terrarium/15/10/20.png") && asked[1].includes("/terrarium/11/10/20.png"));
+    assert.deepEqual(readdirSync(cacheDir).sort(), ["11-10-20.png", "15-10-20.png"]);
   });
 
   it("плитка не скачалась — ошибка с номером и адресом плитки, кэш пуст", async () => {
@@ -71,13 +86,13 @@ describe("createTileReader", () => {
         throw new Error("ответ 403 Forbidden");
       },
     });
-    await assert.rejects(read(5, 6), (error) => error.message.includes("13/5/6") && error.message.includes(tileUrl(5, 6)) && error.message.includes("403"));
-    assert.equal(existsSync(join(cacheDir, "13-5-6.png")), false);
+    await assert.rejects(read(5, 6, 14), (error) => error.message.includes("14/5/6") && error.message.includes(tileUrl(5, 6, 14)) && error.message.includes("403"));
+    assert.equal(existsSync(join(cacheDir, "14-5-6.png")), false);
   });
 
   it("ответ, что не PNG, и плитка не того размера — ошибка, в кэш не попадают", async () => {
-    await assert.rejects(createTileReader({ cacheDir, download: async () => Buffer.from("<html>") })(1, 1), /13\/1\/1.*нет подписи/);
-    await assert.rejects(createTileReader({ cacheDir, download: async () => tilePng(() => 0, 3, 4) })(1, 2), /размер плитки 4 × 4/);
+    await assert.rejects(createTileReader({ cacheDir, download: async () => Buffer.from("<html>") })(1, 1, 13), /13\/1\/1.*нет подписи/);
+    await assert.rejects(createTileReader({ cacheDir, download: async () => tilePng(() => 0, 3, 4) })(1, 2, 13), /размер плитки 4 × 4/);
     assert.deepEqual(readdirSync(cacheDir), []);
   });
 });
