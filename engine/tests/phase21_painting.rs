@@ -26,7 +26,7 @@ const EARTH_MASK: &str = "terrain/earth.png";
 const ROCK_MASK: &str = "terrain/rock.png";
 const TINT: &str = "terrain/tint.png";
 const WEDGE: &str = r#"{"heights":[[0,0.5],[0.5,1]]}"#;
-const WEDGE_MOUNTAIN: &str = r#"{"stamp":"wedge","position":[0,0],"size":[2,2],"height":3}"#;
+const WEDGE_IMPRINT: &str = r#"{"stamp":"wedge","position":[0,0],"size":[2,2],"height":3}"#;
 
 fn material_json(name: &str) -> String {
     format!(
@@ -108,7 +108,7 @@ impl Setup {
             String::new()
         };
         let stamps = if self.stamps {
-            format!(r#""stamps":[{WEDGE_MOUNTAIN}],"#)
+            format!(r#""stamps":[{WEDGE_IMPRINT}],"#)
         } else {
             String::new()
         };
@@ -215,7 +215,7 @@ fn set_covers_puts_the_layers_in_the_loaded_game() {
 }
 
 #[test]
-fn set_covers_keeps_the_heights_the_mountains_the_water_and_the_color_map() {
+fn set_covers_keeps_the_heights_the_imprints_the_water_and_the_color_map() {
     let setup = Setup {
         tint: true,
         stamps: true,
@@ -235,7 +235,7 @@ fn set_covers_keeps_the_heights_the_mountains_the_water_and_the_color_map() {
     assert_eq!(after.covers(), [cover(2, None, None)]);
     assert_eq!(after.heights(), before.heights());
     assert_eq!(after.base_heights(), before.base_heights());
-    assert_eq!(after.mountains().len(), 1);
+    assert_eq!(after.imprints().len(), 1);
     assert_eq!(after.water(), before.water());
 }
 
@@ -643,7 +643,7 @@ fn terrain_readings_give_what_terrain_heights_give_after_a_load() {
 }
 
 #[test]
-fn terrain_readings_lift_the_effective_heights_by_the_mountains_and_not_the_heights() {
+fn terrain_readings_lift_the_effective_heights_by_the_imprints_and_not_the_heights() {
     let setup = Setup {
         stamps: true,
         ..Setup::default()
@@ -653,7 +653,7 @@ fn terrain_readings_lift_the_effective_heights_by_the_mountains_and_not_the_heig
     assert!(read.heights.iter().all(|&h| h == 0.0));
     assert!(
         read.effective.iter().any(|&h| h > 0.0),
-        "гора поднимает землю"
+        "отпечаток поднимает землю"
     );
 }
 

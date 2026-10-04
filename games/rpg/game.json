@@ -25,24 +25,15 @@
       "enemies": "enemies.json"
     },
     "stamps": {
-      "beluha": "stamps/beluha.json",
-      "chuya": "stamps/chuya.json",
-      "ergaki": "stamps/ergaki.json",
-      "dombai": "stamps/dombai.json",
-      "khamar": "stamps/khamar.json",
-      "konzhak": "stamps/konzhak.json",
-      "taganai": "stamps/taganai.json"
+      "mynd": "stamps/mynd.json",
+      "wenlock": "stamps/wenlock.json",
+      "carding": "stamps/carding.json",
+      "onny": "stamps/onny.json"
     },
     "images": {
       "marker": {
         "path": "images/marker.png"
       }
-    },
-    "materials": {
-      "grass": { "size": 3, "color": "materials/grass/color.jpg", "normal": "materials/grass/normal.jpg", "roughness": "materials/grass/roughness.jpg", "height": "materials/grass/height.jpg", "ao": "materials/grass/ao.jpg" },
-      "rock_moss": { "size": 5, "color": "materials/rock_moss/color.jpg", "normal": "materials/rock_moss/normal.jpg", "roughness": "materials/rock_moss/roughness.jpg", "height": "materials/rock_moss/height.jpg", "ao": "materials/rock_moss/ao.jpg" },
-      "scree": { "size": 2.5, "color": "materials/scree/color.png", "normal": "materials/scree/normal.png", "roughness": "materials/scree/roughness.png", "height": "materials/scree/height.png", "ao": "materials/scree/ao.png" },
-      "rock": { "size": 8, "color": "materials/rock/color.png", "normal": "materials/rock/normal.png", "roughness": "materials/rock/roughness.png", "height": "materials/rock/height.png", "ao": "materials/rock/ao.png" }
     }
   }
 }

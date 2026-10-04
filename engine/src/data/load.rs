@@ -2,8 +2,8 @@ use serde_json::Value as Json;
 
 use crate::core::footprint::Footprint;
 use crate::core::game::{self, Game};
+use crate::core::imprints::StampTable;
 use crate::core::keys::{EditValue, KeyBinding, KeyEdit, KeyTable};
-use crate::core::mountains::StampTable;
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::rules::{
     CollideEffect, CommonAction, CompareOp, Condition, NumberExpr, Outcome, Rule, RuleSet,
@@ -37,8 +37,8 @@ use materials::{
     declaration_order, parse_covers, parse_materials_table, validate_material_files,
     warn_unused_materials,
 };
-pub use stamps::parse_edit_mountains;
-use stamps::{parse_mountains, parse_stamp_table, warn_unused_stamps};
+pub use stamps::parse_edit_imprints;
+use stamps::{parse_imprints, parse_stamp_table, warn_unused_stamps};
 
 fn join(base: &str, seg: &str) -> String {
     if base.is_empty() {
@@ -1206,7 +1206,7 @@ fn parse_ground_layer(
 
 /// «Рельеф», требования 1, 38: `heights` — `d × высота + 1` строк по `d × ширина + 1` чисел; `water`
 /// необязательна, но с `level` и `color`; `covers` — слои покрытий из `materials`, их маски и карта
-/// цвета `tint` проверены по ответу страницы `masks`, если он есть; `stamps` — горы из штампов `stamps`.
+/// цвета `tint` проверены по ответу страницы `masks`, если он есть; `stamps` — отпечатки из штампов `stamps`.
 fn parse_terrain(
     text: &str,
     file: &str,
@@ -1239,18 +1239,14 @@ fn parse_terrain(
         None => Some(false),
         Some(v) => materials::parse_tint(v, file, masks, errors).map(|()| true),
     };
-    let mountains = match obj.get("stamps") {
+    let imprints = match obj.get("stamps") {
         None => Some(Vec::new()),
-        Some(v) => parse_mountains(v, file, stamps, errors),
+        Some(v) => parse_imprints(v, file, stamps, errors),
     };
     let terrain = Terrain::from_rows([scene.width, scene.height], &rows?, water?)
         .map_err(|message| errors.push(file, "heights", message))
         .ok()?;
-    Some(
-        terrain
-            .with_covers(covers?, tint?)
-            .with_mountains(mountains?),
-    )
+    Some(terrain.with_covers(covers?, tint?).with_imprints(imprints?))
 }
 
 fn parse_heights(
@@ -1698,7 +1694,7 @@ pub struct FilePaths {
     /// — земля ровная на высоте 0.
     pub terrain: Option<String>,
     /// `(имя, путь)`, в порядке объявления `files.stamps` — «Лепка рельефа»: номер штампа, на который
-    /// ссылаются горы файла рельефа. Пусто, если не объявлена.
+    /// ссылаются отпечатки файла рельефа. Пусто, если не объявлена.
     pub stamps: Vec<(String, String)>,
     /// `files.materials` — «Свет и материалы»: материалы рельефа в порядке объявления; этот порядок —
     /// номер материала, на который ссылаются слои `covers` файла рельефа. Пусто, если не объявлена.
@@ -2049,7 +2045,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             parse_materials_table(v, &order, "game.json", "files → materials", errors)
                 .unwrap_or_default()
         });
-        // «Лепка рельефа»: необязательна — нет ключа, нет и гор из штампов; номер штампа — порядок
+        // «Лепка рельефа»: необязательна — нет ключа, нет и отпечатков штампов; номер штампа — порядок
         // объявления, а не алфавит.
         let stamps = f.get("stamps").map(|v| {
             let order = declaration_order(text).stamps;
@@ -2057,7 +2053,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 v,
                 "game.json",
                 "files → stamps",
-                "files → stamps → пустое имя: у штампа должно быть имя, которым его назовёт гора",
+                "files → stamps → пустое имя: у штампа должно быть имя, которым его назовёт отпечаток",
                 errors,
             )
             .unwrap_or_default();
@@ -8293,10 +8289,10 @@ pub fn load_rest_with_stamps(
             .terrain()
             .map_or(&[][..], |terrain| terrain.covers());
         warn_unused_materials(&config.files.materials, covers, &mut errors);
-        let mountains = properties
+        let imprints = properties
             .terrain()
-            .map_or(&[][..], |terrain| terrain.mountains());
-        warn_unused_stamps(&config.files.stamps, mountains, &mut errors);
+            .map_or(&[][..], |terrain| terrain.imprints());
+        warn_unused_stamps(&config.files.stamps, imprints, &mut errors);
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {

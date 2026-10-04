@@ -7,13 +7,13 @@ import {
   formatTerrainText,
   parseTerrainText,
   readTerrainCovers,
-  readTerrainMountains,
+  readTerrainImprints,
   readTerrainWater,
   terrainTextWithCovers,
   terrainTextWithHeights,
-  terrainTextWithMountains,
+  terrainTextWithImprints,
   terrainTextWithWater,
-  type MountainEntry,
+  type ImprintEntry,
   type TerrainCoverLayer,
   type TerrainGrid,
 } from "./terrainFile";
@@ -179,20 +179,20 @@ describe("покрытия covers", () => {
   });
 });
 
-const MOUNTAINS: MountainEntry[] = [
+const IMPRINTS: ImprintEntry[] = [
   { stamp: "beluha", position: [8, 0], size: [38, 32], height: 15 },
   { stamp: "chuya", position: [104.004, 4], size: [40, 30.125], height: 18, rotation: 345 },
   { stamp: "taganai", position: [124, 52], size: [34, 16], height: 8, rotation: 0 },
 ];
 
-describe("горы stamps", () => {
+describe("отпечатки stamps", () => {
   const WATER = { level: -1, color: "#112233" };
   const COVERS = [{ material: "grass" }, { material: "rock", slope: 34 }];
-  const textWithMountains = formatTerrainText({ ...grid([[0, 0]]), water: WATER, covers: COVERS, tint: "terrain/tint.png", stamps: MOUNTAINS });
+  const textWithImprints = formatTerrainText({ ...grid([[0, 0]]), water: WATER, covers: COVERS, tint: "terrain/tint.png", stamps: IMPRINTS });
   const plainText = formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null });
 
-  it("stamps — после tint, по горе на строку, перед heights; числа до сотых, rotation — если не 0", () => {
-    expect(textWithMountains).toBe(
+  it("stamps — после tint, по отпечатку на строку, перед heights; числа до сотых, rotation — если не 0", () => {
+    expect(textWithImprints).toBe(
       [
         "{",
         '  "water": { "level": -1, "color": "#112233" },',
@@ -220,25 +220,32 @@ describe("горы stamps", () => {
     expect(formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null, stamps: null })).not.toContain("stamps");
   });
 
-  it("горы читаются как лежат в файле; нет ключа — нет гор", () => {
-    expect(readTerrainMountains(textWithMountains)).toHaveLength(3);
-    expect(readTerrainMountains(textWithMountains)[1]).toEqual({ stamp: "chuya", position: [104, 4], size: [40, 30.13], height: 18, rotation: 345 });
-    expect(readTerrainMountains(plainText)).toEqual([]);
-    expect(readTerrainMountains(null)).toEqual([]);
-    expect(readTerrainMountains("{")).toEqual([]);
+  it("отпечатки читаются как лежат в файле; нет ключа — нет отпечатков", () => {
+    expect(readTerrainImprints(textWithImprints)).toHaveLength(3);
+    expect(readTerrainImprints(textWithImprints)[1]).toEqual({ stamp: "chuya", position: [104, 4], size: [40, 30.13], height: 18, rotation: 345 });
+    expect(readTerrainImprints(plainText)).toEqual([]);
+    expect(readTerrainImprints(null)).toEqual([]);
+    expect(readTerrainImprints("{")).toEqual([]);
+  });
+
+  it("вдавливающий отпечаток пишется с отрицательной высотой и читается обратно", () => {
+    const ravine: ImprintEntry = { stamp: "ravine", position: [10, 8], size: [20, 10], height: -3 };
+    const text = formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null, stamps: [ravine] });
+    expect(text).toContain('{ "stamp": "ravine", "position": [10, 8], "size": [20, 10], "height": -3 }');
+    expect(readTerrainImprints(text)).toEqual([ravine]);
   });
 
   it("мазок и правка воды сохраняют stamps, tint и covers", () => {
-    expect(terrainTextWithHeights(textWithMountains, grid([[0.5, 2]]))).toBe(
-      formatTerrainText({ ...grid([[0.5, 2]]), water: WATER, covers: COVERS, tint: "terrain/tint.png", stamps: readTerrainMountains(textWithMountains) }),
+    expect(terrainTextWithHeights(textWithImprints, grid([[0.5, 2]]))).toBe(
+      formatTerrainText({ ...grid([[0.5, 2]]), water: WATER, covers: COVERS, tint: "terrain/tint.png", stamps: readTerrainImprints(textWithImprints) }),
     );
-    const withoutWater = terrainTextWithWater(textWithMountains, { width: 1, height: 1 }, null);
-    expect(readTerrainMountains(withoutWater)).toEqual(readTerrainMountains(textWithMountains));
+    const withoutWater = terrainTextWithWater(textWithImprints, { width: 1, height: 1 }, null);
+    expect(readTerrainImprints(withoutWater)).toEqual(readTerrainImprints(textWithImprints));
     expect(withoutWater).toContain('"tint"');
   });
 
-  it("правка гор сохраняет heights, covers, tint и воду", () => {
-    const after = terrainTextWithMountains(textWithMountains, { width: 1, height: 1 }, [{ stamp: "beluha", position: [1, 2], size: [3, 4], height: 5 }]) as string;
+  it("правка отпечатков сохраняет heights, covers, tint и воду", () => {
+    const after = terrainTextWithImprints(textWithImprints, { width: 1, height: 1 }, [{ stamp: "beluha", position: [1, 2], size: [3, 4], height: 5 }]) as string;
     const content = parseTerrainText(after);
     expect(content?.water).toEqual(WATER);
     expect(content?.covers).toEqual(COVERS);
@@ -247,26 +254,26 @@ describe("горы stamps", () => {
     expect(content?.stamps).toEqual([{ stamp: "beluha", position: [1, 2], size: [3, 4], height: 5 }]);
   });
 
-  it("последняя гора убрана — ключ stamps уходит из файла", () => {
-    const after = terrainTextWithMountains(textWithMountains, { width: 1, height: 1 }, []) as string;
+  it("последний отпечаток убран — ключ stamps уходит из файла", () => {
+    const after = terrainTextWithImprints(textWithImprints, { width: 1, height: 1 }, []) as string;
     expect(after).not.toContain("stamps");
     expect(after).toBe(formatTerrainText({ ...grid([[0, 0]]), water: WATER, covers: COVERS, tint: "terrain/tint.png" }));
   });
 
-  it("первая гора в проекте без файла — ровная земля нужного размера без воды и покрытий", () => {
-    const text = terrainTextWithMountains(null, { width: 3, height: 2 }, [MOUNTAINS[0] as MountainEntry]) as string;
+  it("первый отпечаток в проекте без файла — ровная земля нужного размера без воды и покрытий", () => {
+    const text = terrainTextWithImprints(null, { width: 3, height: 2 }, [IMPRINTS[0] as ImprintEntry]) as string;
     const content = parseTerrainText(text);
     expect(content?.columns).toBe(7);
     expect(content?.rows).toBe(5);
     expect(content?.water).toBe(null);
     expect(content?.covers).toBe(null);
-    expect(content?.stamps).toEqual([MOUNTAINS[0]]);
+    expect(content?.stamps).toEqual([IMPRINTS[0]]);
   });
 
   it("файл, что не разбирается, — править нечего; перенос строки сохраняется", () => {
-    expect(terrainTextWithMountains("{", { width: 1, height: 1 }, MOUNTAINS)).toBe(null);
-    const crlf = formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null, stamps: MOUNTAINS }, "\r\n");
-    expect(terrainTextWithMountains(crlf, { width: 1, height: 1 }, [])).toBe(formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null }, "\r\n"));
+    expect(terrainTextWithImprints("{", { width: 1, height: 1 }, IMPRINTS)).toBe(null);
+    const crlf = formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null, stamps: IMPRINTS }, "\r\n");
+    expect(terrainTextWithImprints(crlf, { width: 1, height: 1 }, [])).toBe(formatTerrainText({ ...grid([[0, 0]]), water: null, covers: null }, "\r\n"));
   });
 
   it("набранное в свойствах пишется как есть: ошибку назовёт движок", () => {
@@ -283,9 +290,9 @@ describe("горы stamps", () => {
 describe("покраска — текст рельефа со слоями («Покраска», требования 13, 15)", () => {
   const LAYERS: TerrainCoverLayer[] = [{ material: "grass" }, { material: "rock", slope: 44, mask: "terrain/rock.png" }];
   const SIZE = { width: 1, height: 1 };
-  const BELUHA: MountainEntry[] = [{ stamp: "beluha", position: [8, 0], size: [38, 32], height: 15 }];
+  const BELUHA: ImprintEntry[] = [{ stamp: "beluha", position: [8, 0], size: [38, 32], height: 15 }];
 
-  it("меняет только слои: высоты, вода, горы и карта цвета остаются, слой с порогом и маской — одной строкой", () => {
+  it("меняет только слои: высоты, вода, отпечатки и карта цвета остаются, слой с порогом и маской — одной строкой", () => {
     const content = { ...grid([[0, 1.25], [2, 3]]), water: DEFAULT_WATER, covers: [{ material: "grass" }], tint: "terrain/tint.png", stamps: BELUHA };
     const text = formatTerrainText(content);
 

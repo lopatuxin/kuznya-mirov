@@ -33,23 +33,23 @@ import {
   setObjectPropertyValues,
 } from "./sceneTextEditing";
 import {
-  mountainsWithCopy,
-  mountainsWithout,
-  mountainsWithPlaced,
-  mountainsWithReplaced,
-  mountainsWithValue,
-  type MountainChange,
-} from "./mountainEditing";
+  imprintsWithCopy,
+  imprintsWithout,
+  imprintsWithPlaced,
+  imprintsWithReplaced,
+  imprintsWithValue,
+  type ImprintChange,
+} from "./imprintEditing";
 import { parseSceneObjects, resolveSelectionAfterReload, type SceneSize } from "./sceneObjects";
 import { createSerialQueue } from "./serialQueue";
 import type { ProjectSource } from "./projectSource";
 import { planTerrainEdit, terrainTextAfterPaint } from "./terrainEditing";
 import {
-  readTerrainMountains,
+  readTerrainImprints,
   terrainTextWithHeights,
-  terrainTextWithMountains,
+  terrainTextWithImprints,
   terrainTextWithWater,
-  type MountainEntry,
+  type ImprintEntry,
   type TerrainGrid,
   type TerrainWater,
 } from "./terrainFile";
@@ -74,12 +74,12 @@ export type SceneEditingState = {
   masks: MaskSet;
   saveState: SaveState;
   canUndo: boolean;
-  /** Выбран либо один объект, либо одна гора: выбор одного снимает выбор другого («Редактор», «Сцена»). */
+  /** Выбран либо один объект, либо один отпечаток: выбор одного снимает выбор другого («Редактор», «Сцена»). */
   selectedIndex: number | null;
   setSelectedIndex: (index: number | null) => void;
-  /** Номер выбранной горы в `stamps` файла рельефа; `null` — гора не выбрана. */
-  selectedMountainIndex: number | null;
-  setSelectedMountainIndex: (index: number | null) => void;
+  /** Номер выбранного отпечатка в `stamps` файла рельефа; `null` — отпечаток не выбран. */
+  selectedImprintIndex: number | null;
+  setSelectedImprintIndex: (index: number | null) => void;
   undo: () => void;
   moveObject: (objectIndex: number, position: readonly [number, number]) => void;
   /** Ручки трёхмерной сцены: все изменившиеся свойства объекта — одна правка текста и одна отмена. */
@@ -92,13 +92,13 @@ export type SceneEditingState = {
   reloadDisplayed: () => void;
   /** Вода рельефа: `null` — воды нет; каждое принятое значение — одно действие (требование 23). */
   setTerrainWater: (water: TerrainWater | null) => void;
-  /** Горы — «Лепка рельефа»: каждое действие — одна правка файла рельефа, первая гора в проекте без файла заводит его. */
-  placeMountain: (entry: MountainEntry) => void;
-  replaceMountain: (index: number, entry: MountainEntry) => void;
-  /** Свойство горы: `undefined` убирает ключ (пустой `rotation`). */
-  setMountainValue: (index: number, key: string, value: unknown) => void;
-  copyMountain: (index: number) => void;
-  deleteMountain: (index: number) => void;
+  /** Отпечатки — «Лепка рельефа»: каждое действие — одна правка файла рельефа, первый отпечаток в проекте без файла заводит его. */
+  placeImprint: (entry: ImprintEntry) => void;
+  replaceImprint: (index: number, entry: ImprintEntry) => void;
+  /** Свойство отпечатка: `undefined` убирает ключ (пустой `rotation`). */
+  setImprintValue: (index: number, key: string, value: unknown) => void;
+  copyImprint: (index: number) => void;
+  deleteImprint: (index: number) => void;
   setPropertyValue: (objectIndex: number, key: string, value: unknown) => void;
   removeProperty: (objectIndex: number, key: string) => void;
   addProperty: (objectIndex: number, key: string, value: unknown) => void;
@@ -135,7 +135,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   const gameJsonTextRef = useRef<string | null>(null);
   const diskGameJsonTextRef = useRef<string | null>(null);
   const [selectedIndex, setSelectedIndexState] = useState<number | null>(null);
-  const [selectedMountainIndex, setSelectedMountainIndexState] = useState<number | null>(null);
+  const [selectedImprintIndex, setSelectedImprintIndexState] = useState<number | null>(null);
 
   function updateSession(next: EditSessionState | null): void {
     sessionRef.current = next;
@@ -293,22 +293,22 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     gameJsonTextRef.current = null;
     diskGameJsonTextRef.current = null;
     setSelectedIndexState(null);
-    setSelectedMountainIndexState(null);
+    setSelectedImprintIndexState(null);
     forceRender();
   }, [source]);
 
   const session = sessionRef.current;
   const sceneText = session?.displayed.sceneText ?? null;
   const terrainText = session?.displayed.terrainText ?? null;
-  const mountainCount = useMemo(() => readTerrainMountains(terrainText).length, [terrainText]);
+  const imprintCount = useMemo(() => readTerrainImprints(terrainText).length, [terrainText]);
 
   function selectObject(index: number | null): void {
     setSelectedIndexState(index);
-    setSelectedMountainIndexState(null);
+    setSelectedImprintIndexState(null);
   }
 
-  function selectMountain(index: number | null): void {
-    setSelectedMountainIndexState(index);
+  function selectImprint(index: number | null): void {
+    setSelectedImprintIndexState(index);
     if (index !== null) setSelectedIndexState(null);
   }
 
@@ -319,10 +319,10 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     setSelectedIndexState((current) => resolveSelectionAfterReload(current, parseSceneObjects(sceneText).length));
   }, [sceneText]);
 
-  // Гора после отмены и внешней правки — тот же номер, если такая гора ещё есть («Лепка рельефа», «Редактор», требование 32).
+  // Отпечаток после отмены и внешней правки — тот же номер, если такой отпечаток ещё есть («Лепка рельефа», «Редактор», требование 32).
   useEffect(() => {
-    setSelectedMountainIndexState((current) => resolveSelectionAfterReload(current, mountainCount));
-  }, [mountainCount]);
+    setSelectedImprintIndexState((current) => resolveSelectionAfterReload(current, imprintCount));
+  }, [imprintCount]);
 
   function undo(): void {
     void actionQueue.run(async () => {
@@ -386,47 +386,47 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   }
 
   /**
-   * Действие с горами: `change` получает горы файла и отдаёт новый список, `null` — действия нет. Выбор
-   * сдвигается вместе с действием, когда оно его просит (новая гора, копия, удаление).
+   * Действие с отпечатками: `change` получает отпечатки файла и отдаёт новый список, `null` — действия нет. Выбор
+   * сдвигается вместе с действием, когда оно его просит (новый отпечаток, копия, удаление).
    */
-  function dispatchMountainEdit(change: (mountains: MountainEntry[]) => MountainChange | null): void {
+  function dispatchImprintEdit(change: (imprints: ImprintEntry[]) => ImprintChange | null): void {
     void actionQueue.run(async () => {
       const current = sessionRef.current;
       const gameJsonText = gameJsonTextRef.current;
       if (current === null || gameJsonText === null) return;
       const outcome: { selected?: number | null } = {};
       const plan = await planTerrainEdit(current, gameJsonText, engineApiRef.current.isFilePresent, (displayed, sceneSize) => {
-        const changed = change(readTerrainMountains(displayed.terrainText));
+        const changed = change(readTerrainImprints(displayed.terrainText));
         if (changed === null) return null;
         outcome.selected = changed.selected;
-        return terrainTextWithMountains(displayed.terrainText, sceneSize, changed.mountains);
+        return terrainTextWithImprints(displayed.terrainText, sceneSize, changed.imprints);
       });
       if (plan === null) return;
       gameJsonTextRef.current = plan.gameJsonText;
       updateSession(plan.state);
-      if (outcome.selected !== undefined) selectMountain(outcome.selected);
+      if (outcome.selected !== undefined) selectImprint(outcome.selected);
       await syncCurrent();
     });
   }
 
-  function placeMountain(entry: MountainEntry): void {
-    dispatchMountainEdit((mountains) => mountainsWithPlaced(mountains, entry));
+  function placeImprint(entry: ImprintEntry): void {
+    dispatchImprintEdit((imprints) => imprintsWithPlaced(imprints, entry));
   }
 
-  function replaceMountain(index: number, entry: MountainEntry): void {
-    dispatchMountainEdit((mountains) => mountainsWithReplaced(mountains, index, entry));
+  function replaceImprint(index: number, entry: ImprintEntry): void {
+    dispatchImprintEdit((imprints) => imprintsWithReplaced(imprints, index, entry));
   }
 
-  function setMountainValue(index: number, key: string, value: unknown): void {
-    dispatchMountainEdit((mountains) => mountainsWithValue(mountains, index, key, value));
+  function setImprintValue(index: number, key: string, value: unknown): void {
+    dispatchImprintEdit((imprints) => imprintsWithValue(imprints, index, key, value));
   }
 
-  function copyMountain(index: number): void {
-    dispatchMountainEdit((mountains) => mountainsWithCopy(mountains, index));
+  function copyImprint(index: number): void {
+    dispatchImprintEdit((imprints) => imprintsWithCopy(imprints, index));
   }
 
-  function deleteMountain(index: number): void {
-    dispatchMountainEdit((mountains) => mountainsWithout(mountains, index));
+  function deleteImprint(index: number): void {
+    dispatchImprintEdit((imprints) => imprintsWithout(imprints, index));
   }
 
   function setPropertyValue(objectIndex: number, key: string, value: unknown): void {
@@ -500,8 +500,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     canUndo: (session?.history.length ?? 0) > 0,
     selectedIndex,
     setSelectedIndex: selectObject,
-    selectedMountainIndex,
-    setSelectedMountainIndex: selectMountain,
+    selectedImprintIndex,
+    setSelectedImprintIndex: selectImprint,
     undo,
     moveObject,
     transformObject,
@@ -509,11 +509,11 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     paintCovers,
     reloadDisplayed,
     setTerrainWater,
-    placeMountain,
-    replaceMountain,
-    setMountainValue,
-    copyMountain,
-    deleteMountain,
+    placeImprint,
+    replaceImprint,
+    setImprintValue,
+    copyImprint,
+    deleteImprint,
     setPropertyValue,
     removeProperty,
     addProperty,

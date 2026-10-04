@@ -1,19 +1,12 @@
 Авторы графики и шрифта ролевой игры
 
-Материалы рельефа — карты цвета, нормалей, шероховатости, высоты и затенения (materials/<имя>/)
-  grass — ambientCG, материал Grass007
-  rock_moss — ambientCG, материал Rock051
-  Лицензия: CC0 1.0, общественное достояние
-  rock и scree — нарисованы программой проекта (tools/art/material.mjs), чужого авторства в них нет
-
-Горы рельефа — штампы высот (stamps/<имя>.json), вырезанные программой проекта (tools/stamps/cut.mjs) из карт высот Terrain Tiles (Mapzen, AWS Open Data; источники данных — SRTM и EU-DEM)
-  beluha — Белуха, Катунский хребет, Алтай
-  chuya — Северо-Чуйский хребет, Алтай
-  ergaki — Ергаки, Западный Саян
-  dombai — Домбай-Ульген, Кавказ
-  khamar — Хамар-Дабан, Прибайкалье
-  konzhak — Конжаковский Камень, Северный Урал
-  taganai — Таганай, Южный Урал
+Холмы, ложбины и берега ручья — штампы высот (stamps/<имя>.json), вырезанные программой проекта (tools/stamps/cut.mjs) из карт высот Terrain Tiles (Mapzen, AWS Open Data; источник данных — лазерная съёмка Environment Agency, data.gov.uk LIDAR Composite Digital Terrain Model)
+  mynd — Лонг-Минд, отрог над долиной Кардинг-Милл, Шропшир, Англия
+  wenlock — Уэнлок-Эдж, пологий склон, Шропшир, Англия
+  carding — долина Кардинг-Милл, Лонг-Минд, Шропшир, Англия
+  onny — река Онни у Крейвен-Армс, Шропшир, Англия
+  © Environment Agency copyright and/or database right 2015. All rights reserved.
+  Лицензия: Open Government Licence v3.0
 
 Кольцо отметки щелчка — нарисовано программой проекта, чужого авторства в нём нет
 

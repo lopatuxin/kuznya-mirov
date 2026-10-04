@@ -7,13 +7,15 @@ type BrushNumberFieldProps = {
   label: string;
   value: number;
   isDisabled?: boolean;
+  /** Подсказка поля при наведении. */
+  hint?: string;
   /** Что становится значением набранного числа: прижатое к пределам или округлённое до сотых. */
   normalize: (typed: number) => number;
   onCommit: (value: number) => void;
 };
 
 /** Число правится, как текстовое значение свойства: Enter или уход из поля принимает, Esc и не число возвращают прежнее. */
-export function BrushNumberField({ label, value, isDisabled = false, normalize, onCommit }: BrushNumberFieldProps): React.JSX.Element {
+export function BrushNumberField({ label, value, isDisabled = false, hint, normalize, onCommit }: BrushNumberFieldProps): React.JSX.Element {
   const [draft, setDraft] = useState<string | null>(null);
 
   function commit(): void {
@@ -25,7 +27,7 @@ export function BrushNumberField({ label, value, isDisabled = false, normalize, 
   }
 
   return (
-    <label className="scene-view__field">
+    <label className="scene-view__field" title={hint}>
       {label}
       <input
         type="text"

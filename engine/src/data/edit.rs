@@ -14,7 +14,7 @@ use crate::core::value::{GridSpec, PropKind, Value};
 use crate::core::world::World;
 
 use super::load::{
-    CoverMask, ImageDecl, MaterialDecl, check_cover_masks, parse_edit_covers, parse_edit_mountains,
+    CoverMask, ImageDecl, MaterialDecl, check_cover_masks, parse_edit_covers, parse_edit_imprints,
     parse_grid, parse_scalar_value, read_terrain, terrain_from_numbers,
 };
 use crate::data::error::{ErrorSink, GameError};
@@ -257,8 +257,8 @@ pub fn delete_object(world: &mut World, id: u32) {
 }
 
 /// «Редактор», «Вызовы движка», `set_terrain`: ставит рельеф в загруженной игре — `heights` строками
-/// сверху вниз, вода — уровень и цвет `#rrggbb`, горы — `stamps` в виде файла рельефа. Ошибка —
-/// текстом, и ничего не меняется: чисел не столько, высота или уровень не число, цвет не цвет, гора не
+/// сверху вниз, вода — уровень и цвет `#rrggbb`, отпечатки — `stamps` в виде файла рельефа. Ошибка —
+/// текстом, и ничего не меняется: чисел не столько, высота или уровень не число, цвет не цвет, отпечаток не
 /// проходит проверку, сцена плоская или идёт партия.
 pub fn set_terrain(
     game: &mut Game,
@@ -277,8 +277,8 @@ pub fn set_terrain(
         game.world.terrain().has_tint(),
     );
     let terrain = terrain_from_numbers(&game.scene, heights, water)?;
-    let mountains = parse_edit_mountains(stamps, game.properties.stamps())?;
-    game.set_terrain(terrain.with_covers(covers, tint).with_mountains(mountains));
+    let imprints = parse_edit_imprints(stamps, game.properties.stamps())?;
+    game.set_terrain(terrain.with_covers(covers, tint).with_imprints(imprints));
     Ok(())
 }
 
@@ -289,9 +289,9 @@ pub struct TerrainHeights {
     pub density: usize,
     pub columns: usize,
     pub rows: usize,
-    /// `heights` файла рельефа, без гор.
+    /// `heights` файла рельефа, без отпечатков.
     pub heights: Vec<f64>,
-    /// Итоговые высоты с горами, той же сетки.
+    /// Итоговые высоты с отпечатками, той же сетки.
     pub effective: Vec<f64>,
     pub water: Option<(f64, String)>,
 }

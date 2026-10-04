@@ -340,7 +340,7 @@ describe("loadProject", () => {
     });
   });
 
-  describe("штампы гор files.stamps", () => {
+  describe("штампы отпечатков files.stamps", () => {
     const files: Record<string, string> = {
       "game.json": "{}",
       "properties.json": "{}",

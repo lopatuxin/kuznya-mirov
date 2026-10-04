@@ -1,11 +1,11 @@
-//! «Лепка рельефа» → «Горы», «Проверка перед запуском»: файлы штампов `files.stamps` и список гор
+//! «Лепка рельефа» → «Отпечатки», «Проверка перед запуском»: файлы штампов `files.stamps` и список отпечатков
 //! `stamps` файла рельефа.
 
 use std::sync::Arc;
 
 use serde_json::Value as Json;
 
-use crate::core::mountains::{Mountain, Stamp, StampTable};
+use crate::core::imprints::{Imprint, Stamp, StampTable};
 use crate::core::value::{Rotation, Vec2};
 
 use super::{
@@ -121,53 +121,53 @@ fn parse_stamp_height(value: &Json, file: &str, path: &str, errors: &mut ErrorSi
     Some(height)
 }
 
-/// `stamps` файла рельефа: список гор.
-pub(super) fn parse_mountains(
+/// `stamps` файла рельефа: список отпечатков.
+pub(super) fn parse_imprints(
     value: &Json,
     file: &str,
     table: &StampTable,
     errors: &mut ErrorSink,
-) -> Option<Vec<Mountain>> {
+) -> Option<Vec<Imprint>> {
     let items = expect_array(value, file, "stamps", errors)?;
-    parse_mountain_items(items, file, table, errors)
+    parse_imprint_items(items, file, table, errors)
 }
 
-fn parse_mountain_items(
+fn parse_imprint_items(
     items: &[Json],
     file: &str,
     table: &StampTable,
     errors: &mut ErrorSink,
-) -> Option<Vec<Mountain>> {
+) -> Option<Vec<Imprint>> {
     let mut ok = true;
-    let mut mountains = Vec::with_capacity(items.len());
+    let mut imprints = Vec::with_capacity(items.len());
     for (index, item) in items.iter().enumerate() {
-        match parse_mountain(item, file, &format!("stamps[{index}]"), table, errors) {
-            Some(mountain) => mountains.push(mountain),
+        match parse_imprint(item, file, &format!("stamps[{index}]"), table, errors) {
+            Some(imprint) => imprints.push(imprint),
             None => ok = false,
         }
     }
-    ok.then_some(mountains)
+    ok.then_some(imprints)
 }
 
-/// «Редактор», `set_terrain`: горы из списка, который прислала страница, проверенные, как в файле
+/// «Редактор», `set_terrain`: отпечатки из списка, который прислала страница, проверенные, как в файле
 /// рельефа. Ошибка — текстом: путь к полю и что с ним не так.
-pub fn parse_edit_mountains(items: &[Json], table: &StampTable) -> Result<Vec<Mountain>, String> {
+pub fn parse_edit_imprints(items: &[Json], table: &StampTable) -> Result<Vec<Imprint>, String> {
     let mut errors = ErrorSink::new();
-    let mountains = parse_mountain_items(items, "", table, &mut errors);
+    let imprints = parse_imprint_items(items, "", table, &mut errors);
     let (errs, _) = errors.into_parts();
     match errs.first() {
         Some(error) => Err(format!("{}: {}", error.path, error.message)),
-        None => mountains.ok_or_else(|| "горы не подходят".to_string()),
+        None => imprints.ok_or_else(|| "отпечатки не подходят".to_string()),
     }
 }
 
-fn parse_mountain(
+fn parse_imprint(
     value: &Json,
     file: &str,
     path: &str,
     table: &StampTable,
     errors: &mut ErrorSink,
-) -> Option<Mountain> {
+) -> Option<Imprint> {
     let obj = expect_object(value, file, path, errors)?;
     reject_unknown_keys(
         obj,
@@ -198,7 +198,7 @@ fn parse_mountain(
         .filter(|size| positive_size(*size, file, &join(path, "size"), errors));
     let height = require_field(obj, "height", file, path, errors)
         .and_then(|v| expect_number(v, file, &join(path, "height"), errors))
-        .filter(|&height| positive_height(height, file, &join(path, "height"), errors));
+        .filter(|&height| nonzero_height(height, file, &join(path, "height"), errors));
     let rotation = match obj.get("rotation") {
         None => Rotation::from_degrees(0.0),
         Some(v) => {
@@ -206,7 +206,7 @@ fn parse_mountain(
         }
     };
     let (stamp, shape) = stamp?;
-    Some(Mountain {
+    Some(Imprint {
         stamp,
         shape,
         position: position?,
@@ -231,30 +231,35 @@ fn positive_size(size: Vec2, file: &str, path: &str, errors: &mut ErrorSink) -> 
     positive
 }
 
-fn positive_height(height: f64, file: &str, path: &str, errors: &mut ErrorSink) -> bool {
-    let positive = height > 0.0;
-    if !positive {
+fn nonzero_height(height: f64, file: &str, path: &str, errors: &mut ErrorSink) -> bool {
+    let nonzero = height != 0.0;
+    if !nonzero {
         errors.push(
             file,
             path,
-            format!("height — число больше нуля, получено {height}"),
+            format!(
+                "height — число не ноль: больше нуля поднимает землю, меньше — вдавливает, получено {}",
+                height.abs()
+            ),
         );
     }
-    positive
+    nonzero
 }
 
-/// Штамп объявлен и не поставлен ни одной горой — только предупреждение.
+/// Штамп объявлен и не поставлен ни одним отпечатком — только предупреждение.
 pub(super) fn warn_unused_stamps(
     declared: &[(String, String)],
-    mountains: &[Mountain],
+    imprints: &[Imprint],
     errors: &mut ErrorSink,
 ) {
     for (index, (name, _)) in declared.iter().enumerate() {
-        if mountains.iter().all(|mountain| mountain.stamp != index) {
+        if imprints.iter().all(|imprint| imprint.stamp != index) {
             errors.push_warning(
                 "game.json",
                 &format!("files → stamps → {name}"),
-                format!("штамп \"{name}\" объявлен и не поставлен ни одной горой файла рельефа"),
+                format!(
+                    "штамп \"{name}\" объявлен и не поставлен ни одним отпечатком файла рельефа"
+                ),
             );
         }
     }

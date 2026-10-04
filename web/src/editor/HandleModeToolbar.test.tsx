@@ -14,7 +14,7 @@ function toolbarProps(overrides: Partial<ToolbarProps> = {}, paintOverrides: Par
     brushSize: 4,
     brushStrength: 50,
     water: null,
-    mountainTool: {
+    imprintTool: {
       isSelected: false,
       isEnabled: true,
       fields: { stampNames: ["beluha"], stamp: "beluha", width: 30, height: 10, onStampChange: NOOP, onWidthChange: NOOP, onHeightChange: NOOP },
@@ -137,5 +137,37 @@ describe("поля кисти «Покрасить»", () => {
 
     expect(html).toContain('aria-label="Вода"');
     expect(html).not.toContain("Материал");
+  });
+});
+
+describe("кнопка «Отпечаток»", () => {
+  it("в группе «Рельеф» после кистей, со значком холма и впадины, не выбрана; поля — только когда выбрана", () => {
+    const html = render(toolbarProps());
+
+    const group = html.slice(html.indexOf('aria-label="Кисти рельефа"'));
+    const groupHtml = group.slice(0, group.indexOf("</div>"));
+    expect((groupHtml.match(/<button/g) ?? []).length).toBe(4);
+    expect(groupHtml.lastIndexOf('title="Отпечаток"')).toBeGreaterThan(groupHtml.lastIndexOf('title="Сгладить перепады"'));
+    expect(groupHtml).toContain('d="M2 12c1.5-4.5 3-7 5-7s3.5 2.5 5 7"');
+    expect(groupHtml).toContain('d="M12 12c1.5 4.5 3 7 5 7s3.5-2.5 5-7"');
+    const tag = buttonTagOf(html, "Отпечаток");
+    expect(tag).not.toContain("disabled");
+    expect(tag).toContain('aria-pressed="false"');
+    expect(html).not.toContain("Меньше нуля — вдавливает");
+    expect(html).not.toContain("Гора");
+  });
+
+  it("выбранная — нажата, и появляются поля с подсказкой «Меньше нуля — вдавливает»", () => {
+    const html = render(toolbarProps({ imprintTool: { ...toolbarProps().imprintTool, isSelected: true } }));
+
+    expect(buttonTagOf(html, "Отпечаток")).toContain('aria-pressed="true"');
+    expect(html).toContain('role="group" aria-label="Отпечаток"');
+    expect(html).toContain('title="Меньше нуля — вдавливает"');
+  });
+
+  it("без files.stamps кнопка неактивна, подсказка называет, что объявить", () => {
+    const html = render(toolbarProps({ imprintTool: { ...toolbarProps().imprintTool, isEnabled: false } }));
+
+    expect(buttonTagOf(html, "Нет штампов: объяви files.stamps в game.json")).toContain("disabled");
   });
 });

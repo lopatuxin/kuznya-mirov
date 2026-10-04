@@ -8,7 +8,7 @@ import { flatTerrainGrid, formatTerrainText, readTerrainCovers, terrainTextWithC
 
 /**
  * Текст рельефа после мазка покраски: слои те же — файл остаётся байт в байт («Покраска», требование 12), пишется только
- * маска; слои другие — текст со слоями, а высоты, вода, горы и карта цвета как были.
+ * маска; слои другие — текст со слоями, а высоты, вода, отпечатки и карта цвета как были.
  */
 export function terrainTextAfterPaint(previousText: string | null, sceneSize: SceneSize, covers: readonly TerrainCoverLayer[]): string | null {
   if (previousText !== null && areCoversEqual(readTerrainCovers(previousText), covers)) return previousText;

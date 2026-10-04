@@ -1,12 +1,12 @@
 import { useState } from "react";
 import { EditorIcon } from "./EditorIcon";
 import { parsePropertyValueInput } from "./propertyValueInput";
-import type { MountainEntry } from "./terrainFile";
+import type { ImprintEntry } from "./terrainFile";
 
-type MountainPropertiesPanelProps = {
-  /** Номер горы в `stamps` с нуля — в заголовке он с единицы. */
+type ImprintPropertiesPanelProps = {
+  /** Номер отпечатка в `stamps` с нуля — в заголовке он с единицы. */
   index: number;
-  entry: MountainEntry;
+  entry: ImprintEntry;
   stampNames: readonly string[];
   /** Файлы проекта разобраны и движок готов проверять правку. */
   canEdit: boolean;
@@ -18,10 +18,10 @@ type MountainPropertiesPanelProps = {
 
 const VALUE_KEYS = ["position", "size", "height", "rotation"] as const;
 
-type MountainValueFieldProps = { value: string; placeholder?: string; canEdit: boolean; onCommit: (text: string) => void };
+type ImprintValueFieldProps = { value: string; placeholder?: string; canEdit: boolean; onCommit: (text: string) => void };
 
 /** Значение правится на месте, как текстовое свойство: Enter или уход из поля принимает, Esc возвращает прежнее. */
-function MountainValueField({ value, placeholder, canEdit, onCommit }: MountainValueFieldProps): React.JSX.Element {
+function ImprintValueField({ value, placeholder, canEdit, onCommit }: ImprintValueFieldProps): React.JSX.Element {
   const [draft, setDraft] = useState<string | null>(null);
 
   function commit(): void {
@@ -48,11 +48,11 @@ function MountainValueField({ value, placeholder, canEdit, onCommit }: MountainV
 }
 
 /**
- * Свойства выбранной горы — «Редактор», «Правка сцены», требование 30: заголовок «Гора N», `stamp` —
+ * Свойства выбранного отпечатка — «Редактор», «Правка сцены», требование 30: заголовок «Отпечаток N», `stamp` —
  * выпадающий список штампов, остальные поля — текстом JSON; «Копия» и «Удалить» в шапке. Набранное
  * пишется как есть — ошибку называет движок, файл при ошибке не пишется.
  */
-export function MountainPropertiesPanel({ index, entry, stampNames, canEdit, onSetValue, onCopy, onDelete }: MountainPropertiesPanelProps): React.JSX.Element {
+export function ImprintPropertiesPanel({ index, entry, stampNames, canEdit, onSetValue, onCopy, onDelete }: ImprintPropertiesPanelProps): React.JSX.Element {
   const stamp = typeof entry.stamp === "string" ? entry.stamp : "";
   const stampOptions = stampNames.includes(stamp) ? stampNames : [stamp, ...stampNames];
 
@@ -64,7 +64,7 @@ export function MountainPropertiesPanel({ index, entry, stampNames, canEdit, onS
   return (
     <div className="properties-panel">
       <div className="editor-panel-header">
-        Гора {index + 1}
+        Отпечаток {index + 1}
         <div className="properties-panel__actions">
           <button type="button" className="editor-button" title="Копия (Ctrl+D)" disabled={!canEdit} onClick={onCopy}>
             <EditorIcon name="copy" size={14} />
@@ -92,7 +92,7 @@ export function MountainPropertiesPanel({ index, entry, stampNames, canEdit, onS
             <div key={key} className="property-row">
               <dt className="property-row__key">{key}</dt>
               <dd className="property-row__value">
-                <MountainValueField
+                <ImprintValueField
                   value={entry[key] === undefined ? "" : JSON.stringify(entry[key])}
                   placeholder={key === "rotation" ? "0" : undefined}
                   canEdit={canEdit}

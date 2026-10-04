@@ -17,7 +17,7 @@ export function toVec3(value: unknown): Vec3 | undefined {
   return [flat[0], flat[1], typeof z === "number" ? z : 0];
 }
 
-/** Рельеф, каким его отдаёт `terrain_heights`: высоты файла без гор, итоговые высоты с горами и вода как есть. */
+/** Рельеф, каким его отдаёт `terrain_heights`: высоты файла без отпечатков, итоговые высоты с отпечатками и вода как есть. */
 export type TerrainSnapshot = { grid: BrushGrid; effective: Float64Array; water: unknown };
 
 export function readTerrainSnapshot(value: unknown): TerrainSnapshot | undefined {

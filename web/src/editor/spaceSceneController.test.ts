@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createEditorCameraStore, type EditorCameraRequest, type EditorCameraState } from "./editorCamera";
-import type { MountainContext } from "./mountainSceneController";
+import type { ImprintContext } from "./imprintSceneController";
 import type { PaintContext } from "./paintSceneController";
 import type { PaintResult } from "./paintStroke";
 import type { PlacementChange } from "./objectPlacement";
@@ -60,9 +60,9 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     grid: { density: 2, columns: 25, rows: 25, heights: new Float64Array(25 * 25) } as BrushGrid,
     water: null as unknown,
     setTerrainError: undefined as string | undefined,
-    /** Итоговые высоты с горами; без значения они равны высотам файла. */
+    /** Итоговые высоты с отпечатками; без значения они равны высотам файла. */
     effective: undefined as Float64Array | undefined,
-    /** Номер горы под указателем. */
+    /** Номер отпечатка под указателем. */
     pickedStamp: undefined as number | undefined,
   };
   const engine = {
@@ -113,12 +113,12 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const modes: string[] = [];
   const terrainCommits: Float64Array[] = [];
   const strokeStates: boolean[] = [];
-  const mountainSelections: number[] = [];
-  const mountainPlaced: unknown[] = [];
-  const mountains: MountainContext = {
-    ...setupMountains(),
-    onSelect: (index) => mountainSelections.push(index),
-    onPlace: (entry) => mountainPlaced.push(entry),
+  const imprintSelections: number[] = [];
+  const imprintPlaced: unknown[] = [];
+  const imprints: ImprintContext = {
+    ...setupImprints(),
+    onSelect: (index) => imprintSelections.push(index),
+    onPlace: (entry) => imprintPlaced.push(entry),
   };
   const context: SpaceSceneContext = {
     engine,
@@ -137,11 +137,11 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     onCommitPlacement: (index, changes) => commits.push([index, changes]),
     onCommitTerrain: (grid) => terrainCommits.push(Float64Array.from(grid.heights)),
     onStrokeActiveChange: (isActive) => strokeStates.push(isActive),
-    mountains,
+    imprints,
     ...overrides,
   };
   const controller = createSpaceSceneController(() => context);
-  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, coverSets, terrainCommits, strokeStates, mountainSelections, mountainPlaced, engine };
+  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, coverSets, terrainCommits, strokeStates, imprintSelections, imprintPlaced, engine };
 }
 
 describe("выбор щелчком", () => {
@@ -179,62 +179,62 @@ describe("выбор щелчком", () => {
   });
 });
 
-describe("горы при щелчке", () => {
+describe("отпечатки при щелчке", () => {
   const BELUHA = { stamp: "beluha", position: [10, 10], size: [8, 8], height: 4 };
 
-  it("объект под указателем важнее горы под ним: выбирается объект, гора нет", () => {
+  it("объект под указателем важнее отпечатка под ним: выбирается объект, отпечаток — нет", () => {
     const scene = setup({ selectedIndex: null });
     scene.state.pickedId = 7;
     scene.state.pickedStamp = 0;
     scene.controller.pointerDown(pointer(100, 100));
     expect(scene.selections).toEqual([7]);
-    expect(scene.mountainSelections).toEqual([]);
+    expect(scene.imprintSelections).toEqual([]);
   });
 
-  it("объекта нет, гора есть — выбирается гора, объектов выбор не снимает вызовом onSelect(null)", () => {
+  it("объекта нет, отпечаток есть — выбирается отпечаток, объектов выбор не снимает вызовом onSelect(null)", () => {
     const scene = setup({ selectedIndex: null });
     scene.state.pickedStamp = 2;
     scene.controller.pointerDown(pointer(100, 100));
-    expect(scene.mountainSelections).toEqual([2]);
+    expect(scene.imprintSelections).toEqual([2]);
     expect(scene.selections).toEqual([]);
   });
 
-  it("нет ни объекта, ни горы — выбор снимается", () => {
+  it("нет ни объекта, ни отпечатка — выбор снимается", () => {
     const scene = setup({ selectedIndex: null });
     expect(scene.controller.pointerDown(pointer(100, 100))).toBe(false);
     expect(scene.selections).toEqual([null]);
-    expect(scene.mountainSelections).toEqual([]);
+    expect(scene.imprintSelections).toEqual([]);
   });
 
-  it("в повторе и на паузе горы не выбираются", () => {
-    const scene = setup({ selectedIndex: null, mountains: { ...setupMountains(), isEditable: false } });
+  it("в повторе и на паузе отпечатки не выбираются", () => {
+    const scene = setup({ selectedIndex: null, imprints: { ...setupImprints(), isEditable: false } });
     scene.state.pickedStamp = 2;
     scene.controller.pointerDown(pointer(100, 100));
-    expect(scene.mountainSelections).toEqual([]);
+    expect(scene.imprintSelections).toEqual([]);
     expect(scene.selections).toEqual([null]);
   });
 
-  it("при кнопке «Гора» щелчок ставит гору и ничего не выбирает; Esc возвращает ручки", () => {
+  it("при кнопке «Отпечаток» щелчок ставит отпечаток и ничего не выбирает; Esc возвращает ручки", () => {
     const placing = { stamp: { name: "beluha", columns: 4, rows: 2 }, width: 8, height: 4 };
-    const scene = setup({ mountains: { ...setupMountains(), placing, onPlace: (entry) => scene.mountainPlaced.push(entry) } });
+    const scene = setup({ imprints: { ...setupImprints(), placing, onPlace: (entry) => scene.imprintPlaced.push(entry) } });
     scene.state.pickedId = 7;
     expect(scene.controller.pointerDown(pointer(100, 100))).toBe(false);
-    expect(scene.mountainPlaced).toEqual([{ stamp: "beluha", position: [5, 5], size: [8, 4], height: 4 }]);
+    expect(scene.imprintPlaced).toEqual([{ stamp: "beluha", position: [5, 5], size: [8, 4], height: 4 }]);
     expect(scene.selections).toEqual([]);
     expect(scene.controller.keyDown(key("Escape"))).toBe(true);
     expect(scene.modes).toEqual(["translate"]);
   });
 
-  it("щелчок мимо земли при «Горе» горы не ставит", () => {
+  it("щелчок мимо земли при «Отпечатке» отпечатка не ставит", () => {
     const placing = { stamp: { name: "beluha", columns: 4, rows: 2 }, width: 8, height: 4 };
-    const scene = setup({ mountains: { ...setupMountains(), placing, onPlace: (entry) => scene.mountainPlaced.push(entry) } });
+    const scene = setup({ imprints: { ...setupImprints(), placing, onPlace: (entry) => scene.imprintPlaced.push(entry) } });
     scene.state.isSkyUnderPointer = true;
     scene.controller.pointerDown(pointer(100, 100));
-    expect(scene.mountainPlaced).toEqual([]);
+    expect(scene.imprintPlaced).toEqual([]);
   });
 
-  it("рамка выбранной горы рисуется вместе с рамкой объекта", () => {
-    const scene = setup({ selectedIndex: null, mountains: { ...setupMountains(), entries: [BELUHA], selectedIndex: 0 } });
+  it("рамка выбранного отпечатка рисуется вместе с рамкой объекта", () => {
+    const scene = setup({ selectedIndex: null, imprints: { ...setupImprints(), entries: [BELUHA], selectedIndex: 0 } });
     const terrainHeight = vi.spyOn(scene.engine, "terrain_height");
     scene.controller.draw(recordingCanvasContext(), 1);
     expect(terrainHeight.mock.calls.length).toBeGreaterThanOrEqual(32);
@@ -638,8 +638,8 @@ function runFrames(scene: ReturnType<typeof setup>, fromMs: number, toMs: number
   for (let time = fromMs; time <= toMs; time += 100) scene.controller.strokeFrame(time);
 }
 
-/** Горы без выбора, как их отдаёт страница, когда ничего не выбрано. */
-function setupMountains(): MountainContext {
+/** Отпечатки без выбора, как их отдаёт страница, когда ничего не выбрано. */
+function setupImprints(): ImprintContext {
   return { isEditable: true, entries: [], selectedIndex: null, placing: null, onSelect: () => {}, onPlace: () => {}, onCommit: () => {}, onActiveChange: () => {} };
 }
 
@@ -698,9 +698,9 @@ describe("мазок кисти рельефа", () => {
     expect(scene.terrainSets[5]?.heights[CENTER]).toBeCloseTo(0, 9);
   });
 
-  it("на горе кисть лепит итоговую землю: в файл идёт прирост итоговой высоты, горы мазок не трогает", () => {
+  it("на отпечатке кисть лепит итоговую землю: в файл идёт прирост итоговой высоты, отпечатки мазок не трогает", () => {
     const stamps = [{ stamp: "beluha", position: [6, 6], size: [4, 4], height: 3 }];
-    const scene = setup({ brush: RAISE, mountains: { ...setupMountains(), entries: stamps } });
+    const scene = setup({ brush: RAISE, imprints: { ...setupImprints(), entries: stamps } });
     scene.state.effective = new Float64Array(25 * 25).fill(3);
     scene.controller.pointerDown(pointer(100, 100));
     runFrames(scene, 100, 1000);
@@ -711,7 +711,7 @@ describe("мазок кисти рельефа", () => {
     expect(scene.terrainCommits[0]?.[CENTER]).toBeCloseTo(1, 9);
   });
 
-  it("«Выровнять» на горе ведёт видимую землю к итоговой высоте начала мазка, а файл — на ту же разницу", () => {
+  it("«Выровнять» на отпечатке ведёт видимую землю к итоговой высоте начала мазка, а файл — на ту же разницу", () => {
     const scene = setup({ brush: { kind: "level", size: 4, strength: 50 } });
     scene.state.effective = new Float64Array(25 * 25).fill(3);
     scene.state.groundZ = 5;
@@ -720,7 +720,7 @@ describe("мазок кисти рельефа", () => {
     expect(scene.terrainSets[4]?.heights[CENTER]).toBeCloseTo(2 * (1 - Math.exp(-2.5)), 9);
   });
 
-  it("Esc посреди мазка на горе возвращает высоты файла без прироста", () => {
+  it("Esc посреди мазка на отпечатке возвращает высоты файла без прироста", () => {
     const scene = setup({ brush: RAISE });
     scene.state.effective = new Float64Array(25 * 25).fill(3);
     scene.controller.pointerDown(pointer(100, 100));

@@ -43,7 +43,7 @@ type LoadResult =
 
 type LoadedFont = { name: string; bytes: Uint8Array | null };
 type LoadedTable = { name: string; text: string | null };
-/** Текст файла штампа горы; `null` — файл не найден, движок назовёт ошибку («Лепка рельефа»). */
+/** Текст файла штампа отпечатка; `null` — файл не найден, движок назовёт ошибку («Лепка рельефа»). */
 export type LoadedStamp = { name: string; text: string | null };
 export type LoadedSound = { index: number; path: string; bytes: Uint8Array | null };
 type LoadedMusic = { index: number; path: string; bytes: Uint8Array | null };
@@ -76,7 +76,7 @@ export type ProjectLoadResult =
       sceneText: string | null;
       loadedSounds: LoadedSound[];
       musicTracks: LoadedMusicVerdict[];
-      /** Штампы `files.stamps` в порядке объявления с прочитанными текстами — редактор берёт из них пропорции новой горы. */
+      /** Штампы `files.stamps` в порядке объявления с прочитанными текстами — редактор берёт из них пропорции нового отпечатка. */
       stamps: LoadedStamp[];
       /** Маски `covers` рельефа, что страница разжала для движка, — редактор красит по ним («Покраска»); не прочитанные или не разжатые не входят. */
       coverMasks: LoadedCoverMask[];
@@ -104,7 +104,7 @@ async function fetchTableTexts(reader: ProjectFileReader, tables: TableEntry[]):
   return tables.map((table, index) => ({ name: table.name, text: textsList[index] ?? null }));
 }
 
-/** Штампы гор читаются текстом во втором заходе, как таблицы («Лепка рельефа», требование 14). */
+/** Штампы отпечатков читаются текстом во втором заходе, как таблицы («Лепка рельефа», требование 14). */
 async function fetchStampTexts(reader: ProjectFileReader, stamps: StampEntry[]): Promise<LoadedStamp[]> {
   const textsList = await Promise.all(stamps.map((stamp) => reader.readText(stamp.path)));
   return stamps.map((stamp, index) => ({ name: stamp.name, text: textsList[index] ?? null }));

@@ -24,11 +24,11 @@ import {
   type PlacementChange,
   type Vec2,
 } from "./objectPlacement";
-import { createMountainSceneController, type MountainContext } from "./mountainSceneController";
+import { createImprintSceneController, type ImprintContext } from "./imprintSceneController";
 import { createPaintSceneController, type PaintContext } from "./paintSceneController";
 import { drawSelectionQuad } from "./selectionDrawing";
 import { applyBrushFrame, brushPathPoints, syncFileHeights, type BrushGrid, type BrushSettings } from "./terrainBrush";
-import { differsInHundredths, type MountainEntry, type TerrainGrid } from "./terrainFile";
+import { differsInHundredths, type ImprintEntry, type TerrainGrid } from "./terrainFile";
 import { readTerrainSnapshot, toVec2, toVec3, type Vec3 } from "./terrainReadings";
 import { createVerticalGrab, type VerticalGrab } from "./verticalGrab";
 
@@ -80,8 +80,8 @@ export type SpaceSceneContext = {
   onCommitTerrain: (grid: TerrainGrid) => void;
   /** Мазок начался или кончился любым способом — пока он идёт, изменения файлов снаружи ждут («Кисти рельефа», крайние случаи). */
   onStrokeActiveChange: (isActive: boolean) => void;
-  /** Горы файла рельефа: выбор, ручки, кнопка «Гора» («Лепка рельефа», «Редактор»). */
-  mountains: MountainContext;
+  /** Отпечатки файла рельефа: выбор, ручки, кнопка «Отпечаток» («Лепка рельефа», «Редактор»). */
+  imprints: ImprintContext;
 };
 
 /** Указатель или колесо: точка в CSS-пикселях от левого верхнего угла холста. */
@@ -115,7 +115,7 @@ type ObjectGesture = {
 };
 
 /**
- * Мазок кисти рельефа: кисть лепит итоговую землю (`grid` — итоговые высоты), а в файл идут высоты без гор
+ * Мазок кисти рельефа: кисть лепит итоговую землю (`grid` — итоговые высоты), а в файл идут высоты без отпечатков
  * (`heights`) — «Лепка рельефа», требование 20: `heights` плюс то, на сколько мазок поднял итоговую землю.
  */
 type StrokeGesture = {
@@ -135,8 +135,8 @@ type StrokeGesture = {
   heights: Float64Array;
   start: Float64Array;
   water: unknown;
-  /** Горы файла на начало мазка: он их не меняет, но `set_terrain` получает их каждый кадр. */
-  stamps: readonly MountainEntry[];
+  /** Отпечатки файла на начало мазка: он их не меняет, но `set_terrain` получает их каждый кадр. */
+  stamps: readonly ImprintEntry[];
   hasChanged: boolean;
   /** Кому сказать о конце мазка — запомнен при нажатии: к концу мазка контекста сцены может уже не быть. */
   onActiveChange: (isActive: boolean) => void;
@@ -235,7 +235,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   let hovered: HandleHit | null = null;
   /** Где указатель над холстом — по нему кисть рисует круг, пока кнопка не нажата. */
   let hoverPoint: Vec2 | null = null;
-  const mountainController = createMountainSceneController();
+  const imprintController = createImprintSceneController();
   const paintController = createPaintSceneController();
 
   function projectionOf(engine: SpaceSceneEngine): SpaceProjection {
@@ -317,7 +317,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
       heights: Float64Array.from(terrain.grid.heights),
       start: terrain.grid.heights,
       water: terrain.water,
-      stamps: context.mountains.entries,
+      stamps: context.imprints.entries,
       hasChanged: false,
       onActiveChange: context.onStrokeActiveChange,
     };
@@ -325,7 +325,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     return true;
   }
 
-  function sendTerrain(engine: SpaceSceneEngine, heights: Float64Array, water: unknown, stamps: readonly MountainEntry[]): boolean {
+  function sendTerrain(engine: SpaceSceneEngine, heights: Float64Array, water: unknown, stamps: readonly ImprintEntry[]): boolean {
     return engine.set_terrain(heights, water, stamps) === undefined;
   }
 
@@ -375,7 +375,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   function pointerDown(input: PointerInput): boolean {
     const context = getContext();
-    if (context.isInputLocked || gesture !== null || mountainController.isActive() || paintController.isActive()) return false;
+    if (context.isInputLocked || gesture !== null || imprintController.isActive() || paintController.isActive()) return false;
     if (input.button === MIDDLE_BUTTON) {
       const camera = context.cameraStore.current();
       if (!context.isEditorCameraActive || camera === null) return false;
@@ -393,9 +393,9 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (context.brush !== null) return startStroke(context, input, context.brush);
     // «Покрасить»: нажатие красит так же, как кисть лепит — ничего не выбирает («Покраска», требование 5).
     if (context.paint !== null) return paintController.start(context, input);
-    // «Гора»: щелчок по земле ставит гору и сам ничего не выбирает и не тянет.
-    if (context.mountains.placing !== null) {
-      mountainController.place(context, input);
+    // «Отпечаток»: щелчок по земле ставит отпечаток и сам ничего не выбирает и не тянет.
+    if (context.imprints.placing !== null) {
+      imprintController.place(context, input);
       return false;
     }
 
@@ -410,14 +410,14 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
       }
     }
 
-    if (mountainController.startHandle(context, input)) return true;
+    if (imprintController.startHandle(context, input)) return true;
 
-    // Объект важнее горы: щелчок по объекту, что стоит на горе, выбирает объект («Лепка рельефа», «Сцена»).
+    // Объект важнее отпечатка: щелчок по объекту, что стоит на отпечатке, выбирает объект («Лепка рельефа», «Сцена»).
     const picked = context.engine.object_at(input.x, input.y) as number | undefined;
     if (typeof picked !== "number") {
-      const mountainResult = mountainController.pickAt(context, input);
-      if (mountainResult === null) context.onSelect(null);
-      return mountainResult === true;
+      const imprintResult = imprintController.pickAt(context, input);
+      if (imprintResult === null) context.onSelect(null);
+      return imprintResult === true;
     }
     context.onSelect(picked);
     if (!context.areHandlesAvailable) return false;
@@ -493,7 +493,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     const context = getContext();
     if (context.isInputLocked) return;
     hoverPoint = [input.x, input.y];
-    if (mountainController.pointerMove(context, input)) return;
+    if (imprintController.pointerMove(context, input)) return;
     if (paintController.pointerMove(input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId) {
@@ -522,7 +522,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   }
 
   function pointerUp(input: PointerInput): void {
-    if (mountainController.pointerUp(getContext(), input)) return;
+    if (imprintController.pointerUp(getContext(), input)) return;
     if (paintController.pointerUp(input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId || (input.buttons & BUTTON_BITS[active.button]) !== 0) return;
@@ -558,7 +558,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   }
 
   function pointerCancel(input: PointerInput): void {
-    if (mountainController.pointerCancel(getContext(), input)) return;
+    if (imprintController.pointerCancel(getContext(), input)) return;
     if (paintController.pointerCancel(getContext(), input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId) return;
@@ -592,7 +592,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     noteShift(input);
     if (input.ctrlKey || input.altKey || input.metaKey) return false;
     if (input.code === "Escape") {
-      if (mountainController.cancel(context)) return true;
+      if (imprintController.cancel(context)) return true;
       if (paintController.cancel(context)) return true;
       const active = gesture;
       if (isStrokeGesture(active)) {
@@ -600,8 +600,8 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
         undoStroke(active);
         return true;
       }
-      // Без жеста Esc снимает кисть или «Гору»: круг пропадает, щелчок снова выбирает, ручки — прежнего вида.
-      if (active === null && (context.brush !== null || context.paint !== null || context.mountains.placing !== null)) {
+      // Без жеста Esc снимает кисть или «Отпечаток»: круг пропадает, щелчок снова выбирает, ручки — прежнего вида.
+      if (active === null && (context.brush !== null || context.paint !== null || context.imprints.placing !== null)) {
         context.onHandleModeChange(context.handleMode);
         return true;
       }
@@ -612,7 +612,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     }
     const mode = MODE_KEYS[input.code];
     if (mode !== undefined && !input.shiftKey) {
-      if (!context.areHandlesAvailable || isStrokeGesture(gesture) || mountainController.isActive() || paintController.isActive()) return false;
+      if (!context.areHandlesAvailable || isStrokeGesture(gesture) || imprintController.isActive() || paintController.isActive()) return false;
       hovered = null;
       context.onHandleModeChange(mode);
       return true;
@@ -644,7 +644,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   function draw(context2d: CanvasRenderingContext2D, pixelRatio: number): void {
     const context = getContext();
     drawBrush(context, context2d, pixelRatio);
-    mountainController.draw(context, context2d, pixelRatio);
+    imprintController.draw(context, context2d, pixelRatio);
     if (context.selectedIndex === null) return;
     const rect = context.engine.object_rect(context.selectedIndex) as { corners?: Vec2[] } | undefined;
     if (rect?.corners !== undefined) drawSelectionQuad(context2d, rect.corners, context.selectedLabel, pixelRatio);
@@ -663,7 +663,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     pointerLeave: () => {
       hovered = null;
       hoverPoint = null;
-      mountainController.pointerLeave();
+      imprintController.pointerLeave();
     },
     wheel,
     keyDown,
@@ -675,7 +675,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
       gesture = null;
       if (isStrokeGesture(active)) active.onActiveChange(false);
       paintController.abandon();
-      mountainController.abandon();
+      imprintController.abandon();
     },
   };
 }

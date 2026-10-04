@@ -10,17 +10,17 @@ export type TerrainGrid = { columns: number; rows: number; heights: Float64Array
 export type TerrainCoverLayer = { material: string; slope?: number; mask?: string };
 
 /**
- * Гора из `stamps` файла рельефа, как она там лежит: `{stamp, position, size, height, rotation?}`.
+ * Отпечаток из `stamps` файла рельефа, как он там лежит: `{stamp, position, size, height, rotation?}`.
  * Значения не проверяются — набранное в свойствах пишется как есть, ошибку называет движок.
  */
-export type MountainEntry = Record<string, unknown>;
+export type ImprintEntry = Record<string, unknown>;
 
-/** Что лежит в файле рельефа: сетка высот, вода, покрытия, путь карты цвета `tint` и горы `stamps`, если они есть. Карту цвета редактор не правит, только переносит. */
+/** Что лежит в файле рельефа: сетка высот, вода, покрытия, путь карты цвета `tint` и отпечатки `stamps`, если они есть. Карту цвета редактор не правит, только переносит. */
 export type TerrainContent = TerrainGrid & {
   water: TerrainWater | null;
   covers: TerrainCoverLayer[] | null;
   tint?: string | null;
-  stamps?: MountainEntry[] | null;
+  stamps?: ImprintEntry[] | null;
 };
 
 /** «Рельеф», требование 23: вода, которую включает галочка, — земля высоты 0 остаётся сушей. */
@@ -38,20 +38,20 @@ function formatNumber(value: number): string {
   return rounded === 0 ? "0" : String(rounded);
 }
 
-const MOUNTAIN_KEYS = ["stamp", "position", "size", "height", "rotation"];
+const IMPRINT_KEYS = ["stamp", "position", "size", "height", "rotation"];
 
-function formatMountainValue(value: unknown): string {
+function formatImprintValue(value: unknown): string {
   if (typeof value === "number" && Number.isFinite(value)) return formatNumber(value);
   if (Array.isArray(value) && value.every((item) => typeof item === "number" && Number.isFinite(item))) return `[${value.map(formatNumber).join(", ")}]`;
   return JSON.stringify(value);
 }
 
-/** Гора одной строкой: ключи в порядке `stamp`, `position`, `size`, `height`, `rotation`, числа до сотых; `rotation` пишется, если не 0. */
-function formatMountain(mountain: MountainEntry): string {
-  const keys = [...MOUNTAIN_KEYS, ...Object.keys(mountain).filter((key) => !MOUNTAIN_KEYS.includes(key))];
+/** Отпечаток одной строкой: ключи в порядке `stamp`, `position`, `size`, `height`, `rotation`, числа до сотых; `rotation` пишется, если не 0. */
+function formatImprint(imprint: ImprintEntry): string {
+  const keys = [...IMPRINT_KEYS, ...Object.keys(imprint).filter((key) => !IMPRINT_KEYS.includes(key))];
   const fields = keys
-    .filter((key) => key in mountain && !(key === "rotation" && formatMountainValue(mountain[key]) === "0"))
-    .map((key) => `${JSON.stringify(key)}: ${formatMountainValue(mountain[key])}`);
+    .filter((key) => key in imprint && !(key === "rotation" && formatImprintValue(imprint[key]) === "0"))
+    .map((key) => `${JSON.stringify(key)}: ${formatImprintValue(imprint[key])}`);
   return `{ ${fields.join(", ")} }`;
 }
 
@@ -63,7 +63,7 @@ function lineBreakOf(text: string | null): string {
 /**
  * Текст файла рельефа — «Кисти рельефа», требование 18, «Свет и материалы», требование 27, и «Лепка
  * рельефа», требование 33: `water` первой строкой, если вода есть, затем `covers` — по слою на строку,
- * если они есть, затем путь карты цвета `tint`, если он есть, затем `stamps` — по горе на строку, затем `heights` — по строке сетки на строку файла, числа через запятую с пробелом, как лежит `games/rpg/terrain.json`.
+ * если они есть, затем путь карты цвета `tint`, если он есть, затем `stamps` — по отпечатку на строку, затем `heights` — по строке сетки на строку файла, числа через запятую с пробелом, как лежит `games/rpg/terrain.json`.
  */
 export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): string {
   const lines: string[] = ["{"];
@@ -85,7 +85,7 @@ export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): st
   const { stamps } = content;
   if (stamps !== undefined && stamps !== null && stamps.length > 0) {
     lines.push('  "stamps": [');
-    stamps.forEach((mountain, index) => lines.push(`    ${formatMountain(mountain)}${index + 1 < stamps.length ? "," : ""}`));
+    stamps.forEach((imprint, index) => lines.push(`    ${formatImprint(imprint)}${index + 1 < stamps.length ? "," : ""}`));
     lines.push("  ],");
   }
   lines.push('  "heights": [');
@@ -123,13 +123,13 @@ function parseCovers(value: unknown): TerrainCoverLayer[] | null {
   }));
 }
 
-/** Горы `stamps` как они лежат в файле; не список — `null`, элемент, что не объект, пропускается: проверять их — дело движка. */
-function parseMountains(value: unknown): MountainEntry[] | null {
+/** Отпечатки `stamps` как они лежат в файле; не список — `null`, элемент, что не объект, пропускается: проверять их — дело движка. */
+function parseImprints(value: unknown): ImprintEntry[] | null {
   if (!Array.isArray(value)) return null;
-  return value.filter((item): item is MountainEntry => item !== null && typeof item === "object" && !Array.isArray(item));
+  return value.filter((item): item is ImprintEntry => item !== null && typeof item === "object" && !Array.isArray(item));
 }
 
-/** Файл рельефа как сетка, вода, покрытия и горы; текст, что не разбирается, — `null` (проверять его — дело движка). */
+/** Файл рельефа как сетка, вода, покрытия и отпечатки; текст, что не разбирается, — `null` (проверять его — дело движка). */
 export function parseTerrainText(text: string): TerrainContent | null {
   let parsed: unknown;
   try {
@@ -149,12 +149,12 @@ export function parseTerrainText(text: string): TerrainContent | null {
     water: water === null ? null : { level: water.level, color: water.color },
     covers: parseCovers(file?.covers),
     tint: typeof file?.tint === "string" ? file.tint : null,
-    stamps: parseMountains(file?.stamps),
+    stamps: parseImprints(file?.stamps),
   };
 }
 
-/** Горы из файла рельефа в порядке файла; файла нет или он не разбирается — гор нет. */
-export function readTerrainMountains(text: string | null): MountainEntry[] {
+/** Отпечатки из файла рельефа в порядке файла; файла нет или он не разбирается — отпечатков нет. */
+export function readTerrainImprints(text: string | null): ImprintEntry[] {
   return text === null ? [] : (parseTerrainText(text)?.stamps ?? []);
 }
 
@@ -180,7 +180,7 @@ export function flatTerrainGrid(sceneSize: SceneSize): TerrainGrid {
   return { columns, rows, heights: new Float64Array(columns * rows) };
 }
 
-/** Текст рельефа после мазка: высоты — из сетки, вода, покрытия, горы и перенос строки — как были. */
+/** Текст рельефа после мазка: высоты — из сетки, вода, покрытия, отпечатки и перенос строки — как были. */
 export function terrainTextWithHeights(previousText: string | null, grid: TerrainGrid): string {
   const previous = previousText === null ? null : parseTerrainText(previousText);
   return formatTerrainText(
@@ -204,17 +204,17 @@ export function terrainTextWithWater(previousText: string | null, sceneSize: Sce
 }
 
 /**
- * Текст рельефа после правки гор — «Лепка рельефа», требование 33: высоты, вода, покрытия и карта цвета
+ * Текст рельефа после правки отпечатков — «Лепка рельефа», требование 33: высоты, вода, покрытия и карта цвета
  * — как в файле, без файла — ровная земля без воды и покрытий; пустой список убирает ключ `stamps`.
  * Файл, что не разбирается, — `null`: править нечего.
  */
-export function terrainTextWithMountains(previousText: string | null, sceneSize: SceneSize, mountains: readonly MountainEntry[]): string | null {
+export function terrainTextWithImprints(previousText: string | null, sceneSize: SceneSize, imprints: readonly ImprintEntry[]): string | null {
   const previous = previousContentOrFlat(previousText, sceneSize);
-  return previous === null ? null : formatTerrainText({ ...previous, stamps: mountains.length === 0 ? null : [...mountains] }, lineBreakOf(previousText));
+  return previous === null ? null : formatTerrainText({ ...previous, stamps: imprints.length === 0 ? null : [...imprints] }, lineBreakOf(previousText));
 }
 
 /**
- * Текст рельефа после покраски — «Покраска», требования 12–13, 15: слои покрытий новые, высоты, вода, горы и
+ * Текст рельефа после покраски — «Покраска», требования 12–13, 15: слои покрытий новые, высоты, вода, отпечатки и
  * карта цвета — как в файле, без файла — ровная земля без воды. Файл, что не разбирается, — `null`: править нечего.
  */
 export function terrainTextWithCovers(previousText: string | null, sceneSize: SceneSize, covers: readonly TerrainCoverLayer[]): string | null {
