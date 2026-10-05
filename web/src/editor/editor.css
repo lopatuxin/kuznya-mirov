@@ -153,28 +153,18 @@ body.is-resizing-panel {
   color: var(--editor-text-muted);
 }
 
+/* Кнопка-значок: подпись — в подсказке. */
+.editor-button--icon {
+  flex: none;
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+
 .editor-button--outline {
   align-self: flex-start;
   border-color: var(--editor-border-strong);
   color: var(--editor-text);
-}
-
-.editor-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  flex-shrink: 1;
-  min-width: 0;
-  overflow: hidden;
-  height: 22px;
-  padding: 0 8px;
-  border: 1px solid var(--editor-border);
-  border-radius: 999px;
-  background: var(--editor-surface-raised);
-  color: var(--editor-text-muted);
-  font: 11.5px var(--editor-font-mono);
-  white-space: nowrap;
-  text-overflow: ellipsis;
 }
 
 .editor-count {
@@ -463,30 +453,49 @@ body.is-resizing-panel {
   background: var(--editor-bg);
 }
 
+/* Одна строка над тремя колонками окна: её части стоят ровно над списком объектов, сценой и свойствами и
+   тянутся вместе с ними, когда автор меняет ширину панелей. */
 .project-topbar {
   grid-area: topbar;
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  display: grid;
+  grid-template-columns: subgrid;
   min-width: 0;
-  padding: 0 14px 0 11px;
   border-bottom: 1px solid var(--editor-border);
   background: var(--editor-surface);
 }
 
-.project-topbar__divider {
-  flex: none;
-  width: 1px;
-  height: 20px;
-  background: var(--editor-border-strong);
+.project-topbar__project,
+.project-topbar__scene,
+.project-topbar__status {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.project-topbar__project {
+  gap: 4px;
+  overflow: hidden;
+  padding: 0 8px 0 11px;
+}
+
+/* Окошки групп выпадают вниз за край полосы — здесь ничего не обрезается. На узкой сцене подписи групп
+   прячутся и остаются значки, чтобы кнопки не наезжали на часть над свойствами. */
+.project-topbar__scene {
+  container-type: inline-size;
+  gap: 10px;
+  padding: 0 10px;
+}
+
+@container (max-width: 640px) {
+  .tool-menu__caption {
+    display: none;
+  }
 }
 
 .project-topbar__title {
   overflow: hidden;
-  flex-shrink: 1;
-  /* Кнопки партии и повтора («Редактор», фаза 10) делят полосу с названием — не даём ему сжаться
-     до полного исчезновения раньше остальных элементов, у которых по умолчанию тот же приоритет. */
-  min-width: 64px;
+  flex: 1;
+  min-width: 0;
   margin: 0 2px 0 4px;
   font: 600 14px var(--editor-font-display);
   text-overflow: ellipsis;
@@ -494,20 +503,19 @@ body.is-resizing-panel {
 }
 
 .project-topbar__status {
-  display: flex;
-  align-items: center;
+  justify-content: flex-end;
   gap: 8px;
-  margin-left: auto;
-  min-width: 0;
+  padding: 0 14px 0 10px;
 }
 
 .project-topbar__live {
   display: inline-flex;
+  flex: none;
   align-items: center;
-  gap: 8px;
-  height: 26px;
-  padding: 0 10px;
+  height: 22px;
+  padding: 0 8px;
   border-radius: 999px;
+  cursor: help;
   color: var(--editor-text-muted);
   font-size: 12px;
   white-space: nowrap;
@@ -1089,120 +1097,309 @@ body.is-resizing-panel {
   display: block;
 }
 
-/* Виды ручек, кисти и поля кисти — в поле над сценой, в два ряда: кнопки, под ними поля. Отступ, высота рядов
-   и промежуток вместе меньше SPACE_STAGE_PADDING, поэтому полоса не наезжает на сцену и не выходит за свою часть окна. */
-.scene-view__tools {
-  position: absolute;
-  top: 3px;
-  left: 10px;
-  right: 10px;
-  display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 4px;
-  overflow-x: auto;
-  scrollbar-width: none;
-}
+/* ——— Инструменты сцены в верхней полосе ——— */
 
-.scene-view__tool-row {
-  flex: none;
+.scene-tools {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  min-width: 0;
 }
 
-/* Группа инструментов — рамка с подписью слева: «Объект», «Рельеф», «Кисть», «Вода». Высота 26 px:
-   два ряда с промежутком и отступом сверху укладываются в STAGE_PADDING трёхмерной сцены. */
-.scene-view__panel {
+/* Виды ручек — значками в одной рамке, как перенос, поворот и масштаб в Godot и Unity. */
+.scene-tools__group {
   flex: none;
   display: flex;
-  align-items: center;
   gap: 2px;
-  height: 26px;
-  padding: 0 2px 0 0;
+  padding: 1px;
   border: 1px solid var(--editor-border-strong);
-  border-radius: 7px;
-  background: var(--editor-surface);
+  border-radius: 8px;
 }
 
-.scene-view__panel--fields {
-  gap: 10px;
-  padding-right: 8px;
-}
-
-.scene-view__panel-caption {
+.scene-tools__button {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
-  align-self: stretch;
-  margin-right: 2px;
-  padding: 0 8px;
-  border-right: 1px solid var(--editor-border-strong);
-  color: var(--editor-text-faint);
-  font-size: 10.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  white-space: nowrap;
-  user-select: none;
-}
-
-.scene-view__panel-caption--toggle {
+  justify-content: center;
+  width: 28px;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--editor-text-muted);
   cursor: pointer;
 }
 
-.scene-view__panel-caption--toggle input {
-  margin: 0;
+.scene-tools__button:hover {
+  background: var(--editor-surface-hover);
+  color: var(--editor-text);
 }
 
-.scene-view__tool {
-  justify-content: center;
-  width: 26px;
-  height: 22px;
-  padding: 0;
-  border-radius: 5px;
+.scene-tools__button--active,
+.scene-tools__button--active:hover {
+  border-color: var(--editor-accent-ring);
+  background: var(--editor-accent-soft);
+  color: var(--editor-accent);
 }
 
-.scene-view__field {
+/* Группа с выпадающим окошком: кнопка группы и стрелка — одной рамкой. */
+.tool-menu {
+  position: relative;
+  flex: none;
+}
+
+.tool-menu__trigger {
+  display: flex;
+  align-items: stretch;
+  height: 30px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.tool-menu__trigger--active {
+  border-color: var(--editor-accent-ring);
+  background: var(--editor-accent-soft);
+}
+
+.tool-menu__main,
+.tool-menu__toggle {
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 6px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
   color: var(--editor-text-muted);
-  font-size: 12px;
+  font-size: 12.5px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.tool-menu__toggle {
+  padding: 0 6px;
+  border-left: 1px solid var(--editor-border-strong);
+}
+
+.tool-menu__main:hover,
+.tool-menu__toggle:hover,
+.tool-menu--open .tool-menu__toggle,
+.tool-menu--open .tool-menu__main[aria-expanded="true"] {
+  background: var(--editor-surface-hover);
+  color: var(--editor-text);
+}
+
+.tool-menu__trigger--active .tool-menu__main {
+  color: var(--editor-accent);
+}
+
+.tool-menu__trigger--active .tool-menu__toggle {
+  border-left-color: var(--editor-accent-ring);
+}
+
+.tool-menu__main:disabled,
+.tool-menu__toggle:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: transparent;
+}
+
+/* Меню записей — один значок «⋮» без подписи: рамки нет, как у соседних кнопок партии. */
+.battle-transport .tool-menu__trigger {
+  border-color: transparent;
+}
+
+.battle-transport .tool-menu__main {
+  justify-content: center;
+  width: 30px;
+  padding: 0;
+}
+
+/* Меню записей стоит у правого края сцены — его окошко выпадает влево, а не на колонку свойств. */
+.battle-transport .tool-menu__popover {
+  right: 0;
+  left: auto;
+}
+
+.tool-menu__popover {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 240px;
+  padding: 6px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 10px;
+  background: var(--editor-surface-raised);
+  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.55);
+}
+
+.tool-menu__items {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.tool-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 30px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--editor-text);
+  font-size: 13px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.tool-menu__item:hover {
+  background: var(--editor-surface-hover);
+}
+
+.tool-menu__item--active,
+.tool-menu__item--active:hover {
+  background: var(--editor-accent-soft);
+  color: var(--editor-accent);
+}
+
+.tool-menu__item:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+  background: transparent;
+}
+
+.tool-menu__item svg {
+  flex: none;
+}
+
+.tool-menu__item-label {
+  flex: 1;
+}
+
+.tool-menu__item-hint {
+  color: var(--editor-text-faint);
+  font-size: 11.5px;
   white-space: nowrap;
 }
 
-.scene-view__field-input {
-  width: 48px;
-  height: 22px;
-  padding: 0 5px;
+.tool-menu__separator {
+  height: 1px;
+  margin: 2px 4px;
+  background: var(--editor-border);
+}
+
+/* Настройки инструмента в окошке: подпись слева, значение справа. */
+.tool-menu__fields {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 4px 8px 6px;
+}
+
+.tool-menu__field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  color: var(--editor-text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.tool-menu__field-input {
+  width: 72px;
+  height: 26px;
+  padding: 0 7px;
   border: 1px solid var(--editor-border-strong);
-  border-radius: 5px;
+  border-radius: 6px;
   background: var(--editor-bg);
   color: var(--editor-text);
   font: 12px var(--editor-font-mono);
 }
 
-/* Выпадающий список штампов в полосе над сценой: имя штампа длиннее числа. */
-.scene-view__field-input--select {
+/* Выпадающие списки штампов и материалов: имя длиннее числа. */
+.tool-menu__field-input--select {
   width: auto;
-  max-width: 120px;
+  min-width: 120px;
+  max-width: 160px;
+  font-family: inherit;
 }
 
-.scene-view__field-input:focus {
+.tool-menu__field-input:focus {
   border-color: var(--editor-accent-ring);
   outline: none;
 }
 
-.scene-view__field-input:disabled {
+.tool-menu__field-input:disabled {
   opacity: 0.4;
 }
 
-.scene-view__tool--active,
-.scene-view__tool--active:hover {
+.tool-menu__toggle-field {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--editor-text);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+
+.tool-menu__toggle-field input {
+  margin: 0;
+}
+
+/* Штампы «Отпечатка» — карточками с картинкой рельефа и названием, как кисти-штампы в Unity и Unreal. */
+.stamp-picker {
+  display: grid;
+  grid-template-columns: repeat(2, 128px);
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.stamp-picker__card {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  padding: 4px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 7px;
+  background: var(--editor-bg);
+  color: var(--editor-text);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.stamp-picker__card:hover {
+  border-color: var(--editor-text-faint);
+}
+
+.stamp-picker__card--chosen,
+.stamp-picker__card--chosen:hover {
   border-color: var(--editor-accent-ring);
   background: var(--editor-accent-soft);
   color: var(--editor-accent);
+}
+
+.stamp-picker__picture {
+  display: block;
+  width: 100%;
+  aspect-ratio: 8 / 5;
+  border-radius: 4px;
+  background: var(--editor-surface);
+}
+
+.stamp-picker__name {
+  overflow: hidden;
+  padding: 0 2px 1px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* Высота и отступ вместе меньше поля вокруг сцены (STAGE_PADDING), поэтому подпись не наезжает на сцену. */
@@ -1419,11 +1616,17 @@ body.is-resizing-panel {
   box-shadow: inset 0 0 0 2px rgba(201, 166, 255, 0.5);
 }
 
+/* Кнопки партии — у правого края части над сценой: стоят на месте, есть инструменты сцены или нет. */
 .battle-transport {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 2px;
   flex: none;
+  margin-left: auto;
+}
+
+.battle-transport__play:not(:disabled) {
+  color: var(--editor-accent);
 }
 
 .battle-transport__step-label {

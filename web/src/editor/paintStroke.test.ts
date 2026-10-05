@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { MaskSet } from "./maskBytes";
-import { canPaintMaterial, newMaskPath, topLayerIndex } from "./paintLayers";
+import { canPaintMaterial, newMaskPath, resolvePaintMaterial, topLayerIndex } from "./paintLayers";
 import { applyPaintFrame, finishPaintStroke, paintStrokeLayers, paintStrokeMasks, startPaintStroke, type PaintFrame, type PaintStroke } from "./paintStroke";
 import type { TerrainCoverLayer } from "./terrainFile";
 
@@ -247,6 +247,26 @@ describe("правила слоёв: без Shift", () => {
 
   it("слой с маской, которой нет в наборе, — мазка нет", () => {
     expect(startPaintStroke(GRASS_ROCK_SCREE, { "terrain/rock.png": mask(0) }, SCENE, "rock", null)).toBeNull();
+  });
+});
+
+describe("материал кисти", () => {
+  it("выбранный, пока им можно красить", () => {
+    expect(resolvePaintMaterial(["grass", "rock"], "rock", new Set())).toBe("rock");
+  });
+
+  it("ничего не выбрано или выбранный пропал из объявления — первый", () => {
+    expect(resolvePaintMaterial(["grass", "rock"], null, new Set())).toBe("grass");
+    expect(resolvePaintMaterial(["grass", "rock"], "moss", new Set())).toBe("grass");
+  });
+
+  it("слоёв восемь — первый, которым можно красить, а не заблокированный", () => {
+    expect(resolvePaintMaterial(["grass", "rock", "scree"], null, new Set(["grass"]))).toBe("rock");
+    expect(resolvePaintMaterial(["grass", "rock", "scree"], "grass", new Set(["grass"]))).toBe("rock");
+  });
+
+  it("материалов нет — кисти нечем красить", () => {
+    expect(resolvePaintMaterial([], null, new Set())).toBe(undefined);
   });
 });
 

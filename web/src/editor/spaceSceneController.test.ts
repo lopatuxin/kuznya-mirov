@@ -113,6 +113,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const modes: string[] = [];
   const terrainCommits: Float64Array[] = [];
   const strokeStates: boolean[] = [];
+  const brushWheelClicks: number[] = [];
   const imprintSelections: number[] = [];
   const imprintPlaced: unknown[] = [];
   const imprints: ImprintContext = {
@@ -137,11 +138,12 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     onCommitPlacement: (index, changes) => commits.push([index, changes]),
     onCommitTerrain: (grid) => terrainCommits.push(Float64Array.from(grid.heights)),
     onStrokeActiveChange: (isActive) => strokeStates.push(isActive),
+    onBrushSizeWheel: (clicks) => brushWheelClicks.push(clicks),
     imprints,
     ...overrides,
   };
   const controller = createSpaceSceneController(() => context);
-  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, coverSets, terrainCommits, strokeStates, imprintSelections, imprintPlaced, engine };
+  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, coverSets, terrainCommits, strokeStates, brushWheelClicks, imprintSelections, imprintPlaced, engine };
 }
 
 describe("выбор щелчком", () => {
@@ -223,6 +225,73 @@ describe("отпечатки при щелчке", () => {
     expect(scene.selections).toEqual([]);
     expect(scene.controller.keyDown(key("Escape"))).toBe(true);
     expect(scene.modes).toEqual(["translate"]);
+  });
+
+  describe("пробный отпечаток", () => {
+    const PLACING = { stamp: { name: "beluha", columns: 4, rows: 2 }, width: 8, height: 4 };
+    const AT_5_5 = { stamp: "beluha", position: [5, 5], size: [8, 4], height: 4 };
+
+    function hovering() {
+      const scene = setup({ imprints: { ...setupImprints(), entries: [BELUHA], placing: PLACING, onPlace: (entry) => scene.imprintPlaced.push(entry) } });
+      scene.controller.pointerMove(pointer(100, 100, { buttons: 0 }));
+      scene.controller.strokeFrame(0);
+      return scene;
+    }
+
+    it("кадр с указателем над землёй ставит его поверх отпечатков файла; тот же указатель — не ставит заново", () => {
+      const scene = hovering();
+      scene.controller.strokeFrame(16);
+
+      expect(scene.terrainSets.map((set) => set.stamps)).toEqual([[BELUHA, AT_5_5]]);
+    });
+
+    it("место ищется по земле без пробного: перед новым местом земля возвращается к файлу", () => {
+      const scene = hovering();
+      scene.controller.pointerMove(pointer(120, 100, { buttons: 0 }));
+      scene.controller.strokeFrame(16);
+
+      expect(scene.terrainSets.map((set) => set.stamps)).toEqual([[BELUHA, AT_5_5], [BELUHA], [BELUHA, { ...AT_5_5, position: [7, 5] }]]);
+    });
+
+    it("указатель ушёл со сцены — земля снова как в файле", () => {
+      const scene = hovering();
+      scene.controller.pointerLeave();
+      scene.controller.strokeFrame(16);
+
+      expect(scene.terrainSets.at(-1)?.stamps).toEqual([BELUHA]);
+    });
+
+    it("щелчок там же — пробный и остаётся: он ставится, земля не возвращается", () => {
+      const scene = hovering();
+      scene.controller.pointerDown(pointer(100, 100));
+
+      expect(scene.imprintPlaced).toEqual([AT_5_5]);
+      expect(scene.terrainSets).toHaveLength(1);
+    });
+
+    it("щелчок не там, где пробный: земля сначала без него, отпечаток — под указателем", () => {
+      const scene = hovering();
+      scene.controller.pointerDown(pointer(120, 100));
+
+      expect(scene.terrainSets.at(-1)?.stamps).toEqual([BELUHA]);
+      expect(scene.imprintPlaced).toEqual([{ ...AT_5_5, position: [7, 5] }]);
+    });
+
+    it("снять сразу — перед запуском игры: земля как в файле в тот же миг, без кадра", () => {
+      const scene = hovering();
+      scene.controller.clearPreview();
+
+      expect(scene.terrainSets.map((set) => set.stamps)).toEqual([[BELUHA, AT_5_5], [BELUHA]]);
+    });
+
+    it("пока камеру ведут средней кнопкой, пробный не переставляется", () => {
+      const scene = hovering();
+      scene.controller.pointerDown(pointer(100, 100, { button: 1, buttons: 4 }));
+      scene.controller.pointerMove(pointer(140, 100, { button: -1, buttons: 4 }));
+      scene.controller.strokeFrame(16);
+
+      expect(scene.terrainSets).toHaveLength(1);
+    });
   });
 
   it("щелчок мимо земли при «Отпечатке» отпечатка не ставит", () => {
@@ -562,17 +631,17 @@ describe("камера редактора", () => {
   it("на паузе и в идущей партии средняя кнопка ничего не делает", () => {
     const paused = setup({ isEditorCameraActive: false });
     expect(paused.controller.pointerDown(pointer(100, 100, { button: 1, buttons: 4 }))).toBe(false);
-    expect(paused.controller.wheel({ deltaY: -100, deltaMode: 0 })).toBe(false);
+    expect(paused.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: false })).toBe(false);
     expect(paused.cameras).toEqual([]);
   });
 
   it("колесо приближает: щелчок — расстояние × 0,9, но не ближе 2 клеток и не дальше трёх расстояний", () => {
     const scene = setup();
-    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0 })).toBe(true);
+    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: false })).toBe(true);
     expect(scene.cameras[0]?.distance).toBeCloseTo(36);
-    for (let index = 0; index < 100; index++) scene.controller.wheel({ deltaY: -100, deltaMode: 0 });
+    for (let index = 0; index < 100; index++) scene.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: false });
     expect(scene.cameraStore.current()?.camera.distance).toBe(2);
-    for (let index = 0; index < 100; index++) scene.controller.wheel({ deltaY: 100, deltaMode: 0 });
+    for (let index = 0; index < 100; index++) scene.controller.wheel({ deltaY: 100, deltaMode: 0, ctrlKey: false });
     expect(scene.cameraStore.current()?.camera.distance).toBe(120);
   });
 });
@@ -877,7 +946,7 @@ describe("мазок кисти рельефа", () => {
     expect(scene.controller.pointerDown(pointer(100, 100, { button: 1, buttons: 4 }))).toBe(true);
     scene.controller.pointerMove(pointer(150, 100, { button: -1, buttons: 4 }));
     expect(scene.cameras).toHaveLength(1);
-    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0 })).toBe(true);
+    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: false })).toBe(true);
     expect(scene.strokeStates).toEqual([]);
   });
 });
@@ -955,6 +1024,13 @@ describe("мазок «Покрасить»", () => {
     return { scene: setup({ paint }), commits, restores };
   }
 
+  it("Ctrl+колесо меняет размер кисти, а не приближает камеру", () => {
+    const { scene } = paintSetup();
+    expect(scene.controller.wheel({ deltaY: 100, deltaMode: 0, ctrlKey: true })).toBe(true);
+    expect(scene.brushWheelClicks).toEqual([1]);
+    expect(scene.cameras).toEqual([]);
+  });
+
   it("нажатие красит, а не выбирает: объект не выбирается, выбор не снимается", () => {
     const { scene } = paintSetup();
     scene.state.pickedId = 9;
@@ -1025,5 +1101,28 @@ describe("мазок «Покрасить»", () => {
 
     expect(scene.strokeStates).toEqual([true, false]);
     expect(commits).toEqual([]);
+  });
+});
+
+describe("Ctrl+колесо", () => {
+  it("при кисти рельефа щелчки идут в размер кисти, а камера стоит", () => {
+    const scene = setup({ brush: RAISE });
+    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: true })).toBe(true);
+    expect(scene.controller.wheel({ deltaY: 100, deltaMode: 0, ctrlKey: true })).toBe(true);
+    expect(scene.brushWheelClicks).toEqual([-1, 1]);
+    expect(scene.cameras).toEqual([]);
+  });
+
+  it("без кисти приближает камеру, как просто колесо", () => {
+    const scene = setup();
+    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: true })).toBe(true);
+    expect(scene.brushWheelClicks).toEqual([]);
+    expect(scene.cameras[0]?.distance).toBeCloseTo(36);
+  });
+
+  it("на паузе и в партии кисти нет — размер не меняется", () => {
+    const scene = setup({ brush: RAISE, isEditorCameraActive: false });
+    expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: true })).toBe(false);
+    expect(scene.brushWheelClicks).toEqual([]);
   });
 });

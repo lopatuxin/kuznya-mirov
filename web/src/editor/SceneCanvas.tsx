@@ -1,14 +1,15 @@
 import type { Engine } from "engine";
-import { useEffect, useRef, useState, type RefObject } from "react";
+import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
+import { createPortal } from "react-dom";
 import { computeCanvasLayout } from "../canvasLayout";
 import { cellSizeFromObjectRect, computeDragPosition, hasCrossedDragThreshold } from "./dragPlacement";
 import type { EditorCameraStore } from "./editorCamera";
 import type { HandleMode } from "./handleGeometry";
-import { HandleModeToolbar } from "./HandleModeToolbar";
+import { HandleModeToolbar, type TerrainTool } from "./HandleModeToolbar";
 import type { MaskSet } from "./maskBytes";
 import type { StampShape } from "./imprintGeometry";
 import type { PlacementChange } from "./objectPlacement";
-import { canPaintMaterial } from "./paintLayers";
+import { canPaintMaterial, resolvePaintMaterial } from "./paintLayers";
 import type { PaintResult } from "./paintStroke";
 import type { SceneSize } from "./sceneObjects";
 import { drawSelection, type CanvasRect } from "./selectionDrawing";
@@ -25,6 +26,8 @@ import {
   type SelectedTool,
 } from "./sceneTools";
 import type { SpaceSceneContext } from "./spaceSceneController";
+import type { StampPreview } from "./stampPreview";
+import { wheelBrushSize } from "./terrainBrush";
 import type { ImprintEntry, TerrainCoverLayer, TerrainGrid, TerrainWater } from "./terrainFile";
 import { useSpaceSceneInput } from "./useSpaceSceneInput";
 
@@ -88,13 +91,15 @@ type SceneCanvasProps = {
   /** Отпечатки файла рельефа как есть, штампы `files.stamps` и выбранный отпечаток — «Лепка рельефа». */
   imprints: readonly ImprintEntry[];
   stampShapes: readonly StampShape[];
+  /** Картинки штампов по имени — карточки «Отпечатка» в окошке «Рельеф». */
+  stampPreviews: ReadonlyMap<string, StampPreview>;
   selectedImprintIndex: number | null;
   onSelectImprint: (index: number) => void;
   /** Кнопка «Отпечаток» поставила отпечаток: дописывается в конец файла и выбирается. */
   onPlaceImprint: (entry: ImprintEntry) => void;
   /** Отпускание после жеста отпечатка: отпечаток целиком — одно действие. */
   onCommitImprint: (index: number, entry: ImprintEntry) => void;
-  /** Материалы `files.materials` в порядке объявления — поле «Материал» кнопки «Покрасить». */
+  /** Материалы `files.materials` в порядке объявления — строки окошка «Материалы». */
   materialNames: readonly string[];
   /** Слои покрытий и их маски из показанных файлов; покрытий нет — `null`. У проекта без файла рельефа `hasTerrainFile` ложно. */
   terrainCovers: readonly TerrainCoverLayer[] | null;
@@ -106,6 +111,10 @@ type SceneCanvasProps = {
   onCommitPaint: (result: PaintResult) => void;
   /** Мазок покраски брошен, а движок нечем вернуть к слоям файла — мир собирается заново. */
   onRestorePaint: () => void;
+  /** Место в верхней полосе окна, куда встают инструменты трёхмерной сцены; `null` — полосы ещё нет. */
+  toolbarSlot: HTMLElement | null;
+  /** Сюда сцена кладёт, чем сразу снять пробный отпечаток, — окно зовёт это перед запуском игры и повтора. */
+  clearPreviewRef: RefObject<() => void>;
 };
 
 /** Числа нового отпечатка по умолчанию — «Правка сцены», требование 22: ширина и высота в клетках. */
@@ -115,7 +124,8 @@ const DEFAULT_IMPRINT_HEIGHT = 10;
 export type BrushFields = {
   size: number;
   strength: number;
-  onSizeChange: (size: number) => void;
+  /** Принимает и шаг от последнего значения — Ctrl+колесо. */
+  onSizeChange: Dispatch<SetStateAction<number>>;
   onStrengthChange: (strength: number) => void;
 };
 
@@ -130,9 +140,8 @@ type DragState = {
   lastPosition: readonly [number, number];
 };
 
-// Поле вокруг сцены; у трёхмерной сверху два ряда инструментов, поэтому поле шире.
+// Поле вокруг сцены; инструменты трёхмерной сцены — в верхней полосе окна, а не в нём.
 const STAGE_PADDING = 28;
-const SPACE_STAGE_PADDING = 60;
 
 /**
  * Сцена вписана в свою часть окна с сохранением пропорций («Редактор», требование 22) на одном
@@ -167,6 +176,7 @@ export function SceneCanvas({
   brushFields,
   imprints,
   stampShapes,
+  stampPreviews,
   selectedImprintIndex,
   onSelectImprint,
   onPlaceImprint,
@@ -178,6 +188,8 @@ export function SceneCanvas({
   terrainTintPath,
   onCommitPaint,
   onRestorePaint,
+  toolbarSlot,
+  clearPreviewRef,
 }: SceneCanvasProps): React.JSX.Element {
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
@@ -202,6 +214,7 @@ export function SceneCanvas({
   const [imprintWidth, setImprintWidth] = useState(DEFAULT_IMPRINT_WIDTH);
   const [imprintHeight, setImprintHeight] = useState(DEFAULT_IMPRINT_HEIGHT);
   const [paintMaterialName, setPaintMaterialName] = useState<string | null>(null);
+  const [lastTerrainTool, setLastTerrainTool] = useState<TerrainTool>("raise");
   const { handleMode, brushKind } = selectedTool;
   const { size: brushSize, strength: brushStrength } = brushFields;
   const { areHandlesAvailable, areBrushesAvailable } = resolveSceneToolAvailability({
@@ -215,9 +228,8 @@ export function SceneCanvas({
   // Штамп по умолчанию — первый; объявление, что пропало из `files.stamps`, выбор тоже уводит на первый.
   const imprintStamp = stampShapes.find((shape) => shape.name === imprintStampName) ?? stampShapes[0];
   const isPaintEnabled = isPaintToolEnabled(areBrushesAvailable, materialNames.length > 0);
-  // Материал по умолчанию — первый; объявление, что пропало из `files.materials`, выбор тоже уводит на первый.
-  const paintMaterial = materialNames.find((name) => name === paintMaterialName) ?? materialNames[0];
   const blockedMaterials = new Set(materialNames.filter((name) => !canPaintMaterial(terrainCovers, name)));
+  const paintMaterial = resolvePaintMaterial(materialNames, paintMaterialName, blockedMaterials);
   const selectHandleMode = (mode: HandleMode): void => setSelectedTool(selectHandleModeTool(mode));
   const spaceContext: SpaceSceneContext | null =
     engine !== null && isThreeDimensionalScene
@@ -252,6 +264,8 @@ export function SceneCanvas({
           onCommitPlacement,
           onCommitTerrain,
           onStrokeActiveChange,
+          // Размер считается от последнего, а не от показанного: быстрые щелчки до перерисовки не теряются.
+          onBrushSizeWheel: (clicks) => brushFields.onSizeChange((size) => wheelBrushSize(size, clicks)),
           imprints: {
             isEditable: areBrushesAvailable,
             entries: imprints,
@@ -268,6 +282,9 @@ export function SceneCanvas({
         }
       : null;
   const spaceScene = useSpaceSceneInput({ overlayCanvasRef, context: spaceContext, objectsVersion });
+  useEffect(() => {
+    clearPreviewRef.current = spaceScene.clearPreview;
+  }, [clearPreviewRef, spaceScene]);
   const sceneWidth = sceneSize?.width ?? null;
   const sceneHeight = sceneSize?.height ?? null;
 
@@ -348,7 +365,7 @@ export function SceneCanvas({
       fillsStageArea || sceneWidth === null || sceneHeight === null ? null : { width: sceneWidth, height: sceneHeight };
 
     function applyLayout(areaWidth: number, areaHeight: number): void {
-      const stageSize = fitSceneStage(areaWidth, areaHeight, knownSceneSize, isThreeDimensionalScene ? SPACE_STAGE_PADDING : STAGE_PADDING);
+      const stageSize = fitSceneStage(areaWidth, areaHeight, knownSceneSize, STAGE_PADDING);
       const pixelRatio = window.devicePixelRatio || 1;
       const layout = computeCanvasLayout(stageSize.width, stageSize.height, pixelRatio);
       if (!stage) return;
@@ -374,7 +391,7 @@ export function SceneCanvas({
     observer.observe(area);
 
     return () => observer.disconnect();
-  }, [canvasRef, engine, sceneWidth, sceneHeight, fillsStageArea, isThreeDimensionalScene, editorCameraStore]);
+  }, [canvasRef, engine, sceneWidth, sceneHeight, fillsStageArea, editorCameraStore]);
 
   useEffect(() => {
     if (!engine) return;
@@ -528,50 +545,64 @@ export function SceneCanvas({
           Сцена {sceneSize.width} × {sceneSize.height}
         </span>
       )}
-      {areHandlesAvailable && (
-        <HandleModeToolbar
-          mode={handleMode}
-          brushKind={brushKind}
-          areBrushesAvailable={areBrushesAvailable}
-          brushSize={brushSize}
-          brushStrength={brushStrength}
-          water={terrainWater}
-          imprintTool={{
-            isSelected: selectedTool.isImprintTool,
-            isEnabled: isImprintEnabled,
-            fields: {
-              stampNames: stampShapes.map((shape) => shape.name),
-              stamp: imprintStamp?.name ?? "",
-              width: imprintWidth,
-              height: imprintHeight,
-              onStampChange: setImprintStampName,
-              onWidthChange: setImprintWidth,
-              onHeightChange: setImprintHeight,
-            },
-            onSelect: () => setSelectedTool(selectImprintTool(handleMode)),
-          }}
-          paintTool={{
-            isSelected: selectedTool.isPaintTool,
-            isEnabled: isPaintEnabled,
-            fields: {
-              size: brushSize,
-              strength: brushStrength,
+      {/* Инструменты трёхмерной сцены — в верхней полосе окна, а не поверх поля сцены. */}
+      {toolbarSlot !== null &&
+        areHandlesAvailable &&
+        createPortal(
+          <HandleModeToolbar
+            mode={handleMode}
+            brushKind={brushKind}
+            areBrushesAvailable={areBrushesAvailable}
+            lastTerrainTool={lastTerrainTool}
+            brushSize={brushSize}
+            brushStrength={brushStrength}
+            water={terrainWater}
+            imprintTool={{
+              isSelected: selectedTool.isImprintTool,
+              isEnabled: isImprintEnabled,
+              fields: {
+                stampNames: stampShapes.map((shape) => shape.name),
+                stamp: imprintStamp?.name ?? "",
+                previews: stampPreviews,
+                width: imprintWidth,
+                height: imprintHeight,
+                // Выбор штампа сразу включает «Отпечаток», как выбор материала — кисть этим материалом.
+                onStampChange: (name) => {
+                  setImprintStampName(name);
+                  setLastTerrainTool("imprint");
+                  setSelectedTool(selectImprintTool(handleMode));
+                },
+                onWidthChange: setImprintWidth,
+                onHeightChange: setImprintHeight,
+              },
+              onSelect: () => {
+                setLastTerrainTool("imprint");
+                setSelectedTool(selectImprintTool(handleMode));
+              },
+            }}
+            materialsTool={{
+              isSelected: selectedTool.isPaintTool,
+              isEnabled: isPaintEnabled,
               materialNames,
               material: paintMaterial ?? "",
               blockedMaterials,
-              onSizeChange: brushFields.onSizeChange,
-              onStrengthChange: brushFields.onStrengthChange,
-              onMaterialChange: setPaintMaterialName,
-            },
-            onSelect: () => setSelectedTool(selectPaintTool(handleMode)),
-          }}
-          onChange={selectHandleMode}
-          onBrushChange={(kind) => setSelectedTool(selectBrushTool(handleMode, kind))}
-          onBrushSizeChange={brushFields.onSizeChange}
-          onBrushStrengthChange={brushFields.onStrengthChange}
-          onWaterChange={onWaterChange}
-        />
-      )}
+              onMaterialSelect: (name) => {
+                setPaintMaterialName(name);
+                setSelectedTool(selectPaintTool(handleMode));
+              },
+              onSelect: () => setSelectedTool(selectPaintTool(handleMode)),
+            }}
+            onChange={selectHandleMode}
+            onBrushChange={(kind) => {
+              setLastTerrainTool(kind);
+              setSelectedTool(selectBrushTool(handleMode, kind));
+            }}
+            onBrushSizeChange={brushFields.onSizeChange}
+            onBrushStrengthChange={brushFields.onStrengthChange}
+            onWaterChange={onWaterChange}
+          />,
+          toolbarSlot,
+        )}
     </div>
   );
 }

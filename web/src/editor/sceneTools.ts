@@ -34,7 +34,7 @@ export function isImprintToolEnabled(areBrushesAvailable: boolean, hasStamps: bo
   return areBrushesAvailable && hasStamps;
 }
 
-/** Кнопка «Покрасить» нажимается там же, где кисти, и только когда в игре объявлены материалы («Покраска», требование 4). */
+/** Группа «Материалы» доступна там же, где кисти, и только когда в игре объявлены материалы («Покраска», требование 4). */
 export function isPaintToolEnabled(areBrushesAvailable: boolean, hasMaterials: boolean): boolean {
   return areBrushesAvailable && hasMaterials;
 }

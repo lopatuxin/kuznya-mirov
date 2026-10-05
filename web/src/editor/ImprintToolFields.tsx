@@ -1,9 +1,13 @@
 import { roundToHundredths } from "./terrainFile";
-import { BrushNumberField } from "./TerrainBrushFields";
+import { BrushNumberField } from "./BrushSizeFields";
+import type { StampPreview } from "./stampPreview";
+import { keepSceneFocus } from "./ToolMenu";
 
 export type ImprintToolFieldsProps = {
   stampNames: readonly string[];
   stamp: string;
+  /** Картинки штампов по имени; у штампа без картинки карточка — одно название. */
+  previews: ReadonlyMap<string, StampPreview>;
   width: number;
   height: number;
   onStampChange: (stamp: string) => void;
@@ -29,21 +33,35 @@ export function nonZeroHundredths(previous: number): (typed: number) => number {
   };
 }
 
-/** Поля кнопки «Отпечаток» в полосе над сценой — «Правка сцены», требование 22: штамп, ширина и высота нового отпечатка, меньше нуля — вдавливает. */
-export function ImprintToolFields({ stampNames, stamp, width, height, onStampChange, onWidthChange, onHeightChange }: ImprintToolFieldsProps): React.JSX.Element {
+/**
+ * Поля «Отпечатка» в окошке группы «Рельеф» — «Правка сцены», требование 22: штамп карточкой с картинкой, ширина и высота
+ * нового отпечатка. Высота меньше нуля вдавливает, и картинки показывают ту же форму впадиной.
+ */
+export function ImprintToolFields({ stampNames, stamp, previews, width, height, onStampChange, onWidthChange, onHeightChange }: ImprintToolFieldsProps): React.JSX.Element {
   return (
-    <div className="scene-view__panel scene-view__panel--fields" role="group" aria-label="Отпечаток">
-      <span className="scene-view__panel-caption">Отпечаток</span>
-      <label className="scene-view__field">
-        Штамп
-        <select className="scene-view__field-input scene-view__field-input--select" value={stamp} onChange={(event) => onStampChange(event.target.value)}>
-          {stampNames.map((name) => (
-            <option key={name} value={name}>
-              {name}
-            </option>
-          ))}
-        </select>
-      </label>
+    <div className="tool-menu__fields" role="group" aria-label="Отпечаток">
+      <div className="stamp-picker" role="radiogroup" aria-label="Штамп">
+        {stampNames.map((name) => {
+          const preview = previews.get(name);
+          const picture = preview === undefined ? undefined : height < 0 ? preview.lowered : preview.raised;
+          const isChosen = name === stamp;
+          return (
+            <button
+              key={name}
+              type="button"
+              role="radio"
+              aria-checked={isChosen}
+              className={`stamp-picker__card${isChosen ? " stamp-picker__card--chosen" : ""}`}
+              title={name}
+              onMouseDown={keepSceneFocus}
+              onClick={() => onStampChange(name)}
+            >
+              {picture !== undefined && <img className="stamp-picker__picture" src={picture} alt="" />}
+              <span className="stamp-picker__name">{name}</span>
+            </button>
+          );
+        })}
+      </div>
       <BrushNumberField label="Ширина" value={width} normalize={positiveHundredths(width)} onCommit={onWidthChange} />
       <BrushNumberField label="Высота" value={height} hint={HEIGHT_HINT} normalize={nonZeroHundredths(height)} onCommit={onHeightChange} />
     </div>

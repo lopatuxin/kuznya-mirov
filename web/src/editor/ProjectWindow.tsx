@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatError } from "../engineErrors";
 import { parseGameDisplayName } from "../gamesIndex";
 import { liveObjectListEmptyLabel } from "./battleSelection";
-import { isBattleTransportShortcut, isReplaySeekShortcut } from "./battleShortcuts";
+import { isBattleTransportShortcut, isCopyShortcut, isReplaySeekShortcut, isUndoShortcut } from "./battleShortcuts";
 import { withCodeErrorLine } from "./battleTypes";
 import { EditorIcon } from "./EditorIcon";
 import { ImprintPropertiesPanel } from "./ImprintPropertiesPanel";
@@ -16,6 +16,7 @@ import { parseProjectImageNames, parseProjectMaterialNames } from "./projectFile
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { SceneCanvas, type BrushFields } from "./SceneCanvas";
+import { stampPreviewOf, type StampPreview } from "./stampPreview";
 import { fallbackDisplayName, type ProjectSource } from "./projectSource";
 import {
   buildObjectPropertiesView,
@@ -104,6 +105,10 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   // Колбэк-реф вместо обычного — «Редактор», партия: элемент нужен движку звука сразу после
   // монтирования, а обычный `useRef` не даёт для этого своего рендера.
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null);
+  // Место в верхней полосе для инструментов сцены — колбэк-реф по той же причине: сцене оно нужно сразу после монтирования полосы.
+  const [toolbarSlot, setToolbarSlot] = useState<HTMLElement | null>(null);
+  // Чем снять пробный отпечаток со сцены: игра и повтор собирают мир из рельефа, что стоит в движке, а пробного нет в файле.
+  const clearScenePreviewRef = useRef<() => void>(() => {});
 
   const gameJsonText = result && result.status !== "entry-missing" ? result.gameJsonText : null;
   const projectName = displayNameFor(source, gameJsonText);
@@ -128,6 +133,16 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const terrainTintPath = useMemo(() => readTerrainTint(terrainText), [terrainText]);
   const materialNames = useMemo(() => parseProjectMaterialNames(gameJsonText), [gameJsonText]);
   const stampShapes = useMemo(() => (result?.status === "ok" ? result.stamps.flatMap(({ name, text }) => parseStampShape(name, text) ?? []) : []), [result]);
+  const stampPreviews = useMemo(
+    () =>
+      new Map<string, StampPreview>(
+        result?.status === "ok" ? result.stamps.flatMap(({ name, text }): [string, StampPreview][] => {
+          const preview = stampPreviewOf(text);
+          return preview === null ? [] : [[name, preview]];
+        }) : [],
+      ),
+    [result],
+  );
   const selectedObject = selectedIndex !== null ? (objectSummaries[selectedIndex] ?? null) : null;
 
   const battle = useBattleSession({
@@ -205,6 +220,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
       event.preventDefault();
       event.stopImmediatePropagation();
       if (isStrokeActiveRef.current) return;
+      clearScenePreviewRef.current();
       battleRef.current.handleShortcut(event);
     }
     window.addEventListener("keydown", handleTransportShortcut, true);
@@ -240,12 +256,11 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
       }
 
       const current = shortcutStateRef.current;
-      const isCtrlOnly = event.ctrlKey && !event.shiftKey && !event.altKey;
       if (battleNow.mode === "battle") {
-        if (isCtrlOnly && event.key.toLowerCase() === "z") {
+        if (isUndoShortcut(event)) {
           event.preventDefault();
           battleNow.undoLiveEdit();
-        } else if (isCtrlOnly && event.key.toLowerCase() === "d" && battleNow.liveSelection !== null) {
+        } else if (isCopyShortcut(event) && battleNow.liveSelection !== null) {
           event.preventDefault();
           battleNow.copyLiveObject(battleNow.liveSelection.id);
         } else if (event.key === "Delete" && battleNow.liveSelection !== null) {
@@ -256,10 +271,10 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
       }
       if (battleNow.mode === "replay" || isStrokeActiveRef.current) return;
 
-      if (isCtrlOnly && event.key.toLowerCase() === "z") {
+      if (isUndoShortcut(event)) {
         event.preventDefault();
         current.undo();
-      } else if (isCtrlOnly && event.key.toLowerCase() === "d") {
+      } else if (isCopyShortcut(event)) {
         if (current.selectedImprintIndex !== null) {
           event.preventDefault();
           current.copyImprint(current.selectedImprintIndex);
@@ -292,6 +307,22 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           : []),
   ]);
   const warningLines = result && result.status !== "entry-missing" ? result.warnings.map(formatError) : [];
+  // Кнопки полосы запускают игру и повтор так же, как сочетания: пробный отпечаток сначала снимается.
+  const topBarBattle = {
+    ...battle,
+    play: () => {
+      clearScenePreviewRef.current();
+      battle.play();
+    },
+    startReplay: () => {
+      clearScenePreviewRef.current();
+      battle.startReplay();
+    },
+    openReplayFile: (text: string) => {
+      clearScenePreviewRef.current();
+      return battle.openReplayFile(text);
+    },
+  };
 
   return (
     <div
@@ -312,7 +343,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
         canUndo={isLive ? battle.canUndoLiveEdit : canUndo}
         onUndo={isLive ? battle.undoLiveEdit : sceneEditing.undo}
         onBackToProjects={onBackToProjects}
-        battle={battle}
+        battle={topBarBattle}
+        onToolbarSlotChange={setToolbarSlot}
       />
 
       <aside className="project-window__objects">
@@ -352,6 +384,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           brushFields={brushFields}
           imprints={imprints}
           stampShapes={stampShapes}
+          stampPreviews={stampPreviews}
           selectedImprintIndex={isLive ? null : selectedImprintIndex}
           onSelectImprint={sceneEditing.setSelectedImprintIndex}
           onPlaceImprint={sceneEditing.placeImprint}
@@ -363,6 +396,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           terrainTintPath={terrainTintPath}
           onCommitPaint={sceneEditing.paintCovers}
           onRestorePaint={sceneEditing.reloadDisplayed}
+          toolbarSlot={toolbarSlot}
+          clearPreviewRef={clearScenePreviewRef}
         />
         {!sceneAvailable && !isLive && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
       </main>

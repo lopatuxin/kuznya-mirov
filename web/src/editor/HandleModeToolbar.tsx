@@ -1,31 +1,44 @@
 import { EditorIcon, type EditorIconName } from "./EditorIcon";
 import type { HandleMode } from "./handleGeometry";
 import { ImprintToolFields, type ImprintToolFieldsProps } from "./ImprintToolFields";
-import { PaintBrushFields, type PaintBrushFieldsProps } from "./PaintBrushFields";
-import { TerrainBrushFields } from "./TerrainBrushFields";
+import { BrushSizeFields } from "./BrushSizeFields";
 import type { BrushKind } from "./terrainBrush";
 import type { TerrainWater } from "./terrainFile";
+import { keepSceneFocus, ToolMenu, ToolMenuItem } from "./ToolMenu";
+import { WaterFields } from "./WaterFields";
 
-/** Кнопка «Отпечаток» и её поля («Правка сцены», требования 22–23). */
-export type ImprintToolbar = {
+/** Инструмент «Отпечаток» и его поля («Правка сцены», требования 22–23). */
+type ImprintToolbar = {
   isSelected: boolean;
-  /** Кнопка нажимается, когда в игре объявлены штампы. */
+  /** Инструмент выбирается, когда в игре объявлены штампы. */
   isEnabled: boolean;
   fields: ImprintToolFieldsProps;
   onSelect: () => void;
 };
 
-/** Кнопка «Покрасить» и её поля («Покраска», требования 1–4). */
-export type PaintToolbar = {
+/** Группа «Материалы»: выбранный материал — это кисть, которая красит им землю («Покраска», требования 1–4). */
+type MaterialsToolbar = {
+  /** Кисть красит: выбран материал. */
   isSelected: boolean;
-  /** Кнопка нажимается, когда в игре объявлены материалы. */
+  /** Группа доступна, когда в игре объявлены материалы. */
   isEnabled: boolean;
-  fields: PaintBrushFieldsProps;
+  /** Материалы `files.materials` в порядке объявления. */
+  materialNames: readonly string[];
+  /** Последний выбранный материал — им красит щелчок по самой кнопке группы. */
+  material: string;
+  /** Материалы, которыми нельзя красить: слоёв уже восемь, а их среди слоёв нет. */
+  blockedMaterials: ReadonlySet<string>;
+  /** Выбор материала в окошке — кисть сразу красит им. */
+  onMaterialSelect: (material: string) => void;
   onSelect: () => void;
 };
 
+/** Инструмент группы «Рельеф»: кисть или «Отпечаток». */
+export type TerrainTool = BrushKind | "imprint";
+
 const NO_STAMPS_TITLE = "Нет штампов: объяви files.stamps в game.json";
 const NO_MATERIALS_TITLE = "Нет материалов: объяви files.materials в game.json";
+const BLOCKED_HINT = "слоёв уже восемь";
 
 type HandleModeToolbarProps = {
   mode: HandleMode;
@@ -33,11 +46,13 @@ type HandleModeToolbarProps = {
   brushKind: BrushKind | null;
   /** Кисти есть только в трёхмерной сцене вне партии («Кисти рельефа», требование 4). */
   areBrushesAvailable: boolean;
+  /** Последний выбранный инструмент группы «Рельеф» — его включает щелчок по самой кнопке группы. */
+  lastTerrainTool: TerrainTool;
   brushSize: number;
   brushStrength: number;
   water: TerrainWater | null;
   imprintTool: ImprintToolbar;
-  paintTool: PaintToolbar;
+  materialsTool: MaterialsToolbar;
   onChange: (mode: HandleMode) => void;
   onBrushChange: (kind: BrushKind) => void;
   onBrushSizeChange: (size: number) => void;
@@ -51,25 +66,24 @@ const MODE_BUTTONS: { mode: HandleMode; icon: EditorIconName; title: string }[] 
   { mode: "scale", icon: "scale", title: "Масштаб (R)" },
 ];
 
-const BRUSH_BUTTONS: { kind: BrushKind; icon: EditorIconName; title: string }[] = [
-  { kind: "raise", icon: "terrain-raise", title: "Поднять землю (с Shift — опустить)" },
-  { kind: "level", icon: "terrain-level", title: "Выровнять до высоты точки нажатия" },
-  { kind: "smooth", icon: "terrain-smooth", title: "Сгладить перепады" },
+const TERRAIN_TOOLS: { tool: TerrainTool; icon: EditorIconName; label: string; hint?: string }[] = [
+  { tool: "raise", icon: "terrain-raise", label: "Поднять", hint: "Shift — опустить" },
+  { tool: "level", icon: "terrain-level", label: "Выровнять", hint: "до точки нажатия" },
+  { tool: "smooth", icon: "terrain-smooth", label: "Сгладить" },
+  { tool: "imprint", icon: "terrain-imprint", label: "Отпечаток", hint: "штамп горы или равнины" },
 ];
 
-type ToolButtonProps = { title: string; isActive: boolean; isDisabled?: boolean; onClick: () => void; children: React.ReactNode };
+type ToolButtonProps = { title: string; isActive: boolean; onClick: () => void; children: React.ReactNode };
 
-function ToolButton({ title, isActive, isDisabled = false, onClick, children }: ToolButtonProps): React.JSX.Element {
+function ToolButton({ title, isActive, onClick, children }: ToolButtonProps): React.JSX.Element {
   return (
     <button
       type="button"
-      className={`editor-button scene-view__tool${isActive ? " scene-view__tool--active" : ""}`}
+      className={`scene-tools__button${isActive ? " scene-tools__button--active" : ""}`}
       title={title}
       aria-label={title}
       aria-pressed={isActive}
-      disabled={isDisabled}
-      // Кнопка не забирает фокус у сцены: `W`, `E`, `R` и `F` работают, пока фокус на ней.
-      onMouseDown={(event) => event.preventDefault()}
+      onMouseDown={keepSceneFocus}
       onClick={onClick}
     >
       {children}
@@ -77,85 +91,175 @@ function ToolButton({ title, isActive, isDisabled = false, onClick, children }: 
   );
 }
 
+/** Инструмент группы «Рельеф», который включает щелчок по её кнопке: последний выбранный, а недоступный «Отпечаток» — «Поднять». */
+export function terrainGroupTool(lastTerrainTool: TerrainTool, isImprintEnabled: boolean): TerrainTool {
+  return lastTerrainTool === "imprint" && !isImprintEnabled ? "raise" : lastTerrainTool;
+}
+
+type TerrainMenuContentProps = Pick<HandleModeToolbarProps, "brushKind" | "brushSize" | "brushStrength" | "imprintTool" | "onBrushSizeChange" | "onBrushStrengthChange"> & {
+  groupTool: TerrainTool;
+  onSelect: (tool: TerrainTool) => void;
+  /** Инструмент или штамп выбран — окошко закрывается, как меню: следующий Esc снимает инструмент, а не окошко. */
+  onPicked: () => void;
+};
+
+/** Окошко группы «Рельеф»: кисти и «Отпечаток», под ними настройки инструмента группы — размер и сила кисти или штамп. */
+export function TerrainMenuContent({ brushKind, brushSize, brushStrength, imprintTool, onBrushSizeChange, onBrushStrengthChange, groupTool, onSelect, onPicked }: TerrainMenuContentProps): React.JSX.Element {
+  return (
+    <>
+      <div className="tool-menu__items">
+        {TERRAIN_TOOLS.map(({ tool, icon, label, hint }) => {
+          const isImprint = tool === "imprint";
+          return (
+            <ToolMenuItem
+              key={tool}
+              icon={icon}
+              label={label}
+              hint={hint}
+              title={isImprint && !imprintTool.isEnabled ? NO_STAMPS_TITLE : undefined}
+              isActive={isImprint ? imprintTool.isSelected : brushKind === tool}
+              isDisabled={isImprint && !imprintTool.isEnabled}
+              onSelect={() => {
+                onSelect(tool);
+                onPicked();
+              }}
+            />
+          );
+        })}
+      </div>
+      <div className="tool-menu__separator" />
+      {groupTool === "imprint" ? (
+        <ImprintToolFields
+          {...imprintTool.fields}
+          onStampChange={(stamp) => {
+            imprintTool.fields.onStampChange(stamp);
+            onPicked();
+          }}
+        />
+      ) : (
+        <BrushSizeFields size={brushSize} strength={brushStrength} onSizeChange={onBrushSizeChange} onStrengthChange={onBrushStrengthChange} />
+      )}
+    </>
+  );
+}
+
+type MaterialsMenuContentProps = Pick<HandleModeToolbarProps, "materialsTool" | "brushSize" | "brushStrength" | "onBrushSizeChange" | "onBrushStrengthChange"> & {
+  /** Материал выбран — окошко закрывается, как меню. */
+  onPicked: () => void;
+};
+
+/** Окошко группы «Материалы»: материалы игры по порядку объявления — выбранным красит кисть, — под ними размер и сила кисти. */
+export function MaterialsMenuContent({ materialsTool, brushSize, brushStrength, onBrushSizeChange, onBrushStrengthChange, onPicked }: MaterialsMenuContentProps): React.JSX.Element {
+  return (
+    <>
+      <div className="tool-menu__items">
+        {materialsTool.materialNames.map((name) => {
+          const isBlocked = materialsTool.blockedMaterials.has(name);
+          return (
+            <ToolMenuItem
+              key={name}
+              label={name}
+              hint={isBlocked ? BLOCKED_HINT : undefined}
+              isActive={materialsTool.isSelected && name === materialsTool.material}
+              isDisabled={isBlocked}
+              onSelect={() => {
+                materialsTool.onMaterialSelect(name);
+                onPicked();
+              }}
+            />
+          );
+        })}
+      </div>
+      <div className="tool-menu__separator" />
+      <BrushSizeFields size={brushSize} strength={brushStrength} onSizeChange={onBrushSizeChange} onStrengthChange={onBrushStrengthChange} />
+    </>
+  );
+}
+
 /**
- * Инструменты над сценой — «Редактор», требование 10, и «Кисти рельефа», требования 1–3: виды ручек
- * (те же режимы, что клавиши `W`, `E`, `R`), кисти рельефа, «Отпечаток», «Покрасить» и, пока выбрана кисть, поля размера, силы и воды,
- * пока выбрана «Отпечаток» — поля штампа, ширины и высоты, пока выбрана «Покрасить» — размера, силы и материала.
+ * Инструменты трёхмерной сцены в верхней полосе — «Редактор», требование 10, и «Кисти рельефа», требования 1–3: виды
+ * ручек значками (те же режимы, что клавиши `W`, `E`, `R`), затем группы «Рельеф», «Материалы» и «Вода» кнопками с
+ * выпадающим окошком — инструменты группы и их настройки в полосе постоянно не стоят.
  */
 export function HandleModeToolbar({
   mode,
   brushKind,
   areBrushesAvailable,
+  lastTerrainTool,
   brushSize,
   brushStrength,
   water,
   imprintTool,
-  paintTool,
+  materialsTool,
   onChange,
   onBrushChange,
   onBrushSizeChange,
   onBrushStrengthChange,
   onWaterChange,
 }: HandleModeToolbarProps): React.JSX.Element {
+  const groupTool = terrainGroupTool(lastTerrainTool, imprintTool.isEnabled);
+  const groupToolInfo = TERRAIN_TOOLS.find(({ tool }) => tool === groupTool) ?? TERRAIN_TOOLS[0];
+  const isTerrainSelected = brushKind !== null || imprintTool.isSelected;
+  const selectTerrainTool = (tool: TerrainTool): void => (tool === "imprint" ? imprintTool.onSelect() : onBrushChange(tool));
+
   return (
-    <div className="scene-view__tools">
-      <div className="scene-view__tool-row">
-        <div className="scene-view__panel" role="group" aria-label="Ручки объекта">
-          <span className="scene-view__panel-caption">Объект</span>
-          {MODE_BUTTONS.map((button) => (
-            <ToolButton key={button.mode} title={button.title} isActive={brushKind === null && !imprintTool.isSelected && !paintTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
-              <EditorIcon name={button.icon} size={14} />
-            </ToolButton>
-          ))}
-        </div>
-        {areBrushesAvailable && (
-          <div className="scene-view__panel" role="group" aria-label="Кисти рельефа">
-            <span className="scene-view__panel-caption">Рельеф</span>
-            {BRUSH_BUTTONS.map((button) => (
-              <ToolButton key={button.kind} title={button.title} isActive={brushKind === button.kind} onClick={() => onBrushChange(button.kind)}>
-                <EditorIcon name={button.icon} size={14} />
-              </ToolButton>
-            ))}
-            <ToolButton
-              title={imprintTool.isEnabled ? "Отпечаток" : NO_STAMPS_TITLE}
-              isActive={imprintTool.isSelected}
-              isDisabled={!imprintTool.isEnabled}
-              onClick={imprintTool.onSelect}
-            >
-              <EditorIcon name="terrain-imprint" size={14} />
-            </ToolButton>
-          </div>
-        )}
-        {areBrushesAvailable && (
-          <div className="scene-view__panel" role="group" aria-label="Покраска">
-            <span className="scene-view__panel-caption">Покраска</span>
-            <ToolButton
-              title={paintTool.isEnabled ? "Покрасить землю материалом (с Shift — стереть)" : NO_MATERIALS_TITLE}
-              isActive={paintTool.isSelected}
-              isDisabled={!paintTool.isEnabled}
-              onClick={paintTool.onSelect}
-            >
-              <EditorIcon name="terrain-paint" size={14} />
-            </ToolButton>
-          </div>
-        )}
+    <>
+      <div className="scene-tools__group" role="group" aria-label="Ручки объекта">
+        {MODE_BUTTONS.map((button) => (
+          <ToolButton key={button.mode} title={button.title} isActive={!isTerrainSelected && !materialsTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
+            <EditorIcon name={button.icon} size={15} />
+          </ToolButton>
+        ))}
       </div>
-      {areBrushesAvailable && imprintTool.isSelected && (
-        <div className="scene-view__tool-row">
-          <ImprintToolFields {...imprintTool.fields} />
-        </div>
+      {areBrushesAvailable && (
+        <>
+          <ToolMenu
+            label="Рельеф"
+            caption="Рельеф"
+            icon={groupToolInfo.icon}
+            title={`Рельеф: ${groupToolInfo.label}`}
+            isActive={isTerrainSelected}
+            onActivate={() => selectTerrainTool(groupTool)}
+          >
+            {(close) => (
+              <TerrainMenuContent
+                brushKind={brushKind}
+                brushSize={brushSize}
+                brushStrength={brushStrength}
+                imprintTool={imprintTool}
+                onBrushSizeChange={onBrushSizeChange}
+                onBrushStrengthChange={onBrushStrengthChange}
+                groupTool={groupTool}
+                onSelect={selectTerrainTool}
+                onPicked={close}
+              />
+            )}
+          </ToolMenu>
+          <ToolMenu
+            label="Материалы"
+            caption="Материалы"
+            icon="materials"
+            title={materialsTool.isEnabled ? `Красить материалом ${materialsTool.material} (с Shift — стереть)` : NO_MATERIALS_TITLE}
+            isActive={materialsTool.isSelected}
+            isDisabled={!materialsTool.isEnabled}
+            onActivate={materialsTool.onSelect}
+          >
+            {(close) => (
+              <MaterialsMenuContent
+                materialsTool={materialsTool}
+                brushSize={brushSize}
+                brushStrength={brushStrength}
+                onBrushSizeChange={onBrushSizeChange}
+                onBrushStrengthChange={onBrushStrengthChange}
+                onPicked={close}
+              />
+            )}
+          </ToolMenu>
+          <ToolMenu label="Вода" caption="Вода" icon="water" title="Вода рельефа: есть ли она, уровень и цвет">
+            <WaterFields water={water} onWaterChange={onWaterChange} />
+          </ToolMenu>
+        </>
       )}
-      {areBrushesAvailable && paintTool.isSelected && <PaintBrushFields {...paintTool.fields} />}
-      {areBrushesAvailable && brushKind !== null && (
-        <TerrainBrushFields
-          size={brushSize}
-          strength={brushStrength}
-          onSizeChange={onBrushSizeChange}
-          onStrengthChange={onBrushStrengthChange}
-          water={water}
-          onWaterChange={onWaterChange}
-        />
-      )}
-    </div>
+    </>
   );
 }

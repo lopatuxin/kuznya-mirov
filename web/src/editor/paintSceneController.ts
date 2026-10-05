@@ -10,7 +10,7 @@ import { readTerrainSnapshot, toVec3 } from "./terrainReadings";
 /** Вызовы движка, которыми пользуется покраска: точка на земле, рельеф проекта без файла и покрытия. */
 export type PaintSceneEngine = Pick<Engine, "terrain_at" | "terrain_heights" | "set_terrain" | "set_covers">;
 
-/** Кнопка «Покрасить» выбрана: слои и маски файла рельефа, материал и числа кисти — «Покраска», требования 1–2. */
+/** В группе «Материалы» выбран материал — кисть красит им: слои и маски файла рельефа, материал и числа кисти — «Покраска», требования 1–2. */
 export type PaintContext = {
   material: string;
   size: number;

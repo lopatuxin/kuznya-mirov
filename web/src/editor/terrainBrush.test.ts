@@ -7,6 +7,7 @@ import {
   BRUSH_SIZE_LIMITS,
   clampToLimits,
   parseNumberField,
+  wheelBrushSize,
   type BrushFrame,
   type BrushGrid,
   type BrushKind,
@@ -183,5 +184,31 @@ describe("поля размера и силы", () => {
     expect(parseNumberField("Infinity")).toBe(null);
     expect(parseNumberField("12,5")).toBe(12.5);
     expect(parseNumberField(" -0.5 ")).toBe(-0.5);
+  });
+});
+
+describe("wheelBrushSize", () => {
+  it("щелчок от себя — больше, на себя — меньше, малая кисть — на клетку", () => {
+    expect(wheelBrushSize(4, -1)).toBe(5);
+    expect(wheelBrushSize(4, 1)).toBe(3);
+  });
+
+  it("большая кисть меняется долей размера", () => {
+    expect(wheelBrushSize(40, -1)).toBe(46);
+    expect(wheelBrushSize(40, 1)).toBe(35);
+  });
+
+  it("в пределах от 1 до 64", () => {
+    expect(wheelBrushSize(1, 1)).toBe(BRUSH_SIZE_LIMITS.min);
+    expect(wheelBrushSize(64, -1)).toBe(BRUSH_SIZE_LIMITS.max);
+  });
+
+  it("без щелчков вверх и вниз — колесо вбок или Ctrl+Shift — размер тот же", () => {
+    expect(wheelBrushSize(4, 0)).toBe(4);
+  });
+
+  it("дробный размер из поля становится целым", () => {
+    expect(wheelBrushSize(4.5, -1)).toBe(5);
+    expect(wheelBrushSize(4.5, 1)).toBe(4);
   });
 });

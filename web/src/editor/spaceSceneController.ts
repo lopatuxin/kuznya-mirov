@@ -78,6 +78,8 @@ export type SpaceSceneContext = {
   onCommitPlacement: (objectIndex: number, changes: PlacementChange[]) => void;
   /** Отпускание после мазка: высоты всей сетки — одно действие («Кисти рельефа», требование 18). */
   onCommitTerrain: (grid: TerrainGrid) => void;
+  /** Ctrl+колесо при кисти рельефа или «Покрасить»: щелчки колеса, положительные — на себя, то есть меньше. */
+  onBrushSizeWheel: (clicks: number) => void;
   /** Мазок начался или кончился любым способом — пока он идёт, изменения файлов снаружи ждут («Кисти рельефа», крайние случаи). */
   onStrokeActiveChange: (isActive: boolean) => void;
   /** Отпечатки файла рельефа: выбор, ручки, кнопка «Отпечаток» («Лепка рельефа», «Редактор»). */
@@ -86,7 +88,7 @@ export type SpaceSceneContext = {
 
 /** Указатель или колесо: точка в CSS-пикселях от левого верхнего угла холста. */
 export type PointerInput = { pointerId: number; button: number; buttons: number; x: number; y: number; ctrlKey: boolean; shiftKey: boolean; timeStamp: number };
-type WheelInput = { deltaY: number; deltaMode: number };
+type WheelInput = { deltaY: number; deltaMode: number; ctrlKey: boolean };
 export type KeyInput = { code: string; ctrlKey: boolean; altKey: boolean; metaKey: boolean; shiftKey: boolean };
 
 /** Каким вызовом жест ставит объекту значения: только место, поворот, размеры или размеры с высотой. */
@@ -216,8 +218,13 @@ export type SpaceSceneController = {
   wheel: (input: WheelInput) => boolean;
   keyDown: (input: KeyInput) => boolean;
   keyUp: (input: KeyInput) => void;
-  /** Кадр страницы: пока кнопка нажата, кисть действует, даже если указатель стоит; `nowMs` — время кадра. */
+  /**
+   * Кадр страницы: пока кнопка нажата, кисть действует, даже если указатель стоит; `nowMs` — время кадра. Здесь же раз
+   * в кадр встаёт пробный отпечаток под указателем.
+   */
   strokeFrame: (nowMs: number) => void;
+  /** Пробный отпечаток снимается сразу: перед запуском игры и повтора земля должна быть как в файле. */
+  clearPreview: () => void;
   /** Рамка выбранного объекта, его ручки и круг кисти поверх холста. */
   draw: (context: CanvasRenderingContext2D, pixelRatio: number) => void;
   /** Жест бросается без возврата объекта: мир уже собран заново (правка файла снаружи, партия пошла). */
@@ -330,6 +337,9 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   }
 
   function strokeFrame(nowMs: number): void {
+    // Пробный отпечаток под указателем ставится раз в кадр, а не на каждое движение мыши; пока камеру ведут — стоит как стоял.
+    const frameContext = getContext() as SpaceSceneContext | null;
+    if (frameContext !== null && gesture === null) imprintController.previewFrame(frameContext, hoverPoint, frameContext.cameraStore.current());
     if (paintController.isActive()) {
       paintController.frame(getContext(), nowMs);
       return;
@@ -570,9 +580,14 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   function wheel(input: WheelInput): boolean {
     const context = getContext();
     if (context.isInputLocked || !context.isEditorCameraActive) return false;
+    const clicks = wheelClicks(input.deltaY, input.deltaMode);
+    if (input.ctrlKey && (context.brush !== null || context.paint !== null)) {
+      context.onBrushSizeWheel(clicks);
+      return true;
+    }
     const camera = context.cameraStore.current();
     if (camera === null) return false;
-    context.cameraStore.update(context.engine, zoomCamera(camera.camera, wheelClicks(input.deltaY, input.deltaMode), camera.maxDistance));
+    context.cameraStore.update(context.engine, zoomCamera(camera.camera, clicks, camera.maxDistance));
     return true;
   }
 
@@ -669,6 +684,10 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     keyDown,
     keyUp,
     strokeFrame,
+    clearPreview: () => {
+      const context = getContext() as SpaceSceneContext | null;
+      if (context !== null) imprintController.clearPreview(context);
+    },
     draw,
     abandonGesture: () => {
       const active = gesture;
