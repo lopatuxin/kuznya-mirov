@@ -50,8 +50,9 @@ describe("файл рельефа ролевой игры", () => {
     expect(terrainTextWithHeights(RPG_TERRAIN, content as TerrainGrid)).toBe(RPG_TERRAIN);
   });
 
-  it("вода из файла читается", () => {
-    expect(readTerrainWater(RPG_TERRAIN)).toEqual(JSON.parse(RPG_TERRAIN).water);
+  it("вода читается так, как лежит в файле, а без неё — её нет", () => {
+    // Воды в рельефе может и не быть — тогда её нет и после чтения.
+    expect(readTerrainWater(RPG_TERRAIN)).toEqual(JSON.parse(RPG_TERRAIN).water ?? null);
   });
 });
 

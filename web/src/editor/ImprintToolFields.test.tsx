@@ -27,16 +27,29 @@ describe("поле «Высота» отпечатка", () => {
     expect(normalize(0)).toBe(30);
   });
 
-  it("поля «Штамп», «Ширина», «Высота» под подписью «Отпечаток»; у высоты подсказка «Меньше нуля — вдавливает»", () => {
+  it("штампы — карточками с названием, выбранная отмечена; «Ширина», «Высота» с подсказкой «Меньше нуля — вдавливает»", () => {
     const html = renderToStaticMarkup(
-      <ImprintToolFields stampNames={["hill", "ravine"]} stamp="ravine" width={30} height={-4} onStampChange={NOOP} onWidthChange={NOOP} onHeightChange={NOOP} />,
+      <ImprintToolFields stampNames={["hill", "ravine"]} stamp="ravine" previews={new Map()} width={30} height={-4} onStampChange={NOOP} onWidthChange={NOOP} onHeightChange={NOOP} />,
     );
 
     expect(html).toContain('role="group" aria-label="Отпечаток"');
-    expect(html).toContain(">Отпечаток</span>");
-    expect(html).toContain('<option value="ravine" selected="">ravine</option>');
+    const cards = Array.from(html.matchAll(/role="radio" aria-checked="(true|false)"[^>]*title="([^"]*)"/g)).map((match) => [match[2], match[1]]);
+    expect(cards).toEqual([
+      ["hill", "false"],
+      ["ravine", "true"],
+    ]);
+    expect(html).not.toContain("<img");
     expect(html).toMatch(/Ширина<input[^>]*value="30"/);
     expect(html).toMatch(/<label[^>]*title="Меньше нуля — вдавливает"[^>]*>Высота<input[^>]*value="-4"/);
     expect(html).not.toMatch(/title="[^"]*"[^>]*>Ширина/);
+  });
+
+  it("картинка штампа — холмом, а при высоте меньше нуля — впадиной", () => {
+    const previews = new Map([["hill", { raised: "raised.png", lowered: "lowered.png" }]]);
+    const render = (height: number): string =>
+      renderToStaticMarkup(<ImprintToolFields stampNames={["hill"]} stamp="hill" previews={previews} width={30} height={height} onStampChange={NOOP} onWidthChange={NOOP} onHeightChange={NOOP} />);
+
+    expect(render(4)).toContain('src="raised.png"');
+    expect(render(-4)).toContain('src="lowered.png"');
   });
 });

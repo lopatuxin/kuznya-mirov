@@ -3,6 +3,7 @@ import { EditorIcon } from "./EditorIcon";
 import { EditorLogoMark } from "./EditorLogoMark";
 import type { SaveState } from "./editSession";
 import type { ProjectSource } from "./projectSource";
+import { ToolMenu, ToolMenuItem } from "./ToolMenu";
 import type { BattleSessionState } from "./useBattleSession";
 
 type ProjectTopBarProps = {
@@ -16,6 +17,8 @@ type ProjectTopBarProps = {
   onUndo: () => void;
   onBackToProjects: () => void;
   battle: BattleSessionState;
+  /** Место над сценой, куда встают инструменты трёхмерной сцены. */
+  onToolbarSlotChange: (slot: HTMLElement | null) => void;
 };
 
 function ProjectStatus({ headerNotice, loadedAt }: Pick<ProjectTopBarProps, "headerNotice" | "loadedAt">): React.JSX.Element | null {
@@ -28,11 +31,11 @@ function ProjectStatus({ headerNotice, loadedAt }: Pick<ProjectTopBarProps, "hea
     );
   }
   if (loadedAt === null) return null;
-  // `key` по времени перезапускает вспышку строки на каждой перезагрузке — видно, что правка подхвачена.
+  const label = `Обновлено в ${loadedAt.toLocaleTimeString("ru-RU")}. Редактор сам перечитывает проект, когда его файлы меняются`;
+  // `key` по времени перезапускает вспышку точки на каждой перезагрузке — видно, что правка подхвачена.
   return (
-    <span key={loadedAt.getTime()} className="project-topbar__live project-topbar__live--flash" title="Редактор сам перечитывает проект, когда его файлы меняются">
+    <span key={loadedAt.getTime()} className="project-topbar__live project-topbar__live--flash" role="img" title={label} aria-label={label}>
       <span className="project-topbar__live-dot" />
-      Обновлено в {loadedAt.toLocaleTimeString("ru-RU")}
     </span>
   );
 }
@@ -94,7 +97,10 @@ function ReplayScrubber({
   );
 }
 
-/** Кнопки «Запуск/Стоп», «Пауза», «Шаг», шкала повтора и звук — «Редактор», требования 1, 27–29, 34–35. */
+/**
+ * «Запуск/Стоп», «Пауза», «Шаг» значками, шкала повтора, меню записей и звук — «Редактор», требования 1, 27–29, 34–35.
+ * «Повтор», «Сохранить запись» и «Открыть запись» нужны реже — они в меню «⋮», а не кнопками в полосе.
+ */
 function BattleTransportControls({ battle }: { battle: BattleSessionState }): React.JSX.Element {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [draftStep, setDraftStep] = useState<number | null>(null);
@@ -120,38 +126,38 @@ function BattleTransportControls({ battle }: { battle: BattleSessionState }): Re
     <div className="battle-transport">
       <button
         type="button"
-        className="editor-button editor-button--outline"
+        className="editor-button editor-button--icon battle-transport__play"
         title={isInSession ? "Стоп (Ctrl+P)" : "Запуск (Ctrl+P)"}
+        aria-label={isInSession ? "Стоп" : "Запуск"}
         disabled={!isInSession && !battle.canPlay}
         onClick={isInSession ? battle.stop : battle.play}
       >
-        <EditorIcon name={isInSession ? "stop" : "play"} size={14} />
-        {isInSession ? "Стоп" : "Запуск"}
+        <EditorIcon name={isInSession ? "stop" : "play"} size={15} />
       </button>
       <button
         type="button"
-        className="editor-button editor-button--outline"
-        title={battle.isRunning ? "Пауза (Ctrl+Shift+P)" : "Продолжить (Ctrl+Shift+P)"}
+        className="editor-button editor-button--icon"
+        title={battle.isRunning || !isInSession ? "Пауза (Ctrl+Shift+P)" : "Продолжить (Ctrl+Shift+P)"}
+        aria-label={battle.isRunning || !isInSession ? "Пауза" : "Продолжить"}
         disabled={!isInSession || (!battle.isRunning && battle.codeError !== null)}
         onClick={battle.pauseOrResume}
       >
-        <EditorIcon name={battle.isRunning ? "pause" : "play"} size={14} />
-        {battle.isRunning ? "Пауза" : "Продолжить"}
+        <EditorIcon name={battle.isRunning || !isInSession ? "pause" : "play"} size={15} />
       </button>
       <button
         type="button"
-        className="editor-button editor-button--outline"
+        className="editor-button editor-button--icon"
         title={battle.stepBlockedReason ?? "Шаг (Ctrl+Alt+P)"}
+        aria-label="Шаг"
         disabled={battle.stepBlockedReason !== undefined}
         onClick={battle.step}
       >
-        <EditorIcon name="step-forward" size={14} />
-        Шаг
+        <EditorIcon name="step-forward" size={15} />
       </button>
 
       {battle.mode === "replay" && (
         <>
-          <button type="button" className="editor-button" title="Шаг назад (←)" disabled={battle.currentStep <= 0} onClick={battle.stepBack}>
+          <button type="button" className="editor-button editor-button--icon" title="Шаг назад (←)" aria-label="Шаг назад" disabled={battle.currentStep <= 0} onClick={battle.stepBack}>
             <EditorIcon name="step-back" size={14} />
           </button>
           <ReplayScrubber battle={battle} draftStep={effectiveDraftStep} onDraftChange={setDraftStep} onCommit={commitScrubber} />
@@ -160,25 +166,48 @@ function BattleTransportControls({ battle }: { battle: BattleSessionState }): Re
 
       {isInSession && <span className="battle-transport__step-label">{battleStatusLabel(battle, effectiveDraftStep ?? battle.currentStep)}</span>}
 
-      {battle.mode === "edit" && (
-        <button type="button" className="editor-button" title="Повтор" disabled={!battle.canStartReplay} onClick={battle.startReplay}>
-          <EditorIcon name="replay" size={14} />
-          Повтор
-        </button>
-      )}
-
-      <button type="button" className="editor-button" title="Сохранить запись" disabled={!battle.hasRecording} onClick={() => void battle.saveRecording()}>
-        <EditorIcon name="download" size={14} />
-      </button>
-      <button type="button" className="editor-button" title="Открыть запись" onClick={() => fileInputRef.current?.click()}>
-        <EditorIcon name="folder" size={14} />
-      </button>
+      <ToolMenu label="Записи партий" icon="more" title="Повтор и записи партий">
+        {(close) => (
+          <div className="tool-menu__items">
+            {battle.mode === "edit" && (
+              <ToolMenuItem
+                icon="replay"
+                label="Повтор"
+                hint="последней партии"
+                isDisabled={!battle.canStartReplay}
+                onSelect={() => {
+                  close();
+                  battle.startReplay();
+                }}
+              />
+            )}
+            <ToolMenuItem
+              icon="download"
+              label="Сохранить запись"
+              isDisabled={!battle.hasRecording}
+              onSelect={() => {
+                close();
+                void battle.saveRecording();
+              }}
+            />
+            <ToolMenuItem
+              icon="folder"
+              label="Открыть запись"
+              onSelect={() => {
+                close();
+                fileInputRef.current?.click();
+              }}
+            />
+          </div>
+        )}
+      </ToolMenu>
       <input ref={fileInputRef} type="file" accept=".json" hidden onChange={handleOpenReplayFile} />
 
       <button
         type="button"
-        className="editor-button"
+        className="editor-button editor-button--icon"
         title={battle.isMuted ? "Включить звук" : "Без звука"}
+        aria-label={battle.isMuted ? "Включить звук" : "Без звука"}
         aria-pressed={battle.isMuted}
         onClick={battle.toggleMute}
       >
@@ -226,34 +255,31 @@ function BattleNotices({ battle }: { battle: BattleSessionState }): React.JSX.El
 }
 
 /**
- * Верхняя полоса окна проекта — «Редактор», требование 8: кнопка «К проектам» и название проекта.
- * «Отменить» и строка «Не сохранено» — требования 2, 4, 21: кнопка неактивна без истории. Кнопки
- * партии, повтора и звука — требования 1, 27–29, 34–35; во время партии и повтора полоса подсвечена
- * (требование 5) через модификатор `project-topbar--battle`/`project-topbar--replay`.
+ * Верхняя полоса окна проекта — «Редактор», требование 8: одна строка из трёх частей над тремя колонками окна. Над
+ * списком объектов — знак, «К проектам», название проекта и «Отменить»; над сценой — инструменты трёхмерной сцены
+ * (их ставит сцена в `onToolbarSlotChange`) и кнопки партии; над свойствами — строки о записи и точка «Обновлено».
+ * «Отменить» неактивна без истории (требования 2, 4, 21); во время партии и повтора полоса подсвечена (требование 5).
  */
-export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, saveState, canUndo, onUndo, onBackToProjects, battle }: ProjectTopBarProps): React.JSX.Element {
+export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, saveState, canUndo, onUndo, onBackToProjects, battle, onToolbarSlotChange }: ProjectTopBarProps): React.JSX.Element {
+  const sourceTitle = source.kind === "listed" ? `Проект из списка: games/${source.name}` : `Папка с диска: ${source.displayName}`;
   return (
     <header className={`project-topbar${battle.mode !== "edit" ? ` project-topbar--${battle.mode}` : ""}`}>
-      <EditorLogoMark size={26} />
-      <button type="button" className="editor-button" onClick={onBackToProjects}>
-        <EditorIcon name="arrow-left" size={15} />К проектам
-      </button>
-      <span className="project-topbar__divider" />
-      <h1 className="project-topbar__title">{projectName}</h1>
-      <span className="editor-chip" title={source.kind === "listed" ? "Проект из списка games/" : "Папка с диска"}>
-        {source.kind === "listed" ? `games/${source.name}` : (
-          <>
-            <EditorIcon name="folder" size={12} />
-            {source.displayName}
-          </>
-        )}
-      </span>
-      <button type="button" className="editor-button" disabled={!canUndo} title="Отменить (Ctrl+Z)" onClick={onUndo}>
-        <EditorIcon name="undo" size={15} />
-        Отменить
-      </button>
-      <span className="project-topbar__divider" />
-      <BattleTransportControls battle={battle} />
+      <div className="project-topbar__project">
+        <EditorLogoMark size={24} />
+        <button type="button" className="editor-button editor-button--icon" title="К проектам" aria-label="К проектам" onClick={onBackToProjects}>
+          <EditorIcon name="arrow-left" size={15} />
+        </button>
+        <h1 className="project-topbar__title" title={sourceTitle}>
+          {projectName}
+        </h1>
+        <button type="button" className="editor-button editor-button--icon" disabled={!canUndo} title="Отменить (Ctrl+Z)" aria-label="Отменить" onClick={onUndo}>
+          <EditorIcon name="undo" size={15} />
+        </button>
+      </div>
+      <div className="project-topbar__scene">
+        <div ref={onToolbarSlotChange} className="scene-tools" />
+        <BattleTransportControls battle={battle} />
+      </div>
       <div className="project-topbar__status">
         <BattleNotices battle={battle} />
         <SaveStateNotice saveState={saveState} />

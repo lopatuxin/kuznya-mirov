@@ -83,8 +83,16 @@ type ImprintGesture = {
 };
 
 export type ImprintSceneController = {
-  /** Нажатие при выбранном «Отпечатке»: ставит отпечаток под указателем. */
+  /** Нажатие при выбранном «Отпечатке»: ставит отпечаток там, где стоит пробный, а без него — под указателем. */
   place: (context: ImprintSceneContext, input: ImprintPointer) => void;
+  /**
+   * Кадр страницы: пока выбран «Отпечаток» и указатель над сценой (`pointer`), земля под ним уже несёт этот отпечаток —
+   * видно, что получится, до щелчка. Указатель ушёл, инструмент сменился — земля возвращается к файлу. `view` — камера:
+   * сменилась — под тем же указателем уже другое место.
+   */
+  previewFrame: (context: ImprintSceneContext, pointer: Vec2 | null, view: unknown) => void;
+  /** Пробный отпечаток снимается сразу, а не в следующем кадре: перед запуском игры и повтора земля должна быть как в файле. */
+  clearPreview: (context: ImprintSceneContext) => void;
   /** Нажатие на ручку выбранного отпечатка; `true` — жест начат. */
   startHandle: (context: ImprintSceneContext, input: ImprintPointer) => boolean;
   /** Нажатие мимо объектов: отпечаток под указателем выбирается и берётся за тело; `null` — под указателем отпечатков нет. */
@@ -101,6 +109,25 @@ export type ImprintSceneController = {
   pointerLeave: () => void;
   draw: (context: ImprintSceneContext, canvas: CanvasRenderingContext2D, pixelRatio: number) => void;
 };
+
+/**
+ * Пробный отпечаток. Под каким указателем, с какими числами, камерой и отпечатками файла он поставлен — пока они те же,
+ * его не переставляют. `entry` — сам отпечаток; `null` — под указателем нет земли или движок отпечаток не принял, и с
+ * теми же условиями попытка не повторяется. `centerHeight` — высота земли в его середине сразу после показа: стала
+ * другой — мир собран заново (отмена, правка файла снаружи), и отпечаток ставится снова.
+ */
+type ImprintPreview = { pointer: Vec2; key: string; view: unknown; entries: readonly ImprintEntry[]; entry: ImprintEntry | null; centerHeight: number };
+
+/** Указатель на месте: щелчок там же, где был последний кадр пробного отпечатка. */
+const SAME_POINTER_PX = 1;
+
+function placementKey(placing: ImprintPlacement): string {
+  return `${placing.stamp.name}|${placing.width}|${placing.height}`;
+}
+
+function isSamePointer(first: Vec2, second: Vec2): boolean {
+  return Math.hypot(first[0] - second[0], first[1] - second[1]) < SAME_POINTER_PX;
+}
 
 /** «Редактор», требование 14: сдвиг указателя дальше 4 точек начинает перенос за тело. */
 const BODY_DRAG_THRESHOLD_PX = 4;
@@ -130,6 +157,7 @@ function translateAxisOf(hit: HandleHit | null): TranslateAxis {
 export function createImprintSceneController(): ImprintSceneController {
   let gesture: ImprintGesture | null = null;
   let hovered: HandleHit | null = null;
+  let preview: ImprintPreview | null = null;
 
   function areHandlesShown(context: ImprintSceneContext): boolean {
     return context.imprints.isEditable && context.brush === null && context.paint === null && context.imprints.placing === null;
@@ -147,9 +175,56 @@ export function createImprintSceneController(): ImprintSceneController {
 
   function place(context: ImprintSceneContext, input: ImprintPointer): void {
     const { placing } = context.imprints;
+    if (placing === null) return;
+    const shown = preview;
+    // Пробный стоит под этим указателем с этими числами — он и остаётся; запись файла соберёт мир заново, возвращать землю не нужно.
+    if (shown?.entry != null && shown.key === placementKey(placing) && isSamePointer(shown.pointer, [input.x, input.y])) {
+      preview = null;
+      context.imprints.onPlace(shown.entry);
+      return;
+    }
+    // Пробный отстал от указателя или чисел: сначала земля без него, иначе луч упрётся в его склон.
+    clearPreview(context);
     const point = toVec3(context.engine.terrain_at(input.x, input.y));
-    if (placing === null || point === undefined) return;
-    context.imprints.onPlace(newImprintEntry([point[0], point[1]], placing.stamp, placing.width, placing.height));
+    if (point !== undefined) context.imprints.onPlace(newImprintEntry([point[0], point[1]], placing.stamp, placing.width, placing.height));
+  }
+
+  /** Пробный отпечаток снимается: земля снова как в файле — высоты и вода, что стоят сейчас, и отпечатки файла. */
+  function clearPreview(context: ImprintSceneContext): void {
+    const shown = preview;
+    preview = null;
+    if (shown?.entry == null) return;
+    const snapshot = readTerrainSnapshot(context.engine.terrain_heights());
+    if (snapshot !== undefined) context.engine.set_terrain(snapshot.grid.heights, snapshot.water, context.imprints.entries as ImprintEntry[]);
+  }
+
+  /** Тот же указатель, числа, камера и отпечатки файла, и мир не собран заново — пробный стоит где надо. */
+  function isPreviewCurrent(context: ImprintSceneContext, pointer: Vec2, key: string, view: unknown): boolean {
+    const shown = preview;
+    if (shown === null || shown.key !== key || shown.view !== view || shown.entries !== context.imprints.entries || !isSamePointer(shown.pointer, pointer)) return false;
+    return shown.entry === null || groundHeight(context.engine, shown.entry.position as Vec2) === shown.centerHeight;
+  }
+
+  function previewFrame(context: ImprintSceneContext, pointer: Vec2 | null, view: unknown): void {
+    const placing = context.imprints.isEditable && gesture === null ? context.imprints.placing : null;
+    if (placing === null || pointer === null) {
+      clearPreview(context);
+      return;
+    }
+    const key = placementKey(placing);
+    if (isPreviewCurrent(context, pointer, key, view)) return;
+    const { engine } = context;
+    const entries = context.imprints.entries;
+    const snapshot = readTerrainSnapshot(engine.terrain_heights());
+    if (snapshot === undefined) return;
+    // Место ищется по земле без пробного: иначе луч упирался бы в его склон, и холм полз бы к камере. Высоты файла и вода
+    // от пробного не меняются — один снимок годится и чтобы снять его, и чтобы поставить новый.
+    if (preview?.entry != null) engine.set_terrain(snapshot.grid.heights, snapshot.water, entries as ImprintEntry[]);
+    const ground = toVec3(engine.terrain_at(pointer[0], pointer[1]));
+    const entry = ground === undefined ? null : newImprintEntry([ground[0], ground[1]], placing.stamp, placing.width, placing.height);
+    const isShown = entry !== null && engine.set_terrain(snapshot.grid.heights, snapshot.water, [...entries, entry]) === undefined;
+    const shownEntry = isShown ? entry : null;
+    preview = { pointer, key, view, entries, entry: shownEntry, centerHeight: shownEntry === null ? 0 : groundHeight(engine, shownEntry.position as Vec2) };
   }
 
   function begin(context: ImprintSceneContext, input: ImprintPointer, index: number, imprint: Imprint, hit: HandleHit | null, geometry: HandleGeometry | null): boolean {
@@ -299,20 +374,28 @@ export function createImprintSceneController(): ImprintSceneController {
   function abandon(): void {
     const active = gesture;
     gesture = null;
+    preview = null;
     active?.onActiveChange(false);
   }
 
-  /** Рамка — стороны прямоугольника по видимой земле, цвет и толщина как у рамки объекта; ручки — в середине на земле. */
+  /** Рамка отпечатка — стороны прямоугольника по видимой земле, цвет и толщина как у рамки объекта. */
+  function drawOutline(context: ImprintSceneContext, canvas: CanvasRenderingContext2D, imprint: Imprint, label: string, pixelRatio: number): void {
+    const projection = projectionOf(context.engine);
+    const outline = imprintOutline(imprint)
+      .map((point) => projection.screenPoint(point[0], point[1], groundHeight(context.engine, point)))
+      .filter((point): point is Vec2 => point !== undefined);
+    if (outline.length >= 3) drawSelectionQuad(canvas, outline, label, pixelRatio);
+  }
+
+  /** Рамка выбранного или пробного отпечатка; ручки — в середине на земле. */
   function draw(context: ImprintSceneContext, canvas: CanvasRenderingContext2D, pixelRatio: number): void {
     if (!context.imprints.isEditable) return;
+    const shown = preview?.entry == null ? null : readImprint(preview.entry);
+    if (shown !== null) drawOutline(context, canvas, shown, shown.stamp, pixelRatio);
     const selected = selectedImprint(context);
     const subject = gesture === null ? selected : { index: gesture.index, imprint: gesture.last };
     if (subject === null) return;
-    const projection = projectionOf(context.engine);
-    const outline = imprintOutline(subject.imprint)
-      .map((point) => projection.screenPoint(point[0], point[1], groundHeight(context.engine, point)))
-      .filter((point): point is Vec2 => point !== undefined);
-    if (outline.length >= 3) drawSelectionQuad(canvas, outline, `Отпечаток ${subject.index + 1}`, pixelRatio);
+    drawOutline(context, canvas, subject.imprint, `Отпечаток ${subject.index + 1}`, pixelRatio);
     if (!areHandlesShown(context)) return;
     const geometry = handleGeometryOf(context, subject.imprint, context.handleMode);
     if (geometry !== undefined) drawHandles(canvas, geometry, context.handleMode, hovered, pixelRatio);
@@ -320,6 +403,8 @@ export function createImprintSceneController(): ImprintSceneController {
 
   return {
     place,
+    previewFrame,
+    clearPreview,
     startHandle,
     pickAt,
     pointerMove,

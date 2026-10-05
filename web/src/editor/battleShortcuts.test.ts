@@ -1,5 +1,43 @@
 import { describe, expect, it } from "vitest";
-import { isPauseResumeShortcut, isPlayStopShortcut, isReplaySeekShortcut, isStepShortcut } from "./battleShortcuts";
+import { isCopyShortcut, isPauseResumeShortcut, isPlayStopShortcut, isReplaySeekShortcut, isStepShortcut, isUndoShortcut } from "./battleShortcuts";
+
+describe("isUndoShortcut", () => {
+  it("Ctrl+Z — да", () => {
+    expect(isUndoShortcut({ code: "KeyZ", ctrlKey: true, shiftKey: false, altKey: false })).toBe(true);
+  });
+
+  it("Ctrl+Z в русской раскладке — да: браузер шлёт key «я», а клавиша та же", () => {
+    const russianCtrlZ = { key: "я", code: "KeyZ", ctrlKey: true, shiftKey: false, altKey: false };
+    expect(isUndoShortcut(russianCtrlZ)).toBe(true);
+  });
+
+  it("Ctrl+Alt+Z — нет", () => {
+    expect(isUndoShortcut({ code: "KeyZ", ctrlKey: true, shiftKey: false, altKey: true })).toBe(false);
+  });
+
+  it("Ctrl+Shift+Z — нет", () => {
+    expect(isUndoShortcut({ code: "KeyZ", ctrlKey: true, shiftKey: true, altKey: false })).toBe(false);
+  });
+});
+
+describe("isCopyShortcut", () => {
+  it("Ctrl+D — да", () => {
+    expect(isCopyShortcut({ code: "KeyD", ctrlKey: true, shiftKey: false, altKey: false })).toBe(true);
+  });
+
+  it("Ctrl+D в русской раскладке — да: браузер шлёт key «в», а клавиша та же", () => {
+    const russianCtrlD = { key: "в", code: "KeyD", ctrlKey: true, shiftKey: false, altKey: false };
+    expect(isCopyShortcut(russianCtrlD)).toBe(true);
+  });
+
+  it("Ctrl+Shift+D — нет", () => {
+    expect(isCopyShortcut({ code: "KeyD", ctrlKey: true, shiftKey: true, altKey: false })).toBe(false);
+  });
+
+  it("D без Ctrl — нет", () => {
+    expect(isCopyShortcut({ code: "KeyD", ctrlKey: false, shiftKey: false, altKey: false })).toBe(false);
+  });
+});
 
 describe("isPlayStopShortcut", () => {
   it("Ctrl+P — да", () => {

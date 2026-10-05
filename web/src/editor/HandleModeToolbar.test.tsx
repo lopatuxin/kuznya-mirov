@@ -1,40 +1,37 @@
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
-import { HandleModeToolbar } from "./HandleModeToolbar";
+import { HandleModeToolbar, MaterialsMenuContent, TerrainMenuContent, terrainGroupTool } from "./HandleModeToolbar";
+import { WaterFields } from "./WaterFields";
 
 type ToolbarProps = Parameters<typeof HandleModeToolbar>[0];
+type TerrainMenuProps = Parameters<typeof TerrainMenuContent>[0];
 
 const NOOP = (): void => {};
 
-function toolbarProps(overrides: Partial<ToolbarProps> = {}, paintOverrides: Partial<ToolbarProps["paintTool"]> = {}, blocked: string[] = []): ToolbarProps {
+function toolbarProps(overrides: Partial<ToolbarProps> = {}, materialsOverrides: Partial<ToolbarProps["materialsTool"]> = {}): ToolbarProps {
   return {
     mode: "translate",
     brushKind: null,
     areBrushesAvailable: true,
+    lastTerrainTool: "raise",
     brushSize: 4,
     brushStrength: 50,
     water: null,
     imprintTool: {
       isSelected: false,
       isEnabled: true,
-      fields: { stampNames: ["beluha"], stamp: "beluha", width: 30, height: 10, onStampChange: NOOP, onWidthChange: NOOP, onHeightChange: NOOP },
+      fields: { stampNames: ["beluha"], stamp: "beluha", previews: new Map(), width: 30, height: 10, onStampChange: NOOP, onWidthChange: NOOP, onHeightChange: NOOP },
       onSelect: NOOP,
     },
-    paintTool: {
+    materialsTool: {
       isSelected: false,
       isEnabled: true,
-      fields: {
-        size: 4,
-        strength: 50,
-        materialNames: ["grass", "rock", "scree"],
-        material: "grass",
-        blockedMaterials: new Set(blocked),
-        onSizeChange: NOOP,
-        onStrengthChange: NOOP,
-        onMaterialChange: NOOP,
-      },
+      materialNames: ["grass", "rock", "scree"],
+      material: "grass",
+      blockedMaterials: new Set(),
+      onMaterialSelect: NOOP,
       onSelect: NOOP,
-      ...paintOverrides,
+      ...materialsOverrides,
     },
     onChange: NOOP,
     onBrushChange: NOOP,
@@ -49,6 +46,24 @@ function render(props: ToolbarProps): string {
   return renderToStaticMarkup(<HandleModeToolbar {...props} />);
 }
 
+function renderTerrainMenu(overrides: Partial<TerrainMenuProps> = {}): string {
+  const { brushKind, brushSize, brushStrength, imprintTool, onBrushSizeChange, onBrushStrengthChange } = toolbarProps();
+  return renderToStaticMarkup(
+    <TerrainMenuContent
+      brushKind={brushKind}
+      brushSize={brushSize}
+      brushStrength={brushStrength}
+      imprintTool={imprintTool}
+      onBrushSizeChange={onBrushSizeChange}
+      onBrushStrengthChange={onBrushStrengthChange}
+      groupTool="raise"
+      onSelect={NOOP}
+      onPicked={NOOP}
+      {...overrides}
+    />,
+  );
+}
+
 /** Тег кнопки с подсказкой `title`. */
 function buttonTagOf(html: string, title: string): string {
   const tag = html.match(new RegExp(`<button[^>]*title="${title}"[^>]*>`))?.[0];
@@ -56,118 +71,151 @@ function buttonTagOf(html: string, title: string): string {
   return tag;
 }
 
-describe("кнопка «Покрасить»", () => {
-  it("группа «Покраска» с подписью, одна кнопка со значком кисти, после группы «Рельеф»", () => {
+describe("полоса инструментов", () => {
+  it("виды ручек значками, затем «Рельеф», «Материалы» и «Вода» кнопками с окошком; полей в полосе нет", () => {
     const html = render(toolbarProps());
 
-    expect(html).toContain('role="group" aria-label="Покраска"');
-    expect(html).toContain(">Покраска</span>");
-    expect(html.indexOf('aria-label="Кисти рельефа"')).toBeLessThan(html.indexOf('aria-label="Покраска"'));
-    const group = html.slice(html.indexOf('aria-label="Покраска"'));
-    expect((group.slice(0, group.indexOf("</div>")).match(/<button/g) ?? []).length).toBe(1);
+    expect(html).toContain('role="group" aria-label="Ручки объекта"');
+    expect(html.indexOf(">Рельеф<")).toBeLessThan(html.indexOf(">Материалы<"));
+    expect(html.indexOf(">Материалы<")).toBeLessThan(html.indexOf(">Вода<"));
+    expect(html).toContain('aria-label="Рельеф: настройки"');
+    expect(html).toContain('aria-label="Материалы: настройки"');
+    expect(html).not.toContain("Покраска");
+    expect(html).not.toContain("Размер");
+    expect(html).not.toContain("Уровень");
+    expect(html).not.toContain('role="dialog"');
   });
 
-  it("кнопка нажимается и не забирает фокус у сцены: подсказка-название и кнопка не выбрана", () => {
-    const tag = buttonTagOf(render(toolbarProps()), "Покрасить землю материалом \\(с Shift — стереть\\)");
-
-    expect(tag).not.toContain("disabled");
-    expect(tag).toContain('aria-pressed="false"');
+  it("щелчок по «Рельеф» включает последний инструмент группы — его и называет подсказка", () => {
+    expect(buttonTagOf(render(toolbarProps()), "Рельеф: Поднять")).toContain('aria-pressed="false"');
+    expect(buttonTagOf(render(toolbarProps({ lastTerrainTool: "smooth", brushKind: "smooth" })), "Рельеф: Сгладить")).toContain('aria-pressed="true"');
   });
 
-  it("выбранная кнопка нажата, а виды ручек — нет", () => {
-    const html = render(toolbarProps({}, { isSelected: true }));
+  it("выбранный «Отпечаток» нажимает «Рельеф», а виды ручек — нет", () => {
+    const html = render(toolbarProps({ lastTerrainTool: "imprint", imprintTool: { ...toolbarProps().imprintTool, isSelected: true } }));
 
-    expect(buttonTagOf(html, "Покрасить землю материалом \\(с Shift — стереть\\)")).toContain('aria-pressed="true"');
+    expect(buttonTagOf(html, "Рельеф: Отпечаток")).toContain('aria-pressed="true"');
     expect(buttonTagOf(html, "Перенос \\(W\\)")).toContain('aria-pressed="false"');
   });
 
-  it("без files.materials кнопка неактивна, подсказка называет, что объявить", () => {
+  it("кисть материалом нажимает «Материалы», подсказка называет материал", () => {
+    const html = render(toolbarProps({}, { isSelected: true, material: "rock" }));
+
+    expect(buttonTagOf(html, "Красить материалом rock \\(с Shift — стереть\\)")).toContain('aria-pressed="true"');
+    expect(buttonTagOf(html, "Перенос \\(W\\)")).toContain('aria-pressed="false"');
+  });
+
+  it("без files.materials «Материалы» неактивны, подсказка называет, что объявить", () => {
     const html = render(toolbarProps({}, { isEnabled: false }));
 
-    const tag = buttonTagOf(html, "Нет материалов: объяви files.materials в game.json");
-    expect(tag).toContain("disabled");
+    expect(buttonTagOf(html, "Нет материалов: объяви files.materials в game.json")).toContain("disabled");
   });
 
-  it("в партии, на паузе, в повторе и в плоской сцене кистей нет: ни группы, ни кнопки, ни полей", () => {
+  it("в партии, на паузе и в повторе — только виды ручек: рельеф там не правится", () => {
     const html = render(toolbarProps({ areBrushesAvailable: false }, { isSelected: true }));
 
-    expect(html).not.toContain("Покраска");
-    expect(html).not.toContain("Материал");
+    expect(html).toContain('aria-label="Ручки объекта"');
+    expect(html).not.toContain("Рельеф");
+    expect(html).not.toContain("Материалы");
+    expect(html).not.toContain("Вода");
   });
 });
 
-describe("поля кисти «Покрасить»", () => {
-  it("группа «Кисть»: «Размер» и «Сила» с общими значениями и «Материал»; группы «Вода» нет", () => {
-    const html = render(toolbarProps({}, { isSelected: true }));
+describe("terrainGroupTool", () => {
+  it("последний инструмент группы, а недоступный «Отпечаток» — «Поднять»", () => {
+    expect(terrainGroupTool("level", true)).toBe("level");
+    expect(terrainGroupTool("imprint", true)).toBe("imprint");
+    expect(terrainGroupTool("imprint", false)).toBe("raise");
+  });
+});
 
-    expect(html).toContain('role="group" aria-label="Кисть"');
-    expect(html).toMatch(/Размер<input[^>]*value="4"/);
+describe("окошко «Рельеф»", () => {
+  it("кисти и «Отпечаток» с названиями, нажата только выбранная кисть", () => {
+    const html = renderTerrainMenu({ brushKind: "level" });
+
+    for (const label of ["Поднять", "Выровнять", "Сгладить", "Отпечаток"]) expect(html).toContain(`>${label}</span>`);
+    expect(html).toContain("Shift — опустить");
+    expect(html.match(/aria-pressed="true"/g)).toHaveLength(1);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>(?:(?!<\/button>).)*Выровнять/);
+  });
+
+  it("у кисти — «Размер» с подсказкой про Ctrl+колесо и «Сила»", () => {
+    const html = renderTerrainMenu();
+
+    expect(html).toMatch(/title="Над сценой — Ctrl\+колесо">Размер<input[^>]*value="4"/);
     expect(html).toMatch(/Сила<input[^>]*value="50"/);
-    expect(html).toContain("Материал<select");
-    expect(html).not.toContain('aria-label="Вода"');
+    expect(html).not.toContain("Штамп");
   });
 
-  it("материалы — в порядке объявления, выбран первый", () => {
-    const html = render(toolbarProps({}, { isSelected: true }));
+  it("у «Отпечатка» — штамп, ширина и высота с подсказкой «Меньше нуля — вдавливает»", () => {
+    const html = renderTerrainMenu({ groupTool: "imprint" });
 
-    const options = Array.from(html.matchAll(/<option value="([^"]*)"( selected="")?/g)).map((match) => [match[1], match[2] !== undefined]);
-    expect(options.filter(([name]) => ["grass", "rock", "scree"].includes(name as string))).toEqual([
-      ["grass", true],
-      ["rock", false],
-      ["scree", false],
-    ]);
-  });
-
-  it("слоёв восемь — материалы, которых нет среди слоёв, неактивны с припиской «— слоёв уже восемь»", () => {
-    const html = render(toolbarProps({}, { isSelected: true }, ["scree"]));
-
-    expect(html).toContain('<option value="scree" disabled="">scree — слоёв уже восемь</option>');
-    expect(html).toContain('<option value="grass" selected="">grass</option>');
-    expect(html).toContain('<option value="rock">rock</option>');
-  });
-
-  it("пока выбрана не «Покрасить», полей материала нет", () => {
-    const html = render(toolbarProps());
-
-    expect(html).not.toContain("Материал");
-  });
-
-  it("у кисти рельефа поля — «Размер», «Сила» и группа «Вода», без «Материала»", () => {
-    const html = render(toolbarProps({ brushKind: "raise" }));
-
-    expect(html).toContain('aria-label="Вода"');
-    expect(html).not.toContain("Материал");
-  });
-});
-
-describe("кнопка «Отпечаток»", () => {
-  it("в группе «Рельеф» после кистей, со значком холма и впадины, не выбрана; поля — только когда выбрана", () => {
-    const html = render(toolbarProps());
-
-    const group = html.slice(html.indexOf('aria-label="Кисти рельефа"'));
-    const groupHtml = group.slice(0, group.indexOf("</div>"));
-    expect((groupHtml.match(/<button/g) ?? []).length).toBe(4);
-    expect(groupHtml.lastIndexOf('title="Отпечаток"')).toBeGreaterThan(groupHtml.lastIndexOf('title="Сгладить перепады"'));
-    expect(groupHtml).toContain('d="M2 12c1.5-4.5 3-7 5-7s3.5 2.5 5 7"');
-    expect(groupHtml).toContain('d="M12 12c1.5 4.5 3 7 5 7s3.5-2.5 5-7"');
-    const tag = buttonTagOf(html, "Отпечаток");
-    expect(tag).not.toContain("disabled");
-    expect(tag).toContain('aria-pressed="false"');
-    expect(html).not.toContain("Меньше нуля — вдавливает");
-    expect(html).not.toContain("Гора");
-  });
-
-  it("выбранная — нажата, и появляются поля с подсказкой «Меньше нуля — вдавливает»", () => {
-    const html = render(toolbarProps({ imprintTool: { ...toolbarProps().imprintTool, isSelected: true } }));
-
-    expect(buttonTagOf(html, "Отпечаток")).toContain('aria-pressed="true"');
     expect(html).toContain('role="group" aria-label="Отпечаток"');
+    expect(html).toContain('role="radiogroup" aria-label="Штамп"');
     expect(html).toContain('title="Меньше нуля — вдавливает"');
+    expect(html).not.toContain("Сила");
   });
 
-  it("без files.stamps кнопка неактивна, подсказка называет, что объявить", () => {
-    const html = render(toolbarProps({ imprintTool: { ...toolbarProps().imprintTool, isEnabled: false } }));
+  it("без files.stamps «Отпечаток» неактивен, подсказка называет, что объявить", () => {
+    const html = renderTerrainMenu({ imprintTool: { ...toolbarProps().imprintTool, isEnabled: false } });
 
     expect(buttonTagOf(html, "Нет штампов: объяви files.stamps в game.json")).toContain("disabled");
+  });
+});
+
+describe("окошко «Материалы»", () => {
+  function renderMaterials(overrides: Partial<ToolbarProps["materialsTool"]> = {}): string {
+    const { materialsTool, brushSize, brushStrength, onBrushSizeChange, onBrushStrengthChange } = toolbarProps({}, overrides);
+    return renderToStaticMarkup(
+      <MaterialsMenuContent
+        materialsTool={materialsTool}
+        brushSize={brushSize}
+        brushStrength={brushStrength}
+        onBrushSizeChange={onBrushSizeChange}
+        onBrushStrengthChange={onBrushStrengthChange}
+        onPicked={NOOP}
+      />,
+    );
+  }
+
+  it("материалы — в порядке объявления, под ними «Размер» и «Сила», общие с кистью рельефа", () => {
+    const html = renderMaterials();
+
+    const labels = Array.from(html.matchAll(/class="tool-menu__item-label">([^<]*)</g)).map((match) => match[1]);
+    expect(labels).toEqual(["grass", "rock", "scree"]);
+    expect(html).toMatch(/Размер<input[^>]*value="4"/);
+    expect(html).toMatch(/Сила<input[^>]*value="50"/);
+  });
+
+  it("нажат материал, которым кисть красит сейчас; пока кисть не выбрана — ни один", () => {
+    expect(renderMaterials().match(/aria-pressed="true"/g)).toBe(null);
+
+    const html = renderMaterials({ isSelected: true, material: "rock" });
+    expect(html.match(/aria-pressed="true"/g)).toHaveLength(1);
+    expect(html).toMatch(/aria-pressed="true"[^>]*>(?:(?!<\/button>).)*rock/);
+  });
+
+  it("слоёв восемь — материалы, которых нет среди слоёв, неактивны с припиской «слоёв уже восемь»", () => {
+    const html = renderMaterials({ blockedMaterials: new Set(["scree"]) });
+
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>(?:(?!<\/button>).)*scree<\/span><span class="tool-menu__item-hint">слоёв уже восемь/);
+    expect(html.match(/disabled=""/g)).toHaveLength(1);
+  });
+});
+
+describe("окошко «Вода»", () => {
+  it("без воды галочка снята, уровень и цвет неактивны", () => {
+    const html = renderToStaticMarkup(<WaterFields water={null} onWaterChange={NOOP} />);
+
+    expect(html).not.toMatch(/<input type="checkbox" checked=""/);
+    expect(html).toMatch(/Уровень<input[^>]*disabled=""/);
+  });
+
+  it("с водой — значения из рельефа", () => {
+    const html = renderToStaticMarkup(<WaterFields water={{ level: -2.2, color: "#3f7fd0" }} onWaterChange={NOOP} />);
+
+    expect(html).toMatch(/<input type="checkbox" checked=""/);
+    expect(html).toMatch(/Уровень<input[^>]*value="-2.2"/);
+    expect(html).not.toMatch(/Уровень<input[^>]*disabled=""/);
   });
 });

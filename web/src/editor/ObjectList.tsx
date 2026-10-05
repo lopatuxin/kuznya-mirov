@@ -79,6 +79,8 @@ export function ObjectList({ objects, selectedIndex, onSelect, emptyLabel = "О�
   function handleKeyDown(event: React.KeyboardEvent<HTMLDivElement>): void {
     if (event.shiftKey || event.altKey || event.ctrlKey || event.metaKey) return;
     if (event.key === "Escape") {
+      // Esc в списке — его: снимает поиск или выбор, а выбранный инструмент сцены остаётся.
+      event.preventDefault();
       if (query !== "") clearQuery();
       else onSelect(null);
       return;

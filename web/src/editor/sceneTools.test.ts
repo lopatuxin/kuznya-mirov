@@ -60,7 +60,7 @@ describe("isImprintToolEnabled", () => {
 });
 
 describe("isPaintToolEnabled", () => {
-  it("кнопка «Покрасить» нажимается там, где есть кисти, и только с материалами", () => {
+  it("группа «Материалы» доступна там, где есть кисти, и только с материалами", () => {
     expect(isPaintToolEnabled(true, true)).toBe(true);
     expect(isPaintToolEnabled(true, false)).toBe(false);
   });

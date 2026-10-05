@@ -25,10 +25,10 @@
       "enemies": "enemies.json"
     },
     "stamps": {
-      "mynd": "stamps/mynd.json",
-      "wenlock": "stamps/wenlock.json",
-      "carding": "stamps/carding.json",
-      "onny": "stamps/onny.json"
+      "Холм-отрог": "stamps/mynd.json",
+      "Пологие холмы": "stamps/wenlock.json",
+      "Ложбина": "stamps/carding.json",
+      "Русло": "stamps/onny.json"
     },
     "images": {
       "marker": {

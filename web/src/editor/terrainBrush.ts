@@ -34,6 +34,18 @@ export function clampToLimits(value: number, limits: BrushLimits): number {
   return Math.min(limits.max, Math.max(limits.min, value));
 }
 
+/** Щелчок колеса с Ctrl меняет размер кисти в столько раз, но не меньше чем на клетку: малая кисть идёт по клетке, большая быстрее. */
+const BRUSH_SIZE_WHEEL_FACTOR = 1.15;
+
+/** Ctrl+колесо — размер кисти: от себя (`clicks` меньше нуля) — больше, на себя — меньше; целым числом в пределах размера. */
+export function wheelBrushSize(size: number, clicks: number): number {
+  // Колесо вбок и наклон колеса — щелчков вверх и вниз нет, размер тот же.
+  if (clicks === 0) return size;
+  const scaled = Math.round(size * BRUSH_SIZE_WHEEL_FACTOR ** -clicks);
+  const stepped = clicks < 0 ? Math.max(scaled, Math.floor(size) + 1) : Math.min(scaled, Math.ceil(size) - 1);
+  return clampToLimits(stepped, BRUSH_SIZE_LIMITS);
+}
+
 /** Вес точки высот на расстоянии `distance` по плоскости от точки кисти радиуса `radius` — «Кисти рельефа», требование 10. */
 export function brushWeight(distance: number, radius: number): number {
   if (distance >= radius) return 0;

@@ -20,6 +20,16 @@ export function isStepShortcut(event: ShortcutKeyEvent): boolean {
   return event.code === "KeyP" && event.ctrlKey && event.altKey && !event.shiftKey;
 }
 
+/** Ctrl+Z — отмена; по месту клавиши, а не по букве: в русской раскладке `key` у неё «я». */
+export function isUndoShortcut(event: ShortcutKeyEvent): boolean {
+  return isPlainCtrl(event, "KeyZ");
+}
+
+/** Ctrl+D — копия выбранного; по месту клавиши, как Ctrl+Z. */
+export function isCopyShortcut(event: ShortcutKeyEvent): boolean {
+  return isPlainCtrl(event, "KeyD");
+}
+
 /** Любое из трёх сочетаний партии — все три перехватываются раньше браузера, при любом фокусе. */
 export function isBattleTransportShortcut(event: ShortcutKeyEvent): boolean {
   return isPlayStopShortcut(event) || isPauseResumeShortcut(event) || isStepShortcut(event);
