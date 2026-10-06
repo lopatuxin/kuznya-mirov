@@ -279,6 +279,9 @@ pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec3>, scene: &Scene
         let Some(axis) = world.follow_mouse(id, property::FOLLOW_MOUSE) else {
             continue;
         };
+        if scene::is_depth_layer(world, id) {
+            continue;
+        }
         let (Some(pos), Some(size)) = (
             world.vec2(id, property::POSITION),
             world.vec2(id, property::SIZE),
@@ -1059,7 +1062,7 @@ pub fn apply_stage4(
 pub fn find_collision_pairs(world: &World, grid: &mut SpatialGrid) -> Vec<(u32, u32)> {
     let objects: Vec<Placed> = world
         .ids()
-        .filter(|&id| world.flag(id, property::COLLIDES))
+        .filter(|&id| world.flag(id, property::COLLIDES) && !scene::is_depth_layer(world, id))
         .filter_map(|id| placed_of(world, id))
         .collect();
     overlapping_pairs(&objects, grid)

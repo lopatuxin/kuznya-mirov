@@ -290,6 +290,9 @@ pub(crate) fn parse_scalar_value(
                 errors.push(file, path, DECK_IN_FLAT_SCENE);
                 return None;
             }
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+                return None;
+            }
             value.as_bool().map(Value::Flag).or_else(|| {
                 errors.push(
                     file,
@@ -305,6 +308,9 @@ pub(crate) fn parse_scalar_value(
                 return None;
             }
             if prop == property::HEIGHT && !validate_height(n, properties, file, path, errors) {
+                return None;
+            }
+            if prop == property::PARALLAX && !validate_parallax(n, properties, file, path, errors) {
                 return None;
             }
             Some(Value::Number(n))
@@ -770,6 +776,82 @@ const SHAPE_IN_FLAT_SCENE: &str =
 const DECK_IN_FLAT_SCENE: &str =
     "deck есть только в трёхмерной сцене: у scene в game.json нет camera";
 
+/// «Мир на экране» → «Проверка перед запуском»: `parallax` и `repeat_x` есть только в плоской
+/// сцене — везде, где их можно записать: объект, шаблон, клавиша, `on_click`, правила.
+fn depth_layer_fits_the_scene(
+    prop: PropertyId,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if matches!(prop, property::PARALLAX | property::REPEAT_X) && properties.three_d() {
+        errors.push(
+            file,
+            path,
+            format!(
+                "{} есть только в плоской сцене: у scene в game.json есть camera",
+                properties.name(prop)
+            ),
+        );
+        return false;
+    }
+    true
+}
+
+/// «Мир на экране» → «Слои глубины»: `parallax` — число не меньше нуля, и только в плоской сцене.
+fn validate_parallax(
+    n: f64,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if !depth_layer_fits_the_scene(property::PARALLAX, properties, file, path, errors) {
+        return false;
+    }
+    if n >= 0.0 {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!("parallax не может быть меньше нуля, получено {n}"),
+    );
+    false
+}
+
+/// «Слои глубины», требование 23: объект с `parallax`, отличным от 1, только рисуется — с этими
+/// свойствами в одном объекте сцены или шаблона он не уживается. `present` — свойства, которые у
+/// объекта заведомо есть.
+fn validate_depth_layer_only_draws(
+    is_layer: bool,
+    present: &std::collections::HashSet<PropertyId>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if !is_layer {
+        return;
+    }
+    for (prop, name) in [
+        (property::COLLIDES, "collides"),
+        (property::ON_CLICK, "on_click"),
+        (property::CAMERA_FOLLOWS, "camera_follows"),
+        (property::FOLLOW_MOUSE, "follow_mouse"),
+    ] {
+        if present.contains(&prop) {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "{name} задан объекту с parallax, отличным от 1: объект слоя глубины только рисуется"
+                ),
+            );
+        }
+    }
+}
+
 /// «Рельеф», требование 38: настил — только объект с `position` и `size`. `check_position` — как у
 /// `validate_follow_mouse_shape`.
 fn validate_deck_shape(
@@ -1031,6 +1113,11 @@ fn parse_scene_object(
     validate_follow_mouse_shape(&shape, true, file, &path, errors);
     validate_shape_fill(&shape, true, file, &path, errors);
     validate_deck_shape(&shape, true, file, &path, errors);
+    let is_layer = matches!(
+        find_value(&values, property::PARALLAX),
+        Some(Value::Number(n)) if *n != 1.0
+    );
+    validate_depth_layer_only_draws(is_layer, &shape, file, &path, errors);
 
     Some(ParsedObject {
         path,
@@ -2981,7 +3068,9 @@ fn require_number_kind(
     path: &str,
     errors: &mut ErrorSink,
 ) -> Option<PropKind> {
-    if !height_fits_the_scene(prop, properties, file, path, errors) {
+    if !(height_fits_the_scene(prop, properties, file, path, errors)
+        && depth_layer_fits_the_scene(prop, properties, file, path, errors))
+    {
         return None;
     }
     let kind = properties.kind(prop);
@@ -3013,11 +3102,26 @@ fn parse_set_value(
 ) -> Option<SetValue> {
     let kind = properties.kind(prop);
     if matches!(kind, PropKind::Number | PropKind::Time | PropKind::Timer) {
-        if !height_fits_the_scene(prop, properties, file, path, errors) {
+        if !(height_fits_the_scene(prop, properties, file, path, errors)
+            && depth_layer_fits_the_scene(prop, properties, file, path, errors))
+        {
             return None;
         }
-        return parse_number_expr(value, kind, properties, file, path, errors)
-            .map(SetValue::Number);
+        let expr = parse_number_expr(value, kind, properties, file, path, errors)?;
+        // «Мир на экране» → «Проверка перед запуском»: `parallax` меньше 0 — ошибка и в постоянных
+        // правила, как в объекте, клавише и щелчке.
+        if prop == property::PARALLAX {
+            let constants: &[f64] = match &expr {
+                NumberExpr::Const(n) => std::slice::from_ref(n),
+                NumberExpr::Table { table, .. } => table,
+                NumberExpr::Multiplier { .. } => &[],
+            };
+            if let Some(&n) = constants.iter().find(|&&n| n < 0.0) {
+                validate_parallax(n, properties, file, path, errors);
+                return None;
+            }
+        }
+        return Some(SetValue::Number(expr));
     }
     parse_scalar_value(value, prop, properties, images, file, path, errors).map(SetValue::Const)
 }
@@ -3311,6 +3415,9 @@ fn parse_common_action(
                 );
                 return None;
             }
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+                return None;
+            }
             let selector_json = require_index(arr, 2, file, path, errors)?;
             let selector_obj = expect_object(selector_json, file, &join(path, "[2]"), errors)?;
             let selector =
@@ -3335,6 +3442,9 @@ fn parse_common_action(
                         properties.kind(prop).label()
                     ),
                 );
+                return None;
+            }
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
                 return None;
             }
             Some(CommonAction::TakeAll { prop })
@@ -3502,6 +3612,9 @@ fn parse_collide_effect(
                 );
                 return None;
             }
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+                return None;
+            }
             if head == "give" {
                 Some(CollideEffect::Give { prop })
             } else {
@@ -3618,6 +3731,16 @@ fn parse_template(
     validate_follow_mouse_shape(&shape, false, file, path, errors);
     validate_shape_fill(&shape, false, file, path, errors);
     validate_deck_shape(&shape, false, file, path, errors);
+    let is_layer = template.iter().any(|(prop, value)| {
+        *prop == property::PARALLAX
+            && matches!(value, TemplateValue::Const(Value::Number(n)) if *n != 1.0)
+    });
+    let present = template
+        .iter()
+        .filter(|(_, value)| !matches!(value, TemplateValue::Const(Value::Flag(false))))
+        .map(|(prop, _)| *prop)
+        .collect();
+    validate_depth_layer_only_draws(is_layer, &present, file, path, errors);
     (template, broken_properties)
 }
 
@@ -4479,6 +4602,9 @@ fn possible_shapes(
 /// «Картинки» → «Отражение», требование 13: текст ошибки `flip_x` без картинки.
 const FLIP_X_WITHOUT_IMAGE: &str = "flip_x задан объекту, которому картинка не достанется никак: ни в файле, ни клавишей, ни правилом, ни кодом";
 
+/// «Слои глубины», требование 23: текст ошибки `repeat_x` без заливки.
+const REPEAT_X_WITHOUT_FILL: &str = "repeat_x задан объекту, которому ни картинка, ни цвет не достанутся никак: ни в файле, ни клавишей, ни правилом, ни кодом";
+
 /// «Картинки»: engine properties that only mean something on top of a picture — `opacity`
 /// multiplies it, `flip_x` (требование 13) mirrors it — each with its own «картинки нет» message.
 const NEEDS_IMAGE: [(PropertyId, &str); 2] = [
@@ -4495,18 +4621,29 @@ const NEEDS_IMAGE: [(PropertyId, &str); 2] = [
 /// check, which needs no such widening. A property that reaches an object only at runtime (a
 /// `keys` edit, a rule, or code) is not checked — «Крайние случаи»: the prestart check only looks
 /// at the scene and templates. An object with `shape` is skipped: `validate_shape_fill` already
-/// reports its `opacity`/`flip_x`.
+/// reports its `opacity`/`flip_x`. «Слои глубины», требование 23: тем же способом проверяется
+/// `repeat_x`, но заливкой ему служит и картинка, и цвет, а слово `color` в тексте кода молчит
+/// проверку так же, как слово `image`.
 fn validate_reachable_image(shapes: &[PossibleShape], code: Option<&str>, errors: &mut ErrorSink) {
     // «Код игры»: слово `image` в тексте кода — код тоже мог дать объекту картинку, проверка
     // здесь бессильна отличить это от настоящей нехватки источника, так что просто не спорит.
-    if code.is_some_and(|c| code_mentions_word(c, "image")) {
-        return;
-    }
+    let code_gives_image = code.is_some_and(|c| code_mentions_word(c, "image"));
+    let code_gives_fill = code_gives_image || code.is_some_and(|c| code_mentions_word(c, "color"));
     for ps in shapes {
-        let has_image = ps.shape.certain.contains(&property::IMAGE)
-            || ps.shape.maybe.contains(&property::IMAGE)
-            || ps.shape.broken_properties.contains(&property::IMAGE);
-        if has_image || ps.shape.certain.contains(&property::SHAPE) {
+        let reachable = |prop: PropertyId| {
+            ps.shape.certain.contains(&prop)
+                || ps.shape.maybe.contains(&prop)
+                || ps.shape.broken_properties.contains(&prop)
+        };
+        let has_image = reachable(property::IMAGE);
+        if !code_gives_fill
+            && !has_image
+            && !reachable(property::COLOR)
+            && ps.shape.certain.contains(&property::REPEAT_X)
+        {
+            errors.push(&ps.file, &ps.path, REPEAT_X_WITHOUT_FILL);
+        }
+        if code_gives_image || has_image || ps.shape.certain.contains(&property::SHAPE) {
             continue;
         }
         for (prop, message) in NEEDS_IMAGE {
@@ -5239,7 +5376,9 @@ fn name_suffix(obj: &ParsedObject) -> String {
 
 /// «Формат игры»: предупреждение (игра идёт), если объект сцены целиком стоит за пределами
 /// сцены — его прямоугольник не пересекается с `[0,0]..[width,height]` вовсе. Объект без
-/// `position` или `size` не проверяется: его прямоугольник неизвестен.
+/// `position` или `size` не проверяется: его прямоугольник неизвестен. «Слои глубины», требование 25:
+/// объект с `parallax`, отличным от 1, не проверяется — где его видно, решает камера; у `repeat_x`
+/// проверяется только высота — по ширине копии закрывают окно.
 fn validate_objects_within_scene(
     scene: &[ParsedObject],
     scene_file: &str,
@@ -5247,6 +5386,16 @@ fn validate_objects_within_scene(
     errors: &mut ErrorSink,
 ) {
     for obj in scene {
+        if !matches!(
+            find_value(&obj.values, property::PARALLAX),
+            None | Some(Value::Number(1.0))
+        ) {
+            continue;
+        }
+        let repeats = matches!(
+            find_value(&obj.values, property::REPEAT_X),
+            Some(Value::Flag(true))
+        );
         let (Some(pos), Some(Value::Vec2(size))) = (
             find_value(&obj.values, property::POSITION).and_then(|v| match v {
                 Value::Vec2(xy) => Some([xy[0], xy[1]]),
@@ -5265,9 +5414,8 @@ fn validate_objects_within_scene(
         };
         let on_scene = match rotation.filter(|r| r.angle() != 0.0) {
             None => {
-                pos[0] + size[0] > 0.0
+                (repeats || (pos[0] + size[0] > 0.0 && pos[0] < config.width as f64))
                     && pos[1] + size[1] > 0.0
-                    && pos[0] < config.width as f64
                     && pos[1] < config.height as f64
             }
             Some(turned) => {

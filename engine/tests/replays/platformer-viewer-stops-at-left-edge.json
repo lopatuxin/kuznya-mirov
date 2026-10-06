@@ -1,0 +1,10 @@
+{
+  "start": "game",
+  "steps": 60,
+  "input": [
+    { "step": 1, "press": "ArrowLeft" }
+  ],
+  "checks": [
+    { "step": 60, "object": "viewer", "property": "position", "equals": [0, 17.5] }
+  ]
+}

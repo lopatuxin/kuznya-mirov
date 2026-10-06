@@ -665,7 +665,8 @@ fn check_height_write(properties: &PropertyTable, prop: PropertyId, z: f64) -> R
 }
 
 /// «Трёхмерная сцена», «Загрузка и проверка»: что код не даёт объекту — `shape` и `height` в плоской
-/// сцене, `height` не больше нуля, `shape` вместе с `image`, `flip_x` или `opacity`.
+/// сцене, `height` не больше нуля, `shape` вместе с `image`, `flip_x` или `opacity`. «Слои
+/// глубины», требование 24: `parallax` и `repeat_x` в трёхмерной сцене, `parallax` меньше нуля.
 fn check_shape_rules(
     world: &World,
     properties: &PropertyTable,
@@ -680,6 +681,12 @@ fn check_shape_rules(
         }
         property::HEIGHT if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
             Err("height должен быть больше нуля".to_string())
+        }
+        property::PARALLAX | property::REPEAT_X if properties.three_d() => {
+            Err(format!("{name} есть только в плоской сцене"))
+        }
+        property::PARALLAX if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
+            Err("parallax не может быть меньше нуля".to_string())
         }
         property::SHAPE
             if world.has(id, property::IMAGE)

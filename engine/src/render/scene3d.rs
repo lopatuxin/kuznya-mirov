@@ -6,7 +6,7 @@ use crate::core::camera::{Camera3d, FOV_Y_DEGREES};
 use crate::core::game::Game;
 use crate::core::math3::{self, Mat4, Vec3};
 use crate::core::property;
-use crate::core::scene::{CellRange, LightConfig, SceneConfig};
+use crate::core::scene::{CellRange, LayerView, LightConfig, SceneConfig};
 use crate::core::shapes::Body;
 use crate::core::value::Shape;
 use crate::data::load::ImageDecl;
@@ -279,6 +279,7 @@ pub fn compose_frame3d(
         elapsed_steps,
         images,
         atlas_rects,
+        &LayerView::default(),
     ));
     let surface = relief::surface_triangles(&game.world, &ground);
 

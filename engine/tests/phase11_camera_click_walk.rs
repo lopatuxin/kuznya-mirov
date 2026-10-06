@@ -7,6 +7,7 @@ use engine::core::input::{MouseState, StepInput, UiQueue};
 use engine::core::property;
 use engine::core::report::RuleFired;
 use engine::core::runner::STEP_SECONDS;
+use engine::core::scene::LayerView;
 use engine::core::screens::{self, ScreenState};
 use engine::data::load::{
     LoadFailure, load_game_from_texts, load_game_from_texts_with_code, load_rest, read_entry,
@@ -164,6 +165,7 @@ fn y_sort_orders_by_the_lower_bottom_edge_when_layers_tie() {
         0.0,
         &images,
         &atlas_rects,
+        &LayerView::default(),
     );
     assert_eq!(paints[0].color, [1.0, 0.0, 0.0, 1.0]);
     assert_eq!(paints[1].color, [0.0, 0.0, 1.0, 1.0]);
@@ -195,6 +197,7 @@ fn layer_wins_over_y_sort() {
         0.0,
         &[],
         &[],
+        &LayerView::default(),
     );
     // Layer 1 (id 1) always draws last, on top, regardless of its own bottom edge.
     assert_eq!(paints.last().unwrap().color, [1.0, 0.0, 0.0, 1.0]);

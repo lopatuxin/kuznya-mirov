@@ -3,6 +3,7 @@
 //! `tests/phase11_camera_click_walk.rs`.
 
 use engine::core::input::{MouseState, StepInput, UiQueue};
+use engine::core::scene::LayerView;
 use engine::core::screens::{Align, ScreenState};
 use engine::core::world_elements;
 use engine::data::error::LoadFailure;
@@ -142,6 +143,7 @@ fn bar_and_label_parse_and_compute_end_to_end() {
         &game.scene,
         &game.properties,
         &screens_config.world_elements,
+        &LayerView::default(),
     );
     assert_eq!(bars.len(), 1);
     assert_eq!(labels.len(), 1);
@@ -170,6 +172,7 @@ fn world_elements_with_a_color_table_resolve_the_by_property() {
         &game.scene,
         &game.properties,
         &screens_config.world_elements,
+        &LayerView::default(),
     );
     assert_eq!(labels[0].color, [1.0, 0.1254902, 0.1254902, 1.0]);
 }

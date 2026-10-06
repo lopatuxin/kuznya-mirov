@@ -45,6 +45,14 @@ describe("suggestPropertyNames", () => {
     expect(suggestPropertyNames([], {})).toContain("flip_x");
   });
 
+  it("parallax и repeat_x Фазы 28 — среди подсказок, пока их нет у объекта", () => {
+    const suggestions = suggestPropertyNames([], {});
+    expect(suggestions).toContain("parallax");
+    expect(suggestions).toContain("repeat_x");
+    expect(suggestPropertyNames(["parallax", "repeat_x"], {})).not.toContain("parallax");
+    expect(suggestPropertyNames(["parallax", "repeat_x"], {})).not.toContain("repeat_x");
+  });
+
   it("shape и height Фазы 15 — среди подсказок", () => {
     const suggestions = suggestPropertyNames([], {});
     expect(suggestions).toContain("shape");

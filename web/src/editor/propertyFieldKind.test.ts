@@ -26,6 +26,15 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("flip_x", true, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "checkbox" });
   });
 
+  it("repeat_x — галочка (Фаза 28, требование 22); не булево — текстовое поле", () => {
+    expect(propertyFieldKind("repeat_x", true, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "checkbox" });
+    expect(propertyFieldKind("repeat_x", 1, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
+  });
+
+  it("parallax — число в текстовом поле (Фаза 28, требование 22)", () => {
+    expect(propertyFieldKind("parallax", 0.25, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
+  });
+
   it("walk_to, walk_speed и on_click — текстовое поле, как другие пары, числа и keys", () => {
     expect(propertyFieldKind("walk_to", [3, 4], NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
     expect(propertyFieldKind("walk_speed", 4, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
