@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeHeight, computeRotation, computeScale, computeTranslate, scaleFactorAlong, scaleFactorUniform } from "./handleMath";
+import { computeFlatScale, computeHeight, computeRotation, computeScale, computeTranslate, scaleFactorAlong, scaleFactorUniform } from "./handleMath";
 import type { SpaceProjection } from "./handleGeometry";
 import { placementCenter, type ObjectPlacement } from "./objectPlacement";
 import { createVerticalGrab, type VerticalGrab } from "./verticalGrab";
@@ -156,5 +156,75 @@ describe("scaleFactorUniform", () => {
     expect(scaleFactorUniform([100, 100], [100, 100], 90)).toBe(1);
     expect(scaleFactorUniform([100, 100], [190, 100], 90)).toBeGreaterThan(1);
     expect(scaleFactorUniform([100, 100], [100, 190], 90)).toBeLessThan(1);
+  });
+});
+
+describe("computeFlatScale", () => {
+  const START = { position: [10, 15], size: [4, 2] } as const;
+
+  it("правая сторона на +2 — size [6, 2], position не меняется", () => {
+    expect(computeFlatScale(START, "right", [2, 0.7], false)).toEqual({ position: [10, 15], size: [6, 2] });
+  });
+
+  it("левая сторона на +1 — size [3, 2], position [11, 15]", () => {
+    expect(computeFlatScale(START, "left", [1, 0], false)).toEqual({ position: [11, 15], size: [3, 2] });
+  });
+
+  it("верхняя сторона на −1 — size [4, 3], position [10, 14]", () => {
+    expect(computeFlatScale(START, "top", [0, -1], false)).toEqual({ position: [10, 14], size: [4, 3] });
+  });
+
+  it("нижняя сторона меняет размер по y, position не меняется", () => {
+    expect(computeFlatScale(START, "bottom", [3, 1.5], false)).toEqual({ position: [10, 15], size: [4, 3.5] });
+  });
+
+  it("правый нижний угол на (+2, +1): доля (24 + 6) / 20 = 1,5 — size [6, 3], position не меняется", () => {
+    expect(computeFlatScale(START, "bottom-right", [2, 1], false)).toEqual({ position: [10, 15], size: [6, 3] });
+  });
+
+  it("левый верхний угол на (−2, −1) — size [6, 3], position [8, 14]", () => {
+    expect(computeFlatScale(START, "top-left", [-2, -1], false)).toEqual({ position: [8, 14], size: [6, 3] });
+  });
+
+  it("правый верхний и левый нижний углы держат противоположный угол на месте", () => {
+    expect(computeFlatScale(START, "top-right", [2, -1], false)).toEqual({ position: [10, 14], size: [6, 3] });
+    expect(computeFlatScale(START, "bottom-left", [-2, 1], false)).toEqual({ position: [8, 15], size: [6, 3] });
+  });
+
+  it("указатель вбок от диагонали: берётся проекция на диагональ, (6·4 + 1·2) / 20 = 1,3", () => {
+    expect(computeFlatScale(START, "bottom-right", [2, -1], false).size).toEqual([5.2, 2.6]);
+  });
+
+  it("правая сторона на −5 — size [0,1; 2], объект не отражается", () => {
+    expect(computeFlatScale(START, "right", [-5, 0], false)).toEqual({ position: [10, 15], size: [0.1, 2] });
+  });
+
+  it("левая сторона за правой — size 0,1, правая сторона остаётся на месте", () => {
+    const scaled = computeFlatScale(START, "left", [9, 0], false);
+
+    expect(scaled.size[0]).toBe(0.1);
+    expect(scaled.position[0]).toBeCloseTo(13.9);
+  });
+
+  it("у угла доля не меньше той, при которой меньшая сторона становится 0,1", () => {
+    expect(computeFlatScale(START, "bottom-right", [-50, -50], false).size).toEqual([0.2, 0.1]);
+  });
+
+  it("свободно размеры округляются до сотой клетки", () => {
+    expect(computeFlatScale(START, "right", [2.346, 0], false).size).toEqual([6.35, 2]);
+  });
+
+  it("с Ctrl доля 1,47 — 1,5", () => {
+    expect(computeFlatScale(START, "right", [1.88, 0], true).size).toEqual([6, 2]);
+    expect(computeFlatScale(START, "bottom-right", [1.88, 0.94], true).size).toEqual([6, 3]);
+  });
+
+  it("с Ctrl размер после доли тоже округляется до сотой клетки", () => {
+    const start = { position: [10, 15], size: [13.33, 2] } as const;
+    expect(computeFlatScale(start, "right", [2.67, 0], true).size).toEqual([16, 2]);
+  });
+
+  it("с Ctrl левая сторона держит правую на месте", () => {
+    expect(computeFlatScale(START, "left", [-2.1, 0], true)).toEqual({ position: [8, 15], size: [6, 2] });
   });
 });

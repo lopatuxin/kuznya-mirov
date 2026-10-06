@@ -3,7 +3,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { loadProject, type ProjectLoadResult } from "../projectLoader";
 import { hideWebGpuIfRequested, logEngineBackend } from "../renderBackend";
 import { createCachingProjectFileReader, createOverridingReader } from "./cachingProjectFileReader";
-import { createEditorCameraStore, type EditorCameraStore } from "./editorCamera";
+import { createEditorCameraStore, createFlatCameraStore, type EditorCameraStore, type FlatCameraStore } from "./editorCamera";
 import { watchFolderProject } from "./folderProjectWatcher";
 import { listedProjectBaseUrl, createReaderForSource, type ProjectSource } from "./projectSource";
 import { pollListedProject, type FileFingerprint } from "./listedProjectPoller";
@@ -31,6 +31,8 @@ export type ProjectEngineState = {
   memory: WebAssembly.Memory | null;
   /** Камера редактора трёхмерной сцены — «Редактор», «Сцена»: движок после каждого `show_scene` получает её отсюда. */
   editorCameraStore: EditorCameraStore;
+  /** Камера редактора плоской сцены — то же, что `editorCameraStore` для трёхмерной. */
+  flatCameraStore: FlatCameraStore;
   result: ProjectLoadResult | null;
   /** Когда пришёл `result` — последняя загрузка или перезагрузка после правки файлов. */
   loadedAt: Date | null;
@@ -96,6 +98,7 @@ export function useProjectEngine(
   ) => void,
 ): ProjectEngineState {
   const [editorCameraStore] = useState(createEditorCameraStore);
+  const [flatCameraStore] = useState(createFlatCameraStore);
   const [engine, setEngine] = useState<Engine | null>(null);
   const [memory, setMemory] = useState<WebAssembly.Memory | null>(null);
   const [result, setResult] = useState<ProjectLoadResult | null>(null);
@@ -117,6 +120,7 @@ export function useProjectEngine(
   useEffect(() => {
     let cancelled = false;
     editorCameraStore.reset();
+    flatCameraStore.reset();
     let disposeWatch: (() => void) | null = null;
     let disposePoll: (() => void) | null = null;
     let disposeDebouncer: (() => void) | null = null;
@@ -176,10 +180,12 @@ export function useProjectEngine(
       let lastGameJsonText: string | null = null;
 
       // «Редактор», «Сцена», требования 1 и 5: собранный заново мир не помнит камеру редактора — первая
-      // успешная загрузка ставит камеру на всю землю, дальше ей возвращается прежняя.
+      // успешная загрузка ставит камеру на всю землю (в плоской сцене — на всю сцену), дальше ей возвращается прежняя;
+      // хранилище чужого вида ничего не делает.
       function showScene(): void {
         engineInstance.show_scene();
         editorCameraStore.restore(engineInstance);
+        flatCameraStore.restore(engineInstance);
       }
 
       async function reload(): Promise<void> {
@@ -312,7 +318,7 @@ export function useProjectEngine(
         createdAudioContext?.close().catch(() => {});
       });
     };
-  }, [canvasRef, source, editorCameraStore]);
+  }, [canvasRef, source, editorCameraStore, flatCameraStore]);
 
-  return { engine, memory, editorCameraStore, result, loadedAt, headerNotice, engineError, hasQueuedReload, ...editingApi };
+  return { engine, memory, editorCameraStore, flatCameraStore, result, loadedAt, headerNotice, engineError, hasQueuedReload, ...editingApi };
 }

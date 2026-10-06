@@ -11,6 +11,7 @@ const NOOP = (): void => {};
 function toolbarProps(overrides: Partial<ToolbarProps> = {}, materialsOverrides: Partial<ToolbarProps["materialsTool"]> = {}): ToolbarProps {
   return {
     mode: "translate",
+    isThreeDimensionalScene: true,
     brushKind: null,
     areBrushesAvailable: true,
     lastTerrainTool: "raise",
@@ -118,6 +119,30 @@ describe("полоса инструментов", () => {
     expect(html).not.toContain("Рельеф");
     expect(html).not.toContain("Материалы");
     expect(html).not.toContain("Вода");
+  });
+});
+
+describe("полоса плоской сцены", () => {
+  it("две кнопки вида ручек — перенос и масштаб, без поворота, групп рельефа, материалов и воды", () => {
+    const html = render(toolbarProps({ isThreeDimensionalScene: false, areBrushesAvailable: false }));
+
+    expect(buttonTagOf(html, "Перенос \\(W\\)")).toContain('aria-pressed="true"');
+    expect(buttonTagOf(html, "Масштаб \\(R\\)")).toContain('aria-pressed="false"');
+    expect(html).not.toContain("Поворот");
+    expect(html).not.toContain("Рельеф");
+    expect(html).not.toContain("Материалы");
+    expect(html).not.toContain("Вода");
+    expect(html.match(/<button/g)).toHaveLength(2);
+  });
+
+  it("выбран масштаб — нажата кнопка масштаба", () => {
+    const html = render(toolbarProps({ isThreeDimensionalScene: false, areBrushesAvailable: false, mode: "scale" }));
+
+    expect(buttonTagOf(html, "Масштаб \\(R\\)")).toContain('aria-pressed="true"');
+  });
+
+  it("в трёхмерной сцене кнопок видов ручек три, с поворотом", () => {
+    expect(render(toolbarProps())).toContain("Поворот (E)");
   });
 });
 

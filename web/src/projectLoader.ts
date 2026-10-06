@@ -55,6 +55,12 @@ type MusicVerdictEntry = { index: number; verdict: MusicVerdict };
 /** Маска покрытия, как её прочитала страница: путь файла и байт на точку — красный канал картинки, как его читает движок. */
 export type LoadedCoverMask = { path: string; width: number; height: number; pixels: Uint8Array };
 
+/**
+ * Картинка `files.images`, как её разжала страница: размер и точки RGBA. Редактор рисует по ним уменьшенные кадры и
+ * считает размер нового объекта; не прочитанных и не разжатых картинок здесь нет.
+ */
+export type LoadedProjectImage = { name: string; width: number; height: number; pixels: Uint8Array };
+
 /** Подмножество `Engine`, которого хватает трём заходам загрузки — тестам достаточно подделать эти три метода. */
 export type ProjectLoadEngine = Pick<Engine, "read_entry" | "read_texts" | "load">;
 
@@ -80,6 +86,8 @@ export type ProjectLoadResult =
       stamps: LoadedStamp[];
       /** Маски `covers` рельефа, что страница разжала для движка, — редактор красит по ним («Покраска»); не прочитанные или не разжатые не входят. */
       coverMasks: LoadedCoverMask[];
+      /** Разжатые картинки `files.images` в порядке, в каком их назвал движок. */
+      images: LoadedProjectImage[];
       audioContext: AudioContext;
     }
   /** `game.json` не читается вовсе — вызывающая сторона сама знает, как это назвать (имя игры или проекта). */
@@ -211,7 +219,11 @@ export async function loadProject(
     if (decoded?.verdict !== "ok") return [];
     return [{ path: image.path, width: decoded.width, height: decoded.height, pixels: redChannelOf(decoded.pixels) }];
   });
-  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, coverMasks, audioContext };
+  const images = needed.images.flatMap((entry, position): LoadedProjectImage[] => {
+    const decoded = imagesPayload[position];
+    return decoded?.verdict === "ok" ? [{ name: entry.name, width: decoded.width, height: decoded.height, pixels: decoded.pixels }] : [];
+  });
+  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, coverMasks, images, audioContext };
 }
 
 /**

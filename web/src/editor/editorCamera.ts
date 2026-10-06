@@ -94,7 +94,8 @@ export function createEditorCameraStore(): EditorCameraStore {
 
   function fitGround(engine: EditorCameraEngine): void {
     const fitted = engine.fit_camera(null) as EditorCameraState | undefined;
-    if (fitted === undefined) return;
+    // В плоской сцене `fit_camera` отвечает `{center, view_height}` — это камера другого хранилища.
+    if (fitted === undefined || !("target" in fitted)) return;
     state = { camera: fitted, maxDistance: maxDistanceFor(fitted.distance) };
     isGroundFit = true;
     engine.editor_camera(fitted);
@@ -135,4 +136,99 @@ export function focusCameraOnObject(store: EditorCameraStore, engine: EditorCame
   const fitted = engine.fit_camera(objectId) as EditorCameraState | undefined;
   if (fitted === undefined) return;
   store.update(engine, { ...fitted, target: [fitted.target[0], fitted.target[1]], distance: Math.max(MIN_DISTANCE, fitted.distance) });
+}
+
+/** То, что шлёт `editor_camera` и возвращает `fit_camera` в плоской сцене: середина видимой части и сколько клеток видно по высоте. */
+export type FlatCameraState = { center: [number, number]; view_height: number };
+
+/** Вызовы движка, которыми пользуется камера редактора плоской сцены. */
+export type FlatCameraEngine = Pick<Engine, "editor_camera" | "fit_camera">;
+
+/**
+ * Колесо плоской сцены — «Редактор», «Сцена»: щелчок — `view_height` × 0,9 или ÷ 0,9, от 2 клеток до
+ * `maxViewHeight`; `under` — место сцены под указателем, оно остаётся под ним: середина отходит от него
+ * во столько же раз, во сколько меняется высота.
+ */
+export function zoomFlatCamera(camera: FlatCameraState, clicks: number, under: Vec2, maxViewHeight: number): FlatCameraState {
+  const viewHeight = Math.min(maxViewHeight, Math.max(MIN_DISTANCE, camera.view_height * WHEEL_STEP ** -clicks));
+  const ratio = viewHeight / camera.view_height;
+  return { center: [under[0] - (under[0] - camera.center[0]) * ratio, under[1] - (under[1] - camera.center[1]) * ratio], view_height: viewHeight };
+}
+
+/**
+ * Сдвиг средней кнопкой — «Редактор», «Сцена»: `grabbed` — место сцены, за которое взялась мышь, `under` — место
+ * под указателем сейчас при нынешней камере; середина сдвигается на разницу, и `grabbed` встаёт под указатель.
+ */
+export function panFlatCamera(camera: FlatCameraState, grabbed: Vec2, under: Vec2): FlatCameraState {
+  return { ...camera, center: [camera.center[0] + grabbed[0] - under[0], camera.center[1] + grabbed[1] - under[1]] };
+}
+
+/** Самая большая высота вида — три высоты, с которых видна вся сцена в окне сейчас. */
+export function maxViewHeightFor(wholeSceneViewHeight: number): number {
+  return Math.max(MIN_DISTANCE, wholeSceneViewHeight * MAX_DISTANCE_FACTOR);
+}
+
+/**
+ * Камера редактора плоской сцены, которую держит редактор, — как у трёхмерной: движок помнит её сам, но
+ * новая загрузка игры её забывает, поэтому редактор шлёт её после каждого `show_scene`.
+ */
+export type FlatCameraStore = {
+  /** Камера; `null` — ещё не было успешной загрузки плоской сцены. */
+  current(): FlatCameraState | null;
+  /** Ставит камеру и шлёт её движку. */
+  update(engine: FlatCameraEngine, camera: FlatCameraState): void;
+  /** После `show_scene`: первая загрузка берёт у движка камеру на всю сцену, дальше — прежняя камера. */
+  restore(engine: FlatCameraEngine): void;
+  /** Холст получил новый размер: камера, которую никто не трогал, снова подбирается на всю сцену под это окно. */
+  refit(engine: FlatCameraEngine): void;
+  /** Проект сменился — камера забывается. */
+  reset(): void;
+};
+
+/** Ответ плоского `fit_camera`; трёхмерный ответ и `undefined` — `undefined`. */
+export function readFlatCamera(fitted: unknown): FlatCameraState | undefined {
+  return fitted !== null && typeof fitted === "object" && "center" in fitted && "view_height" in fitted ? (fitted as FlatCameraState) : undefined;
+}
+
+export function createFlatCameraStore(): FlatCameraStore {
+  let state: FlatCameraState | null = null;
+  let isWholeSceneFit = false;
+
+  function fitWholeScene(engine: FlatCameraEngine): void {
+    const fitted = readFlatCamera(engine.fit_camera(null));
+    if (fitted === undefined) return;
+    state = fitted;
+    isWholeSceneFit = true;
+    engine.editor_camera(fitted);
+  }
+
+  return {
+    current: () => state,
+    update(engine, camera) {
+      if (state === null) return;
+      engine.editor_camera(camera);
+      state = camera;
+      isWholeSceneFit = false;
+    },
+    restore(engine) {
+      if (state === null) {
+        fitWholeScene(engine);
+        return;
+      }
+      engine.editor_camera(state);
+    },
+    refit(engine) {
+      if (state !== null && isWholeSceneFit) fitWholeScene(engine);
+    },
+    reset() {
+      state = null;
+      isWholeSceneFit = false;
+    },
+  };
+}
+
+/** `F` в плоской сцене — «Редактор», требование 7: камера подходит к месту, где объект нарисован. Без объекта, его `position` и `size` ничего не меняется. */
+export function focusFlatCameraOnObject(store: FlatCameraStore, engine: FlatCameraEngine, objectId: number): void {
+  const fitted = readFlatCamera(engine.fit_camera(objectId));
+  if (fitted !== undefined) store.update(engine, fitted);
 }

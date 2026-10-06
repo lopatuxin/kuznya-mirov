@@ -1,5 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { chooseTerrainFilePath, parseProjectFilePaths, parseProjectMaterialNames, parseProjectStamps } from "./projectFiles";
+import {
+  chooseTerrainFilePath,
+  parseProjectCellPixels,
+  parseProjectFilePaths,
+  parseProjectImageDescriptions,
+  parseProjectMaterialNames,
+  parseProjectStamps,
+} from "./projectFiles";
 
 describe("parseProjectFilePaths", () => {
   it("путь рельефа — из files.terrain, без него null", () => {
@@ -54,5 +61,59 @@ describe("parseProjectStamps", () => {
   it("без files.stamps — пусто", () => {
     expect(parseProjectStamps('{ "files": {} }')).toEqual([]);
     expect(parseProjectStamps(null)).toEqual([]);
+  });
+});
+
+describe("parseProjectImageDescriptions", () => {
+  it("картинки в порядке объявления с кадрами, столбцами, своим size и smooth", () => {
+    const text = JSON.stringify({
+      files: {
+        images: {
+          izba: { path: "images/izba.png" },
+          hero: { path: "images/hero.png", frames: 60, columns: 15, size: [2, 2], smooth: true },
+          ball: { path: "images/ball.png", frames: 4, frame_time: 0.15 },
+        },
+      },
+    });
+
+    expect(parseProjectImageDescriptions(text)).toEqual([
+      { name: "izba", frames: null, columns: null, size: null, smooth: false },
+      { name: "hero", frames: 60, columns: 15, size: [2, 2], smooth: true },
+      { name: "ball", frames: 4, columns: null, size: null, smooth: false },
+    ]);
+  });
+
+  it("описание не объект и неверные поля — умолчания, size не из двух положительных чисел — нет", () => {
+    const text = '{ "files": { "images": { "a": 5, "b": { "size": [1], "frames": 0, "smooth": "yes" }, "c": { "size": [2, -1] } } } }';
+
+    expect(parseProjectImageDescriptions(text)).toEqual([
+      { name: "a", frames: null, columns: null, size: null, smooth: false },
+      { name: "b", frames: null, columns: null, size: null, smooth: false },
+      { name: "c", frames: null, columns: null, size: null, smooth: false },
+    ]);
+  });
+
+  it("без files.images, не объект и непонятный текст — картинок нет", () => {
+    expect(parseProjectImageDescriptions('{ "files": {} }')).toEqual([]);
+    expect(parseProjectImageDescriptions('{ "files": { "images": [] } }')).toEqual([]);
+    expect(parseProjectImageDescriptions("{")).toEqual([]);
+    expect(parseProjectImageDescriptions(null)).toEqual([]);
+  });
+});
+
+describe("parseProjectCellPixels", () => {
+  it("cell_pixels из scene — число больше нуля", () => {
+    expect(parseProjectCellPixels('{ "scene": { "width": 160, "cell_pixels": 96 } }')).toBe(96);
+    expect(parseProjectCellPixels('{ "scene": { "cell_pixels": 0.5 } }')).toBe(0.5);
+  });
+
+  it("нет ключа, не число или не больше нуля — null", () => {
+    expect(parseProjectCellPixels('{ "scene": { "width": 160 } }')).toBeNull();
+    expect(parseProjectCellPixels('{ "scene": { "cell_pixels": "96" } }')).toBeNull();
+    expect(parseProjectCellPixels('{ "scene": { "cell_pixels": 0 } }')).toBeNull();
+    expect(parseProjectCellPixels('{ "scene": { "cell_pixels": -1 } }')).toBeNull();
+    expect(parseProjectCellPixels('{ "width": 160 }')).toBeNull();
+    expect(parseProjectCellPixels("{")).toBeNull();
+    expect(parseProjectCellPixels(null)).toBeNull();
   });
 });

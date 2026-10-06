@@ -62,10 +62,11 @@ export type BattleSessionState = {
   setLiveProperty(id: number, key: string, value: unknown): string | undefined;
   removeLiveProperty(id: number, key: string): void;
   copyLiveObject(id: number): void;
+  /** Новый объект в живой мир на паузе — как копия: запись отмены, выбор на нём, файл не пишется («Партия в редакторе», требование 25). */
+  addLiveObject(properties: Record<string, unknown>): void;
   deleteLiveObject(id: number): void;
   previewLiveMove(id: number, position: readonly [number, number]): void;
-  commitLiveMove(id: number, position: readonly [number, number], previousPosition: readonly [number, number]): void;
-  /** Отпускание жеста ручки на паузе: `set_property` каждого изменившегося свойства и одна запись отмены. */
+  /** Отпускание жеста ручки или переноса на паузе: `set_property` каждого изменившегося свойства и одна запись отмены. */
   commitLiveTransform(id: number, changes: PlacementChange[]): void;
   undoLiveEdit(): void;
 };
@@ -472,24 +473,30 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     });
   }
 
+  function addLiveObject(properties: Record<string, unknown>): void {
+    withEngine((engine) => {
+      const result = engine.add_object(properties) as EngineAddObjectResult;
+      if (!result.ok) return;
+      // Не `refreshSnapshot` + `setLiveSelectedId` по очереди: второй читает `snapshot.worldObjects`
+      // из замыкания React-состояния, которое ещё не подхватило список, обновлённый первым вызовом
+      // в этом же синхронном тике, — новый объект остаётся не выбранным. `readSnapshot` сразу же со свежим
+      // списком и выбором на новый объект.
+      const worldObjects = engine.world_objects() as WorldObjectSummary[];
+      const created = findWorldObject(worldObjects, result.id);
+      // Метка нового объекта — своя, с этого самого создания (требование 18): следующая отмена именно
+      // его и должна найти, а не какой-то другой с тем же номером.
+      if (created) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "add", id: created.id, generation: created.generation }));
+      applySnapshot(readSnapshot(engine, created ? { id: created.id, generation: created.generation } : null));
+    });
+  }
+
   function copyLiveObject(id: number): void {
     withEngine((engine) => {
       const properties = engine.object_properties(id) as Record<string, unknown> | undefined;
       if (properties === undefined) return;
       const position = properties.position;
       const shifted = Array.isArray(position) && typeof position[0] === "number" && typeof position[1] === "number" ? { ...properties, position: [position[0] + 1, position[1], ...position.slice(2)] } : properties;
-      const result = engine.add_object(shifted) as EngineAddObjectResult;
-      if (!result.ok) return;
-      // Не `refreshSnapshot` + `setLiveSelectedId` по очереди: второй читает `snapshot.worldObjects`
-      // из замыкания React-состояния, которое ещё не подхватило список, обновлённый первым вызовом
-      // в этом же синхронном тике, — копия остаётся не выбранной. `readSnapshot` сразу же со свежим
-      // списком и выбором на новый объект.
-      const worldObjects = engine.world_objects() as WorldObjectSummary[];
-      const created = findWorldObject(worldObjects, result.id);
-      // Метка новой копии — своя, с этого самого создания (требование 18): следующая отмена именно
-      // её и должна найти, а не какую-то другую с тем же номером.
-      if (created) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "add", id: created.id, generation: created.generation }));
-      applySnapshot(readSnapshot(engine, created ? { id: created.id, generation: created.generation } : null));
+      addLiveObject(shifted);
     });
   }
 
@@ -506,21 +513,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
 
   function previewLiveMove(id: number, position: readonly [number, number]): void {
     withEngine((engine) => engine.move_object(id, position[0], position[1]));
-  }
-
-  /**
-   * `previousPosition` приходит от вызывающей стороны (место на начало переноса), а не читается из
-   * движка: превью переноса (`previewLiveMove`, `move_object`) уже переставило объект туда же, где
-   * его застаёт отпускание, так что «текущее» свойство к этому моменту — уже новое место, не старое.
-   */
-  function commitLiveMove(id: number, position: readonly [number, number], previousPosition: readonly [number, number]): void {
-    withEngine((engine) => {
-      const result = engine.set_property(id, "position", [position[0], position[1]]) as EngineEditResult;
-      if (!result.ok) return;
-      const generation = findWorldObject(engine.world_objects() as WorldObjectSummary[], id)?.generation;
-      if (generation !== undefined) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "move", id, generation, previous: previousPosition }));
-      refreshSnapshot(engine);
-    });
   }
 
   /**
@@ -657,9 +649,9 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     setLiveProperty,
     removeLiveProperty,
     copyLiveObject,
+    addLiveObject,
     deleteLiveObject,
     previewLiveMove,
-    commitLiveMove,
     commitLiveTransform,
     undoLiveEdit,
   };

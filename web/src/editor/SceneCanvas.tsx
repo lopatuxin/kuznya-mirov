@@ -2,17 +2,18 @@ import type { Engine } from "engine";
 import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
 import { computeCanvasLayout } from "../canvasLayout";
-import { cellSizeFromObjectRect, computeDragPosition, hasCrossedDragThreshold } from "./dragPlacement";
-import type { EditorCameraStore } from "./editorCamera";
+import type { EditorCameraStore, FlatCameraStore } from "./editorCamera";
+import type { FlatSceneContext } from "./flatSceneController";
 import type { HandleMode } from "./handleGeometry";
 import { HandleModeToolbar, type TerrainTool } from "./HandleModeToolbar";
 import type { MaskSet } from "./maskBytes";
+import { IMAGE_DRAG_TYPE, resolveImageDropEffect } from "./imageDrag";
 import type { StampShape } from "./imprintGeometry";
 import type { PlacementChange } from "./objectPlacement";
 import { canPaintMaterial, resolvePaintMaterial } from "./paintLayers";
 import type { PaintResult } from "./paintStroke";
+import { focusSceneWhenGameStarts } from "./sceneInputDom";
 import type { SceneSize } from "./sceneObjects";
-import { drawSelection, type CanvasRect } from "./selectionDrawing";
 import { fitSceneStage } from "./sceneStageLayout";
 import {
   isImprintToolEnabled,
@@ -29,20 +30,14 @@ import type { SpaceSceneContext } from "./spaceSceneController";
 import type { StampPreview } from "./stampPreview";
 import { wheelBrushSize } from "./terrainBrush";
 import type { ImprintEntry, TerrainCoverLayer, TerrainGrid, TerrainWater } from "./terrainFile";
+import { useFlatSceneInput } from "./useFlatSceneInput";
 import { useSpaceSceneInput } from "./useSpaceSceneInput";
-
-type ObjectGeometry = { position: readonly [number, number]; size: readonly [number, number] };
 
 type SceneCanvasProps = {
   /** Тот же холст, на котором `useProjectEngine` создал движок — требование Engine.create(canvas). */
   canvasRef: RefObject<HTMLCanvasElement | null>;
   engine: Engine | null;
   sceneSize: SceneSize | null;
-  /**
-   * Место и размер объекта по его номеру, для геометрии переноса (требование 8) — из текста
-   * `scene.json` в правке, из живого мира в партии на паузе («Редактор», требование 20).
-   */
-  getObjectGeometry: (objectId: number) => ObjectGeometry | null;
   /** Ссылка меняется, когда объекты изменились под переносом извне — отменяет его на лету. */
   objectsVersion: unknown;
   /** `scene.json`/живой мир недоступны правке — перенос не начинается (крайний случай). */
@@ -51,33 +46,24 @@ type SceneCanvasProps = {
   isSceneShown: boolean;
   /** Мышь и клавиатура принадлежат игре, а не выбору/переносу — «Редактор», требование 4: партия идёт. */
   isGameInputActive: boolean;
-  /**
-   * В партии, на паузе и в повторе холст занимает всю часть окна под сцену, как страница игры —
-   * «Редактор», требование 42; трёхмерная сцена занимает её и вне партии — камера сама вписывает
-   * землю в холст («Фаза 15», требование 27); плоская вне партии вписывается по своим пропорциям.
-   */
-  fillsStageArea: boolean;
-  /** Трёхмерная сцена: камера редактора, выбор лучом, четырёхугольная рамка и ручки («Фаза 16»). Плоская — как раньше. */
+  /** Трёхмерная сцена: камера редактора, выбор лучом, четырёхугольная рамка и ручки («Фаза 16»). Плоская — камера редактора в клетках, рамка по прямоугольнику, ручки переноса и масштаба. */
   isThreeDimensionalScene: boolean;
   /** Сцена вне партии и повтора видна камерой редактора, которую водят мышью («Редактор», «Сцена»). */
   isEditorCameraActive: boolean;
-  /** Камера редактора, которую редактор держит и шлёт движку после каждого `show_scene`. */
+  /** Камера редактора трёхмерной сцены, которую редактор держит и шлёт движку после каждого `show_scene`. */
   editorCameraStore: EditorCameraStore;
+  /** То же для плоской сцены. */
+  flatCameraStore: FlatCameraStore;
   /** Свойства объекта в виде файла — место, размер, высота, поворот и `shape` для ручек: из текста сцены или из живого мира. */
   getObjectProperties: (objectId: number) => Record<string, unknown> | null;
   selectedIndex: number | null;
   /** Подпись над рамкой выбранного объекта — его имя или номер. */
   selectedLabel: string | null;
   onSelect: (index: number | null) => void;
-  /**
-   * Отпускание после переноса — «Редактор», требование 9: одно действие с новым местом объекта.
-   * `previousPosition` — место на начало переноса, для отмены правки на ходу (требование 21): его
-   * не восстановить из движка в момент отпускания — `move_object` уже успел передвинуть объект
-   * там во время самого переноса, так что «текущее» свойство к этому моменту и есть новое место.
-   */
-  onMoveObject: (objectIndex: number, position: readonly [number, number], previousPosition: readonly [number, number]) => void;
-  /** Отпускание после жеста ручки или переноса по земле в трёхмерной сцене: изменившиеся свойства объекта — одно действие. */
+  /** Отпускание после жеста ручки или переноса объекта: изменившиеся свойства объекта — одно действие. */
   onCommitPlacement: (objectIndex: number, changes: PlacementChange[]) => void;
+  /** Картинку из вкладки «Картинки» отпустили над сценой: имя картинки и точка холста («Редактор», требование 25). */
+  onDropImage: (imageName: string, x: number, y: number) => void;
   /** Вода рельефа из файла — поля воды над сценой; `null` — воды нет. */
   terrainWater: TerrainWater | null;
   /** Отпускание после мазка кисти: высоты всей сетки — одно действие. */
@@ -129,46 +115,34 @@ export type BrushFields = {
   onStrengthChange: (strength: number) => void;
 };
 
-type DragState = {
-  objectIndex: number;
-  pointerId: number;
-  startClientX: number;
-  startClientY: number;
-  startPosition: readonly [number, number];
-  cellSizePx: number;
-  hasStartedDrag: boolean;
-  lastPosition: readonly [number, number];
-};
-
 // Поле вокруг сцены; инструменты трёхмерной сцены — в верхней полосе окна, а не в нём.
 const STAGE_PADDING = 28;
 
 /**
- * Сцена вписана в свою часть окна с сохранением пропорций («Редактор», требование 22) на одном
- * холсте, а рамку выбранного объекта поверх него рисует сам редактор на втором, прозрачном
- * («Решения» — «рамку выбора рисует редактор, а не движок», требование 24). Щелчок по холсту —
- * `object_at` (требование 23), щелчок по полям вокруг сцены снимает выбор. За размером следит
+ * Холст сцены занимает всю часть окна под неё («Редактор», требование 42) — сцену на нём показывает камера
+ * редактора или камера игры, — а рамку выбранного объекта, ручки и границу сцены поверх него рисует сам редактор на
+ * втором, прозрачном («Решения» — «рамку выбора рисует редактор, а не движок», требование 24). Щелчок по холсту —
+ * `object_at` (требование 23), щелчок по полям вокруг холста снимает выбор. За размером следит
  * `ResizeObserver` на части окна со сценой, а не `window.resize`, как у страницы игры.
  */
 export function SceneCanvas({
   canvasRef,
   engine,
   sceneSize,
-  getObjectGeometry,
   objectsVersion,
   canEditScene,
   isSceneShown,
   isGameInputActive,
-  fillsStageArea,
   isThreeDimensionalScene,
   isEditorCameraActive,
   editorCameraStore,
+  flatCameraStore,
   getObjectProperties,
   selectedIndex,
   selectedLabel,
   onSelect,
-  onMoveObject,
   onCommitPlacement,
+  onDropImage,
   terrainWater,
   onCommitTerrain,
   onWaterChange,
@@ -194,28 +168,19 @@ export function SceneCanvas({
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
-  const selectedIndexRef = useRef(selectedIndex);
-  selectedIndexRef.current = selectedIndex;
-  const selectedLabelRef = useRef(selectedLabel);
-  selectedLabelRef.current = selectedLabel;
-  const getObjectGeometryRef = useRef(getObjectGeometry);
-  getObjectGeometryRef.current = getObjectGeometry;
-  const canEditSceneRef = useRef(canEditScene);
-  canEditSceneRef.current = canEditScene;
   const isGameInputActiveRef = useRef(isGameInputActive);
   isGameInputActiveRef.current = isGameInputActive;
   const isThreeDimensionalSceneRef = useRef(isThreeDimensionalScene);
   isThreeDimensionalSceneRef.current = isThreeDimensionalScene;
-  const onMoveObjectRef = useRef(onMoveObject);
-  onMoveObjectRef.current = onMoveObject;
-  const dragRef = useRef<DragState | null>(null);
   const [selectedTool, setSelectedTool] = useState<SelectedTool>(selectHandleModeTool("translate"));
   const [imprintStampName, setImprintStampName] = useState<string | null>(null);
   const [imprintWidth, setImprintWidth] = useState(DEFAULT_IMPRINT_WIDTH);
   const [imprintHeight, setImprintHeight] = useState(DEFAULT_IMPRINT_HEIGHT);
   const [paintMaterialName, setPaintMaterialName] = useState<string | null>(null);
   const [lastTerrainTool, setLastTerrainTool] = useState<TerrainTool>("raise");
-  const { handleMode, brushKind } = selectedTool;
+  const { brushKind } = selectedTool;
+  // В плоской сцене поворота нет: вид ручек, оставшийся от трёхмерной сцены, там — перенос.
+  const handleMode: HandleMode = !isThreeDimensionalScene && selectedTool.handleMode === "rotate" ? "translate" : selectedTool.handleMode;
   const { size: brushSize, strength: brushStrength } = brushFields;
   const { areHandlesAvailable, areBrushesAvailable } = resolveSceneToolAvailability({
     isThreeDimensionalScene,
@@ -281,12 +246,30 @@ export function SceneCanvas({
           },
         }
       : null;
+  const flatContext: FlatSceneContext | null =
+    engine !== null && !isThreeDimensionalScene
+      ? {
+          engine,
+          cameraStore: flatCameraStore,
+          sceneSize,
+          isInputLocked: isGameInputActive,
+          isEditorCameraActive,
+          areHandlesAvailable,
+          selectedIndex,
+          selectedLabel,
+          handleMode,
+          getObjectProperties,
+          onSelect,
+          onHandleModeChange: selectHandleMode,
+          onCommitPlacement,
+        }
+      : null;
   const spaceScene = useSpaceSceneInput({ overlayCanvasRef, context: spaceContext, objectsVersion });
+  const flatScene = useFlatSceneInput({ overlayCanvasRef, context: flatContext, objectsVersion });
   useEffect(() => {
     clearPreviewRef.current = spaceScene.clearPreview;
   }, [clearPreviewRef, spaceScene]);
-  const sceneWidth = sceneSize?.width ?? null;
-  const sceneHeight = sceneSize?.height ?? null;
+  const canAcceptImages = areHandlesAvailable && !isThreeDimensionalScene;
 
   // «Запуск» и всё, что убирает кисти или «Отпечаток», — вместо них ручки «Перенос»; после «Стопа» остаются ручки.
   useEffect(() => {
@@ -294,15 +277,9 @@ export function SceneCanvas({
     if (settledTool !== selectedTool) setSelectedTool(settledTool);
   }, [areBrushesAvailable, isImprintEnabled, isPaintEnabled, selectedTool]);
 
-  // Внешняя правка или другое действие поменяли объекты во время переноса — «Редактор», крайний
-  // случай: перенос отменяется, мир движок уже собрал заново из показанного своей перезагрузкой.
+  // Партия пошла — фокус на сцене («Партия в редакторе», требование 33): «Шаг» и повтор `isGameInputActive` не включают.
   useEffect(() => {
-    dragRef.current = null;
-  }, [objectsVersion]);
-
-  // Партия пошла или встала на паузу — начатый мышью перенос больше не имеет смысла в новом режиме.
-  useEffect(() => {
-    dragRef.current = null;
+    focusSceneWhenGameStarts(overlayCanvasRef.current, isGameInputActive);
   }, [isGameInputActive]);
 
   // Клавиатура доходит до игры, только когда фокус на холсте, — «Редактор», требование 4.
@@ -361,11 +338,9 @@ export function SceneCanvas({
     const overlayCanvas = overlayCanvasRef.current;
     if (!engine || !area || !stage || !sceneCanvas || !overlayCanvas) return;
     const activeEngine = engine;
-    const knownSceneSize =
-      fillsStageArea || sceneWidth === null || sceneHeight === null ? null : { width: sceneWidth, height: sceneHeight };
 
     function applyLayout(areaWidth: number, areaHeight: number): void {
-      const stageSize = fitSceneStage(areaWidth, areaHeight, knownSceneSize, STAGE_PADDING);
+      const stageSize = fitSceneStage(areaWidth, areaHeight, STAGE_PADDING);
       const pixelRatio = window.devicePixelRatio || 1;
       const layout = computeCanvasLayout(stageSize.width, stageSize.height, pixelRatio);
       if (!stage) return;
@@ -381,6 +356,7 @@ export function SceneCanvas({
       activeEngine.resize(layout.bufferWidth, layout.bufferHeight);
       activeEngine.set_pixel_ratio(pixelRatio);
       editorCameraStore.refit(activeEngine);
+      flatCameraStore.refit(activeEngine);
     }
 
     applyLayout(area.clientWidth, area.clientHeight);
@@ -391,7 +367,7 @@ export function SceneCanvas({
     observer.observe(area);
 
     return () => observer.disconnect();
-  }, [canvasRef, engine, sceneWidth, sceneHeight, fillsStageArea, editorCameraStore]);
+  }, [canvasRef, engine, editorCameraStore, flatCameraStore]);
 
   useEffect(() => {
     if (!engine) return;
@@ -408,14 +384,10 @@ export function SceneCanvas({
       activeEngine.draw();
       if (overlayCanvas && overlayContext) {
         overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
-        const selected = selectedIndexRef.current;
+        const pixelRatio = window.devicePixelRatio || 1;
         // Нефункциональное требование: пока ничего не выбрано, object_rect не зовётся.
-        if (isThreeDimensionalSceneRef.current) {
-          spaceScene.draw(overlayContext, window.devicePixelRatio || 1);
-        } else if (selected !== null) {
-          const rect = activeEngine.object_rect(selected) as CanvasRect | undefined;
-          if (rect) drawSelection(overlayContext, rect, selectedLabelRef.current, window.devicePixelRatio || 1);
-        }
+        if (isThreeDimensionalSceneRef.current) spaceScene.draw(overlayContext, pixelRatio);
+        else flatScene.draw(overlayContext, pixelRatio);
       }
       frameHandle = requestAnimationFrame(frame);
     }
@@ -425,99 +397,44 @@ export function SceneCanvas({
       stopped = true;
       cancelAnimationFrame(frameHandle);
     };
-  }, [engine, spaceScene]);
+  }, [engine, spaceScene, flatScene]);
 
   /**
-   * Нажатие выбирает объект под указателем — «Редактор», требование 7 (выбор на нажатии, не на
-   * отпускании). Правка недоступна или под указателем нет объекта с `position`/`size` в тексте —
-   * перенос не заводится, но выбор всё равно работает (крайний случай: `scene.json` не разобрать).
+   * Партия идёт — щелчок по холсту даёт ему фокус и уходит игре, а не выбору («Редактор», требование 4); захват
+   * указателя доносит отпускание до холста, даже если кнопку отпустили за ним (фаза 11, требование 15). Вне партии
+   * выбор и жесты ведёт контроллер сцены. `mouse_move` шлёт `window`-слушатель выше, а не холст: он не увидел бы
+   * движение, начавшееся ещё до входа курсора в холст.
    */
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
-    if (!engine || event.button !== 0) return;
-    // Партия идёт — щелчок по холсту даёт ему фокус и уходит игре, а не выбору («Редактор», требование 4).
-    // Захват указателя доносит отпускание до холста, даже если кнопку отпустили за ним (фаза 11, требование 15).
-    if (isGameInputActiveRef.current) {
-      event.currentTarget.focus();
-      event.currentTarget.setPointerCapture(event.pointerId);
-      engine.mouse_down();
-      return;
-    }
-    if (isThreeDimensionalSceneRef.current) return;
-    const bounds = event.currentTarget.getBoundingClientRect();
-    const hit = engine.object_at(event.clientX - bounds.left, event.clientY - bounds.top) as number | undefined;
-    // Открытое поле свойства записывается в прежний объект (требование 13) до смены выбора: иначе
-    // панель пересоздаётся под новый номер раньше, чем браузер снимет фокус, и черновик пропадёт.
-    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
-    onSelect(typeof hit === "number" ? hit : null);
-    if (typeof hit !== "number" || !canEditSceneRef.current) return;
-
-    const geometry = getObjectGeometryRef.current(hit);
-    const rect = engine.object_rect(hit) as { width: number } | undefined;
-    if (geometry === null || !rect) return;
-
-    dragRef.current = {
-      objectIndex: hit,
-      pointerId: event.pointerId,
-      startClientX: event.clientX,
-      startClientY: event.clientY,
-      startPosition: geometry.position,
-      cellSizePx: cellSizeFromObjectRect(rect.width, geometry.size[0]),
-      hasStartedDrag: false,
-      lastPosition: geometry.position,
-    };
+    if (!engine || event.button !== 0 || !isGameInputActiveRef.current) return;
+    event.currentTarget.focus();
     event.currentTarget.setPointerCapture(event.pointerId);
+    engine.mouse_down();
   }
 
-  /**
-   * Партия идёт — указатель над холстом принадлежит игре целиком («Редактор», требование 4), а
-   * `mouse_move` шлёт `window`-слушатель выше, а не этот обработчик: он не увидел бы движение,
-   * начавшееся ещё до входа курсора в холст.
-   */
-  function handlePointerMove(event: React.PointerEvent<HTMLCanvasElement>): void {
-    if (!engine || isGameInputActiveRef.current) return;
-    const drag = dragRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) return;
-    const deltaX = event.clientX - drag.startClientX;
-    const deltaY = event.clientY - drag.startClientY;
-    if (!drag.hasStartedDrag) {
-      // «Редактор», требование 7: сдвиг дальше 4 пикселей начинает перенос.
-      if (!hasCrossedDragThreshold(deltaX, deltaY)) return;
-      drag.hasStartedDrag = true;
-    }
-    const position = computeDragPosition(drag.startPosition, [deltaX, deltaY], drag.cellSizePx, event.ctrlKey);
-    if (position[0] === drag.lastPosition[0] && position[1] === drag.lastPosition[1]) return;
-    drag.lastPosition = position;
-    engine.move_object(drag.objectIndex, position[0], position[1]);
+  function handlePointerUp(event: React.PointerEvent<HTMLCanvasElement>): void {
+    // Только левая кнопка доходит до игры (требование 44) — нажатие правой/средней уже не дошло
+    // до `mouse_down`, поэтому и её отпускание не должно звонить `mouse_up`.
+    if (isGameInputActiveRef.current && event.button === 0) engine?.mouse_up();
   }
 
-  function endDrag(event: React.PointerEvent<HTMLCanvasElement>): void {
-    if (isGameInputActiveRef.current) {
-      // Только левая кнопка доходит до игры (требование 44) — нажатие правой/средней уже не дошло
-      // до `mouse_down`, поэтому и её отпускание не должно звонить `mouse_up`.
-      if (event.button === 0) engine?.mouse_up();
-      return;
-    }
-    const drag = dragRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    if (drag.hasStartedDrag) onMoveObjectRef.current(drag.objectIndex, drag.lastPosition, drag.startPosition);
+  /** Картинку принимает только плоская сцена, когда её можно править: иначе указатель показывает запрет («Редактор», требование 25). */
+  function handleDragOver(event: React.DragEvent<HTMLCanvasElement>): void {
+    const effect = resolveImageDropEffect(event.dataTransfer.types, canAcceptImages);
+    if (effect === null) return;
+    event.dataTransfer.dropEffect = effect;
+    if (effect === "copy") event.preventDefault();
   }
 
-  /** Браузер сам отменил перенос (например, второй палец на тачскрине) — объект возвращается на прежнее место, без действия. */
-  function handlePointerCancel(event: React.PointerEvent<HTMLCanvasElement>): void {
-    const drag = dragRef.current;
-    if (drag === null || drag.pointerId !== event.pointerId) return;
-    dragRef.current = null;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    if (drag.hasStartedDrag) engine?.move_object(drag.objectIndex, drag.startPosition[0], drag.startPosition[1]);
-  }
-
-  function handleKeyDown(event: React.KeyboardEvent<HTMLCanvasElement>): void {
-    const drag = dragRef.current;
-    if (event.key !== "Escape" || drag === null) return;
-    dragRef.current = null;
-    engine?.move_object(drag.objectIndex, drag.startPosition[0], drag.startPosition[1]);
+  function handleDrop(event: React.DragEvent<HTMLCanvasElement>): void {
+    if (resolveImageDropEffect(event.dataTransfer.types, canAcceptImages) !== "copy") return;
+    event.preventDefault();
+    const imageName = event.dataTransfer.getData(IMAGE_DRAG_TYPE);
+    if (imageName === "") return;
+    // Открытое поле свойства записывается в прежний объект до появления нового — как при смене выбора щелчком.
+    if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
+    const bounds = event.currentTarget.getBoundingClientRect();
+    onDropImage(imageName, event.clientX - bounds.left, event.clientY - bounds.top);
   }
 
   function handleAreaClick(event: React.MouseEvent<HTMLDivElement>): void {
@@ -534,10 +451,9 @@ export function SceneCanvas({
           tabIndex={-1}
           data-game-input={isGameInputActive ? "true" : undefined}
           onPointerDown={handlePointerDown}
-          onPointerMove={handlePointerMove}
-          onPointerUp={endDrag}
-          onPointerCancel={handlePointerCancel}
-          onKeyDown={handleKeyDown}
+          onPointerUp={handlePointerUp}
+          onDragOver={handleDragOver}
+          onDrop={handleDrop}
         />
       </div>
       {sceneSize !== null && (
@@ -545,12 +461,13 @@ export function SceneCanvas({
           Сцена {sceneSize.width} × {sceneSize.height}
         </span>
       )}
-      {/* Инструменты трёхмерной сцены — в верхней полосе окна, а не поверх поля сцены. */}
+      {/* Инструменты сцены — в верхней полосе окна, а не поверх поля сцены. */}
       {toolbarSlot !== null &&
         areHandlesAvailable &&
         createPortal(
           <HandleModeToolbar
             mode={handleMode}
+            isThreeDimensionalScene={isThreeDimensionalScene}
             brushKind={brushKind}
             areBrushesAvailable={areBrushesAvailable}
             lastTerrainTool={lastTerrainTool}

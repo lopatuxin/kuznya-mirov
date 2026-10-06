@@ -1657,6 +1657,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
             "y_sort",
             "camera",
             "light",
+            "cell_pixels",
         ],
         "game.json",
         "scene",
@@ -1739,6 +1740,9 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
             "y_sort вместе с camera: порядок рисования в трёхмерной сцене задаёт глубина",
         );
     }
+    if !valid_cell_pixels(obj, errors) {
+        return None;
+    }
     Some(SceneJsonConfig {
         width: width?,
         height: height?,
@@ -1748,6 +1752,26 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         camera: camera?,
         light: light?,
     })
+}
+
+/// «Редактор», «Формат игры»: `cell_pixels` — необязательное число больше нуля. Движок значение не
+/// использует: редактор читает его из текста `game.json`, здесь только проверка.
+fn valid_cell_pixels(scene: &serde_json::Map<String, Json>, errors: &mut ErrorSink) -> bool {
+    let Some(value) = scene.get("cell_pixels") else {
+        return true;
+    };
+    match expect_number(value, "game.json", "scene → cell_pixels", errors) {
+        Some(n) if n > 0.0 => true,
+        Some(n) => {
+            errors.push(
+                "game.json",
+                "scene → cell_pixels",
+                format!("cell_pixels должен быть больше нуля, получено {n}"),
+            );
+            false
+        }
+        None => false,
+    }
 }
 
 #[derive(Debug, Clone)]

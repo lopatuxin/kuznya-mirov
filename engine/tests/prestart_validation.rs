@@ -1,3 +1,4 @@
+use engine::data::error::GameError;
 use engine::data::load::{LoadFailure, load_game_from_texts, read_entry};
 
 const GAME: &str = r##"{"name":"T","scene":{"width":4,"height":4,"background":"#000000"},
@@ -261,9 +262,8 @@ fn random_seed_larger_than_i64_max_is_accepted() {
     assert_eq!(config.random_seed, u64::MAX);
 }
 
-/// «Формат игры» больше не знает поля `cell_pixels` — сцена вписывается в холст целиком, а не по
-/// фиксированному размеру клетки. `GAME`, используемый почти всеми тестами этого файла, уже не
-/// содержит этого поля; этот тест называет требование явно.
+/// «Формат игры»: `cell_pixels` — необязательный ключ `scene` в `game.json`; игра без него
+/// загружается как прежде.
 #[test]
 fn game_json_without_cell_pixels_loads() {
     let scene = r#"{"objects":[]}"#;
@@ -273,24 +273,53 @@ fn game_json_without_cell_pixels_loads() {
     assert_eq!(game.world.alive_count(), 0);
 }
 
-/// `game.json → scene` теперь проверяет свои ключи на незнакомость так же, как `resolve_property`
-/// ловит опечатку в объектах `scene.json`: лишний `cell_pixels` — та же тихая подмена, которую
-/// «Формат игры» запрещает, а не безобидная мелочь.
-#[test]
-fn stray_cell_pixels_field_in_game_json_is_reported() {
-    let game_json = r##"{"name":"T","scene":{"width":4,"height":4,"cell_pixels":24,"background":"#000000"},
+fn game_with_scene(scene_extra: &str) -> String {
+    format!(
+        r##"{{"name":"T","scene":{{"width":4,"height":4,"background":"#000000"{scene_extra}}},
 "random_seed":1,"start_screen":"main","max_objects":100,
-"files":{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{}}}"##;
-    let scene = r#"{"objects":[]}"#;
-    let LoadFailure { errors, .. } =
-        load_game_from_texts(game_json, PROPS_EMPTY, scene, r#"{"rules":[]}"#, SCREENS)
-            .expect_err("незнакомое поле cell_pixels — ошибка, а не тихий пропуск");
-    assert!(
-        errors
-            .iter()
-            .any(|e| e.file == "game.json" && e.message.contains("cell_pixels")),
-        "{errors:?}"
-    );
+"files":{{"properties":"properties.json","scene":"scene.json","rules":"rules.json","screens":"screens.json","fonts":{{}}}}}}"##
+    )
+}
+
+fn load_with_scene_extra(scene_extra: &str) -> Result<(), Vec<GameError>> {
+    load_game_from_texts(
+        &game_with_scene(scene_extra),
+        PROPS_EMPTY,
+        r#"{"objects":[]}"#,
+        r#"{"rules":[]}"#,
+        SCREENS,
+    )
+    .map(|_| ())
+    .map_err(|failure| failure.errors)
+}
+
+/// «Редактор», требование 31: положительное число грузится.
+#[test]
+fn cell_pixels_greater_than_zero_loads() {
+    load_with_scene_extra(r#","cell_pixels":96"#).expect("cell_pixels 96 — не ошибка");
+    load_with_scene_extra(r#","cell_pixels":0.5"#).expect("дробное больше нуля — не ошибка");
+}
+
+/// «Редактор», требование 31: ноль, отрицательное и не число — ошибка с файлом и местом.
+#[test]
+fn cell_pixels_zero_negative_or_not_a_number_is_reported() {
+    for value in ["0", "-1", r#""96""#] {
+        let errors = load_with_scene_extra(&format!(r#","cell_pixels":{value}"#))
+            .expect_err("cell_pixels не больше нуля или не число — ошибка");
+        assert!(
+            errors
+                .iter()
+                .any(|e| e.file == "game.json" && e.path == "scene → cell_pixels"),
+            "{value}: {errors:?}"
+        );
+    }
+}
+
+/// «Редактор», требование 31: в трёхмерной сцене ключ допустим и ничего не меняет.
+#[test]
+fn cell_pixels_in_a_three_dimensional_scene_is_not_an_error() {
+    load_with_scene_extra(r#","view_height":12,"camera":{"pitch":55},"cell_pixels":96"#)
+        .expect("cell_pixels в трёхмерной сцене — не ошибка");
 }
 
 /// Опечатка в имени необязательного поля `random_seed` не должна молча превращаться в зерно 0:

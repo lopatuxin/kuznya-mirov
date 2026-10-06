@@ -24,11 +24,16 @@ describe("resolveSceneToolAvailability", () => {
     expect(resolveSceneToolAvailability(EDITING)).toEqual({ areHandlesAvailable: true, areBrushesAvailable: true });
   });
 
-  it("в плоской сцене нет ни ручек, ни кистей", () => {
-    expect(resolveSceneToolAvailability({ ...EDITING, isThreeDimensionalScene: false })).toEqual({ areHandlesAvailable: false, areBrushesAvailable: false });
+  it("в плоской сцене вне партии ручки есть, кистей нет", () => {
+    expect(resolveSceneToolAvailability({ ...EDITING, isThreeDimensionalScene: false })).toEqual({ areHandlesAvailable: true, areBrushesAvailable: false });
   });
 
-  it("в идущей партии и на паузе нет ни ручек, ни кистей", () => {
+  it("в плоской сцене на паузе ручки есть, в идущей партии нет", () => {
+    expect(resolveSceneToolAvailability({ ...EDITING, isThreeDimensionalScene: false, isEditorCameraActive: false })).toEqual({ areHandlesAvailable: true, areBrushesAvailable: false });
+    expect(resolveSceneToolAvailability({ ...EDITING, isThreeDimensionalScene: false, isGameInputActive: true })).toEqual({ areHandlesAvailable: false, areBrushesAvailable: false });
+  });
+
+  it("в идущей партии нет ни ручек, ни кистей", () => {
     expect(resolveSceneToolAvailability({ ...EDITING, isGameInputActive: true, isEditorCameraActive: false })).toEqual({
       areHandlesAvailable: false,
       areBrushesAvailable: false,

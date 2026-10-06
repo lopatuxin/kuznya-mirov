@@ -1,15 +1,23 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   createEditorCameraStore,
+  createFlatCameraStore,
   focusCameraOnObject,
+  focusFlatCameraOnObject,
   maxDistanceFor,
+  maxViewHeightFor,
   orbitCamera,
   panCamera,
+  panFlatCamera,
+  readFlatCamera,
   wheelClicks,
   zoomCamera,
+  zoomFlatCamera,
   type EditorCameraEngine,
   type EditorCameraRequest,
   type EditorCameraState,
+  type FlatCameraEngine,
+  type FlatCameraState,
 } from "./editorCamera";
 
 const CAMERA: EditorCameraState = { target: [16, 12, 0], yaw: 0, pitch: 55, distance: 40 };
@@ -246,5 +254,160 @@ describe("focusCameraOnObject", () => {
     focusCameraOnObject(store, { editor_camera: update, fit_camera: () => undefined } as unknown as EditorCameraEngine, 3);
     expect(update).not.toHaveBeenCalled();
     expect(store.current()?.camera).toEqual(CAMERA);
+  });
+});
+
+const FLAT_WHOLE_SCENE: FlatCameraState = { center: [80, 12], view_height: 80 };
+
+function fakeFlatEngine(fitted: unknown): { engine: FlatCameraEngine; sent: FlatCameraState[]; fitCalls: unknown[] } {
+  const sent: FlatCameraState[] = [];
+  const fitCalls: unknown[] = [];
+  const engine = {
+    editor_camera: (camera: FlatCameraState) => {
+      sent.push(camera);
+    },
+    fit_camera: (id?: number | null) => {
+      fitCalls.push(id);
+      return fitted;
+    },
+  } as unknown as FlatCameraEngine;
+  return { engine, sent, fitCalls };
+}
+
+describe("zoomFlatCamera", () => {
+  it("щелчок на себя над точкой (40, 12): высота 72, середина (76, 12) — пример требования 6", () => {
+    const zoomed = zoomFlatCamera(FLAT_WHOLE_SCENE, -1, [40, 12], 240);
+
+    expect(zoomed.view_height).toBeCloseTo(72);
+    expect(zoomed.center[0]).toBeCloseTo(76);
+    expect(zoomed.center[1]).toBeCloseTo(12);
+  });
+
+  it("щелчок от себя — высота ÷ 0,9, точка под указателем остаётся на месте", () => {
+    const zoomed = zoomFlatCamera(FLAT_WHOLE_SCENE, 1, [40, 12], 240);
+
+    expect(zoomed.view_height).toBeCloseTo(80 / 0.9);
+    const ratio = zoomed.view_height / 80;
+    expect(40 - (40 - zoomed.center[0]) / ratio).toBeCloseTo(80);
+  });
+
+  it("высота — от 2 клеток до максимума", () => {
+    expect(zoomFlatCamera(FLAT_WHOLE_SCENE, -100, [40, 12], 240).view_height).toBe(2);
+    expect(zoomFlatCamera(FLAT_WHOLE_SCENE, 100, [40, 12], 240).view_height).toBe(240);
+  });
+
+  it("у предела точка под указателем тоже остаётся под ним", () => {
+    const zoomed = zoomFlatCamera({ center: [80, 12], view_height: 2.1 }, -5, [78, 11], 240);
+
+    expect(zoomed.view_height).toBe(2);
+    expect(zoomed.center[0]).toBeCloseTo(78 + (80 - 78) * (2 / 2.1));
+  });
+});
+
+describe("maxViewHeightFor", () => {
+  it("три высоты, с которых видна вся сцена; не меньше 2 клеток", () => {
+    expect(maxViewHeightFor(80)).toBe(240);
+    expect(maxViewHeightFor(0.1)).toBe(2);
+  });
+});
+
+describe("panFlatCamera", () => {
+  it("сдвигает середину на разницу мест сцены — взятое место встаёт под указатель", () => {
+    expect(panFlatCamera(FLAT_WHOLE_SCENE, [10, 8], [12, 7])).toEqual({ center: [78, 13], view_height: 80 });
+  });
+});
+
+describe("readFlatCamera", () => {
+  it("принимает только ответ плоской сцены", () => {
+    expect(readFlatCamera(FLAT_WHOLE_SCENE)).toBe(FLAT_WHOLE_SCENE);
+    expect(readFlatCamera(CAMERA)).toBeUndefined();
+    expect(readFlatCamera(undefined)).toBeUndefined();
+  });
+});
+
+describe("createFlatCameraStore", () => {
+  it("до первой загрузки камеры нет, update ничего не шлёт", () => {
+    const { engine, sent } = fakeFlatEngine(FLAT_WHOLE_SCENE);
+    const store = createFlatCameraStore();
+
+    store.update(engine, { center: [1, 1], view_height: 5 });
+
+    expect(store.current()).toBeNull();
+    expect(sent).toEqual([]);
+  });
+
+  it("первая загрузка берёт у движка камеру на всю сцену и шлёт её; дальше возвращается прежняя", () => {
+    const { engine, sent, fitCalls } = fakeFlatEngine(FLAT_WHOLE_SCENE);
+    const store = createFlatCameraStore();
+
+    store.restore(engine);
+    store.update(engine, { center: [76, 12], view_height: 72 });
+    store.restore(engine);
+
+    expect(fitCalls).toEqual([null]);
+    expect(sent).toEqual([FLAT_WHOLE_SCENE, { center: [76, 12], view_height: 72 }, { center: [76, 12], view_height: 72 }]);
+    expect(store.current()).toEqual({ center: [76, 12], view_height: 72 });
+  });
+
+  it("новый размер холста подбирает камеру заново, пока её не трогали; после колеса — нет", () => {
+    const { engine, sent, fitCalls } = fakeFlatEngine(FLAT_WHOLE_SCENE);
+    const store = createFlatCameraStore();
+    store.restore(engine);
+
+    store.refit(engine);
+    expect(fitCalls).toEqual([null, null]);
+
+    store.update(engine, { center: [76, 12], view_height: 72 });
+    sent.length = 0;
+    store.refit(engine);
+    expect(sent).toEqual([]);
+    expect(fitCalls).toHaveLength(2);
+  });
+
+  it("ответ трёхмерной сцены камерой не становится", () => {
+    const { engine, sent } = fakeFlatEngine(CAMERA);
+    const store = createFlatCameraStore();
+
+    store.restore(engine);
+
+    expect(store.current()).toBeNull();
+    expect(sent).toEqual([]);
+  });
+
+  it("другой проект камеру забывает", () => {
+    const { engine } = fakeFlatEngine(FLAT_WHOLE_SCENE);
+    const store = createFlatCameraStore();
+    store.restore(engine);
+
+    store.reset();
+
+    expect(store.current()).toBeNull();
+  });
+});
+
+describe("focusFlatCameraOnObject", () => {
+  it("ставит камеру, что подвёл движок", () => {
+    const { engine, sent, fitCalls } = fakeFlatEngine({ center: [168, 26], view_height: 14.4 });
+    const store = createFlatCameraStore();
+    store.restore(engine);
+    fitCalls.length = 0;
+    sent.length = 0;
+
+    focusFlatCameraOnObject(store, engine, 4);
+
+    expect(fitCalls).toEqual([4]);
+    expect(sent).toEqual([{ center: [168, 26], view_height: 14.4 }]);
+  });
+
+  it("движок объекта не знает — камера прежняя", () => {
+    const { engine } = fakeFlatEngine(FLAT_WHOLE_SCENE);
+    const store = createFlatCameraStore();
+    store.restore(engine);
+    const missing = fakeFlatEngine(undefined);
+
+    focusFlatCameraOnObject(store, missing.engine, 4);
+
+    expect(missing.sent).toEqual([]);
+    expect(store.current()).toEqual(FLAT_WHOLE_SCENE);
   });
 });

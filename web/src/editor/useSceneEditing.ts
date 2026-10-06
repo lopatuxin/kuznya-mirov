@@ -15,7 +15,7 @@ import {
   type EditSnapshot,
   type SaveState,
 } from "./editSession";
-import type { EditorCameraStore } from "./editorCamera";
+import type { EditorCameraStore, FlatCameraStore } from "./editorCamera";
 import { NO_MASKS, type MaskBytes, type MaskSet } from "./maskBytes";
 import type { PlacementChange } from "./objectPlacement";
 import type { PaintResult } from "./paintStroke";
@@ -59,6 +59,7 @@ export type SceneEditingState = {
   engine: Engine | null;
   memory: WebAssembly.Memory | null;
   editorCameraStore: EditorCameraStore;
+  flatCameraStore: FlatCameraStore;
   result: ProjectLoadResult | null;
   loadedAt: Date | null;
   headerNotice: string | null;
@@ -81,8 +82,7 @@ export type SceneEditingState = {
   selectedImprintIndex: number | null;
   setSelectedImprintIndex: (index: number | null) => void;
   undo: () => void;
-  moveObject: (objectIndex: number, position: readonly [number, number]) => void;
-  /** Ручки трёхмерной сцены: все изменившиеся свойства объекта — одна правка текста и одна отмена. */
+  /** Ручки и перенос: все изменившиеся свойства объекта — одна правка текста и одна отмена. */
   transformObject: (objectIndex: number, changes: PlacementChange[]) => void;
   /** Кисти рельефа: мазок — высоты всей сетки, одно действие; первый мазок в проекте без рельефа заводит файл («Кисти рельефа», требования 18–19). */
   paintTerrain: (grid: TerrainGrid) => void;
@@ -104,7 +104,11 @@ export type SceneEditingState = {
   addProperty: (objectIndex: number, key: string, value: unknown) => void;
   declareProperty: (objectIndex: number, key: string, kind: PropertyKind, value: unknown) => void;
   copyObject: (objectIndex: number) => void;
+  /** Новый объект в конец `objects` — одно действие; становится выбранным («Редактор», «Правка сцены», требование 25). */
+  addObject: (object: Record<string, unknown>) => void;
   deleteObject: (objectIndex: number) => void;
+  /** Исполняется, когда закончились все действия правки, поставленные в очередь до вызова, вместе с их загрузкой в движок. */
+  whenIdle: () => Promise<void>;
 };
 
 /** «Редактор», требование 2: строка «Не сохранено — в проекте ошибки» — сами ошибки уже видны в панели ниже. */
@@ -335,17 +339,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     });
   }
 
-  function moveObject(objectIndex: number, position: readonly [number, number]): void {
-    dispatchEdit((displayed) => {
-      const objects = parseSceneObjects(displayed.sceneText);
-      const object = objects[objectIndex];
-      if (object === undefined || object === null || typeof object !== "object" || Array.isArray(object)) return null;
-      const current = (object as Record<string, unknown>).position;
-      if (Array.isArray(current) && current[0] === position[0] && current[1] === position[1]) return null;
-      return { ...displayed, sceneText: setObjectPropertyValue(displayed.sceneText, objectIndex, "position", [position[0], position[1]]) };
-    });
-  }
-
   function transformObject(objectIndex: number, changes: PlacementChange[]): void {
     dispatchEdit((displayed) => {
       const object = parseSceneObjects(displayed.sceneText)[objectIndex];
@@ -469,6 +462,18 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     });
   }
 
+  function addObject(object: Record<string, unknown>): void {
+    void actionQueue.run(async () => {
+      const current = sessionRef.current;
+      if (current === null) return;
+      const count = parseSceneObjects(current.displayed.sceneText).length;
+      const candidate: EditSnapshot = { ...current.displayed, sceneText: appendSceneObject(current.displayed.sceneText, count, object) };
+      updateSession(beginAction(current, candidate));
+      selectObject(count);
+      await syncCurrent();
+    });
+  }
+
   function deleteObject(objectIndex: number): void {
     void actionQueue.run(async () => {
       const current = sessionRef.current;
@@ -482,10 +487,15 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     });
   }
 
+  function whenIdle(): Promise<void> {
+    return actionQueue.run(() => Promise.resolve());
+  }
+
   return {
     engine: engineState.engine,
     memory: engineState.memory,
     editorCameraStore: engineState.editorCameraStore,
+    flatCameraStore: engineState.flatCameraStore,
     result: engineState.result,
     loadedAt: engineState.loadedAt,
     headerNotice: engineState.headerNotice,
@@ -503,7 +513,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     selectedImprintIndex,
     setSelectedImprintIndex: selectImprint,
     undo,
-    moveObject,
     transformObject,
     paintTerrain,
     paintCovers,
@@ -519,6 +528,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     addProperty,
     declareProperty,
     copyObject,
+    addObject,
     deleteObject,
+    whenIdle,
   };
 }

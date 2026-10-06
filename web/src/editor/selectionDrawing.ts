@@ -85,3 +85,23 @@ export function drawSelectionQuad(context: CanvasRenderingContext2D, corners: re
   }
   context.restore();
 }
+
+const BOUNDARY_COLOR = "#f4f7fb";
+const BOUNDARY_HALO = "rgba(6, 8, 14, 0.7)";
+
+/**
+ * Граница плоской сцены поверх холста — «Редактор», «Сцена», требование 14: тонкая линия по прямоугольнику
+ * сцены между его углами `from` и `to` (точки холста), светлая на тёмной кайме — видна и на светлом, и на тёмном фоне.
+ */
+export function drawSceneBoundary(context: CanvasRenderingContext2D, from: Vec2, to: Vec2, pixelRatio: number): void {
+  context.save();
+  context.scale(pixelRatio, pixelRatio);
+  context.lineJoin = "miter";
+  context.lineWidth = 3;
+  context.strokeStyle = BOUNDARY_HALO;
+  context.strokeRect(from[0], from[1], to[0] - from[0], to[1] - from[1]);
+  context.lineWidth = 1;
+  context.strokeStyle = BOUNDARY_COLOR;
+  context.strokeRect(from[0], from[1], to[0] - from[0], to[1] - from[1]);
+  context.restore();
+}

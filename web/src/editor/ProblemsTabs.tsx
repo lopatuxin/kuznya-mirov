@@ -1,10 +1,12 @@
 import { useState } from "react";
 import type { SessionMessage, StepReport } from "./battleTypes";
 import { ErrorsPanel } from "./ErrorsPanel";
+import { ImagesPanel } from "./ImagesPanel";
 import { MessagesPanel } from "./MessagesPanel";
+import type { ProjectImageTile } from "./projectImages";
 import { StepReportPanel } from "./StepReportPanel";
 
-type ProblemsTab = "errors" | "step" | "messages";
+type ProblemsTab = "errors" | "step" | "messages" | "images";
 
 type ProblemsTabsProps = {
   errorLines: string[];
@@ -12,16 +14,17 @@ type ProblemsTabsProps = {
   isLoading: boolean;
   stepReport: StepReport | undefined;
   messages: SessionMessage[];
+  imageTiles: readonly ProjectImageTile[];
   onSelectObject: (id: number) => void;
 };
 
-const TAB_LABELS: Record<ProblemsTab, string> = { errors: "Ошибки", step: "Шаг", messages: "Сообщения" };
+const TAB_LABELS: Record<ProblemsTab, string> = { errors: "Ошибки", step: "Шаг", messages: "Сообщения", images: "Картинки" };
 
 /**
- * Нижняя панель редактора — «Редактор», требование 23: вкладки «Ошибки», «Шаг» и «Сообщения». Шаг и
+ * Нижняя панель редактора — «Редактор», требование 23: вкладки «Ошибки», «Шаг», «Сообщения» и «Картинки». Шаг и
  * сообщения относятся к партии и повтору — вне них показывают «Шагов ещё не было»/«Сообщений нет».
  */
-export function ProblemsTabs({ errorLines, warningLines, isLoading, stepReport, messages, onSelectObject }: ProblemsTabsProps): React.JSX.Element {
+export function ProblemsTabs({ errorLines, warningLines, isLoading, stepReport, messages, imageTiles, onSelectObject }: ProblemsTabsProps): React.JSX.Element {
   const [activeTab, setActiveTab] = useState<ProblemsTab>("errors");
   const problemCount = errorLines.length + warningLines.length;
 
@@ -47,6 +50,7 @@ export function ProblemsTabs({ errorLines, warningLines, isLoading, stepReport, 
         {activeTab === "errors" && <ErrorsPanel errorLines={errorLines} warningLines={warningLines} isLoading={isLoading} />}
         {activeTab === "step" && <StepReportPanel report={stepReport} onSelectObject={onSelectObject} />}
         {activeTab === "messages" && <MessagesPanel messages={messages} />}
+        {activeTab === "images" && <ImagesPanel tiles={imageTiles} />}
       </div>
     </div>
   );
