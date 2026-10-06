@@ -1,6 +1,6 @@
 {
   "name": "Платформер",
-  "scene": { "width": 160, "height": 24, "view_height": 12, "background": "#b4d2ec" },
+  "scene": { "width": 160, "height": 24, "view_height": 12, "background": "#b4d2ec", "cell_pixels": 96 },
   "max_objects": 256,
   "start_screen": "game",
   "files": {

@@ -49,23 +49,6 @@ function hasOwnField(entry: unknown, key: string): boolean {
   return entry !== null && typeof entry === "object" && !Array.isArray(entry) && key in entry;
 }
 
-function readVec2Field(entry: unknown, key: string): [number, number] | null {
-  if (entry === null || typeof entry !== "object" || Array.isArray(entry)) return null;
-  const value = (entry as Record<string, unknown>)[key];
-  if (!Array.isArray(value) || value.length < 2) return null;
-  const [x, y] = value as unknown[];
-  return typeof x === "number" && typeof y === "number" ? [x, y] : null;
-}
-
-/** `position` и `size` объекта — «Редактор», требование 8: клетка переноса меряется от них, не от прямоугольника на холсте. */
-export function getObjectGeometry(objects: unknown[], index: number): { position: [number, number]; size: [number, number] } | null {
-  const entry = objects[index];
-  const position = readVec2Field(entry, "position");
-  const size = readVec2Field(entry, "size");
-  if (position === null || size === null) return null;
-  return { position, size };
-}
-
 /** Свойства объекта `objects[index]` из текста сцены для ручек трёхмерной сцены; элемент не объект — `null`. */
 export function getObjectProperties(objects: unknown[], index: number): Record<string, unknown> | null {
   const entry = objects[index];

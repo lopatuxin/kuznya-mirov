@@ -1,11 +1,12 @@
 import { useEffect, useRef, type RefObject } from "react";
+import { createFlatSceneController, type FlatSceneContext, type FlatSceneController } from "./flatSceneController";
 import { capturePointer, isTypingTarget } from "./sceneInputDom";
-import { createSpaceSceneController, type PointerInput, type SpaceSceneContext, type SpaceSceneController } from "./spaceSceneController";
+import type { PointerInput } from "./spaceSceneController";
 
-type UseSpaceSceneInputParams = {
+type UseFlatSceneInputParams = {
   overlayCanvasRef: RefObject<HTMLCanvasElement | null>;
-  /** Трёхмерная сцена с движком: только тогда события холста идут в контроллер. */
-  context: SpaceSceneContext | null;
+  /** Плоская сцена с движком: только тогда события холста идут в контроллер. */
+  context: FlatSceneContext | null;
   /** Ссылка меняется, когда объекты изменились под жестом извне — жест бросается («Редактор», крайние случаи). */
   objectsVersion: unknown;
 };
@@ -13,16 +14,16 @@ type UseSpaceSceneInputParams = {
 const MIDDLE_BUTTON = 1;
 
 /**
- * Связывает события холста с контроллером трёхмерной сцены: нажатие, движение и отпускание
- * указателя, колесо (`passive: false` — иначе страницу листало бы) и клавиши (нажатие и отпускание — Shift мазка). `mousedown` средней
- * кнопки гасится вместе с `pointerdown`: без этого Windows включает автопрокрутку. Возвращает тот же
- * контроллер на всю жизнь холста — кадровый цикл рисует им рамку и ручки.
+ * Связывает события холста с контроллером плоской сцены, как `useSpaceSceneInput` — трёхмерной: нажатие, движение и
+ * отпускание указателя, колесо (`passive: false` — иначе страницу листало бы или Ctrl+колесо масштабировало её) и
+ * клавиши на всей странице. `mousedown` средней кнопки гасится вместе с `pointerdown`: без этого Windows включает
+ * автопрокрутку. Возвращает тот же контроллер на всю жизнь холста — кадровый цикл рисует им границу, рамку и ручки.
  */
-export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }: UseSpaceSceneInputParams): SpaceSceneController {
+export function useFlatSceneInput({ overlayCanvasRef, context, objectsVersion }: UseFlatSceneInputParams): FlatSceneController {
   const contextRef = useRef(context);
   contextRef.current = context;
-  const controllerRef = useRef<SpaceSceneController | null>(null);
-  if (controllerRef.current === null) controllerRef.current = createSpaceSceneController(() => contextRef.current as SpaceSceneContext);
+  const controllerRef = useRef<FlatSceneController | null>(null);
+  if (controllerRef.current === null) controllerRef.current = createFlatSceneController(() => contextRef.current as FlatSceneContext);
   const controller = controllerRef.current;
   const isEnabled = context !== null;
   const isInputLocked = context?.isInputLocked ?? false;
@@ -58,9 +59,8 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
       if (event.button === MIDDLE_BUTTON) event.preventDefault();
       if (event.button !== 0 && event.button !== MIDDLE_BUTTON) return;
       if (contextRef.current?.isInputLocked) return;
-      // Открытое поле свойства записывается в прежний объект до смены выбора — как в плоской сцене.
+      // Открытое поле свойства записывается в прежний объект до смены выбора.
       if (document.activeElement instanceof HTMLElement && document.activeElement !== activeCanvas) document.activeElement.blur();
-      // Фокус — на сцену: поле, из которого щёлкнули, перестаёт ловить клавиши, а в партии они доходят до игры.
       activeCanvas.focus({ preventScroll: true });
       if (controller.pointerDown(toInput(event))) capturePointer(activeCanvas, event.pointerId);
     }
@@ -78,17 +78,15 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
     }
 
     function handleWheel(event: WheelEvent): void {
-      if (controller.wheel({ deltaY: event.deltaY, deltaMode: event.deltaMode, ctrlKey: event.ctrlKey })) event.preventDefault();
+      const bounds = activeCanvas.getBoundingClientRect();
+      const input = { deltaY: event.deltaY, deltaMode: event.deltaMode, ctrlKey: event.ctrlKey, x: event.clientX - bounds.left, y: event.clientY - bounds.top };
+      if (controller.wheel(input)) event.preventDefault();
     }
 
     function handleKeyDown(event: KeyboardEvent): void {
       // Клавишу уже взял себе элемент страницы (Esc в списке объектов) или в элемент печатают — сцене она не достаётся.
       if (event.defaultPrevented || isTypingTarget(event.target)) return;
       if (controller.keyDown(event)) event.preventDefault();
-    }
-
-    function handleKeyUp(event: KeyboardEvent): void {
-      controller.keyUp(event);
     }
 
     activeCanvas.addEventListener("mousedown", handleMouseDown);
@@ -98,10 +96,9 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
     activeCanvas.addEventListener("pointercancel", handlePointerCancel);
     activeCanvas.addEventListener("pointerleave", controller.pointerLeave);
     activeCanvas.addEventListener("wheel", handleWheel, { passive: false });
-    // Клавиши сцены (Esc, `W`, `E`, `R`, `F`, Shift мазка) — на всей странице, а не только на холсте: инструмент включают
+    // Клавиши сцены (Esc, `W`, `R`, `F`) — на всей странице, а не только на холсте: инструмент включают
     // кнопкой в полосе, и пока по сцене не щёлкнули, фокус не на ней.
     window.addEventListener("keydown", handleKeyDown);
-    window.addEventListener("keyup", handleKeyUp);
     return () => {
       activeCanvas.removeEventListener("mousedown", handleMouseDown);
       activeCanvas.removeEventListener("pointerdown", handlePointerDown);
@@ -111,7 +108,6 @@ export function useSpaceSceneInput({ overlayCanvasRef, context, objectsVersion }
       activeCanvas.removeEventListener("pointerleave", controller.pointerLeave);
       activeCanvas.removeEventListener("wheel", handleWheel);
       window.removeEventListener("keydown", handleKeyDown);
-      window.removeEventListener("keyup", handleKeyUp);
       controller.abandonGesture();
     };
   }, [overlayCanvasRef, controller, isEnabled]);

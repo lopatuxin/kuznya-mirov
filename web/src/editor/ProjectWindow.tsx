@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { formatError } from "../engineErrors";
 import { parseGameDisplayName } from "../gamesIndex";
 import { liveObjectListEmptyLabel } from "./battleSelection";
-import { isBattleTransportShortcut, isCopyShortcut, isReplaySeekShortcut, isUndoShortcut } from "./battleShortcuts";
+import { isBattleTransportShortcut, isCopyShortcut, isPlayStopShortcut, isReplaySeekShortcut, isStepShortcut, isUndoShortcut } from "./battleShortcuts";
 import { withCodeErrorLine } from "./battleTypes";
 import { EditorIcon } from "./EditorIcon";
 import { ImprintPropertiesPanel } from "./ImprintPropertiesPanel";
@@ -12,15 +12,16 @@ import { PanelResizeHandle } from "./PanelResizeHandle";
 import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
 import { readTerrainCovers, readTerrainImprints, readTerrainTint, readTerrainWater } from "./terrainFile";
-import { parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
+import { parseProjectCellPixels, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
+import { buildImageTiles, createImageObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { SceneCanvas, type BrushFields } from "./SceneCanvas";
 import { stampPreviewOf, type StampPreview } from "./stampPreview";
+import { toVec2 } from "./terrainReadings";
 import { fallbackDisplayName, type ProjectSource } from "./projectSource";
 import {
   buildObjectPropertiesView,
-  getObjectGeometry,
   getObjectProperties,
   parseSceneIsThreeDimensional,
   parseSceneObjects,
@@ -126,6 +127,9 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const sceneSize = useMemo(() => parseSceneSize(gameJsonText), [gameJsonText]);
   const isThreeDimensionalScene = useMemo(() => parseSceneIsThreeDimensional(gameJsonText), [gameJsonText]);
   const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
+  const imageDescriptions = useMemo(() => parseProjectImageDescriptions(gameJsonText), [gameJsonText]);
+  const cellPixels = useMemo(() => parseProjectCellPixels(gameJsonText), [gameJsonText]);
+  const imageTiles = useMemo(() => buildImageTiles(imageDescriptions, result?.status === "ok" ? result.images : []), [imageDescriptions, result]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
   const imprints = useMemo(() => readTerrainImprints(terrainText), [terrainText]);
@@ -171,20 +175,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   // Отпечаток выбирается только вне партии, паузы и повтора («Лепка рельефа», «Редактор», требование 26).
   const selectedImprint = !isLive && selectedImprintIndex !== null ? imprints[selectedImprintIndex] : undefined;
 
-  // Место и размер объекта по номеру для переноса мышью — из текста сцены вне партии, из живого
-  // мира на паузе внутри неё («Редактор», требование 20).
-  const liveObjectGeometry = useCallback(
-    (id: number) => {
-      const properties = engine?.object_properties(id) as Record<string, unknown> | undefined;
-      const position = properties?.position;
-      const size = properties?.size;
-      if (!Array.isArray(position) || !Array.isArray(size)) return null;
-      return { position: [position[0], position[1]] as const, size: [size[0], size[1]] as const };
-    },
-    [engine],
-  );
-  const sceneObjectGeometry = useCallback((id: number) => getObjectGeometry(objects, id), [objects]);
-  // Свойства для ручек трёхмерной сцены: место, размер, высота, поворот и `shape` — там же, откуда геометрия переноса.
+  // Свойства для ручек: место, размер, `parallax`, у трёхмерной сцены ещё высота, поворот и `shape` — из текста сцены
+  // вне партии, из живого мира на паузе внутри неё («Редактор», требование 20).
   const liveObjectProperties = useCallback((id: number) => (engine?.object_properties(id) as Record<string, unknown> | undefined) ?? null, [engine]);
   const sceneObjectProperties = useCallback((id: number) => getObjectProperties(objects, id), [objects]);
 
@@ -202,6 +194,9 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   shortcutStateRef.current = shortcutState;
   const battleRef = useRef(battle);
   battleRef.current = battle;
+  const sceneEditingRef = useRef(sceneEditing);
+  sceneEditingRef.current = sceneEditing;
+
   // Мазок кисти держит перезагрузку файлов, пока кнопка нажата («Кисти рельефа», крайние случаи); партия держит её сама.
   // Сочетания, которые пересобирают мир или начинают партию, до конца мазка не срабатывают: иначе мазок
   // бросился бы, а его рельеф остался бы в движке без файла.
@@ -210,6 +205,24 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     isStrokeActiveRef.current = isActive;
     if (battleRef.current.mode === "edit") sceneEditing.setReloadGateOpen(!isActive);
   };
+
+  /**
+   * «Запуск» после правок сцены, уже поставленных в очередь: записанное поле или жест перезагружают мир загрузкой
+   * по правке, и партия, начатая раньше неё, шла бы на мире, который загрузка тут же подменит. Пока запуск ждёт,
+   * второе нажатие ничего не делает.
+   */
+  const isPlayPendingRef = useRef(false);
+  function playAfterSceneEdits(): void {
+    if (isPlayPendingRef.current) return;
+    isPlayPendingRef.current = true;
+    void sceneEditingRef.current.whenIdle().then(() => {
+      isPlayPendingRef.current = false;
+      // Рендер после загрузки правки ещё не случился, и `sceneAvailable` в нём прежний: неудачную загрузку видно только по движку — мира нет.
+      const engine = sceneEditingRef.current.engine;
+      if (battleRef.current.mode !== "edit" || isStrokeActiveRef.current || engine === null || !engine.has_world()) return;
+      battleRef.current.play();
+    });
+  }
 
   // Ctrl+P/Ctrl+Shift+P/Ctrl+Alt+P — «Редактор», требование 1: перехватываются раньше остальных
   // сочетаний и раньше печати браузера, при любом фокусе — фаза перехвата на `window`. Дальше
@@ -221,6 +234,15 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
       event.stopImmediatePropagation();
       if (isStrokeActiveRef.current) return;
       clearScenePreviewRef.current();
+      // Открытое поле свойства записывается раньше «Запуска», «Стопа» и паузы, как при нажатии кнопки мышью: на «Запуске»
+      // панель свойств пересоздаётся под живой мир, и поле в фокусе пропало бы вместе с черновиком. «Шаг» фокус не трогает.
+      const active = document.activeElement;
+      const isFieldFocused = active instanceof HTMLInputElement || active instanceof HTMLTextAreaElement || active instanceof HTMLSelectElement;
+      if (isFieldFocused && !isStepShortcut(event)) active.blur();
+      if (isPlayStopShortcut(event) && battleRef.current.mode === "edit") {
+        playAfterSceneEdits();
+        return;
+      }
       battleRef.current.handleShortcut(event);
     }
     window.addEventListener("keydown", handleTransportShortcut, true);
@@ -296,6 +318,20 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, []);
 
+  // Картинку отпустили на плоскую сцену — «Редактор», «Правка сцены», требования 25–30: новый объект встаёт серединой под
+  // указателем, на том же слое, что выбранный; вне партии он дописывается в `scene.json`, на паузе — в живой мир.
+  function handleDropImage(imageName: string, x: number, y: number): void {
+    const tile = imageTiles.find(({ description }) => description.name === imageName);
+    if (engine === null || tile === undefined || tile.image === null) return;
+    const selected = displayedSelectedIndex === null ? null : (isLive ? liveObjectProperties : sceneObjectProperties)(displayedSelectedIndex);
+    const middle = toVec2(engine.scene_point(x, y, newObjectParallax(selected)));
+    if (middle === undefined) return;
+    const size = newObjectSize(imageFrameSize(tile.image, tile.description), tile.description, cellPixels);
+    const object = createImageObject(imageName, size, middle, selected);
+    if (isLive) battle.addLiveObject(object);
+    else sceneEditing.addObject(object);
+  }
+
   const errorLines = withCodeErrorLine(battle.codeError, [
     ...(engineError !== null ? [engineError] : []),
     ...(result === null
@@ -312,7 +348,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     ...battle,
     play: () => {
       clearScenePreviewRef.current();
-      battle.play();
+      playAfterSceneEdits();
     },
     startReplay: () => {
       clearScenePreviewRef.current();
@@ -362,21 +398,20 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           canvasRef={canvasRef}
           engine={engine}
           sceneSize={sceneSize}
-          getObjectGeometry={isLive ? liveObjectGeometry : sceneObjectGeometry}
           objectsVersion={isLive ? battle.liveObjectSummaries : objects}
           canEditScene={displayedCanEdit}
           isSceneShown={sceneAvailable || isLive}
           isGameInputActive={battle.mode === "battle" && battle.isRunning}
-          fillsStageArea={isLive || isThreeDimensionalScene}
           isThreeDimensionalScene={isThreeDimensionalScene}
           isEditorCameraActive={battle.mode === "edit"}
           editorCameraStore={sceneEditing.editorCameraStore}
+          flatCameraStore={sceneEditing.flatCameraStore}
           getObjectProperties={isLive ? liveObjectProperties : sceneObjectProperties}
           selectedIndex={displayedSelectedIndex}
           selectedLabel={displayedSelectedObject === null ? null : (displayedSelectedObject.name ?? `№ ${displayedSelectedObject.index}`)}
           onSelect={displayedOnSelect}
-          onMoveObject={isLive ? battle.commitLiveMove : sceneEditing.moveObject}
           onCommitPlacement={isLive ? battle.commitLiveTransform : sceneEditing.transformObject}
+          onDropImage={handleDropImage}
           terrainWater={terrainWater}
           onCommitTerrain={sceneEditing.paintTerrain}
           onWaterChange={sceneEditing.setTerrainWater}
@@ -456,6 +491,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           isLoading={isLoading}
           stepReport={battle.stepReport}
           messages={battle.messages}
+          imageTiles={imageTiles}
           onSelectObject={battle.setLiveSelectedId}
         />
       </footer>

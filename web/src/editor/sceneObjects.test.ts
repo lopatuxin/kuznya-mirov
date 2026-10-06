@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
   buildObjectPropertiesView,
-  getObjectGeometry,
   getObjectProperties,
   parseSceneObjects,
   parseSceneIsThreeDimensional,
@@ -64,19 +63,6 @@ describe("summarizeSceneObjects", () => {
       { index: 2, name: null, color: null, image: null, isOnScene: false },
       { index: 3, name: null, color: null, image: null, isOnScene: false },
     ]);
-  });
-});
-
-describe("getObjectGeometry", () => {
-  it("отдаёт position и size объекта", () => {
-    const objects = [{ position: [2, 6], size: [1, 1] }];
-    expect(getObjectGeometry(objects, 0)).toEqual({ position: [2, 6], size: [1, 1] });
-  });
-
-  it("без position или size — null", () => {
-    expect(getObjectGeometry([{ size: [1, 1] }], 0)).toBe(null);
-    expect(getObjectGeometry([{ position: [1, 1] }], 0)).toBe(null);
-    expect(getObjectGeometry([], 0)).toBe(null);
   });
 });
 

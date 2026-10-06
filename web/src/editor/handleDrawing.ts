@@ -1,5 +1,7 @@
+import { flatScaleHandlePoints, SCALE_HANDLE_SIZE_PX, type FlatScaleHandle } from "./flatHandles";
 import { CENTER_HALF_SIZE_PX, type HandleGeometry, type HandleHit, type HandleMode } from "./handleGeometry";
 import type { Vec2 } from "./objectPlacement";
+import type { CanvasRect } from "./selectionDrawing";
 
 /** «Редактор», требование 9: цвета, как в Godot, — `x` красная, `y` синяя, высота зелёная. */
 const AXIS_COLORS = { "axis-x": "#e5484d", "axis-y": "#3e8bff", "axis-z": "#46c26d" } as const;
@@ -90,5 +92,21 @@ export function drawHandles(context: CanvasRenderingContext2D, geometry: HandleG
     else drawTipBox(context, tip, color);
   }
   drawCenter(context, geometry.center, hovered === "center");
+  context.restore();
+}
+
+/** Восемь квадратиков масштаба плоской сцены на рамке выбранного объекта — «Редактор», «Правка сцены», требование 18. */
+export function drawFlatScaleHandles(context: CanvasRenderingContext2D, rect: CanvasRect, hovered: FlatScaleHandle | null, pixelRatio: number): void {
+  const half = SCALE_HANDLE_SIZE_PX / 2;
+  const points = flatScaleHandlePoints(rect);
+  context.save();
+  context.scale(pixelRatio, pixelRatio);
+  context.strokeStyle = HANDLE_HALO;
+  context.lineWidth = 1.5;
+  for (const [handle, point] of Object.entries(points) as [FlatScaleHandle, Vec2][]) {
+    context.fillStyle = handle === hovered ? CENTER_HOVER_COLOR : CENTER_COLOR;
+    context.fillRect(point[0] - half, point[1] - half, SCALE_HANDLE_SIZE_PX, SCALE_HANDLE_SIZE_PX);
+    context.strokeRect(point[0] - half, point[1] - half, SCALE_HANDLE_SIZE_PX, SCALE_HANDLE_SIZE_PX);
+  }
   context.restore();
 }

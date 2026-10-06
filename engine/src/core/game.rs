@@ -1,4 +1,4 @@
-use super::camera::{self, Camera3d, CameraHeight, EditorCamera};
+use super::camera::{self, Camera3d, CameraHeight, EditorCamera, FlatEditorCamera};
 use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
@@ -8,7 +8,7 @@ use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, StepReport, StepReportBuilder};
 use super::rng::Rng;
 use super::rules::{Outcome, RuleSet};
-use super::scene::{GroundLayer, ObjectSpec, SceneConfig};
+use super::scene::{GroundLayer, ObjectSpec, SceneConfig, letterbox};
 use super::sound::SoundWindow;
 use super::step;
 use super::surface;
@@ -113,6 +113,8 @@ pub struct Game {
     /// «Редактор», «Сцена»: камера редактора трёхмерной сцены — последняя, что прислал редактор;
     /// `None`, пока не присылал. Сборка мира её не сбрасывает.
     editor_camera: Option<EditorCamera>,
+    /// «Редактор», «Сцена»: то же для плоской сцены.
+    flat_editor_camera: Option<FlatEditorCamera>,
 }
 
 /// «Экраны и состояние» / «Редактор», требование 16: builds a fresh world from `scene_objects` —
@@ -240,6 +242,7 @@ impl Game {
             camera_height: CameraHeight::default(),
             walk_paths: WalkCaches::new(),
             editor_camera: None,
+            flat_editor_camera: None,
         };
         // «Код игры» → «Экраны и состояние»: код грузится ровно один раз на партию. Партия
         // начинается либо прямо здесь (стартовый экран без меню — `world_runs` поднят сразу), и
@@ -669,6 +672,44 @@ impl Game {
         };
         let current = self.current_editor_camera(viewport)?;
         camera::fit_object(&self.world, id, current.yaw, current.pitch, viewport)
+    }
+
+    /// «Редактор», «Сцена»: запоминает камеру редактора плоской сцены.
+    pub fn set_flat_editor_camera(&mut self, camera: FlatEditorCamera) {
+        self.flat_editor_camera = Some(camera);
+    }
+
+    /// «Редактор», «Сцена»: камера редактора плоской сцены — присланная или та, что видит всю сцену.
+    fn current_flat_editor_camera(&self, viewport: [f64; 2]) -> FlatEditorCamera {
+        self.flat_editor_camera
+            .unwrap_or_else(|| camera::fit_flat_scene(&self.scene, viewport))
+    }
+
+    /// «Редактор», «Сцена», требования 1, 13: масштаб и сдвиг, которыми плоская сцена видна вне
+    /// партии, — камера редактора, а пока её не прислали — вся сцена по её пропорциям.
+    pub fn editor_flat_frame(&self, viewport: [f32; 2]) -> (f32, [f32; 2]) {
+        match self.flat_editor_camera {
+            Some(editor) => editor.frame(viewport),
+            None => letterbox(
+                viewport,
+                [self.scene.width as f32, self.scene.height as f32],
+            ),
+        }
+    }
+
+    /// «Редактор», «Вызовы движка», `fit_camera`: в плоской сцене без номера — камера, что видит
+    /// всю сцену, с номером — что видит место, где нарисован объект. `None` в трёхмерной сцене и
+    /// без объекта, его `position` и `size`.
+    pub fn fit_flat_camera(&self, id: Option<u32>, viewport: [f32; 2]) -> Option<FlatEditorCamera> {
+        if self.scene.is_3d() {
+            return None;
+        }
+        let viewport = [viewport[0] as f64, viewport[1] as f64];
+        let Some(id) = id else {
+            return Some(camera::fit_flat_scene(&self.scene, viewport));
+        };
+        let current = self.current_flat_editor_camera(viewport).center;
+        camera::fit_flat_object(&self.world, &self.scene, id, current, viewport)
     }
 
     pub fn is_running(&self) -> bool {

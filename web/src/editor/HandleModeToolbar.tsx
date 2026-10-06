@@ -42,6 +42,8 @@ const BLOCKED_HINT = "слоёв уже восемь";
 
 type HandleModeToolbarProps = {
   mode: HandleMode;
+  /** Плоская сцена: только перенос и масштаб, без поворота («Правка сцены», требование 15). */
+  isThreeDimensionalScene: boolean;
   /** Выбранная кисть; `null` — выбраны ручки. Выбран всегда один инструмент. */
   brushKind: BrushKind | null;
   /** Кисти есть только в трёхмерной сцене вне партии («Кисти рельефа», требование 4). */
@@ -177,12 +179,13 @@ export function MaterialsMenuContent({ materialsTool, brushSize, brushStrength, 
 }
 
 /**
- * Инструменты трёхмерной сцены в верхней полосе — «Редактор», требование 10, и «Кисти рельефа», требования 1–3: виды
- * ручек значками (те же режимы, что клавиши `W`, `E`, `R`), затем группы «Рельеф», «Материалы» и «Вода» кнопками с
+ * Инструменты сцены в верхней полосе — «Редактор», требование 10, и «Кисти рельефа», требования 1–3: виды
+ * ручек значками (те же режимы, что клавиши `W`, `E`, `R`; в плоской сцене только `W` и `R`), затем в трёхмерной группы «Рельеф», «Материалы» и «Вода» кнопками с
  * выпадающим окошком — инструменты группы и их настройки в полосе постоянно не стоят.
  */
 export function HandleModeToolbar({
   mode,
+  isThreeDimensionalScene,
   brushKind,
   areBrushesAvailable,
   lastTerrainTool,
@@ -205,7 +208,7 @@ export function HandleModeToolbar({
   return (
     <>
       <div className="scene-tools__group" role="group" aria-label="Ручки объекта">
-        {MODE_BUTTONS.map((button) => (
+        {MODE_BUTTONS.filter((button) => isThreeDimensionalScene || button.mode !== "rotate").map((button) => (
           <ToolButton key={button.mode} title={button.title} isActive={!isTerrainSelected && !materialsTool.isSelected && mode === button.mode} onClick={() => onChange(button.mode)}>
             <EditorIcon name={button.icon} size={15} />
           </ToolButton>

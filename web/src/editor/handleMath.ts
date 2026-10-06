@@ -1,3 +1,4 @@
+import { SCALE_HANDLE_SIDES, type FlatScaleHandle } from "./flatHandles";
 import { effectiveHeight, normalizeRotation, placementCenter, type ObjectPlacement, type Vec2 } from "./objectPlacement";
 import { raisedAtPointer, type VerticalGrab } from "./verticalGrab";
 
@@ -112,4 +113,44 @@ export function computeScale(start: ObjectPlacement, axis: ScaleAxis, factor: nu
   const startHeight = effectiveHeight(start);
   const height = scalesHeight && startHeight !== null ? scaleValue(startHeight) : start.height;
   return { ...start, position: [positionAlong(0), positionAlong(1)], size, height };
+}
+
+const FLAT_CTRL_FACTOR_STEP = 0.1;
+
+/** Прямоугольник объекта плоской сцены: то, что меняют ручки масштаба. */
+type FlatRect = { position: Vec2; size: Vec2 };
+
+/**
+ * Масштаб плоской сцены — «Редактор», «Правка сцены», требования 18–19: `delta` — на сколько клеток ушёл указатель
+ * с начала жеста. Ручка стороны меняет размер по своей оси, ручка угла умножает оба на одну долю — проекцию указателя
+ * на диагональ от противоположного угла; противоположная сторона или угол стоят на месте. С Ctrl доля округляется
+ * до десятой; размеры в обоих случаях — до сотой клетки, не меньше 0,1 клетки по каждой оси.
+ */
+export function computeFlatScale(start: FlatRect, handle: FlatScaleHandle, delta: Vec2, snapFactorToTenths: boolean): FlatRect {
+  const [sideX, sideY] = SCALE_HANDLE_SIDES[handle];
+  const sides = [sideX, sideY] as const;
+  const factors: [number, number] = [1, 1];
+  if (sideX !== 0 && sideY !== 0) {
+    const diagonal: Vec2 = [sideX * start.size[0], sideY * start.size[1]];
+    const squared = diagonal[0] * diagonal[0] + diagonal[1] * diagonal[1];
+    if (squared === 0) return start;
+    const grabbed: Vec2 = [diagonal[0] + delta[0], diagonal[1] + delta[1]];
+    const factor = (grabbed[0] * diagonal[0] + grabbed[1] * diagonal[1]) / squared;
+    const applied = snapFactorToTenths ? Math.round(factor / FLAT_CTRL_FACTOR_STEP) * FLAT_CTRL_FACTOR_STEP : factor;
+    const uniform = Math.max(MIN_SCALED_SIZE / Math.min(start.size[0], start.size[1]), applied);
+    factors[0] = uniform;
+    factors[1] = uniform;
+  } else {
+    const axis = sideX !== 0 ? 0 : 1;
+    const raw = (start.size[axis] + sides[axis] * delta[axis]) / start.size[axis];
+    factors[axis] = snapFactorToTenths ? Math.round(raw / FLAT_CTRL_FACTOR_STEP) * FLAT_CTRL_FACTOR_STEP : raw;
+  }
+
+  const scaled = (axis: 0 | 1): number => {
+    const value = start.size[axis] * factors[axis];
+    return Math.max(MIN_SCALED_SIZE, roundToHundredth(value));
+  };
+  const size: [number, number] = [sides[0] === 0 ? start.size[0] : scaled(0), sides[1] === 0 ? start.size[1] : scaled(1)];
+  const positionAlong = (axis: 0 | 1): number => (sides[axis] < 0 ? trimFloatNoise(start.position[axis] + start.size[axis] - size[axis]) : start.position[axis]);
+  return { position: [positionAlong(0), positionAlong(1)], size };
 }

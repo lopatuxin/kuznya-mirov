@@ -321,6 +321,33 @@ describe("loadProject", () => {
       expect(result.status === "ok" && result.coverMasks).toEqual([{ path: "terrain/earth.png", width: 1, height: 1, pixels: new Uint8Array([9]) }]);
     });
 
+    it("в итоге загрузки картинки files.images — имя, размер и точки; не найденная и не разжатая не входят («Редактор», вкладка «Картинки»)", async () => {
+      stubBrowserDecoder();
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: vi.fn(() => ({
+          fonts: [],
+          sounds: [],
+          music: [],
+          images: [
+            { index: 3, name: "izba", path: "images/izba.png" },
+            { index: 4, name: "gone", path: "images/gone.png" },
+          ],
+          materials: [],
+          masks: [],
+        })),
+        load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
+      };
+
+      const result = await loadProject(engine, createReader({ ...files, "images/izba.png": new Uint8Array([5]) }), "{}", stubAudioContext);
+
+      expect(result.status === "ok" && result.images).toEqual([{ name: "izba", width: 1, height: 1, pixels: new Uint8Array([9, 8, 7, 255]) }]);
+    });
+
     it("без файла рельефа в read_texts идёт undefined", async () => {
       const readTexts = vi.fn((..._args: unknown[]) => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] }));
       const engine: ProjectLoadEngine = {

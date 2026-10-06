@@ -533,6 +533,91 @@ pub fn fit_object(
     })
 }
 
+/// «Редактор», «Сцена»: камера редактора плоской сцены — середина видимой части в клетках и
+/// видимая высота в клетках; то, что шлют `editor_camera` и возвращает `fit_camera`. К краям сцены
+/// она не прижимается.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FlatEditorCamera {
+    pub center: Vec2,
+    pub view_height: f64,
+}
+
+impl FlatEditorCamera {
+    /// Масштаб и сдвиг кадра (тем же видом, что у `frame`): середина окна стоит над `center`.
+    pub fn frame(&self, viewport: [f32; 2]) -> (f32, [f32; 2]) {
+        if viewport[1] <= 0.0 || self.view_height <= 0.0 {
+            return (1.0, [0.0, 0.0]);
+        }
+        let scale = viewport[1] / self.view_height as f32;
+        (
+            scale,
+            [
+                viewport[0] / 2.0 - self.center[0] as f32 * scale,
+                viewport[1] / 2.0 - self.center[1] as f32 * scale,
+            ],
+        )
+    }
+}
+
+/// Наименьшая видимая высота, на которую `fit_flat_object` подводит камеру, клеток.
+const MIN_FIT_VIEW_HEIGHT: f64 = 2.0;
+
+/// Поля вокруг объекта, на которые `fit_flat_object` отступает от его места.
+const FIT_MARGIN: f64 = 1.2;
+
+/// Высота окна на ширину окна, не меньше пикселя по ширине.
+fn aspect(viewport: [f64; 2]) -> f64 {
+    viewport[1] / viewport[0].max(1.0)
+}
+
+/// «Редактор», «Сцена», требование 3: камера редактора плоской сцены при открытии проекта — видит
+/// всю сцену. `view_height` — большее из высоты сцены и ширины сцены, приведённой к высоте окна.
+pub fn fit_flat_scene(scene: &SceneConfig, viewport: [f64; 2]) -> FlatEditorCamera {
+    let (width, height) = (scene.width as f64, scene.height as f64);
+    FlatEditorCamera {
+        center: [width / 2.0, height / 2.0],
+        view_height: height.max(width * aspect(viewport)),
+    }
+}
+
+/// «Редактор», «Сцена», требования 7–8: камера редактора, что видит целиком место, где объект `id`
+/// нарисован, с полями. У объекта слоя глубины середина камеры — та, при которой он нарисован в
+/// середине окна; у объекта с `parallax` 0 — прежняя, `current`, а нужный размер — удвоенное
+/// расстояние от неё до дальнего края места объекта. `None` без объекта или его `position` и `size`.
+pub fn fit_flat_object(
+    world: &World,
+    scene: &SceneConfig,
+    id: u32,
+    current: Vec2,
+    viewport: [f64; 2],
+) -> Option<FlatEditorCamera> {
+    if id as usize >= world.slot_count() {
+        return None;
+    }
+    let position = world.vec2(id, property::POSITION)?;
+    let size = world.vec2(id, property::SIZE)?;
+    let parallax = scene::parallax(world, id);
+    let middle = [scene.width as f64 / 2.0, scene.height as f64 / 2.0];
+    let mut center = current;
+    let mut need = size;
+    for axis in 0..2 {
+        if parallax > 0.0 {
+            let recorded = position[axis] + size[axis] / 2.0;
+            center[axis] = (recorded - middle[axis] * (1.0 - parallax)) / parallax;
+        } else {
+            let from_middle = position[axis] - middle[axis];
+            need[axis] = 2.0 * from_middle.abs().max((from_middle + size[axis]).abs());
+        }
+    }
+    let view_height = (need[1] * FIT_MARGIN)
+        .max(need[0] * FIT_MARGIN * aspect(viewport))
+        .max(MIN_FIT_VIEW_HEIGHT);
+    Some(FlatEditorCamera {
+        center,
+        view_height,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

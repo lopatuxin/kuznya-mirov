@@ -20,13 +20,13 @@ export type SceneToolContext = {
 export type SceneToolAvailability = { areHandlesAvailable: boolean; areBrushesAvailable: boolean };
 
 /**
- * Ручки и кнопки видов ручек — только в трёхмерной сцене; кисти и их поля — ещё и только вне партии,
- * паузы и повтора («Кисти рельефа», требование 4): в плоской сцене, при ошибках проекта и без правки
- * сцены нет ни тех, ни других.
+ * Ручки и кнопки видов ручек — в обеих сценах, пока сцена показана, правка доступна и партия не идёт (вне партии и
+ * на паузе); кисти и их поля — только в трёхмерной сцене и ещё только вне партии, паузы и повтора («Кисти рельефа»,
+ * требование 4). При ошибках проекта и без правки сцены нет ни тех, ни других.
  */
 export function resolveSceneToolAvailability(context: SceneToolContext): SceneToolAvailability {
-  const areHandlesAvailable = context.isThreeDimensionalScene && context.isSceneShown && context.canEditScene && !context.isGameInputActive;
-  return { areHandlesAvailable, areBrushesAvailable: areHandlesAvailable && context.isEditorCameraActive };
+  const areHandlesAvailable = context.isSceneShown && context.canEditScene && !context.isGameInputActive;
+  return { areHandlesAvailable, areBrushesAvailable: areHandlesAvailable && context.isThreeDimensionalScene && context.isEditorCameraActive };
 }
 
 /** Кнопка «Отпечаток» нажимается там же, где кисти, и только когда в игре объявлены штампы («Редактор», «Правка сцены», требование 23). */

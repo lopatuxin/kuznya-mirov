@@ -70,3 +70,47 @@ export function parseProjectStamps(gameJsonText: string | null): { name: string;
   if (stamps === null || typeof stamps !== "object" || Array.isArray(stamps)) return [];
   return Object.entries(stamps).flatMap(([name, path]) => (typeof path === "string" ? [{ name, path }] : []));
 }
+
+/** Описание картинки из `files.images`: что нужно редактору, чтобы показать её кадр и посчитать размер нового объекта. */
+export type ProjectImageDescription = {
+  name: string;
+  /** Сколько кадров в файле; `null` — один кадр, весь файл. */
+  frames: number | null;
+  /** Сколько кадров в строке сетки; `null` — кадры лежат в одну строку. */
+  columns: number | null;
+  /** Свой размер картинки `size` в клетках; `null` — не задан. */
+  size: readonly [number, number] | null;
+  smooth: boolean;
+};
+
+function readPositiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+/** Картинки `files.images` в порядке объявления — «Редактор», «Окно редактора», требование 24; в описании, которое не объект, берутся только имя и умолчания. */
+export function parseProjectImageDescriptions(gameJsonText: string | null): ProjectImageDescription[] {
+  const images = readFilesSection(gameJsonText)?.images;
+  if (images === null || typeof images !== "object" || Array.isArray(images)) return [];
+  return Object.entries(images).map(([name, description]) => {
+    const fields = description !== null && typeof description === "object" && !Array.isArray(description) ? (description as Record<string, unknown>) : {};
+    const size = Array.isArray(fields.size) ? [readPositiveNumber(fields.size[0]), readPositiveNumber(fields.size[1])] : null;
+    return {
+      name,
+      frames: readPositiveNumber(fields.frames),
+      columns: readPositiveNumber(fields.columns),
+      size: size !== null && size[0] !== null && size[1] !== null ? [size[0], size[1]] : null,
+      smooth: fields.smooth === true,
+    };
+  });
+}
+
+/** `scene.cell_pixels` из `game.json` — «Формат игры», требование 31: сколько точек картинки в клетке сцены; нет или не число больше нуля — `null`. */
+export function parseProjectCellPixels(gameJsonText: string | null): number | null {
+  if (gameJsonText === null) return null;
+  try {
+    const scene = (JSON.parse(gameJsonText) as { scene?: unknown } | null)?.scene;
+    return scene !== null && typeof scene === "object" ? readPositiveNumber((scene as { cell_pixels?: unknown }).cell_pixels) : null;
+  } catch {
+    return null;
+  }
+}

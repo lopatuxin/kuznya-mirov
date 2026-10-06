@@ -2,7 +2,7 @@ use js_sys::{Array, Float64Array, JSON, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
 use web_sys::HtmlCanvasElement;
 
-use crate::core::camera::{Camera3d, EditorCamera};
+use crate::core::camera::{Camera3d, EditorCamera, FlatEditorCamera};
 use crate::core::game::Game;
 use crate::core::input::{MouseState, UiQueue};
 use crate::core::math3::Vec3;
@@ -11,7 +11,8 @@ use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
 use crate::core::scene::{
-    CellRange, GroundLayer, LayerView, ObjectTransform, pointer_hit, stamp_hit, terrain_hit,
+    CellRange, GroundLayer, LayerView, ObjectTransform, pointer_hit, recorded_place, stamp_hit,
+    terrain_hit, window_point,
 };
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
@@ -637,6 +638,13 @@ fn js_editor_camera(camera: &EditorCamera) -> JsValue {
     obj.into()
 }
 
+fn js_flat_editor_camera(camera: &FlatEditorCamera) -> JsValue {
+    let obj = Object::new();
+    set(&obj, "center", &js_point(camera.center));
+    set(&obj, "view_height", &JsValue::from_f64(camera.view_height));
+    obj.into()
+}
+
 /// A finite number stored under `key` of a JS object.
 fn js_finite(object: &JsValue, key: &str) -> Option<f64> {
     Reflect::get(object, &JsValue::from_str(key))
@@ -700,6 +708,15 @@ fn parse_editor_camera(c: &JsValue) -> Option<(EditorCamera, bool)> {
     Some((camera, target_z.is_none()))
 }
 
+/// `editor_camera`'s `{center, view_height}` в плоской сцене; `None`, когда `center` не пара чисел
+/// или `view_height` не число больше нуля.
+fn parse_flat_editor_camera(c: &JsValue) -> Option<FlatEditorCamera> {
+    Some(FlatEditorCamera {
+        center: js_finite_pair(c, "center")?,
+        view_height: js_finite(c, "view_height").filter(|height| *height > 0.0)?,
+    })
+}
+
 /// `set_terrain`'s `water`: `{level, color}` или `undefined`. Уровень не число и цвет не строка
 /// доходят до ядра как `NaN` и пустая строка — ядро отвечает на них ошибкой.
 fn parse_water(water: &JsValue) -> Option<(f64, String)> {
@@ -744,8 +761,8 @@ fn draw_rect(
 /// игры»: rendering never changes the world, this just reads it. The layer ordering and fill
 /// choice are `atlas::compose_world_paints`'s job, natively testable; this just turns each result
 /// into the GPU's own `DrawRect`.
-/// «Камера»: this call's own scale/offset — the core camera in a battle, the plain
-/// wall-to-wall letterbox outside one (требование 41). A free function (not an `Engine` method)
+/// «Камера»: this call's own scale/offset — the core camera in a battle, the editor camera outside
+/// one (the whole scene until one is sent; требование 41). A free function (not an `Engine` method)
 /// so `tick`/`step`/`seek`/`step_back` can call it while they already hold `game` mutably
 /// borrowed from `self.game` — a `&self`/`&mut self` method there would conflict with that borrow.
 fn frame_for(game: &Game, battle_view: bool, viewport: [f32; 2]) -> View {
@@ -763,8 +780,7 @@ fn frame_for(game: &Game, battle_view: bool, viewport: [f32; 2]) -> View {
     let (scale, offset) = if battle_view {
         game.camera_frame(viewport)
     } else {
-        let scene_cells = [game.scene.width as f32, game.scene.height as f32];
-        crate::core::scene::letterbox(viewport, scene_cells)
+        game.editor_flat_frame(viewport)
     };
     View::Flat { scale, offset }
 }
@@ -1575,7 +1591,7 @@ impl Engine {
 
     /// «Редактор», требование 16: rebuilds the world from the loaded scene, ready for `draw` —
     /// no partiya, no code, no initial values. Does nothing without a successfully loaded game.
-    /// «Камера», требование 41: вне партии — вся сцена по её пропорциям, камера не действует.
+    /// «Камера», требование 41: вне партии камера игры не действует, сцену показывает камера редактора.
     pub fn show_scene(&mut self) {
         if let Some(game) = self.game.as_mut() {
             game.show_scene();
@@ -1583,8 +1599,8 @@ impl Engine {
         self.battle_view = false;
     }
 
-    /// «Камера»: масштаб и сдвиг этого кадра — камера ядра в партии/повторе, letterbox сцены
-    /// целиком вне партии (требование 41). `None` без загруженной игры.
+    /// «Камера»: масштаб и сдвиг этого кадра — камера ядра в партии/повторе, вне партии камера
+    /// редактора, а до её присылки вся сцена (требование 41). `None` без загруженной игры.
     fn frame(&self) -> Option<View> {
         let game = self.game.as_ref()?;
         let viewport = self.renderer.window_size_css();
@@ -1798,8 +1814,15 @@ impl Engine {
     /// рисуется и щёлкается ею. `target` — `[x, y]`: высота точки вращения берётся из рельефа под ней, или
     /// `[x, y, z]`: точка вращения ровно на этой высоте. Возвращает высоту, которую взяла, `undefined` без
     /// игры или при значении не из чисел. `show_scene`, `play`, `stop` и `set_terrain` её не сбрасывают.
+    /// В плоской сцене камера — `{center: [x, y], view_height}`: середина видимой части и сколько клеток
+    /// видно по высоте; ответ всегда `undefined`.
     pub fn editor_camera(&mut self, c: JsValue) -> Option<f64> {
-        let (game, (camera, on_terrain)) = (self.game.as_mut()?, parse_editor_camera(&c)?);
+        let game = self.game.as_mut()?;
+        if !game.scene.is_3d() {
+            game.set_flat_editor_camera(parse_flat_editor_camera(&c)?);
+            return None;
+        }
+        let (camera, on_terrain) = parse_editor_camera(&c)?;
         let camera = if on_terrain {
             camera.on_terrain(game.world.terrain())
         } else {
@@ -1914,12 +1937,21 @@ impl Engine {
 
     /// «Редактор», «Вызовы движка»: камера редактора, что видит объект `id` целиком при нынешних
     /// повороте и наклоне, а без номера — всю землю под углом камеры игры; `{target, yaw, pitch,
-    /// distance}`, `target` — три числа `[x, y, z]`, или `undefined` в плоской сцене, без игры, без объекта или его `position` и `size`.
+    /// distance}`, `target` — три числа `[x, y, z]`, или `undefined` без игры, без объекта или его `position` и `size`.
+    /// В плоской сцене — `{center: [x, y], view_height}`: без номера вся сцена, с номером — место, где
+    /// нарисован объект, с полями.
     pub fn fit_camera(&self, id: Option<u32>) -> JsValue {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
-        match game.fit_camera(id, self.renderer.window_size_css()) {
+        let viewport = self.renderer.window_size_css();
+        if !game.scene.is_3d() {
+            return match game.fit_flat_camera(id, viewport) {
+                Some(camera) => js_flat_editor_camera(&camera),
+                None => JsValue::UNDEFINED,
+            };
+        }
+        match game.fit_camera(id, viewport) {
             Some(camera) => js_editor_camera(&camera),
             None => JsValue::UNDEFINED,
         }
@@ -1940,15 +1972,40 @@ impl Engine {
     }
 
     /// «Редактор», «Вызовы движка»: точка холста для места сцены `(x, y)` на высоте `z` клеток той
-    /// же камерой — `[x, y]`; `undefined` в плоской сцене или за камерой.
+    /// же камерой — `[x, y]`; `undefined` за камерой. В плоской сцене `z` не учитывается, а точка —
+    /// для объекта с `parallax` 1, по кадру, которым сцена видна сейчас.
     pub fn screen_point(&self, x: f64, y: f64, z: f64) -> JsValue {
         match self.frame() {
             Some(View::Space(camera)) => match camera.project([x, y, z]) {
                 Some(point) => js_point(point),
                 None => JsValue::UNDEFINED,
             },
-            _ => JsValue::UNDEFINED,
+            Some(View::Flat { scale, offset }) => js_point(window_point(scale, offset, [x, y])),
+            None => JsValue::UNDEFINED,
         }
+    }
+
+    /// «Редактор», «Вызовы движка»: записанное место сцены, которое объект с этим `parallax` рисует в
+    /// точке холста `(x, y)` (CSS-пиксели), — `[x, y]`, по кадру, которым плоская сцена видна сейчас
+    /// (камера редактора или камера игры на паузе). К краям сцены не прижимается; `parallax` меньше
+    /// нуля — как 0. `undefined` в трёхмерной сцене, без игры или при значении не из чисел.
+    pub fn scene_point(&self, x: f64, y: f64, parallax: f64) -> JsValue {
+        let (Some(game), Some(View::Flat { scale, offset })) = (self.game.as_ref(), self.frame())
+        else {
+            return JsValue::UNDEFINED;
+        };
+        if ![x, y, parallax].iter().all(|v| v.is_finite()) {
+            return JsValue::UNDEFINED;
+        }
+        let viewport = self.renderer.window_size_css();
+        js_point(recorded_place(
+            &game.scene,
+            scale,
+            offset,
+            viewport,
+            [x, y],
+            parallax,
+        ))
     }
 
     /// Queued, not applied immediately — judged against whichever screen is active once `tick`

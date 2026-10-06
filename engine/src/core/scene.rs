@@ -346,6 +346,34 @@ fn drawn_rect(
     })
 }
 
+/// «Редактор», «Вызовы движка», `scene_point`: записанное место, которое объект с этим `parallax`
+/// рисует в точке окна `window` (CSS-точки) в кадре `scale`/`offset`. К краям сцены не прижимается;
+/// `parallax` меньше нуля — как 0.
+pub fn recorded_place(
+    scene: &SceneConfig,
+    scale: f32,
+    offset: [f32; 2],
+    viewport: [f32; 2],
+    window: [f64; 2],
+    parallax: f64,
+) -> Vec2 {
+    let shift = LayerView::of_frame(scene, scale, offset, viewport).displacement(parallax.max(0.0));
+    let scale = (scale as f64).max(1e-6);
+    [
+        (window[0] - offset[0] as f64) / scale - shift[0],
+        (window[1] - offset[1] as f64) / scale - shift[1],
+    ]
+}
+
+/// «Редактор», «Вызовы движка», `screen_point` в плоской сцене: точка окна (CSS-точки) для клетки
+/// сцены `cell` в кадре `scale`/`offset`, слой — `parallax` 1.
+pub fn window_point(scale: f32, offset: [f32; 2], cell: Vec2) -> Vec2 {
+    [
+        offset[0] as f64 + cell[0] * scale as f64,
+        offset[1] as f64 + cell[1] * scale as f64,
+    ]
+}
+
 /// «Редактор», требование 30: moves an already-loaded object to `position`, in the world alone —
 /// the scene it was built from and the files on disk stay untouched, so the next `show_scene`
 /// rebuilds the world from the unchanged file. Does nothing without that object or without its
