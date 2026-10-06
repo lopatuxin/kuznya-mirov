@@ -32,6 +32,10 @@ pub const SHAPE: PropertyId = 19;
 pub const HEIGHT: PropertyId = 20;
 /// «Рельеф»: настил — мост, помост, ступень лестницы.
 pub const DECK: PropertyId = 21;
+/// «Мир на экране» → «Слои глубины»: доля сдвига камеры, на которую объект уходит по экрану.
+pub const PARALLAX: PropertyId = 22;
+/// «Слои глубины»: повтор рисунка объекта влево и вправо до краёв окна.
+pub const REPEAT_X: PropertyId = 23;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -56,6 +60,8 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("shape", PropKind::Shape),
     ("height", PropKind::Number),
     ("deck", PropKind::Flag),
+    ("parallax", PropKind::Number),
+    ("repeat_x", PropKind::Flag),
 ];
 
 #[derive(Debug, Clone)]
@@ -195,6 +201,10 @@ mod tests {
         assert_eq!(table.kind(HEIGHT), PropKind::Number);
         assert_eq!(table.resolve("deck"), Some(DECK));
         assert_eq!(table.kind(DECK), PropKind::Flag);
+        assert_eq!(table.resolve("parallax"), Some(PARALLAX));
+        assert_eq!(table.kind(PARALLAX), PropKind::Number);
+        assert_eq!(table.resolve("repeat_x"), Some(REPEAT_X));
+        assert_eq!(table.kind(REPEAT_X), PropKind::Flag);
     }
 
     #[test]

@@ -31,6 +31,8 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "walk_to",
   "walk_speed",
   "on_click",
+  "parallax",
+  "repeat_x",
 ];
 
 /**

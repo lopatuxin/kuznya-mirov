@@ -5,7 +5,7 @@
 
 use super::camera::Camera3d;
 use super::property::{self, PropertyTable};
-use super::scene::{self, SceneConfig};
+use super::scene::{self, LayerView, SceneConfig};
 use super::screens::{
     self, Align, Anchor, FontId, MaxSpec, WorldColor, WorldElement, WorldElementKind, WorldTextPart,
 };
@@ -110,14 +110,17 @@ fn resolve_max(max: &MaxSpec, world: &World, id: u32) -> Option<f64> {
 /// требование 14 — между собой элементы идут в порядке списка, а над разными объектами одного
 /// элемента — в порядке их рисования (`scene::draw_order`). Возвращает полоски и надписи отдельными
 /// списками, каждый уже в этом самом порядке: вызывающий кладёт все полоски мира раньше всего
-/// текста в мире и получает верный порядок без дополнительной сортировки.
+/// текста в мире и получает верный порядок без дополнительной сортировки. «Слои глубины»,
+/// требование 18: над объектом слоя — над местом, где он нарисован, с тем же сдвигом, и один раз,
+/// без копий `repeat_x`.
 pub fn compute_world_draws(
     world: &World,
     scene: &SceneConfig,
     properties: &PropertyTable,
     elements: &[WorldElement],
+    layers: &LayerView,
 ) -> (Vec<BarDraw>, Vec<LabelDraw>) {
-    compute_draws(world, scene, properties, elements, None)
+    compute_draws(world, scene, properties, elements, None, layers)
 }
 
 /// «Трёхмерная сцена» → «Мышь и надписи», требования 24–25: то же для трёхмерной сцены, но
@@ -132,7 +135,14 @@ pub fn compute_world_draws_3d(
     elements: &[WorldElement],
     camera: &Camera3d,
 ) -> (Vec<BarDraw>, Vec<LabelDraw>) {
-    compute_draws(world, scene, properties, elements, Some(camera))
+    compute_draws(
+        world,
+        scene,
+        properties,
+        elements,
+        Some(camera),
+        &LayerView::default(),
+    )
 }
 
 /// Прямоугольник объекта на экране в точках окна — `[x, y]` и `[ширина, высота]`.
@@ -175,6 +185,7 @@ fn compute_draws(
     properties: &PropertyTable,
     elements: &[WorldElement],
     camera: Option<&Camera3d>,
+    layers: &LayerView,
 ) -> (Vec<BarDraw>, Vec<LabelDraw>) {
     let mut bars = Vec::new();
     let mut labels = Vec::new();
@@ -193,11 +204,15 @@ fn compute_draws(
                 continue;
             };
             let (position, obj_size, cell) = match camera {
-                None => (
-                    world.vec2(id, property::POSITION).expect("filtered above"),
-                    world.vec2(id, property::SIZE).expect("filtered above"),
-                    1.0,
-                ),
+                None => {
+                    let position = world.vec2(id, property::POSITION).expect("filtered above");
+                    let shift = layers.displacement(scene::parallax(world, id));
+                    (
+                        [position[0] + shift[0], position[1] + shift[1]],
+                        world.vec2(id, property::SIZE).expect("filtered above"),
+                        1.0,
+                    )
+                }
                 Some(camera) => {
                     let Some((position, size)) = screen_rectangle(world, id, camera) else {
                         continue;
@@ -368,8 +383,64 @@ mod tests {
         let scene = scene_config();
         let mut element = bar_element(hp, MaxSpec::Const(1.0), None);
         element.placement = placement(Anchor::Top, [0.0, 0.0], [2.0, 0.4]);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars[0].fill.size, [2.0, 0.4]);
+    }
+
+    /// «Слои глубины», требование 18: полоска над объектом слоя — над местом, где он нарисован, с
+    /// тем же сдвигом; у объекта на `parallax` 1 она остаётся на записанном месте.
+    #[test]
+    fn a_bar_over_a_depth_layer_object_is_shifted_with_it() {
+        let mut properties = PropertyTable::new();
+        let hp = properties.declare_author("hp", PropKind::Number).unwrap();
+        let mut world = World::new(&properties);
+        let layer = object_with_rect(&mut world, [10.0, 10.0], [4.0, 2.0]);
+        world.set_number(layer, hp, 1.0);
+        world.set_number(layer, property::PARALLAX, 0.25);
+        let plain = object_with_rect(&mut world, [10.0, 10.0], [4.0, 2.0]);
+        world.set_number(plain, hp, 1.0);
+        let scene = scene_config();
+        let layers = LayerView {
+            shift: [20.0, 6.0],
+            window_cells: 0.0,
+        };
+        let mut element = bar_element(hp, MaxSpec::Const(1.0), None);
+        element.placement = placement(Anchor::TopLeft, [0.0, 0.0], [2.0, 0.5]);
+        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element], &layers);
+        assert_eq!(bars.len(), 2);
+        // Середина полоски — в углу объекта, левый верхний угол полоски на полразмера левее и выше.
+        assert_eq!(bars[0].fill.position, [24.0, 14.25], "сдвиг 15 и 4,5");
+        assert_eq!(
+            bars[1].fill.position,
+            [9.0, 9.75],
+            "parallax 1 — без сдвига"
+        );
+    }
+
+    /// «Слои глубины», требование 18: у `repeat_x` надпись одна — над самим объектом, без копий.
+    #[test]
+    fn a_repeating_object_gets_one_element_not_one_per_copy() {
+        let mut properties = PropertyTable::new();
+        let hp = properties.declare_author("hp", PropKind::Number).unwrap();
+        let mut world = World::new(&properties);
+        let layer = object_with_rect(&mut world, [10.0, 10.0], [4.0, 2.0]);
+        world.set_number(layer, hp, 1.0);
+        world.set_number(layer, property::PARALLAX, 0.5);
+        world.set_flag(layer, property::REPEAT_X, true);
+        let scene = scene_config();
+        let layers = LayerView {
+            shift: [0.0, 0.0],
+            window_cells: 20.0,
+        };
+        let element = bar_element(hp, MaxSpec::Const(1.0), None);
+        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element], &layers);
+        assert_eq!(bars.len(), 1);
     }
 
     #[test]
@@ -381,7 +452,13 @@ mod tests {
         world.set_number(obj, hp, 1.0);
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let (bars, labels) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, labels) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert!(bars.is_empty());
         assert!(labels.is_empty());
     }
@@ -396,7 +473,13 @@ mod tests {
         world.set_number(obj, hp, 1.0);
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars.len(), 1);
     }
 
@@ -411,7 +494,13 @@ mod tests {
 
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(10.0), None);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars.len(), 1);
     }
 
@@ -423,18 +512,34 @@ mod tests {
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(10.0), None);
 
-        let (bars, _) =
-            compute_world_draws(&world, &scene, &properties, std::slice::from_ref(&element));
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            std::slice::from_ref(&element),
+            &LayerView::default(),
+        );
         assert!(bars.is_empty(), "нет объекта — нет элемента");
 
         let id = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
         world.set_number(id, hp, 5.0);
-        let (bars, _) =
-            compute_world_draws(&world, &scene, &properties, std::slice::from_ref(&element));
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            std::slice::from_ref(&element),
+            &LayerView::default(),
+        );
         assert_eq!(bars.len(), 1, "объект создан — элемент появился");
 
         world.delete(id);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert!(bars.is_empty(), "объект удалён — элемента больше нет");
     }
 
@@ -451,7 +556,13 @@ mod tests {
         world.set_number(obj, hp, 45.0);
         world.set_number(obj, max_hp, 30.0);
         let element = bar_element(hp, MaxSpec::Property(max_hp), None);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars[0].fill.size[0], 2.0); // full width (element width is 2.0 cells)
     }
 
@@ -468,7 +579,13 @@ mod tests {
         world.set_number(obj, hp, -5.0);
         world.set_number(obj, max_hp, 30.0);
         let element = bar_element(hp, MaxSpec::Property(max_hp), None);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars[0].fill.size[0], 0.0);
     }
 
@@ -481,7 +598,13 @@ mod tests {
         let obj = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
         world.set_number(obj, hp, 5.0);
         let element = bar_element(hp, MaxSpec::Const(10.0), None);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars[0].fill.size[0], 1.0); // half of the 2.0-cell width
     }
 
@@ -499,7 +622,13 @@ mod tests {
         world.set_number(obj, max_hp, 0.0);
         let back = [0.0, 0.0, 0.0, 0.5];
         let element = bar_element(hp, MaxSpec::Property(max_hp), Some(back));
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars[0].fill.size[0], 0.0);
         assert_eq!(bars[0].back.map(|b| b.color), Some(back));
     }
@@ -516,7 +645,13 @@ mod tests {
         object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]); // neither hp nor max_hp set
         let mut element = bar_element(hp, MaxSpec::Property(max_hp), Some([0.0; 4]));
         element.for_ = Selector::default();
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert!(bars.is_empty());
     }
 
@@ -529,7 +664,13 @@ mod tests {
         let obj = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
         world.set_number(obj, hp, 1.0);
         let element = bar_element(hp, MaxSpec::Const(1.0), Some([0.0, 0.0, 0.0, 0.5]));
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars[0].back.unwrap().size, [2.0, 0.5]);
     }
 
@@ -574,7 +715,13 @@ mod tests {
                 by: danger,
             });
             element.for_ = selector_has(&[danger]);
-            let (_, labels) = compute_world_draws(&world, &scene, &properties, &[element]);
+            let (_, labels) = compute_world_draws(
+                &world,
+                &scene,
+                &properties,
+                &[element],
+                &LayerView::default(),
+            );
             assert_eq!(labels[0].color, expected, "danger={danger_value}");
         }
     }
@@ -592,7 +739,13 @@ mod tests {
             colors: vec![[1.0, 1.0, 1.0, 1.0]],
             by: danger,
         });
-        let (bars, labels) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, labels) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert!(bars.is_empty());
         assert!(labels.is_empty());
     }
@@ -638,7 +791,13 @@ mod tests {
                 align: Align::Center,
             },
         };
-        let (_, labels) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (_, labels) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(labels[0].text, "Ур. 3/1.5/да/boss/");
         assert_eq!(labels[0].font, 2);
         assert_eq!(labels[0].font_size, 0.35);
@@ -663,7 +822,13 @@ mod tests {
         world.set_number(upper, hp, 1.0);
 
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element]);
+        let (bars, _) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(bars.len(), 2);
         // The object drawn on top (`lower`, bigger bottom edge) is pushed last — «полоска
         // объекта, нарисованного поверх, лежит поверх». Center anchor, element size [2.0, 0.5]:
@@ -695,7 +860,13 @@ mod tests {
                 align: Align::Left,
             },
         };
-        let (bars, labels) = compute_world_draws(&world, &scene, &properties, &[label, bar]);
+        let (bars, labels) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[label, bar],
+            &LayerView::default(),
+        );
         assert_eq!(bars.len(), 1);
         assert_eq!(labels.len(), 1);
     }
@@ -710,7 +881,13 @@ mod tests {
         world.set_number(obj, hp, 1.0);
         let before = format!("{world:?}");
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let _ = compute_world_draws(&world, &scene, &properties, &[element]);
+        let _ = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
         assert_eq!(format!("{world:?}"), before);
     }
 
@@ -739,7 +916,13 @@ mod tests {
             },
         };
         let elements = [bar, label];
-        let (bars, labels) = compute_world_draws(&world, &scene, &properties, &elements);
+        let (bars, labels) = compute_world_draws(
+            &world,
+            &scene,
+            &properties,
+            &elements,
+            &LayerView::default(),
+        );
         assert_eq!(bars.len(), 200);
         assert_eq!(labels.len(), 200);
         // Лучший из нескольких замеров после прогрева выше: соседние тесты, идущие параллельно,
@@ -747,7 +930,13 @@ mod tests {
         let best = (0..10)
             .map(|_| {
                 let start = Instant::now();
-                black_box(compute_world_draws(&world, &scene, &properties, &elements));
+                black_box(compute_world_draws(
+                    &world,
+                    &scene,
+                    &properties,
+                    &elements,
+                    &LayerView::default(),
+                ));
                 start.elapsed()
             })
             .min()

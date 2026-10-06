@@ -1,6 +1,6 @@
 use super::property;
 use super::surface::{self, Lies};
-use super::value::ImageId;
+use super::value::{ImageId, Vec2};
 use super::world::World;
 
 /// «Мир на экране» → «Земля», требования 14–17: one `ground` layer — `image` is a declared image
@@ -224,6 +224,63 @@ fn bottom_edge(world: &World, id: u32) -> f64 {
     }
 }
 
+/// «Мир на экране» → «Слои глубины», требование 4: `parallax` объекта таким, каким его рисуют, —
+/// не меньше нуля, без свойства — 1.
+pub fn parallax(world: &World, id: u32) -> f64 {
+    world
+        .number_like(id, property::PARALLAX)
+        .unwrap_or(1.0)
+        .max(0.0)
+}
+
+/// «Слои глубины», требование 17: объект с `parallax`, отличным от 1, только рисуется.
+pub fn is_depth_layer(world: &World, id: u32) -> bool {
+    parallax(world, id) != 1.0
+}
+
+/// «Слои глубины», требования 3–4, 10: как камера этого кадра видит сцену — одна точка отсчёта и
+/// ширина окна для рисования, выбора и надписей, чтобы редактор видел то же, что игра.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct LayerView {
+    /// Середина камеры минус середина сцены, клеток; нули — все объекты на записанных местах.
+    pub shift: Vec2,
+    /// Ширина окна в клетках; 0 — копий `repeat_x` не нужно.
+    pub window_cells: f64,
+}
+
+impl LayerView {
+    /// Середина камеры — `(окно / 2 − сдвиг) / масштаб` по каждой оси: масштаб и сдвиг те самые, с
+    /// которыми нарисован кадр, так что прижатие камеры к краям сцены уже учтено.
+    pub fn of_frame(
+        scene: &SceneConfig,
+        scale: f32,
+        offset: [f32; 2],
+        viewport: [f32; 2],
+    ) -> LayerView {
+        if scale <= 0.0 {
+            return LayerView::default();
+        }
+        let scale = scale as f64;
+        let camera_middle =
+            |axis: usize| (viewport[axis] as f64 / 2.0 - offset[axis] as f64) / scale;
+        LayerView {
+            shift: [
+                camera_middle(0) - scene.width as f64 / 2.0,
+                camera_middle(1) - scene.height as f64 / 2.0,
+            ],
+            window_cells: viewport[0] as f64 / scale,
+        }
+    }
+
+    /// Сдвиг объекта с этим `parallax` от записанного места, клеток.
+    pub fn displacement(&self, parallax: f64) -> Vec2 {
+        [
+            self.shift[0] * (1.0 - parallax),
+            self.shift[1] * (1.0 - parallax),
+        ]
+    }
+}
+
 /// A rectangle in canvas CSS pixels, top-left origin — `object_rect`'s result, handed to the
 /// editor as `{x, y, width, height}`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -247,26 +304,43 @@ pub fn object_rect(
 ) -> Option<CanvasRect> {
     let scene_cells = [scene.width as f32, scene.height as f32];
     let (scale, offset) = letterbox(viewport, scene_cells);
-    object_rect_frame(world, id, scale, offset)
+    object_rect_frame(world, scene, id, scale, offset, viewport)
 }
 
 /// Same as `object_rect`, given an already-computed frame — «Камера», требование 42: the wasm
 /// layer computes the camera's own scale/offset once per call and passes it here instead of
-/// letterboxing the whole scene.
+/// letterboxing the whole scene. «Слои глубины», требование 20: прямоугольник — там, где нарисован
+/// сам объект, без копий `repeat_x`; `viewport` — окно, которым считан кадр.
 pub fn object_rect_frame(
     world: &World,
+    scene: &SceneConfig,
     id: u32,
     scale: f32,
     offset: [f32; 2],
+    viewport: [f32; 2],
 ) -> Option<CanvasRect> {
     if id as usize >= world.slot_count() {
         return None;
     }
+    let layers = LayerView::of_frame(scene, scale, offset, viewport);
+    drawn_rect(world, id, &layers, scale, offset)
+}
+
+/// Прямоугольник объекта в точках окна там, где он нарисован в этом кадре: от записанного места на
+/// сдвиг слоя («Слои глубины», требование 4).
+fn drawn_rect(
+    world: &World,
+    id: u32,
+    layers: &LayerView,
+    scale: f32,
+    offset: [f32; 2],
+) -> Option<CanvasRect> {
     let position = world.vec2(id, property::POSITION)?;
     let size = world.vec2(id, property::SIZE)?;
+    let shift = layers.displacement(parallax(world, id));
     Some(CanvasRect {
-        x: offset[0] + position[0] as f32 * scale,
-        y: offset[1] + position[1] as f32 * scale,
+        x: offset[0] + (position[0] + shift[0]) as f32 * scale,
+        y: offset[1] + (position[1] + shift[1]) as f32 * scale,
         width: size[0] as f32 * scale,
         height: size[1] as f32 * scale,
     })
@@ -382,17 +456,21 @@ pub fn object_at(
 ) -> Option<u32> {
     let scene_cells = [scene.width as f32, scene.height as f32];
     let (scale, offset) = letterbox(viewport, scene_cells);
-    object_at_frame(world, scene, point, scale, offset)
+    object_at_frame(world, scene, point, scale, offset, viewport)
 }
 
-/// Same as `object_at`, given an already-computed frame — see `object_rect_frame`.
+/// Same as `object_at`, given an already-computed frame — see `object_rect_frame`. «Слои глубины»,
+/// требование 19: объект слоя выбирается там, где он нарисован в этом кадре; у `repeat_x` — по
+/// любой копии, а копии через `size.x` покрывают окно по ширине целиком.
 pub fn object_at_frame(
     world: &World,
     scene: &SceneConfig,
     point: [f32; 2],
     scale: f32,
     offset: [f32; 2],
+    viewport: [f32; 2],
 ) -> Option<u32> {
+    let layers = LayerView::of_frame(scene, scale, offset, viewport);
     let mut best: Option<u32> = None;
     for id in world.ids() {
         let has_fill = world.color(id, property::COLOR).is_some()
@@ -400,14 +478,12 @@ pub fn object_at_frame(
         if !has_fill {
             continue;
         }
-        let Some(rect) = object_rect_frame(world, id, scale, offset) else {
+        let Some(rect) = drawn_rect(world, id, &layers, scale, offset) else {
             continue;
         };
-        if point[0] < rect.x
-            || point[1] < rect.y
-            || point[0] >= rect.x + rect.width
-            || point[1] >= rect.y + rect.height
-        {
+        let repeats = rect.width > 0.0 && world.flag(id, property::REPEAT_X);
+        let across = repeats || (point[0] >= rect.x && point[0] < rect.x + rect.width);
+        if !across || point[1] < rect.y || point[1] >= rect.y + rect.height {
             continue;
         }
         let replace = match best {
@@ -665,7 +741,7 @@ pub fn on_click_target(
 ) -> Option<u32> {
     let mut best: Option<u32> = None;
     for id in world.ids() {
-        if !world.has(id, property::ON_CLICK) {
+        if !world.has(id, property::ON_CLICK) || is_depth_layer(world, id) {
             continue;
         }
         let (Some(p), Some(s)) = (

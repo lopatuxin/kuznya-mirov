@@ -14,13 +14,13 @@ const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
 
 /**
  * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `deck` («Рельеф», требование 46), `camera_follows`,
- * `flip_x` (Фаза 14, требование 20) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
+ * `flip_x` (Фаза 14, требование 20), `repeat_x` (Фаза 28, требование 22) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
  * `rotation` (0/90/180/270 в плоской сцене; в трёхмерной — любое число, текстовое поле, «Фаза 15», требование 29),
  * `shape` (`box`/`cylinder`/`capsule`/`sphere`), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; объявленное свойство
  * автора вида `text` — строковое поле без разбора JSON («Таблицы данных», требование 40); остальное —
  * текст. Значение, которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), —
  * текстовое поле. `walk_to` и `walk_speed` (Фаза 11, требование 45) — как другие пары и числа,
- * `on_click` — как `keys`, а `height` — как другие числа: всё это уже текст по умолчанию, отдельного вида не заводится.
+ * `on_click` — как `keys`, а `height` и `parallax` (Фаза 28, требование 22) — как другие числа: всё это уже текст по умолчанию, отдельного вида не заводится.
  */
 export function propertyFieldKind(
   key: string,
@@ -30,7 +30,7 @@ export function propertyFieldKind(
   isThreeDimensionalScene: boolean,
 ): PropertyFieldKind {
   if (authorPropertyKinds[key] === "text") return { kind: "raw-text" };
-  if (key === "collides" || key === "deck" || key === "camera_follows" || key === "flip_x" || authorPropertyKinds[key] === "flag") {
+  if (key === "collides" || key === "deck" || key === "camera_follows" || key === "flip_x" || key === "repeat_x" || authorPropertyKinds[key] === "flag") {
     return typeof value === "boolean" ? { kind: "checkbox" } : { kind: "text" };
   }
   if (key === "image") {

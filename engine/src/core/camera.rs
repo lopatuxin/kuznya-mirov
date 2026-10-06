@@ -11,11 +11,11 @@ use super::value::Vec2;
 use super::world::World;
 
 /// «Камера», требование 5: объект камеры — живой объект с `camera_follows: true`, `position` и
-/// `size`, с меньшим номером.
+/// `size`, с меньшим номером. «Слои глубины», требование 17: объект слоя камеру не ведёт.
 fn camera_object(world: &World) -> Option<u32> {
     world
         .ids()
-        .filter(|&id| world.flag(id, property::CAMERA_FOLLOWS))
+        .filter(|&id| world.flag(id, property::CAMERA_FOLLOWS) && !scene::is_depth_layer(world, id))
         .filter(|&id| world.has(id, property::POSITION) && world.has(id, property::SIZE))
         .min()
 }

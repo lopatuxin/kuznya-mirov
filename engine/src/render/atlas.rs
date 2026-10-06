@@ -9,7 +9,7 @@
 //! built from its result (see `super::gpu`, wasm32-only).
 
 use crate::core::property;
-use crate::core::scene::{self, CellRange, GroundLayer, SceneConfig};
+use crate::core::scene::{self, CellRange, GroundLayer, LayerView, SceneConfig};
 use crate::core::screens::Fill;
 use crate::core::time::frame_index;
 use crate::core::value::{ImageId, Vec2};
@@ -368,7 +368,8 @@ pub struct RectPaint {
 /// and a `color` or `image` sorts into one list by «Порядок рисования» (`scene::draw_order`) — a
 /// color fill and an image fill mixed in the same order — «Картинки» → «Атлас и отрисовка»: a
 /// color fill is the atlas's white pixel, an image fill samples its current frame, so the two
-/// interleave exactly as if both were images.
+/// interleave exactly as if both were images. «Слои глубины», требования 4, 10–15: каждый рисунок
+/// сдвинут на сдвиг слоя объекта, у `repeat_x` на его месте в порядке рисования идут и копии.
 pub fn compose_world_paints(
     world: &World,
     scene: &SceneConfig,
@@ -376,6 +377,7 @@ pub fn compose_world_paints(
     elapsed_steps: f64,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
+    layers: &LayerView,
 ) -> Vec<RectPaint> {
     let three_d = world.three_d();
     // «Трёхмерная сцена», требование 19: фигуры рисует свой проход, плоскими прямоугольниками на земле
@@ -390,10 +392,15 @@ pub fn compose_world_paints(
         })
         .collect();
     ordered.sort_by(|&a, &b| scene::draw_order(world, scene, a, b));
+    let camera_middle = scene.width as f64 / 2.0 + layers.shift[0];
+    let window = [
+        camera_middle - layers.window_cells / 2.0,
+        camera_middle + layers.window_cells / 2.0,
+    ];
 
     ordered
         .into_iter()
-        .map(|id| {
+        .flat_map(|id| {
             let p = world.vec2(id, property::POSITION).expect("filtered above");
             let s = world.vec2(id, property::SIZE).expect("filtered above");
             let fill = match world.image(id, property::IMAGE) {
@@ -452,7 +459,7 @@ pub fn compose_world_paints(
                 }
                 Fill::Color(_) => ([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32]),
             };
-            RectPaint {
+            let paint = RectPaint {
                 position,
                 size,
                 color,
@@ -462,9 +469,47 @@ pub fn compose_world_paints(
                 flip_x,
                 turn,
                 object: Some(id),
-            }
+            };
+            layered_paints(world, id, paint, s[0], layers, window)
         })
         .collect()
+}
+
+/// «Слои глубины», требования 4, 10–14: рисунок объекта сдвинут на сдвиг слоя; у `repeat_x` к нему
+/// добавлены копии через `size.x` объекта — каждая, чей нарисованный прямоугольник хоть частью
+/// попадает в окно по ширине (`window` — его края в клетках сцены). Копии идут слева направо, сам
+/// объект — на своём месте среди них, а вне окна — первым.
+fn layered_paints(
+    world: &World,
+    id: u32,
+    mut paint: RectPaint,
+    size_x: f64,
+    layers: &LayerView,
+    window: [f64; 2],
+) -> impl Iterator<Item = RectPaint> {
+    let shift = layers.displacement(scene::parallax(world, id));
+    paint.position[0] += shift[0] as f32;
+    paint.position[1] += shift[1] as f32;
+    let repeats = size_x > 0.0 && window[1] > window[0] && world.flag(id, property::REPEAT_X);
+    let (first, last) = if repeats {
+        let (left, width) = (paint.position[0] as f64, paint.size[0] as f64);
+        (
+            ((window[0] - left - width) / size_x).floor() as i64 + 1,
+            ((window[1] - left) / size_x).ceil() as i64 - 1,
+        )
+    } else {
+        (0, -1)
+    };
+    let own_is_outside = !(first..=last).contains(&0);
+    own_is_outside
+        .then_some(0)
+        .into_iter()
+        .chain(first..=last)
+        .map(move |copy| {
+            let mut painted = paint;
+            painted.position[0] += (copy as f64 * size_x) as f32;
+            painted
+        })
 }
 
 /// «Картинки» → «Картинка своего размера», требование 9: rotates `v` by `quarters` (0–3)
@@ -961,7 +1006,15 @@ mod tests {
         }];
 
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         assert_eq!(paints.len(), 2, "{paints:?}");
         assert_eq!(paints[0].color, [1.0, 0.0, 0.0, 1.0]);
         assert_eq!(paints[0].atlas_rect, WHITE_PIXEL);
@@ -1013,7 +1066,15 @@ mod tests {
         world.set_color(color_obj, property::COLOR, [1.0, 1.0, 1.0, 1.0]);
 
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         let smooth: Vec<bool> = paints.iter().map(|p| p.smooth).collect();
         assert_eq!(smooth, vec![true, false, false], "{paints:?}");
     }
@@ -1050,7 +1111,15 @@ mod tests {
         object(Some(-1.0));
 
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         let alpha: Vec<f32> = paints.iter().map(|p| p.color[3]).collect();
         assert_eq!(alpha, vec![0.5, 1.0, 1.0, 1.0, 0.0], "{alpha:?}");
     }
@@ -1198,8 +1267,15 @@ mod tests {
 
         // `elapsed_steps` is nonzero on purpose: frame_by must ignore it entirely.
         let scene = test_scene();
-        let paints =
-            compose_world_paints(&world, &scene, world.ids(), 999.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            999.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         assert_eq!(
             paints[0].atlas_rect,
             AtlasRect {
@@ -1494,7 +1570,15 @@ mod tests {
             sheet: 0,
         }];
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         assert_eq!(paints.len(), 1);
         assert!((paints[0].position[0] - 9.5).abs() < 1e-5, "{paints:?}");
         assert!((paints[0].position[1] - 4.6).abs() < 1e-5, "{paints:?}");
@@ -1532,8 +1616,15 @@ mod tests {
                 sheet: 0,
             }];
             let scene = test_scene();
-            let paints =
-                compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+            let paints = compose_world_paints(
+                &world,
+                &scene,
+                world.ids(),
+                0.0,
+                &images,
+                &atlas_rects,
+                &LayerView::default(),
+            );
             assert!(
                 (paints[0].position[0] - expected_top_left[0]).abs() < 1e-5
                     && (paints[0].position[1] - expected_top_left[1]).abs() < 1e-5,
@@ -1559,7 +1650,15 @@ mod tests {
             sheet: 0,
         }];
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         assert_eq!(paints[0].position, [3.0, 4.0]);
         assert_eq!(paints[0].size, [2.0, 5.0]);
     }
@@ -1589,8 +1688,15 @@ mod tests {
         for (degrees, expected_pos, expected_size) in expectations {
             let mut world = World::new(&properties);
             one_sized_object(&mut world, [0.0, 0.0], [4.0, 2.0], Some(degrees));
-            let paints =
-                compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+            let paints = compose_world_paints(
+                &world,
+                &scene,
+                world.ids(),
+                0.0,
+                &images,
+                &atlas_rects,
+                &LayerView::default(),
+            );
             assert!(
                 (paints[0].position[0] - expected_pos[0]).abs() < 1e-4
                     && (paints[0].position[1] - expected_pos[1]).abs() < 1e-4,
@@ -1639,7 +1745,15 @@ mod tests {
             sheet: 0,
         }];
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         assert_eq!(paints.len(), 1);
         assert!((paints[0].position[0] - 8.5).abs() < 1e-5, "{paints:?}");
         assert!((paints[0].position[1] - 4.5).abs() < 1e-5, "{paints:?}");
@@ -1677,8 +1791,15 @@ mod tests {
                 sheet: 0,
             }];
             let scene = test_scene();
-            let paints =
-                compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+            let paints = compose_world_paints(
+                &world,
+                &scene,
+                world.ids(),
+                0.0,
+                &images,
+                &atlas_rects,
+                &LayerView::default(),
+            );
             assert!(
                 (paints[0].position[0] - expected_top_left[0]).abs() < 1e-5
                     && (paints[0].position[1] - expected_top_left[1]).abs() < 1e-5,
@@ -1707,7 +1828,15 @@ mod tests {
             sheet: 0,
         }];
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         assert!((paints[0].position[0] - 0.0).abs() < 1e-4, "{paints:?}");
         assert!((paints[0].position[1] - 2.0).abs() < 1e-4, "{paints:?}");
         assert!((paints[0].size[0] - 3.0).abs() < 1e-4, "{paints:?}");
@@ -1732,7 +1861,15 @@ mod tests {
             sheet: 0,
         }];
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &images, &atlas_rects);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        );
         assert_eq!(paints[0].position, [3.0, 4.0]);
         assert_eq!(paints[0].size, [2.0, 5.0]);
         assert!(paints[0].flip_x);
@@ -1751,11 +1888,101 @@ mod tests {
         world.set_flag(id, property::FLIP_X, true);
 
         let scene = test_scene();
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &[], &[]);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &[],
+            &[],
+            &LayerView::default(),
+        );
         assert_eq!(paints.len(), 1);
         assert!(!paints[0].flip_x, "{paints:?}");
         assert_eq!(paints[0].position, [1.0, 1.0]);
         assert_eq!(paints[0].size, [2.0, 2.0]);
+    }
+
+    // -----------------------------------------------------------------------------------------
+    // Фаза 28 — слои глубины
+    // -----------------------------------------------------------------------------------------
+
+    /// «Слои глубины», требование 11: копия `repeat_x` — тот же рисунок целиком: картинка своего
+    /// размера с `anchor`, `offset` и `flip_x` сдвинута на столько клеток, на сколько копия от
+    /// объекта; копии идут через `size.x` объекта, а не через ширину картинки.
+    #[test]
+    fn repeat_x_copies_of_a_sized_flipped_image_move_as_a_whole() {
+        let properties = PropertyTable::new();
+        let images = vec![sized_image([6.0, 3.0], Anchor::Bottom, [0.5, 0.0])];
+        let atlas_rects = vec![AtlasRect {
+            x: 0,
+            y: 0,
+            w: 10,
+            h: 10,
+            sheet: 0,
+        }];
+        let scene = test_scene();
+        let mut single = World::new(&properties);
+        one_flipped_sized_object(&mut single, [0.0, 0.0], [4.0, 2.0], None);
+        let baseline = compose_world_paints(
+            &single,
+            &scene,
+            single.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &LayerView::default(),
+        )[0];
+        assert_eq!(baseline.position, [-1.5, -1.0]);
+
+        let mut world = World::new(&properties);
+        let id = one_flipped_sized_object(&mut world, [0.0, 0.0], [4.0, 2.0], None);
+        world.set_flag(id, property::REPEAT_X, true);
+        // Середина камеры на x = 3, окно в 12 клеток — от −3 до 9.
+        let layers = LayerView {
+            shift: [-47.0, 0.0],
+            window_cells: 12.0,
+        };
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            0.0,
+            &images,
+            &atlas_rects,
+            &layers,
+        );
+        let expected: Vec<RectPaint> = [-1.0f32, 0.0, 1.0, 2.0]
+            .iter()
+            .map(|copy| RectPaint {
+                position: [baseline.position[0] + copy * 4.0, baseline.position[1]],
+                ..baseline
+            })
+            .collect();
+        assert_eq!(paints, expected);
+        assert!(paints.iter().all(|paint| paint.flip_x));
+    }
+
+    /// «Слои глубины», требование 10: объект вне окна всё равно рисуется своим местом, а копии —
+    /// только те, что попали в окно, и копий у такого объекта может не оказаться вовсе.
+    #[test]
+    fn an_object_outside_the_window_keeps_its_own_draw_and_gains_only_visible_copies() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        let id = world.create();
+        world.set_vec2(id, property::POSITION, [90.0, 0.0]);
+        world.set_vec2(id, property::SIZE, [2.0, 2.0]);
+        world.set_color(id, property::COLOR, [1.0, 0.0, 0.0, 1.0]);
+        world.set_flag(id, property::REPEAT_X, true);
+        let scene = test_scene();
+        // Окно от 0 до 7 клеток: копии через 2 клетки — с x 0, 2, 4, 6; сам объект на 90.
+        let layers = LayerView {
+            shift: [-46.5, 0.0],
+            window_cells: 7.0,
+        };
+        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &[], &[], &layers);
+        let xs: Vec<f32> = paints.iter().map(|paint| paint.position[0]).collect();
+        assert_eq!(xs, vec![90.0, 0.0, 2.0, 4.0, 6.0]);
     }
 
     // -----------------------------------------------------------------------------------------

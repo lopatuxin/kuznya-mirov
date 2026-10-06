@@ -1,0 +1,14 @@
+{
+  "name": "Платформер",
+  "scene": { "width": 160, "height": 24, "view_height": 12, "background": "#b4d2ec" },
+  "max_objects": 256,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {}
+  }
+}

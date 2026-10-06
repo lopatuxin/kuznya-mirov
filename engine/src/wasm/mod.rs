@@ -11,7 +11,7 @@ use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
 use crate::core::runner::{Runner, UiClock};
 use crate::core::scene::{
-    CellRange, GroundLayer, ObjectTransform, pointer_hit, stamp_hit, terrain_hit,
+    CellRange, GroundLayer, LayerView, ObjectTransform, pointer_hit, stamp_hit, terrain_hit,
 };
 use crate::core::screens::{self, ScreenState, ScreensConfig};
 use crate::core::world::World;
@@ -848,6 +848,7 @@ fn compose_instances(
     game: &Game,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
+    layers: &LayerView,
 ) -> Vec<DrawRect> {
     let steps = game.step_count() as f64;
     to_draw_rects(atlas::compose_world_paints(
@@ -857,6 +858,7 @@ fn compose_instances(
         steps,
         images,
         atlas_rects,
+        layers,
     ))
 }
 
@@ -978,6 +980,7 @@ fn compose_world_elements(
     game: &Game,
     screens_config: &ScreensConfig,
     camera: Option<&Camera3d>,
+    layers: &LayerView,
 ) -> (Vec<DrawRect>, Vec<WorldTextDraw>) {
     let (bars, labels) = match camera {
         None => world_elements::compute_world_draws(
@@ -985,6 +988,7 @@ fn compose_world_elements(
             &game.scene,
             &game.properties,
             &screens_config.world_elements,
+            layers,
         ),
         Some(camera) => world_elements::compute_world_draws_3d(
             &game.world,
@@ -1100,12 +1104,14 @@ fn render_world(
             let visible = game.scene.visible_cell_range(*scale, *offset, viewport);
             let mut world_instances =
                 compose_ground_instances(&game.ground, visible, images, atlas_rects);
-            world_instances.extend(compose_instances(game, images, atlas_rects));
+            let layers = LayerView::of_frame(&game.scene, *scale, *offset, viewport);
+            world_instances.extend(compose_instances(game, images, atlas_rects, &layers));
             // «Надписи и полоски в мире», требование 37: рисуются везде, где нарисован мир — в
             // редакторе вне партии тоже, в отличие от интерфейса, который виден только в партии.
             let world_texts = match config {
                 Some(config) => {
-                    let (bar_rects, world_texts) = compose_world_elements(game, config, None);
+                    let (bar_rects, world_texts) =
+                        compose_world_elements(game, config, None, &layers);
                     world_instances.extend(bar_rects);
                     world_texts
                 }
@@ -1124,7 +1130,9 @@ fn render_world(
                 atlas_rects,
             );
             let (bar_rects, world_texts) = match config {
-                Some(config) => compose_world_elements(game, config, Some(camera)),
+                Some(config) => {
+                    compose_world_elements(game, config, Some(camera), &LayerView::default())
+                }
                 None => (Vec::new(), Vec::new()),
             };
             let (globals, ground, shapes) = gpu_frame_parts(&frame);
@@ -1668,9 +1676,14 @@ impl Engine {
             return JsValue::UNDEFINED;
         };
         let picked = match self.frame() {
-            Some(View::Flat { scale, offset }) => {
-                crate::core::scene::object_at_frame(&game.world, &game.scene, [x, y], scale, offset)
-            }
+            Some(View::Flat { scale, offset }) => crate::core::scene::object_at_frame(
+                &game.world,
+                &game.scene,
+                [x, y],
+                scale,
+                offset,
+                self.renderer.window_size_css(),
+            ),
             // «Редактор», «Сцена», требование 7: в трёхмерной сцене — лучом камеры, которой она
             // видна сейчас.
             Some(View::Space(camera)) => crate::core::scene::editor_target_ray(
@@ -1698,7 +1711,15 @@ impl Engine {
         };
         match self.frame() {
             Some(View::Flat { scale, offset }) => {
-                match crate::core::scene::object_rect_frame(&game.world, id, scale, offset) {
+                let viewport = self.renderer.window_size_css();
+                match crate::core::scene::object_rect_frame(
+                    &game.world,
+                    &game.scene,
+                    id,
+                    scale,
+                    offset,
+                    viewport,
+                ) {
                     Some(rect) => {
                         let obj = Object::new();
                         set(&obj, "x", &JsValue::from_f64(rect.x as f64));
