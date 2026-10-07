@@ -1,6 +1,8 @@
 // Превращает видео или картинку нейросети на однотонном ярко-зелёном фоне в PNG с прозрачным
 // фоном для игры. Траву, листву и всё зелёное нейросеть рисует на ярко-розовом фоне
-// (`--key magenta`): зелёный фон убрал бы их вместе с собой. Картинка вырезается по своему содержимому. Видео становится листом кадров
+// (`--key magenta`): зелёный фон убрал бы их вместе с собой. Картинка вырезается по своему содержимому;
+// у слоя фона, который повторяется по ширине, `--repeat-x` сводит концы без шва. `--fade-ends` и
+// `--repeat-x` считаются в точках картинки после `--height`. Видео становится листом кадров
 // сеткой: повторяющийся шаг находится сам, а движение без повтора (удар, падение) задаётся
 // номерами кадров через --range. Персонаж в видео должен двигаться на месте при неподвижной
 // камере: все кадры режутся одним общим прямоугольником, и если персонаж идёт через кадр, он
@@ -16,7 +18,7 @@ import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
-const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--fade-ends P]";
+const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--fade-ends P] [--repeat-x P]";
 const MARGIN = 4;
 export const VISIBLE_ALPHA = 26;
 const THUMB_SIZE = 96;
@@ -264,17 +266,52 @@ export function fadeEnds(rgba, width, height, fade) {
   }
 }
 
-async function makeCutout(input, output, height, key, fade) {
+/**
+ * Сводит концы картинки, которая повторяется по ширине: правые `overlap` столбцов плавно
+ * переходят в левые и ложатся на них, картинка становится на `overlap` уже. Последний столбец
+ * результата в исходнике — сосед первого, поэтому повтор идёт без шва. Смешивание — с учётом
+ * прозрачности: прозрачная точка не темнит соседнюю видимую. Если край силуэта на концах на
+ * разной высоте, в полосе наложения видны оба края, полупрозрачными.
+ */
+export function wrapEnds(rgba, width, height, overlap) {
+  const outWidth = width - overlap;
+  const out = Buffer.alloc(outWidth * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < outWidth; x++) {
+      const head = (y * width + x) * 4;
+      const dst = (y * outWidth + x) * 4;
+      if (x >= overlap) {
+        rgba.copy(out, dst, head, head + 4);
+        continue;
+      }
+      const tail = (y * width + outWidth + x) * 4;
+      const headWeight = smoothstep(0, overlap, x) * rgba[head + 3];
+      const tailWeight = (1 - smoothstep(0, overlap, x)) * rgba[tail + 3];
+      const alpha = headWeight + tailWeight;
+      for (let c = 0; c < 3; c++) out[dst + c] = alpha === 0 ? 0 : Math.round((rgba[head + c] * headWeight + rgba[tail + c] * tailWeight) / alpha);
+      out[dst + 3] = Math.round(alpha);
+    }
+  }
+  return out;
+}
+
+async function makeCutout(input, output, height, key, fade, overlap) {
   const image = await removeBackground(input, key);
   const { data, info } = await cutOut(image, visibleBox([image]), height);
-  if (fade === undefined) {
+  let width = info.width;
+  if (fade === undefined && overlap === undefined) {
     writeFileSync(output, data);
   } else {
-    const raw = await sharp(data).raw().toBuffer();
-    fadeEnds(raw, info.width, info.height, fade);
-    await sharp(raw, { raw: { width: info.width, height: info.height, channels: 4 } }).png().toFile(output);
+    let raw = await sharp(data).raw().toBuffer();
+    if (fade !== undefined) fadeEnds(raw, width, info.height, fade);
+    if (overlap !== undefined) {
+      if (overlap * 2 > width) throw new Error(`--repeat-x больше половины ширины картинки (${width})`);
+      raw = wrapEnds(raw, width, info.height, overlap);
+      width -= overlap;
+    }
+    await sharp(raw, { raw: { width, height: info.height, channels: 4 } }).png().toFile(output);
   }
-  console.log(`картинка ${info.width}×${info.height}`);
+  console.log(`картинка ${width}×${info.height}`);
 }
 
 async function main() {
@@ -287,6 +324,7 @@ async function main() {
       range: { type: "string" },
       key: { type: "string", default: "green" },
       "fade-ends": { type: "string" },
+      "repeat-x": { type: "string" },
     },
   });
   if (positionals.length !== 2) throw new Error(USAGE);
@@ -295,10 +333,12 @@ async function main() {
   if (!Object.hasOwn(KEYS, values.key)) throw new Error(`--key должно быть green или magenta, а не «${values.key}»`);
   if (!VIDEO_EXTENSIONS.has(extname(input).toLowerCase())) {
     if ([values.frames, values.columns, values.range].some((value) => value !== undefined)) throw new Error("--frames, --columns и --range — только для видео");
-    await makeCutout(input, output, height, values.key, positiveInt("fade-ends", values["fade-ends"]));
+    if (values["fade-ends"] !== undefined && values["repeat-x"] !== undefined) throw new Error("--fade-ends и --repeat-x не бывают вместе: гашёные концы повтор не сведёт");
+    await makeCutout(input, output, height, values.key, positiveInt("fade-ends", values["fade-ends"]), positiveInt("repeat-x", values["repeat-x"]));
     return;
   }
-  if (values["fade-ends"] !== undefined) throw new Error("--fade-ends — только для картинки");
+  const pictureOnly = ["fade-ends", "repeat-x"].find((name) => values[name] !== undefined);
+  if (pictureOnly !== undefined) throw new Error(`--${pictureOnly} — только для картинки`);
   await makeSheet(input, output, {
     height,
     key: values.key,

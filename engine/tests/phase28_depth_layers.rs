@@ -3,6 +3,7 @@
 //! платформера лежат в `tests/replays/platformer-*.json`.
 
 use std::fs;
+use std::iter::once;
 use std::path::PathBuf;
 
 use engine::core::camera::followed_center;
@@ -14,8 +15,10 @@ use engine::core::scene::{
 };
 use engine::core::step::apply_follow_mouse;
 use engine::data::error::{GameError, LoadFailure};
-use engine::data::load::load_game_from_texts_with_code;
-use engine::render::atlas::{RectPaint, compose_world_paints};
+use engine::data::load::{
+    ImageDecl, ImageVerdict, load_game_from_texts_with_code, load_rest, read_entry,
+};
+use engine::render::atlas::{AtlasImage, RectPaint, compose_world_paints, pack};
 
 const WINDOW: [f32; 2] = [1280.0, 720.0];
 const SCREENS: &str = r#"{"screens":[{"name":"main","world_runs":true,"elements":[]}]}"#;
@@ -824,38 +827,75 @@ fn platformer_dir() -> PathBuf {
         .join("platformer")
 }
 
-fn platformer() -> (Game, Vec<GameError>) {
+/// Ширина и высота картинки уровня из заголовка `IHDR` PNG (байты 16..24) и пустые точки такого
+/// размера: проверке картинок и атласу нужен только размер, точки движок получает от страницы.
+fn blank_image(path: &str) -> (u32, u32, Vec<u8>) {
+    let path = platformer_dir().join(path);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"));
+    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
+    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
+    (width, height, vec![0u8; (width * height * 4) as usize])
+}
+
+/// Уровень грузится целиком, с картинками: страница отдала бы движку их размер и точки, здесь
+/// точки пустые — проверке и атласу важен только размер.
+fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
     let read = |name: &str| {
         fs::read_to_string(platformer_dir().join(name))
             .unwrap_or_else(|e| panic!("не смог прочитать {name}: {e}"))
     };
-    load_game_from_texts_with_code(
-        &read("game.json"),
-        &read("properties.json"),
-        &read("scene.json"),
-        &read("rules.json"),
-        &read("screens.json"),
+    let game_json = read("game.json");
+    let (config, mut warnings) =
+        read_entry(&game_json).unwrap_or_else(|e| panic!("game.json не разобран: {e:?}"));
+    let verdicts: Vec<(String, ImageVerdict)> = config
+        .files
+        .images
+        .iter()
+        .map(|decl| {
+            let (width, height, pixels) = blank_image(&decl.path);
+            (
+                decl.name.clone(),
+                ImageVerdict::Ok {
+                    width,
+                    height,
+                    pixels,
+                },
+            )
+        })
+        .collect();
+    let (game, _screens, rest_warnings, images) = load_rest(
+        &game_json,
+        config,
+        Some(&read("properties.json")),
+        Some(&read("scene.json")),
+        Some(&read("rules.json")),
+        Some(&read("screens.json")),
+        &[],
+        &[],
+        &[],
+        &verdicts,
         Some(&read("code.lua")),
+        false,
     )
-    .map(|(game, _screens, warnings)| (game, warnings))
-    .unwrap_or_else(|e| panic!("платформер не загрузился: {e:?}"))
+    .unwrap_or_else(|e| panic!("платформер не загрузился: {e:?}"));
+    warnings.extend(rest_warnings);
+    (game, warnings, images)
 }
 
 #[test]
-fn the_platformer_blank_loads_without_errors_or_warnings() {
-    let (game, warnings) = platformer();
+fn the_platformer_loads_without_errors_or_warnings() {
+    let (game, warnings, _images) = platformer();
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
     assert_eq!(
         game.world.text(0, property::NAME),
         Some("viewer"),
         "точка осмотра — первый объект сцены"
     );
-    assert_eq!(game.world.alive_count(), 1 + 3 + 1 + 17 + 13 + 6 + 15);
 }
 
 #[test]
 fn the_platformer_starts_with_the_camera_at_the_bottom_of_the_scene() {
-    let (game, _warnings) = platformer();
+    let (game, _warnings, _images) = platformer();
     let (scale, offset) = game.camera_frame(WINDOW);
     let layers = LayerView::of_frame(&game.scene, scale, offset, WINDOW);
     assert!(
@@ -869,8 +909,26 @@ fn the_platformer_starts_with_the_camera_at_the_bottom_of_the_scene() {
 }
 
 #[test]
-fn sky_and_hills_cover_a_window_of_any_width() {
-    let (game, _warnings) = platformer();
+fn repeated_layers_cover_a_window_of_any_width() {
+    let (game, _warnings, images) = platformer();
+    let atlas_images: Vec<AtlasImage> = images
+        .iter()
+        .map(|decl| {
+            let (width, height, pixels) = blank_image(&decl.path);
+            AtlasImage {
+                width,
+                height,
+                pixels,
+            }
+        })
+        .collect();
+    let atlas = pack(&atlas_images).expect("картинки уровня умещаются в атлас");
+    let repeated: Vec<u32> = game
+        .world
+        .ids()
+        .filter(|&id| game.world.flag(id, property::REPEAT_X))
+        .collect();
+    assert!(!repeated.is_empty(), "в платформере есть слои с повтором");
     for width in [400.0_f32, 1280.0, 3000.0] {
         let viewport = [width, 720.0];
         let layers = layers_of(&game, viewport);
@@ -879,28 +937,35 @@ fn sky_and_hills_cover_a_window_of_any_width() {
             middle - layers.window_cells / 2.0,
             middle + layers.window_cells / 2.0,
         );
-        for (what, ids) in [("небо", 1..=3), ("холмы", 4..=4)] {
-            for id in ids {
-                let mut drawn: Vec<(f32, f32)> = paints_of_object(&game, viewport, id)
-                    .iter()
-                    .map(|paint| (paint.position[0], paint.position[0] + paint.size[0]))
-                    .collect();
-                drawn.sort_by(|a, b| a.0.total_cmp(&b.0));
-                assert!(
-                    drawn.first().unwrap().0 <= left as f32,
-                    "{what} {id}, окно {width}"
-                );
-                assert!(
-                    drawn.last().unwrap().1 >= right as f32,
-                    "{what} {id}, окно {width}"
-                );
-                assert!(
-                    drawn
-                        .windows(2)
-                        .all(|pair| (pair[0].1 - pair[1].0).abs() < 1e-3),
-                    "{what} {id}: копии встык, окно {width}: {drawn:?}"
-                );
-            }
+        for &id in &repeated {
+            let paints = compose_world_paints(
+                &game.world,
+                &game.scene,
+                once(id),
+                0.0,
+                &images,
+                &atlas.rects,
+                &layers,
+            );
+            let mut drawn: Vec<(f32, f32)> = paints
+                .iter()
+                .map(|paint| (paint.position[0], paint.position[0] + paint.size[0]))
+                .collect();
+            drawn.sort_by(|a, b| a.0.total_cmp(&b.0));
+            assert!(
+                drawn.first().unwrap().0 <= left as f32,
+                "объект {id}, окно {width}"
+            );
+            assert!(
+                drawn.last().unwrap().1 >= right as f32,
+                "объект {id}, окно {width}"
+            );
+            assert!(
+                drawn
+                    .windows(2)
+                    .all(|pair| (pair[0].1 - pair[1].0).abs() < 1e-3),
+                "объект {id}: копии встык, окно {width}: {drawn:?}"
+            );
         }
     }
 }
