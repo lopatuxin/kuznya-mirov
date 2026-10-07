@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { fadeEnds, findCycle, keyGreen, keyMagenta, parseRange, pickFrames } from "./sheet.mjs";
+import { fadeEnds, findCycle, keyGreen, keyMagenta, parseRange, pickFrames, wrapEnds } from "./sheet.mjs";
 
 const THUMB = 64;
 
@@ -70,6 +70,25 @@ describe("fadeEnds", () => {
     assert.equal(faded[5], 255);
     assert.equal(faded[8], 0);
     assert.equal(faded[9], 0);
+  });
+});
+
+describe("wrapEnds", () => {
+  it("укорачивает картинку на наложение и ставит в начало конец исходника, чтобы повтор шёл без шва", () => {
+    const reds = [0, 10, 20, 30, 40, 50, 60, 70, 80, 90];
+    const rgba = Buffer.from(reds.flatMap((red) => [red, 0, 0, 255]));
+    const out = wrapEnds(rgba, reds.length, 1, 3);
+    const outReds = Array.from({ length: 7 }, (_, x) => out[x * 4]);
+    assert.equal(outReds[0], 70);
+    assert.deepEqual(outReds.slice(3), [30, 40, 50, 60]);
+    assert.ok(outReds[1] < 80 && outReds[1] > 10, `смешанная точка ${outReds[1]}`);
+  });
+
+  it("прозрачная точка не темнит видимую, с которой смешивается", () => {
+    // Вторая точка результата — поровну вторая точка исходника и прозрачная последняя.
+    const pixels = [[0, 0, 0, 255], [200, 100, 50, 255], [0, 0, 0, 255], [0, 0, 0, 255], [0, 0, 0, 0]];
+    const out = wrapEnds(Buffer.from(pixels.flat()), pixels.length, 1, 2);
+    assert.deepEqual([...out.subarray(4, 8)], [200, 100, 50, 128]);
   });
 });
 
