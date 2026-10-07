@@ -29,6 +29,15 @@ export function resolveSceneToolAvailability(context: SceneToolContext): SceneTo
   return { areHandlesAvailable, areBrushesAvailable: areHandlesAvailable && context.isThreeDimensionalScene && context.isEditorCameraActive };
 }
 
+/**
+ * Кнопка «Ветер» — «Правка сцены», требование 30: только в плоской сцене; неактивна, когда сцены нет (в проекте ошибки)
+ * или её нельзя править (повтор). Ветер правится и в партии, и на паузе, поэтому от ручек и кистей кнопка не зависит.
+ */
+export function resolveWindMenuState(context: Pick<SceneToolContext, "isThreeDimensionalScene" | "isSceneShown" | "canEditScene">): "hidden" | "disabled" | "enabled" {
+  if (context.isThreeDimensionalScene) return "hidden";
+  return context.isSceneShown && context.canEditScene ? "enabled" : "disabled";
+}
+
 /** Кнопка «Отпечаток» нажимается там же, где кисти, и только когда в игре объявлены штампы («Редактор», «Правка сцены», требование 23). */
 export function isImprintToolEnabled(areBrushesAvailable: boolean, hasStamps: boolean): boolean {
   return areBrushesAvailable && hasStamps;

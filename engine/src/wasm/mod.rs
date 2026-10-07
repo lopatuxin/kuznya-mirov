@@ -23,10 +23,11 @@ use crate::data::load::{
     self, CoverMask, GameConfig, ImageDecl, ImageVerdict, MaterialDecl, MusicVerdict, NeededMedia,
 };
 use crate::data::session::{self, PlaySession};
-use crate::render::atlas::{self, AtlasRect};
+use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint};
 use crate::render::materials::Relief;
 use crate::render::relief::TerrainMesh;
 use crate::render::scene3d::{self, Frame3d};
+use crate::render::wind::Motion;
 use crate::render::{
     DrawRect, Globals3d, GroundVertex, Renderer, Scene3dFrame, ShapeInstance, TextDraw,
     WorldTextDraw,
@@ -734,33 +735,28 @@ fn parse_water(water: &JsValue) -> Option<(f64, String)> {
     Some((level, color))
 }
 
-fn draw_rect(
-    position: [f32; 2],
-    size: [f32; 2],
-    color: [f32; 4],
-    atlas_rect: AtlasRect,
-    rotation_quarters: f32,
-    smooth: bool,
-    flip_x: bool,
-) -> DrawRect {
+fn draw_rect(paint: &RectPaint) -> DrawRect {
+    let atlas_rect = paint.atlas_rect;
     DrawRect {
-        position,
-        size,
-        color,
+        position: paint.position,
+        size: paint.size,
+        color: paint.color,
         atlas_pos: [atlas_rect.x as f32, atlas_rect.y as f32],
         atlas_size: [atlas_rect.w as f32, atlas_rect.h as f32],
-        rotation_quarters,
+        rotation_quarters: f32::from(paint.rotation_quarters),
         atlas_layer: atlas_rect.sheet as f32,
-        smooth: smooth as u8 as f32,
-        flip_x: flip_x as u8 as f32,
+        smooth: f32::from(u8::from(paint.smooth)),
+        flip_x: f32::from(u8::from(paint.flip_x)),
+        glow: f32::from(u8::from(paint.glow)),
+        lean: paint.lean,
     }
 }
 
-/// «Картинки» → «Кадры»: the world's own frame is picked by shots taken (`game.step_count()`),
-/// frozen exactly when the world stops stepping (paused, or on the outcome screen) — «Исполнение
-/// игры»: rendering never changes the world, this just reads it. The layer ordering and fill
-/// choice are `atlas::compose_world_paints`'s job, natively testable; this just turns each result
-/// into the GPU's own `DrawRect`.
+/// «Картинки» → «Кадры»: the world's own frame is picked by `motion`'s clock — world steps taken,
+/// frozen exactly when the world stops stepping (paused, or on the outcome screen), outside a
+/// partiya the editor's own clock — «Исполнение игры»: rendering never changes the world, this
+/// just reads it. The layer ordering and fill choice are `atlas::compose_world_paints`'s job,
+/// natively testable; this just turns each result into the GPU's own `DrawRect`.
 /// «Камера»: this call's own scale/offset — the core camera in a battle, the editor camera outside
 /// one (the whole scene until one is sent; требование 41). A free function (not an `Engine` method)
 /// so `tick`/`step`/`seek`/`step_back` can call it while they already hold `game` mutably
@@ -843,35 +839,28 @@ fn recompute_cursor_after_step(
     }
 }
 
-fn to_draw_rects(paints: Vec<atlas::RectPaint>) -> Vec<DrawRect> {
-    paints
-        .into_iter()
-        .map(|paint| {
-            draw_rect(
-                paint.position,
-                paint.size,
-                paint.color,
-                paint.atlas_rect,
-                paint.rotation_quarters as f32,
-                paint.smooth,
-                paint.flip_x,
-            )
-        })
-        .collect()
+fn to_draw_rects(paints: Vec<RectPaint>) -> Vec<DrawRect> {
+    paints.iter().map(draw_rect).collect()
+}
+
+/// «Ветер и частицы» → «Часы движения»: доводит наклоны и кадры качающихся объектов `game` до часов
+/// `motion` — раз в кадр, перед тем как их рисовать.
+fn update_motion(motion: &mut Motion, game: &Game, images: &[ImageDecl]) {
+    motion.update(game.wind()[0], atlas::sway_objects(&game.world, images));
 }
 
 fn compose_instances(
     game: &Game,
+    motion: &Motion,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
     layers: &LayerView,
 ) -> Vec<DrawRect> {
-    let steps = game.step_count() as f64;
     to_draw_rects(atlas::compose_world_paints(
         &game.world,
         &game.scene,
         game.world.ids(),
-        steps,
+        motion,
         images,
         atlas_rects,
         layers,
@@ -893,6 +882,18 @@ fn compose_ground_instances(
         images,
         atlas_rects,
     ))
+}
+
+/// A panel's or button's rectangle in window pixels.
+fn fill_rect(position: [f32; 2], size: [f32; 2], paint: FillPaint) -> RectPaint {
+    RectPaint::flat(
+        position,
+        size,
+        paint.color,
+        paint.atlas_rect,
+        paint.smooth,
+        paint.glow,
+    )
 }
 
 /// Panels and buttons become `DrawRect`s in window pixels; labels and button captions become
@@ -917,17 +918,12 @@ fn compose_ui(
     for (index, element) in screen.elements.iter().enumerate() {
         match element {
             screens::Element::Panel { placement, fill } => {
-                let (color, atlas_rect, smooth) =
-                    atlas::fill_paint(fill, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect(
+                let paint = atlas::fill_paint(fill, ui_elapsed_steps, images, atlas_rects);
+                rects.push(draw_rect(&fill_rect(
                     placement.top_left(viewport),
                     placement.size,
-                    color,
-                    atlas_rect,
-                    0.0,
-                    smooth,
-                    false,
-                ));
+                    paint,
+                )));
             }
             screens::Element::Label {
                 placement,
@@ -960,17 +956,8 @@ fn compose_ui(
             } => {
                 let [x, y] = placement.top_left(viewport);
                 let chosen = screens::button_fill(fill, fill_hover, fill_pressed, index, mouse);
-                let (color, atlas_rect, smooth) =
-                    atlas::fill_paint(chosen, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect(
-                    [x, y],
-                    placement.size,
-                    color,
-                    atlas_rect,
-                    0.0,
-                    smooth,
-                    false,
-                ));
+                let paint = atlas::fill_paint(chosen, ui_elapsed_steps, images, atlas_rects);
+                rects.push(draw_rect(&fill_rect([x, y], placement.size, paint)));
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
                 texts.push(TextDraw {
@@ -1016,26 +1003,16 @@ fn compose_world_elements(
     };
     let mut rects = Vec::with_capacity(bars.len() * 2);
     for bar in &bars {
-        if let Some(back) = bar.back {
-            rects.push(draw_rect(
-                back.position,
-                back.size,
-                back.color,
+        for part in bar.back.iter().chain([&bar.fill]) {
+            rects.push(draw_rect(&RectPaint::flat(
+                part.position,
+                part.size,
+                part.color,
                 atlas::WHITE_PIXEL,
-                0.0,
                 false,
                 false,
-            ));
+            )));
         }
-        rects.push(draw_rect(
-            bar.fill.position,
-            bar.fill.size,
-            bar.fill.color,
-            atlas::WHITE_PIXEL,
-            0.0,
-            false,
-            false,
-        ));
     }
     let texts = labels
         .into_iter()
@@ -1083,7 +1060,7 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundVertex>, [Vec<Shape
             color: vertex.color,
             uv_min: vertex.uv_min,
             uv_max: vertex.uv_max,
-            sheet: [vertex.layer, vertex.smooth],
+            sheet: [vertex.layer, vertex.smooth, vertex.glow],
         })
         .collect();
     let mut shapes: [Vec<ShapeInstance>; 4] = Default::default();
@@ -1105,6 +1082,7 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundVertex>, [Vec<Shape
 fn render_world(
     renderer: &mut Renderer,
     game: &Game,
+    motion: &Motion,
     config: Option<&ScreensConfig>,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
@@ -1121,7 +1099,13 @@ fn render_world(
             let mut world_instances =
                 compose_ground_instances(&game.ground, visible, images, atlas_rects);
             let layers = LayerView::of_frame(&game.scene, *scale, *offset, viewport);
-            world_instances.extend(compose_instances(game, images, atlas_rects, &layers));
+            world_instances.extend(compose_instances(
+                game,
+                motion,
+                images,
+                atlas_rects,
+                &layers,
+            ));
             // «Надписи и полоски в мире», требование 37: рисуются везде, где нарисован мир — в
             // редакторе вне партии тоже, в отличие от интерфейса, который виден только в партии.
             let world_texts = match config {
@@ -1138,13 +1122,7 @@ fn render_world(
         View::Space(camera) => {
             // Полоски и надписи над фигурами посчитаны сразу в точках окна.
             renderer.set_world_frame(1.0, [0.0, 0.0]);
-            let frame = scene3d::compose_frame3d(
-                game,
-                camera,
-                game.step_count() as f64,
-                images,
-                atlas_rects,
-            );
+            let frame = scene3d::compose_frame3d(game, camera, motion, images, atlas_rects);
             let (bar_rects, world_texts) = match config {
                 Some(config) => {
                     compose_world_elements(game, config, Some(camera), &LayerView::default())
@@ -1289,6 +1267,9 @@ pub struct Engine {
     /// recompute the world cursor after a step or a resize moves the camera under a mouse that
     /// never itself moved. `None` until the first `mouse_move`, and again from each `play()`.
     last_mouse_window_pos: Option<[f32; 2]>,
+    /// «Ветер и частицы» → «Часы движения»: часы, по которым идут порывы, пружины и кадры по
+    /// времени, и наклоны с кадрами качающихся объектов.
+    motion: Motion,
 }
 
 #[wasm_bindgen]
@@ -1321,6 +1302,7 @@ impl Engine {
             session: None,
             battle_view: true,
             last_mouse_window_pos: None,
+            motion: Motion::default(),
         })
     }
 
@@ -1556,6 +1538,7 @@ impl Engine {
                 self.screens_config = Some(screens_config);
                 self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
                 self.game = Some(game);
+                self.motion.world_rebuilt();
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
                 self.ui_queue = UiQueue::new();
@@ -1595,6 +1578,7 @@ impl Engine {
     pub fn show_scene(&mut self) {
         if let Some(game) = self.game.as_mut() {
             game.show_scene();
+            self.motion.world_rebuilt();
         }
         self.battle_view = false;
     }
@@ -1630,12 +1614,14 @@ impl Engine {
     }
 
     /// «Редактор», требования 17, 40: outside a partiya/повтор, the world alone — no interface, no
-    /// text, an image's own frame frozen at the world's own step, same as `tick`'s own
-    /// `compose_instances`. During one, also the active screen's interface, same as `tick` draws
-    /// it, reusing `tick`'s last `ui_clock` reading (there is no fresh timestamp here — a paused
-    /// screen's interface simply stays exactly as `tick` last left it, which is what "paused"
-    /// means for its own animated fills). An empty frame without a loaded game.
-    pub fn draw(&mut self) {
+    /// text; its images' frames, the wind and the swaying go by the editor's own clock, which this
+    /// call moves on by `dt` seconds (since the last frame, no more than 0.1) — the world itself does
+    /// not step. During a partiya or replay `dt` is not used: the clock is the world's own
+    /// step, and the active screen's interface is drawn too, same as `tick` draws it, reusing `tick`'s
+    /// last `ui_clock` reading (there is no fresh timestamp here — a paused screen's interface
+    /// simply stays exactly as `tick` last left it, which is what "paused" means for its own animated
+    /// fills). An empty frame without a loaded game.
+    pub fn draw(&mut self, dt: f64) {
         if self.game.is_none() {
             let _ = self.renderer.render_frame(&[], &[], &[], &[]);
             return;
@@ -1647,6 +1633,8 @@ impl Engine {
             .session
             .as_ref()
             .is_some_and(|session| session.is_live() || session.is_replay());
+        self.motion.tick(show_ui.then(|| game.step_count()), dt);
+        update_motion(&mut self.motion, game, &self.images);
         let (ui_instances, texts) = match (
             show_ui,
             self.screens_config.as_ref(),
@@ -1671,6 +1659,7 @@ impl Engine {
         if let Err(e) = render_world(
             &mut self.renderer,
             game,
+            &self.motion,
             self.screens_config.as_ref(),
             &self.images,
             &self.atlas_rects,
@@ -2141,6 +2130,8 @@ impl Engine {
 
         // «Камера», требования 41–42: на игровой странице ничего кроме `tick` кадр не задаёт —
         // без этого мир рисовался бы заглушкой, которую поставил последний `set_scene`/`resize`.
+        self.motion.tick(Some(game.step_count()), 0.0);
+        update_motion(&mut self.motion, game, &self.images);
         let view = frame_for(game, self.battle_view, viewport);
         let screen = &config.screens[state.active()];
         let (ui_instances, texts) = compose_ui(
@@ -2156,6 +2147,7 @@ impl Engine {
         if let Err(e) = render_world(
             &mut self.renderer,
             game,
+            &self.motion,
             Some(config),
             &self.images,
             &self.atlas_rects,
@@ -2233,6 +2225,7 @@ impl Engine {
             return;
         };
         self.session = Some(PlaySession::begin_live(game, config, state));
+        self.motion.reset();
         self.runner = Runner::new();
         self.mouse = MouseState::default();
         self.ui_queue = UiQueue::new();
@@ -2340,6 +2333,7 @@ impl Engine {
         };
         session.end(game);
         game.show_scene();
+        self.motion.reset();
         self.runner = Runner::new();
         self.mouse = MouseState::default();
         self.ui_queue = UiQueue::new();
@@ -2396,6 +2390,31 @@ impl Engine {
             return js_edit_err("нет партии");
         };
         js_edit_result(session.set_property(game, &self.images, id, name, &json))
+    }
+
+    /// «Редактор», «Вызовы движка»: `settings = {wind: [x, y]}` — ровный ветер плоской сцены, клеток в
+    /// секунду. Вне партии ставит его собранному миру и сразу проверяет, как загрузка; в партии и на
+    /// паузе — живой игре, и ветер идёт в запись на текущем шаге; в повторе — ошибка. Файлы не
+    /// меняются, наклоны и кадры качающихся объектов не сбрасываются. Ответ, как у `set_property`:
+    /// `{ok: true}` или `{ok: false, error}`.
+    pub fn set_wind_particles(&mut self, settings: JsValue) -> JsValue {
+        let wind = Reflect::get(&settings, &JsValue::from_str("wind"))
+            .map_or(serde_json::Value::Null, |wind| js_to_json(&wind));
+        let Some(game) = self.game.as_mut() else {
+            return js_edit_err("игра не загружена");
+        };
+        js_edit_result(session::set_wind(self.session.as_mut(), game, &wind))
+    }
+
+    /// «Редактор», «Правка сцены»: ровный ветер, который действует в мире сейчас, — `[x, y]`, клеток в
+    /// секунду: живой в партии и в повторе, ветер файла вне партии и после `new_game`. `[0, 0]` без
+    /// загруженной игры. Поля окошка «Ветер» показывают его.
+    pub fn wind(&self) -> Array {
+        let [x, y] = self.game.as_ref().map_or([0.0, 0.0], Game::wind);
+        let wind = Array::new();
+        wind.push(&JsValue::from_f64(x));
+        wind.push(&JsValue::from_f64(y));
+        wind
     }
 
     /// «Редактор», требование 43.
@@ -2504,6 +2523,7 @@ impl Engine {
         match PlaySession::begin_replay(text, game, config, state) {
             Ok(session) => {
                 self.session = Some(session);
+                self.motion.reset();
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
                 self.ui_queue = UiQueue::new();
@@ -2531,6 +2551,7 @@ impl Engine {
             return js_running();
         };
         self.ui_queue = UiQueue::new();
+        self.motion.reset();
         let viewport = self.renderer.window_size_css();
         session.seek(
             step as u64,
@@ -2557,6 +2578,7 @@ impl Engine {
             return js_running();
         };
         self.ui_queue = UiQueue::new();
+        self.motion.reset();
         let viewport = self.renderer.window_size_css();
         session.step_back(
             &mut self.ui_queue,

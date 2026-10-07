@@ -8,6 +8,7 @@ import {
   formatSceneValue,
   removeObjectProperty,
   removeSceneObject,
+  sceneTextWithWind,
   setObjectPropertyValue,
   setObjectPropertyValues,
 } from "./sceneTextEditing";
@@ -152,5 +153,35 @@ describe("addTerrainFilePath", () => {
   it("путь в подпапке — как у files.scene", () => {
     const result = addTerrainFilePath('{ "files": { "scene": "world/scene.json" } }', "world/terrain.json");
     expect(JSON.parse(result).files.terrain).toBe("world/terrain.json");
+  });
+});
+
+describe("sceneTextWithWind", () => {
+  it("заменяет значение wind на месте, остальной текст байт в байт", () => {
+    const text = '{\n  "wind": [1.5,   0],\n  "objects": [\n    { "position": [0, 6],  "size": [1, 1] }\n  ]\n}';
+    expect(sceneTextWithWind(text, [-2, 0.5])).toBe(text.replace("[1.5,   0]", "[-2, 0.5]"));
+  });
+
+  it("[0, 0] пишется как есть", () => {
+    expect(sceneTextWithWind('{ "wind": [3, 1], "objects": [] }', [0, 0])).toBe('{ "wind": [0, 0], "objects": [] }');
+  });
+
+  it("ключа не было — дописывает последним ключом корня на своей строке, ручное оформление остаётся", () => {
+    const result = sceneTextWithWind(SCENE_TEXT, [1.5, 0]);
+    expect(result).toBe(SCENE_TEXT.replace("\n  ]\n}", '\n  ],\n  "wind": [1.5, 0]\n}'));
+    expect(result).toContain('"name": "wall_left_hidden",  "position"');
+    expect(Object.keys(JSON.parse(result)).at(-1)).toBe("wind");
+  });
+
+  it("корень в одну строку — ключ через запятую с пробелом", () => {
+    expect(sceneTextWithWind('{ "objects": [] }', [-2, 0])).toBe('{ "objects": [], "wind": [-2, 0] }');
+  });
+
+  it("перенос строки Windows сохраняется", () => {
+    expect(sceneTextWithWind('{\r\n  "objects": []\r\n}', [1, 0])).toBe('{\r\n  "objects": [],\r\n  "wind": [1, 0]\r\n}');
+  });
+
+  it("пустой корень заполняет jsonc-parser", () => {
+    expect(JSON.parse(sceneTextWithWind("{}", [1, 2]))).toEqual({ wind: [1, 2] });
   });
 });

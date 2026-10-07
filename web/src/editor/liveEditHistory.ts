@@ -1,4 +1,5 @@
 import type { WorldObjectSummary } from "./battleTypes";
+import { applyWind, type SceneWind, type WindEditor } from "./sceneWind";
 
 /**
  * Стек правок на ходу — «Редактор», требование 21: каждая правка над живым миром кладёт сюда, как
@@ -17,7 +18,8 @@ export type LiveEditEntry =
   | { kind: "add"; id: number; generation: number }
   | { kind: "delete"; id: number; properties: Record<string, unknown> }
   | { kind: "move"; id: number; generation: number; previous: readonly [number, number] }
-  | { kind: "transform"; id: number; generation: number; changes: LiveTransformChange[] };
+  | { kind: "transform"; id: number; generation: number; changes: LiveTransformChange[] }
+  | { kind: "wind"; previous: SceneWind; next: SceneWind };
 
 /** Свойство, которое поменял жест ручки; `hadKey` `false` — свойства не было, отмена его убирает. */
 type LiveTransformChange = { key: string; hadKey: boolean; previous: unknown };
@@ -41,14 +43,20 @@ export function undoLiveTransform(entry: { id: number; changes: LiveTransformCha
   }
 }
 
+/** Отмена правки ветра на ходу — «Редактор», требование 32: прежний ветер ставится тем же вызовом движка, что и правка. */
+export function undoLiveWind(entry: { previous: SceneWind }, editor: WindEditor): void {
+  applyWind(editor, entry.previous);
+}
+
 /**
  * Цела ли ещё запись отмены — «Редактор», требование 21, крайний случай: объект, к которому она
  * относится, уже не тот (правило его удалило, а номер занял новый) — отмена должна снять запись без
  * действия, а не сработать над чужим объектом. `delete` восстанавливает объект заново, поэтому её
- * цель всегда «жива» в этом смысле — сама запись и есть свидетельство, что объекта сейчас нет.
+ * цель всегда «жива» в этом смысле — сама запись и есть свидетельство, что объекта сейчас нет; ветер
+ * к объекту не привязан вовсе.
  */
 export function isLiveEditTargetAlive(entry: LiveEditEntry, worldObjects: readonly WorldObjectSummary[]): boolean {
-  if (entry.kind === "delete") return true;
+  if (entry.kind === "delete" || entry.kind === "wind") return true;
   return worldObjects.some((object) => object.id === entry.id && object.generation === entry.generation);
 }
 

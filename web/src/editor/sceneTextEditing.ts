@@ -85,19 +85,34 @@ export function declarePropertyKind(propertiesText: string, name: string, kind: 
 }
 
 /**
- * Дописывает `"terrain": "<путь>"` в конец `files` файла `game.json` — «Кисти рельефа», требование 19.
- * Остальной текст остаётся байт в байт; ключ встаёт на своей строке с отступом соседа, если `files`
- * набран по строке на ключ, и через запятую с пробелом, если в одну строку; пустой `files` заполняет `jsonc-parser`.
+ * Дописывает ключ последним в объект по пути `objectPath` (корень — пустой путь). Остальной текст остаётся байт в
+ * байт; ключ встаёт на своей строке с отступом соседа, если объект набран по строке на ключ, и через запятую с
+ * пробелом, если в одну строку; пустой объект заполняет `jsonc-parser`.
  */
-export function addTerrainFilePath(gameJsonText: string, path: string): string {
-  const root = parseTree(gameJsonText);
-  const files = root === undefined ? undefined : findNodeAtLocation(root, ["files"]);
-  const lastProperty = files?.type === "object" ? files.children?.at(-1) : undefined;
-  if (lastProperty === undefined) return editAt(gameJsonText, ["files", "terrain"], path, false);
-  const lineStart = gameJsonText.lastIndexOf("\n", lastProperty.offset) + 1;
-  const indent = gameJsonText.slice(lineStart, lastProperty.offset);
-  const lineBreak = gameJsonText.includes("\r\n") ? "\r\n" : "\n";
+function appendLastKey(text: string, objectPath: JSONPath, key: string, value: unknown): string {
+  const root = parseTree(text);
+  const objectNode = root === undefined ? undefined : findNodeAtLocation(root, objectPath);
+  const lastProperty = objectNode?.type === "object" ? objectNode.children?.at(-1) : undefined;
+  if (lastProperty === undefined) return editAt(text, [...objectPath, key], value, false);
+  const lineStart = text.lastIndexOf("\n", lastProperty.offset) + 1;
+  const indent = text.slice(lineStart, lastProperty.offset);
+  const lineBreak = text.includes("\r\n") ? "\r\n" : "\n";
   const separator = indent.trim() === "" && lineStart > 0 ? `,${lineBreak}${indent}` : ", ";
   const end = lastProperty.offset + lastProperty.length;
-  return `${gameJsonText.slice(0, end)}${separator}"terrain": ${JSON.stringify(path)}${gameJsonText.slice(end)}`;
+  return `${text.slice(0, end)}${separator}${JSON.stringify(key)}: ${formatSceneValue(value)}${text.slice(end)}`;
+}
+
+/** Дописывает `"terrain": "<путь>"` в конец `files` файла `game.json` — «Кисти рельефа», требование 19. */
+export function addTerrainFilePath(gameJsonText: string, path: string): string {
+  return appendLastKey(gameJsonText, ["files"], "terrain", path);
+}
+
+/**
+ * Ветер сцены — «Редактор», «Правка сцены», требование 31: меняет значение `wind` в корне `scene.json` на месте, а если
+ * ключа не было, дописывает `"wind": [x, y]` последним ключом корня в стиле файла. `[0, 0]` пишется как есть.
+ */
+export function sceneTextWithWind(sceneText: string, wind: readonly [number, number]): string {
+  const root = parseTree(sceneText);
+  const hasWind = root !== undefined && findNodeAtLocation(root, ["wind"]) !== undefined;
+  return hasWind ? editAt(sceneText, ["wind"], wind, false) : appendLastKey(sceneText, [], "wind", wind);
 }

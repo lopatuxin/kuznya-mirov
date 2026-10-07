@@ -55,13 +55,14 @@ pub struct GroundVertex {
     pub color: [f32; 4],
     pub uv_min: [f32; 2],
     pub uv_max: [f32; 2],
-    pub sheet: [f32; 2],
+    /// Лист атласа, признак сглаживания и признак свечения.
+    pub sheet: [f32; 3],
 }
 
 // Раскладки, которые читает `scene3d.wgsl`: уникальный размер в байтах и смещения атрибутов ниже.
 const _: () = assert!(std::mem::size_of::<Globals3d>() == 208);
 const _: () = assert!(std::mem::size_of::<ShapeInstance>() == 48);
-const _: () = assert!(std::mem::size_of::<GroundVertex>() == 72);
+const _: () = assert!(std::mem::size_of::<GroundVertex>() == 76);
 
 /// Кадр трёхмерной сцены для видеокарты; `shapes` — по видам фигур в порядке `Shape::ALL`. `terrain` —
 /// сетка рельефа сцены, если в ней есть файл высот; буфер пересоздаётся, только когда сменился её
@@ -506,7 +507,7 @@ const GROUND_ATTRIBUTES: [wgpu::VertexAttribute; 7] = [
         shader_location: 5,
     },
     wgpu::VertexAttribute {
-        format: wgpu::VertexFormat::Float32x2,
+        format: wgpu::VertexFormat::Float32x3,
         offset: 64,
         shader_location: 6,
     },

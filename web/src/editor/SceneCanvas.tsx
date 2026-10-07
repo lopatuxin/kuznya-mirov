@@ -10,15 +10,18 @@ import type { MaskSet } from "./maskBytes";
 import { IMAGE_DRAG_TYPE, resolveImageDropEffect } from "./imageDrag";
 import type { StampShape } from "./imprintGeometry";
 import type { PlacementChange } from "./objectPlacement";
+import { secondsSinceLastFrame } from "./frameClock";
 import { canPaintMaterial, resolvePaintMaterial } from "./paintLayers";
 import type { PaintResult } from "./paintStroke";
 import { focusSceneWhenGameStarts } from "./sceneInputDom";
 import type { SceneSize } from "./sceneObjects";
+import type { SceneWind } from "./sceneWind";
 import { fitSceneStage } from "./sceneStageLayout";
 import {
   isImprintToolEnabled,
   isPaintToolEnabled,
   resolveSceneToolAvailability,
+  resolveWindMenuState,
   selectBrushTool,
   selectHandleModeTool,
   selectImprintTool,
@@ -32,6 +35,7 @@ import { wheelBrushSize } from "./terrainBrush";
 import type { ImprintEntry, TerrainCoverLayer, TerrainGrid, TerrainWater } from "./terrainFile";
 import { useFlatSceneInput } from "./useFlatSceneInput";
 import { useSpaceSceneInput } from "./useSpaceSceneInput";
+import { WindMenu } from "./WindMenu";
 
 type SceneCanvasProps = {
   /** Тот же холст, на котором `useProjectEngine` создал движок — требование Engine.create(canvas). */
@@ -70,6 +74,10 @@ type SceneCanvasProps = {
   onCommitTerrain: (grid: TerrainGrid) => void;
   /** Галочка, уровень или цвет воды: новая вода или `null` — одно действие. */
   onWaterChange: (water: TerrainWater | null) => void;
+  /** Ветер сцены: из файла, а в партии живой — поля окошка «Ветер». */
+  wind: SceneWind;
+  /** Новый ветер из окошка; возвращает текст ошибки движка, если ветер не принят. */
+  onWindChange: (wind: SceneWind) => string | undefined;
   /** Мазок начался или кончился — пока он идёт, перезагрузка файлов ждёт. */
   onStrokeActiveChange: (isActive: boolean) => void;
   /** Размер и сила кисти — их держит страница редактора, а не окно проекта («Кисти рельефа», требование 2). */
@@ -146,6 +154,8 @@ export function SceneCanvas({
   terrainWater,
   onCommitTerrain,
   onWaterChange,
+  wind,
+  onWindChange,
   onStrokeActiveChange,
   brushFields,
   imprints,
@@ -189,6 +199,7 @@ export function SceneCanvas({
     isGameInputActive,
     isEditorCameraActive,
   });
+  const windMenuState = resolveWindMenuState({ isThreeDimensionalScene, isSceneShown, canEditScene });
   const isImprintEnabled = isImprintToolEnabled(areBrushesAvailable, stampShapes.length > 0);
   // Штамп по умолчанию — первый; объявление, что пропало из `files.stamps`, выбор тоже уводит на первый.
   const imprintStamp = stampShapes.find((shape) => shape.name === imprintStampName) ?? stampShapes[0];
@@ -376,12 +387,15 @@ export function SceneCanvas({
     const overlayContext = overlayCanvas?.getContext("2d") ?? null;
     let frameHandle = 0;
     let stopped = false;
+    let previousTime: number | null = null;
 
     function frame(time: number): void {
       if (stopped) return;
       // Мазок действует в каждом кадре страницы и до отрисовки — сцена сразу показывает новый рельеф.
       if (isThreeDimensionalSceneRef.current) spaceScene.strokeFrame(time);
-      activeEngine.draw();
+      // Часы редактора идут вне партии на секунды между кадрами; вкладка, что простояла спрятанной, двигает их не больше чем на 0,1.
+      activeEngine.draw(secondsSinceLastFrame(previousTime, time));
+      previousTime = time;
       if (overlayCanvas && overlayContext) {
         overlayContext.clearRect(0, 0, overlayCanvas.width, overlayCanvas.height);
         const pixelRatio = window.devicePixelRatio || 1;
@@ -463,61 +477,65 @@ export function SceneCanvas({
       )}
       {/* Инструменты сцены — в верхней полосе окна, а не поверх поля сцены. */}
       {toolbarSlot !== null &&
-        areHandlesAvailable &&
         createPortal(
-          <HandleModeToolbar
-            mode={handleMode}
-            isThreeDimensionalScene={isThreeDimensionalScene}
-            brushKind={brushKind}
-            areBrushesAvailable={areBrushesAvailable}
-            lastTerrainTool={lastTerrainTool}
-            brushSize={brushSize}
-            brushStrength={brushStrength}
-            water={terrainWater}
-            imprintTool={{
-              isSelected: selectedTool.isImprintTool,
-              isEnabled: isImprintEnabled,
-              fields: {
-                stampNames: stampShapes.map((shape) => shape.name),
-                stamp: imprintStamp?.name ?? "",
-                previews: stampPreviews,
-                width: imprintWidth,
-                height: imprintHeight,
-                // Выбор штампа сразу включает «Отпечаток», как выбор материала — кисть этим материалом.
-                onStampChange: (name) => {
-                  setImprintStampName(name);
-                  setLastTerrainTool("imprint");
-                  setSelectedTool(selectImprintTool(handleMode));
-                },
-                onWidthChange: setImprintWidth,
-                onHeightChange: setImprintHeight,
-              },
-              onSelect: () => {
-                setLastTerrainTool("imprint");
-                setSelectedTool(selectImprintTool(handleMode));
-              },
-            }}
-            materialsTool={{
-              isSelected: selectedTool.isPaintTool,
-              isEnabled: isPaintEnabled,
-              materialNames,
-              material: paintMaterial ?? "",
-              blockedMaterials,
-              onMaterialSelect: (name) => {
-                setPaintMaterialName(name);
-                setSelectedTool(selectPaintTool(handleMode));
-              },
-              onSelect: () => setSelectedTool(selectPaintTool(handleMode)),
-            }}
-            onChange={selectHandleMode}
-            onBrushChange={(kind) => {
-              setLastTerrainTool(kind);
-              setSelectedTool(selectBrushTool(handleMode, kind));
-            }}
-            onBrushSizeChange={brushFields.onSizeChange}
-            onBrushStrengthChange={brushFields.onStrengthChange}
-            onWaterChange={onWaterChange}
-          />,
+          <>
+            {areHandlesAvailable && (
+              <HandleModeToolbar
+                mode={handleMode}
+                isThreeDimensionalScene={isThreeDimensionalScene}
+                brushKind={brushKind}
+                areBrushesAvailable={areBrushesAvailable}
+                lastTerrainTool={lastTerrainTool}
+                brushSize={brushSize}
+                brushStrength={brushStrength}
+                water={terrainWater}
+                imprintTool={{
+                  isSelected: selectedTool.isImprintTool,
+                  isEnabled: isImprintEnabled,
+                  fields: {
+                    stampNames: stampShapes.map((shape) => shape.name),
+                    stamp: imprintStamp?.name ?? "",
+                    previews: stampPreviews,
+                    width: imprintWidth,
+                    height: imprintHeight,
+                    // Выбор штампа сразу включает «Отпечаток», как выбор материала — кисть этим материалом.
+                    onStampChange: (name) => {
+                      setImprintStampName(name);
+                      setLastTerrainTool("imprint");
+                      setSelectedTool(selectImprintTool(handleMode));
+                    },
+                    onWidthChange: setImprintWidth,
+                    onHeightChange: setImprintHeight,
+                  },
+                  onSelect: () => {
+                    setLastTerrainTool("imprint");
+                    setSelectedTool(selectImprintTool(handleMode));
+                  },
+                }}
+                materialsTool={{
+                  isSelected: selectedTool.isPaintTool,
+                  isEnabled: isPaintEnabled,
+                  materialNames,
+                  material: paintMaterial ?? "",
+                  blockedMaterials,
+                  onMaterialSelect: (name) => {
+                    setPaintMaterialName(name);
+                    setSelectedTool(selectPaintTool(handleMode));
+                  },
+                  onSelect: () => setSelectedTool(selectPaintTool(handleMode)),
+                }}
+                onChange={selectHandleMode}
+                onBrushChange={(kind) => {
+                  setLastTerrainTool(kind);
+                  setSelectedTool(selectBrushTool(handleMode, kind));
+                }}
+                onBrushSizeChange={brushFields.onSizeChange}
+                onBrushStrengthChange={brushFields.onStrengthChange}
+                onWaterChange={onWaterChange}
+              />
+            )}
+            {windMenuState !== "hidden" && <WindMenu wind={wind} isDisabled={windMenuState === "disabled"} onWindChange={onWindChange} />}
+          </>,
           toolbarSlot,
         )}
     </div>

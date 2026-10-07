@@ -4,6 +4,7 @@ use wgpu::util::DeviceExt;
 use super::atlas::{self, ATLAS_SIZE};
 use super::gpu3d;
 use super::materials::Relief;
+use super::wind;
 use crate::core::screens::{Align, FontId};
 use crate::core::terrain::Cover;
 use crate::data::load::{CoverMask, MaterialDecl};
@@ -35,6 +36,12 @@ pub struct DrawRect {
     /// «Картинки» → «Отражение», требование 9: `0.0`/`1.0` — mirrors the sampled point in the
     /// image's own axes, after the rotation above has already picked which corner maps where.
     pub flip_x: f32,
+    /// «Картинки», «Таблица картинок»: `0.0`/`1.0` — светящаяся картинка прибавляет свет к тому, что
+    /// под ней: фрагмент отдаёт `(цвет, 0)`.
+    pub glow: f32,
+    /// «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх прямоугольника;
+    /// вершинный шейдер гнёт его по дуге по восьми полосам.
+    pub lean: f32,
 }
 
 /// One label or button caption to hand to `glyphon` this frame. `rect_px` is the element's
@@ -134,7 +141,7 @@ pub struct Renderer {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     rect_pipeline: wgpu::RenderPipeline,
-    quad_buffer: wgpu::Buffer,
+    strip_buffer: wgpu::Buffer,
 
     world_globals_buffer: wgpu::Buffer,
     world_bind_group: wgpu::BindGroup,
@@ -453,6 +460,16 @@ impl Renderer {
                     offset: 60,
                     shader_location: 9,
                 },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 64,
+                    shader_location: 10,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 68,
+                    shader_location: 11,
+                },
             ],
         };
 
@@ -479,24 +496,20 @@ impl Renderer {
                 })],
                 compilation_options: wgpu::PipelineCompilationOptions::default(),
             }),
-            primitive: wgpu::PrimitiveState::default(),
+            primitive: wgpu::PrimitiveState {
+                topology: wgpu::PrimitiveTopology::TriangleStrip,
+                ..wgpu::PrimitiveState::default()
+            },
             depth_stencil: None,
             multisample: wgpu::MultisampleState::default(),
             multiview_mask: None,
             cache: None,
         });
 
-        let quad_vertices: [[f32; 2]; 6] = [
-            [0.0, 0.0],
-            [1.0, 0.0],
-            [0.0, 1.0],
-            [1.0, 0.0],
-            [1.0, 1.0],
-            [0.0, 1.0],
-        ];
-        let quad_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("unit_quad"),
-            contents: bytemuck::cast_slice(&quad_vertices),
+        let strip_vertices = wind::strip_units();
+        let strip_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("unit_strip"),
+            contents: bytemuck::cast_slice(&strip_vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
 
@@ -536,7 +549,7 @@ impl Renderer {
             queue,
             config,
             rect_pipeline,
-            quad_buffer,
+            strip_buffer,
             world_globals_buffer,
             world_bind_group,
             world_instance_buffer,
@@ -1124,11 +1137,11 @@ impl Renderer {
     ) -> Result<(), String> {
         let [world_instances, world_texts, ui_instances, texts] = counts;
         pass.set_pipeline(&self.rect_pipeline);
-        pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+        pass.set_vertex_buffer(0, self.strip_buffer.slice(..));
         if world_instances > 0 {
             pass.set_bind_group(0, &self.world_bind_group, &[]);
             pass.set_vertex_buffer(1, self.world_instance_buffer.slice(..));
-            pass.draw(0..6, 0..world_instances as u32);
+            pass.draw(0..wind::STRIP_VERTICES as u32, 0..world_instances as u32);
         }
         if world_texts > 0 {
             self.world_text_renderer
@@ -1138,11 +1151,11 @@ impl Renderer {
         // `world_text_renderer.render` above rebinds its own pipeline/vertex buffer on this
         // same pass — restored here before the interface rectangles draw.
         pass.set_pipeline(&self.rect_pipeline);
-        pass.set_vertex_buffer(0, self.quad_buffer.slice(..));
+        pass.set_vertex_buffer(0, self.strip_buffer.slice(..));
         if ui_instances > 0 {
             pass.set_bind_group(0, &self.ui_bind_group, &[]);
             pass.set_vertex_buffer(1, self.ui_instance_buffer.slice(..));
-            pass.draw(0..6, 0..ui_instances as u32);
+            pass.draw(0..wind::STRIP_VERTICES as u32, 0..ui_instances as u32);
         }
         if texts > 0 {
             self.text_renderer

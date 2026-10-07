@@ -575,8 +575,8 @@ struct GroundVertex {
     @location(3) color: vec4<f32>,
     @location(4) uv_min: vec2<f32>,
     @location(5) uv_max: vec2<f32>,
-    // x — лист атласа, y — признак сглаживания.
-    @location(6) sheet: vec2<f32>,
+    // x — лист атласа, y — признак сглаживания, z — признак свечения.
+    @location(6) sheet: vec3<f32>,
 };
 
 struct GroundOutput {
@@ -589,6 +589,7 @@ struct GroundOutput {
     @location(5) @interpolate(flat) smooth_sample: f32,
     @location(6) world: vec3<f32>,
     @location(7) normal: vec3<f32>,
+    @location(8) @interpolate(flat) glow: f32,
 };
 
 @vertex
@@ -601,13 +602,15 @@ fn vs_ground(vertex: GroundVertex) -> GroundOutput {
     out.uv_max = vertex.uv_max;
     out.atlas_layer = i32(vertex.sheet.x + 0.5);
     out.smooth_sample = vertex.sheet.y;
+    out.glow = vertex.sheet.z;
     out.world = vertex.position;
     out.normal = vertex.normal;
     return out;
 }
 
 // Цвет картинки уже умножен на прозрачность: свет считается по цвету без неё, затем цвет умножается
-// снова.
+// снова. Светящаяся картинка не освещается и не затеняется: отдаёт `(цвет, 0)`, и смешивание
+// `PREMULTIPLIED_ALPHA_BLENDING` прибавляет цвет к тому, что под ней.
 @fragment
 fn fs_ground(in: GroundOutput) -> @location(0) vec4<f32> {
     let clamped = clamp(in.uv_px, in.uv_min, in.uv_max);
@@ -620,5 +623,5 @@ fn fs_ground(in: GroundOutput) -> @location(0) vec4<f32> {
     let visible = shadow_lit(in.world, normal);
     let straight = base.rgb / max(base.a, 0.0001);
     let lit = finish(shade_matte(srgb_to_linear(straight), in.world, normal, visible));
-    return vec4<f32>(lit * base.a, base.a);
+    return vec4<f32>(select(lit * base.a, base.rgb, in.glow > 0.5), base.a * (1.0 - in.glow));
 }

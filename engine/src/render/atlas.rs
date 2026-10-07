@@ -16,6 +16,8 @@ use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
+use super::wind::{Motion, SwayObject, swaying_frame};
+
 /// «Картинки» → «Атлас», требование 14: the canvas is this size in every browser, so the game
 /// either starts everywhere or nowhere, never differently depending on what WebGPU would actually
 /// allow.
@@ -298,7 +300,17 @@ fn frame_by_index(world: &World, id: u32, prop: property::PropertyId, frame_coun
     (raw.floor() as u64).min(frame_count.saturating_sub(1) as u64) as u32
 }
 
-/// A `Fill`'s resolved `(color, atlas rect, smooth)` for the current frame — «Картинки» → «Атлас»:
+/// What a `Fill` draws this frame — `fill_paint`'s result: the color to multiply the atlas rectangle
+/// by, the atlas rectangle, the image's own `smooth` and `glow`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FillPaint {
+    pub color: [f32; 4],
+    pub atlas_rect: AtlasRect,
+    pub smooth: bool,
+    pub glow: bool,
+}
+
+/// A `Fill`'s resolved paint for the current frame — «Картинки» → «Атлас»:
 /// a color fill is the atlas's white pixel stretched and multiplied by the color, never smoothed;
 /// an image fill leaves the color white (only its alpha carries `opacity`), samples the image's
 /// current frame instead, and carries that image's own `smooth` (требование 3: a panel or button
@@ -311,14 +323,20 @@ pub fn fill_paint(
     elapsed_steps: f64,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
-) -> ([f32; 4], AtlasRect, bool) {
+) -> FillPaint {
     match *fill {
-        Fill::Color(c) => (c, WHITE_PIXEL, false),
-        Fill::Image { image, opacity } => (
-            [1.0, 1.0, 1.0, opacity],
-            frame_atlas_rect(image, elapsed_steps, images, atlas_rects),
-            images[image].smooth,
-        ),
+        Fill::Color(color) => FillPaint {
+            color,
+            atlas_rect: WHITE_PIXEL,
+            smooth: false,
+            glow: false,
+        },
+        Fill::Image { image, opacity } => FillPaint {
+            color: [1.0, 1.0, 1.0, opacity],
+            atlas_rect: frame_atlas_rect(image, elapsed_steps, images, atlas_rects),
+            smooth: images[image].smooth,
+            glow: images[image].glow,
+        },
     }
 }
 
@@ -360,10 +378,43 @@ pub struct RectPaint {
     pub turn: Turn,
     /// Объект, чей это прямоугольник; `None` у плитки земли.
     pub object: Option<u32>,
+    /// «Картинки», «Таблица картинок»: картинка светится — её точки прибавляют свет к тому, что под
+    /// ней; всегда `false` у заливки цветом.
+    pub glow: bool,
+    /// «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх рисунка;
+    /// нижний край стоит. 0 — рисунок не качается.
+    pub lean: f32,
 }
 
-/// «Картинки» → «Кадры»: the world's own frame is picked by steps taken (`elapsed_steps`, frozen
-/// exactly when the world stops stepping — paused, or on the outcome screen); «Исполнение игры»:
+impl RectPaint {
+    /// Прямоугольник без поворота, отражения и наклона — панель, кнопка, плитка земли, полоска в мире.
+    pub fn flat(
+        position: [f32; 2],
+        size: [f32; 2],
+        color: [f32; 4],
+        atlas_rect: AtlasRect,
+        smooth: bool,
+        glow: bool,
+    ) -> RectPaint {
+        RectPaint {
+            position,
+            size,
+            color,
+            atlas_rect,
+            rotation_quarters: 0,
+            smooth,
+            flip_x: false,
+            turn: Turn::NONE,
+            object: None,
+            glow,
+            lean: 0.0,
+        }
+    }
+}
+
+/// «Картинки» → «Кадры»: the world's own frame is picked by `motion`'s clock (steps taken, frozen
+/// exactly when the world stops stepping — paused, or on the outcome screen; outside a partiya in
+/// the editor, the editor's own clock); «Исполнение игры»:
 /// rendering never changes the world, this just reads it. Every object with `position`, `size`
 /// and a `color` or `image` sorts into one list by «Порядок рисования» (`scene::draw_order`) — a
 /// color fill and an image fill mixed in the same order — «Картинки» → «Атлас и отрисовка»: a
@@ -374,7 +425,7 @@ pub fn compose_world_paints(
     world: &World,
     scene: &SceneConfig,
     ids: impl Iterator<Item = u32>,
-    elapsed_steps: f64,
+    motion: &Motion,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
     layers: &LayerView,
@@ -416,8 +467,23 @@ pub fn compose_world_paints(
                 }
                 None => Fill::Color(world.color(id, property::COLOR).expect("filtered above")),
             };
-            let (color, mut atlas_rect, smooth) =
-                fill_paint(&fill, elapsed_steps, images, atlas_rects);
+            let FillPaint {
+                color,
+                mut atlas_rect,
+                smooth,
+                glow,
+            } = fill_paint(&fill, motion.clock_steps(), images, atlas_rects);
+            let generation = world.generation(id);
+            // «Кадры качающегося объекта», требования 20–22: объект с `sway` считает кадры по
+            // своим часам, а не по общим.
+            if let Fill::Image { image, .. } = fill
+                && images[image].animated
+                && let Some(clock) = motion.frame_clock(id, generation)
+            {
+                let decl = &images[image];
+                let frame = swaying_frame(id, clock, decl.frames, decl.frame_seconds);
+                atlas_rect = frame_atlas_rect_at(image, frame, images, atlas_rects);
+            }
             // «Картинки», требование 23: `frame_by` overrides the time-driven frame `fill_paint`
             // already picked — the object's own property decides instead.
             if let Fill::Image { image, .. } = fill
@@ -426,16 +492,11 @@ pub fn compose_world_paints(
                 let frame = frame_by_index(world, id, frame_by, images[image].frames);
                 atlas_rect = frame_atlas_rect_at(image, frame, images, atlas_rects);
             }
-            // «Картинки», требование 24: заливка цветом поворот не видит; требование 12: и
-            // отражение тоже.
-            let is_image = matches!(fill, Fill::Image { .. });
-            let rotation_quarters = if is_image && !three_d {
-                world
-                    .rotation(id, property::ROTATION)
-                    .map_or(0, |r| r.quarters())
-            } else {
-                0
+            let image = match fill {
+                Fill::Image { image, .. } => Some(image),
+                Fill::Color(_) => None,
             };
+            let drawn = drawn_rect(world, id, p, s, image, images);
             let turn = match world.rotation(id, property::ROTATION) {
                 Some(rotation) if three_d => {
                     let (sin, cos) = rotation.sin_cos();
@@ -447,37 +508,102 @@ pub fn compose_world_paints(
                 }
                 _ => Turn::NONE,
             };
-            let flip_x = is_image && world.flag(id, property::FLIP_X);
-            // «Картинки» → «Картинка своего размера», требования 8–10: own-size placement (and,
-            // with a nonzero rotation, требование 9's rigid rotation around the object's own
-            // middle) replaces the object's own rectangle only for drawing — every filter/sort
-            // above already ran against `p`/`s` unchanged.
-            let (position, size) = match fill {
-                Fill::Image { image, .. } => {
-                    own_size_rect(&images[image], p, s, rotation_quarters, flip_x)
-                        .unwrap_or(([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32]))
-                }
-                Fill::Color(_) => ([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32]),
-            };
             let paint = RectPaint {
-                position,
-                size,
+                position: drawn.position,
+                size: drawn.size,
                 color,
                 atlas_rect,
-                rotation_quarters,
+                rotation_quarters: drawn.rotation_quarters,
                 smooth,
-                flip_x,
+                flip_x: drawn.flip_x,
                 turn,
                 object: Some(id),
+                glow,
+                lean: motion.lean(id, generation) as f32,
             };
             layered_paints(world, id, paint, s[0], layers, window)
         })
         .collect()
 }
 
+/// Нарисованный прямоугольник объекта и то, как он повёрнут и отражён, — для рисования и для
+/// высоты рисунка качающегося объекта.
+struct DrawnRect {
+    position: [f32; 2],
+    size: [f32; 2],
+    rotation_quarters: u8,
+    flip_x: bool,
+}
+
+/// «Картинки» → «Картинка своего размера», требования 8–10: own-size placement (and, with a nonzero
+/// rotation, требование 9's rigid rotation around the object's own middle) replaces the object's
+/// own rectangle `p`/`s` only for drawing — every filter/sort in `compose_world_paints` runs
+/// against `p`/`s` unchanged. «Картинки», требование 24: заливка цветом (`image` — `None`) поворот
+/// не видит; требование 12: и отражение тоже.
+fn drawn_rect(
+    world: &World,
+    id: u32,
+    p: Vec2,
+    s: Vec2,
+    image: Option<ImageId>,
+    images: &[ImageDecl],
+) -> DrawnRect {
+    let rotation_quarters = if image.is_some() && !world.three_d() {
+        world
+            .rotation(id, property::ROTATION)
+            .map_or(0, |r| r.quarters())
+    } else {
+        0
+    };
+    let flip_x = image.is_some() && world.flag(id, property::FLIP_X);
+    let own =
+        image.and_then(|image| own_size_rect(&images[image], p, s, rotation_quarters, flip_x));
+    let (position, size) = own.unwrap_or(([p[0] as f32, p[1] as f32], [s[0] as f32, s[1] as f32]));
+    DrawnRect {
+        position,
+        size,
+        rotation_quarters,
+        flip_x,
+    }
+}
+
+/// «Качание», требования 9–11: объекты плоской сцены с `sway`, которые рисуются, — с серединой
+/// нижнего края записанного прямоугольника и высотой нарисованного рисунка. `sway` меньше нуля
+/// считается нулём; объект с нулём тоже отдаётся — `Motion` доведёт его наклон до нуля пружиной.
+pub fn sway_objects<'a>(
+    world: &'a World,
+    images: &'a [ImageDecl],
+) -> impl Iterator<Item = SwayObject> + 'a {
+    let slots = if world.three_d() {
+        0
+    } else {
+        world.slot_count() as u32
+    };
+    (0..slots).filter_map(move |id| {
+        let sway = world.number_like(id, property::SWAY)?.max(0.0);
+        let p = world.vec2(id, property::POSITION)?;
+        let s = world.vec2(id, property::SIZE)?;
+        let image = world.image(id, property::IMAGE);
+        if image.is_none() && world.color(id, property::COLOR).is_none() {
+            return None;
+        }
+        let drawn = drawn_rect(world, id, p, s, image, images);
+        Some(SwayObject {
+            id,
+            generation: world.generation(id),
+            image,
+            sway,
+            x: p[0] + s[0] / 2.0,
+            height: f64::from(drawn.size[1]),
+            parallax: scene::parallax(world, id),
+        })
+    })
+}
+
 /// «Слои глубины», требования 4, 10–14: рисунок объекта сдвинут на сдвиг слоя; у `repeat_x` к нему
 /// добавлены копии через `size.x` объекта — каждая, чей нарисованный прямоугольник хоть частью
-/// попадает в окно по ширине (`window` — его края в клетках сцены). Копии идут слева направо, сам
+/// попадает в окно по ширине (`window` — его края в клетках сцены); верх качающегося рисунка уходит
+/// вбок на наклон, поэтому окно для отсева шире на него в обе стороны. Копии идут слева направо, сам
 /// объект — на своём месте среди них, а вне окна — первым.
 fn layered_paints(
     world: &World,
@@ -493,9 +619,10 @@ fn layered_paints(
     let repeats = size_x > 0.0 && window[1] > window[0] && world.flag(id, property::REPEAT_X);
     let (first, last) = if repeats {
         let (left, width) = (paint.position[0] as f64, paint.size[0] as f64);
+        let lean = f64::from(paint.lean.abs());
         (
-            ((window[0] - left - width) / size_x).floor() as i64 + 1,
-            ((window[1] - left) / size_x).ceil() as i64 - 1,
+            ((window[0] - lean - left - width) / size_x).floor() as i64 + 1,
+            ((window[1] + lean - left) / size_x).ceil() as i64 - 1,
         )
     } else {
         (0, -1)
@@ -614,17 +741,14 @@ pub fn compose_ground_paints(
                 if n < 0 {
                     continue;
                 }
-                out.push(RectPaint {
-                    position: [x as f32, y as f32],
-                    size: [1.0, 1.0],
-                    color: [1.0, 1.0, 1.0, 1.0],
-                    atlas_rect: frame_atlas_rect_at(layer.image, n as u32, images, atlas_rects),
-                    rotation_quarters: 0,
-                    smooth: images[layer.image].smooth,
-                    flip_x: false,
-                    turn: Turn::NONE,
-                    object: None,
-                });
+                out.push(RectPaint::flat(
+                    [x as f32, y as f32],
+                    [1.0, 1.0],
+                    [1.0, 1.0, 1.0, 1.0],
+                    frame_atlas_rect_at(layer.image, n as u32, images, atlas_rects),
+                    images[layer.image].smooth,
+                    images[layer.image].glow,
+                ));
             }
         }
     }
@@ -924,6 +1048,17 @@ mod tests {
         assert_eq!(sampler_bindings, 1, "{shader}");
     }
 
+    /// «Картинки» → «Таблица картинок», `glow`: светящийся экземпляр отдаёт `(цвет, 0)` — смешивание
+    /// `PREMULTIPLIED_ALPHA_BLENDING` прибавляет цвет к тому, что под ним; наклон гнёт вершины по дуге.
+    #[test]
+    fn rect_wgsl_adds_the_glowing_colour_and_bends_the_vertices() {
+        let shader = include_str!("../../shaders/rect.wgsl");
+        assert!(shader.contains("@location(10) glow_flag: f32"), "{shader}");
+        assert!(shader.contains("@location(11) lean: f32"), "{shader}");
+        assert!(shader.contains("painted.a * (1.0 - in.glow)"), "{shader}");
+        assert!(shader.contains("instance.lean * along * along"), "{shader}");
+    }
+
     /// «Картинки» → «Сглаживание», требование 5: `PREMULTIPLIED_ALPHA_BLENDING` (`render::gpu`)
     /// expects the fragment's whole output premultiplied, not just the atlas's own points — a
     /// color fill's own alpha (opacity, translucent panels) must be premultiplied too.
@@ -960,6 +1095,12 @@ mod tests {
     use crate::core::property::PropertyTable;
     use crate::core::screens::{Anchor, button_fill};
 
+    fn motion_at(steps: u64) -> Motion {
+        let mut motion = Motion::default();
+        motion.tick(Some(steps), 0.0);
+        motion
+    }
+
     fn one_frame_image() -> ImageDecl {
         ImageDecl {
             name: "x".to_string(),
@@ -974,6 +1115,8 @@ mod tests {
             frame_by: None,
             frame_by_name: None,
             smooth: false,
+            glow: false,
+            frame_seconds: 0.0,
         }
     }
 
@@ -1010,7 +1153,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1070,7 +1213,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1115,7 +1258,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1147,7 +1290,7 @@ mod tests {
         };
 
         let chosen = button_fill(&base, &base, &base, 0, &mouse);
-        let (_, atlas_rect, _) = fill_paint(chosen, 0.0, &images, &atlas_rects);
+        let atlas_rect = fill_paint(chosen, 0.0, &images, &atlas_rects).atlas_rect;
         assert_eq!(atlas_rect, atlas_rects[0]);
     }
 
@@ -1185,7 +1328,7 @@ mod tests {
         };
 
         let chosen = button_fill(&base, &hover, &base, 0, &mouse);
-        let (_, atlas_rect, _) = fill_paint(chosen, 0.0, &images, &atlas_rects);
+        let atlas_rect = fill_paint(chosen, 0.0, &images, &atlas_rects).atlas_rect;
         assert_eq!(atlas_rect, atlas_rects[1]);
     }
 
@@ -1208,10 +1351,10 @@ mod tests {
             image: 0,
             opacity: 1.0,
         };
-        let (_, _, smooth) = fill_paint(&image_fill, 0.0, &images, &atlas_rects);
+        let smooth = fill_paint(&image_fill, 0.0, &images, &atlas_rects).smooth;
         assert!(smooth);
         let color_fill = Fill::Color([1.0, 0.0, 0.0, 1.0]);
-        let (_, _, smooth) = fill_paint(&color_fill, 0.0, &images, &atlas_rects);
+        let smooth = fill_paint(&color_fill, 0.0, &images, &atlas_rects).smooth;
         assert!(!smooth);
     }
 
@@ -1239,6 +1382,8 @@ mod tests {
             frame_by: Some(hits),
             frame_by_name: None,
             smooth: false,
+            glow: false,
+            frame_seconds: 0.0,
         }];
         let atlas_rects = vec![AtlasRect {
             x: 0,
@@ -1271,7 +1416,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            999.0,
+            &motion_at(999),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1329,6 +1474,8 @@ mod tests {
             frame_by: None,
             frame_by_name: None,
             smooth: false,
+            glow: false,
+            frame_seconds: 0.0,
         }
     }
 
@@ -1529,6 +1676,8 @@ mod tests {
             frame_by: None,
             frame_by_name: None,
             smooth: false,
+            glow: false,
+            frame_seconds: 0.0,
         }
     }
 
@@ -1574,7 +1723,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1620,7 +1769,7 @@ mod tests {
                 &world,
                 &scene,
                 world.ids(),
-                0.0,
+                &Motion::default(),
                 &images,
                 &atlas_rects,
                 &LayerView::default(),
@@ -1654,7 +1803,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1692,7 +1841,7 @@ mod tests {
                 &world,
                 &scene,
                 world.ids(),
-                0.0,
+                &Motion::default(),
                 &images,
                 &atlas_rects,
                 &LayerView::default(),
@@ -1749,7 +1898,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1795,7 +1944,7 @@ mod tests {
                 &world,
                 &scene,
                 world.ids(),
-                0.0,
+                &Motion::default(),
                 &images,
                 &atlas_rects,
                 &LayerView::default(),
@@ -1832,7 +1981,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1865,7 +2014,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1892,7 +2041,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &[],
             &[],
             &LayerView::default(),
@@ -1928,7 +2077,7 @@ mod tests {
             &single,
             &scene,
             single.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &LayerView::default(),
@@ -1947,7 +2096,7 @@ mod tests {
             &world,
             &scene,
             world.ids(),
-            0.0,
+            &Motion::default(),
             &images,
             &atlas_rects,
             &layers,
@@ -1980,9 +2129,44 @@ mod tests {
             shift: [-46.5, 0.0],
             window_cells: 7.0,
         };
-        let paints = compose_world_paints(&world, &scene, world.ids(), 0.0, &[], &[], &layers);
+        let paints = compose_world_paints(
+            &world,
+            &scene,
+            world.ids(),
+            &Motion::default(),
+            &[],
+            &[],
+            &layers,
+        );
         let xs: Vec<f32> = paints.iter().map(|paint| paint.position[0]).collect();
         assert_eq!(xs, vec![90.0, 0.0, 2.0, 4.0, 6.0]);
+    }
+
+    /// «Качание», «Слои глубины»: копия, у которой без наклона нет ни клетки в окне, а с наклоном
+    /// верх заходит в окно, рисуется — справа от окна при наклоне влево, слева от него при наклоне
+    /// вправо.
+    #[test]
+    fn a_repeat_copy_whose_leaning_top_enters_the_window_is_drawn() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        let id = world.create();
+        world.set_flag(id, property::REPEAT_X, true);
+        let still = RectPaint::flat([0.0, 0.0], [2.0, 2.0], [1.0; 4], WHITE_PIXEL, false, false);
+        let copies = |lean: f32, window: [f64; 2]| -> Vec<f32> {
+            let paint = RectPaint { lean, ..still };
+            layered_paints(&world, id, paint, 2.0, &LayerView::default(), window)
+                .map(|copy| copy.position[0])
+                .collect()
+        };
+        assert_eq!(copies(0.0, [5.5, 12.0]), vec![0.0, 4.0, 6.0, 8.0, 10.0]);
+        assert!(
+            copies(1.8, [5.5, 12.0]).contains(&2.0),
+            "верх копии на 2 уходит вправо на 1,8 и заходит в окно"
+        );
+        assert!(
+            copies(-1.8, [5.5, 12.0]).contains(&12.0),
+            "верх копии на 12 уходит влево на 1,8 и заходит в окно"
+        );
     }
 
     // -----------------------------------------------------------------------------------------

@@ -162,6 +162,7 @@ mod tests {
             scene,
             100,
             Vec::new(),
+            [0.0, 0.0],
             1,
             Vec::new(),
             0,

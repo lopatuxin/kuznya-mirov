@@ -31,7 +31,9 @@ import {
   removeSceneObject,
   setObjectPropertyValue,
   setObjectPropertyValues,
+  sceneTextWithWind,
 } from "./sceneTextEditing";
+import { applyWind, type SceneWind } from "./sceneWind";
 import {
   imprintsWithCopy,
   imprintsWithout,
@@ -92,6 +94,8 @@ export type SceneEditingState = {
   reloadDisplayed: () => void;
   /** Вода рельефа: `null` — воды нет; каждое принятое значение — одно действие (требование 23). */
   setTerrainWater: (water: TerrainWater | null) => void;
+  /** Ветер сцены: движок проверяет его сразу, и без ошибки `wind` пишется в `scene.json` одним действием; с ошибкой файл не пишется, возвращается её текст («Правка сцены», требование 31). */
+  setSceneWind: (wind: SceneWind) => string | undefined;
   /** Отпечатки — «Лепка рельефа»: каждое действие — одна правка файла рельефа, первый отпечаток в проекте без файла заводит его. */
   placeImprint: (entry: ImprintEntry) => void;
   replaceImprint: (index: number, entry: ImprintEntry) => void;
@@ -378,6 +382,16 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     dispatchTerrainEdit((displayed, sceneSize) => terrainTextWithWater(displayed.terrainText, sceneSize, water));
   }
 
+  function setSceneWind(wind: SceneWind): string | undefined {
+    const engine = engineState.engine;
+    if (engine === null) return undefined;
+    // Проверка идёт сразу, до очереди: ветер пары чисел от мира не зависит, а ошибка нужна окошку сейчас.
+    const error = applyWind(engine, wind);
+    if (error !== undefined) return error;
+    dispatchEdit((displayed) => ({ ...displayed, sceneText: sceneTextWithWind(displayed.sceneText, wind) }));
+    return undefined;
+  }
+
   /**
    * Действие с отпечатками: `change` получает отпечатки файла и отдаёт новый список, `null` — действия нет. Выбор
    * сдвигается вместе с действием, когда оно его просит (новый отпечаток, копия, удаление).
@@ -518,6 +532,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     paintCovers,
     reloadDisplayed,
     setTerrainWater,
+    setSceneWind,
     placeImprint,
     replaceImprint,
     setImprintValue,

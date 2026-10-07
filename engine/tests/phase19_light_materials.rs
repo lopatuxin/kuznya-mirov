@@ -19,6 +19,7 @@ use engine::render::materials::{
     pack_material,
 };
 use engine::render::scene3d::{compose_frame3d, light_colors};
+use engine::render::wind::Motion;
 
 // -------------------------------------------------------------------------------------------
 // Игры из текстов
@@ -356,7 +357,7 @@ fn a_shadow_of_zero_leaves_only_the_sky_and_a_shadow_of_one_leaves_only_the_sun(
 fn the_frame_carries_the_eye_and_the_light_of_the_scene() {
     let game = Setup::default().game();
     let camera = game.camera_3d([1920.0, 1080.0]).expect("камера");
-    let frame = compose_frame3d(&game, &camera, 0.0, &[], &[]);
+    let frame = compose_frame3d(&game, &camera, &Motion::default(), &[], &[]);
     assert_eq!(frame.eye, camera.eye.map(|c| c as f32));
     let (sun, sky) = light_colors(&game.scene.light);
     assert_eq!((frame.sun_light, frame.sky_light), (sun, sky));
