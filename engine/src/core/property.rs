@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::imprints::StampTable;
+use super::particles::ParticleTable;
 use super::terrain::Terrain;
 use super::value::PropKind;
 
@@ -39,6 +40,8 @@ pub const REPEAT_X: PropertyId = 23;
 /// «Ветер и частицы» → «Качание»: гибкость объекта в клетках — на сколько уходит вбок верх рисунка
 /// при ровном ветре в одну клетку в секунду.
 pub const SWAY: PropertyId = 24;
+/// «Ветер и частицы» → «Источник»: имя вида частиц, которые вылетают из объекта.
+pub const PARTICLES: PropertyId = 25;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -66,6 +69,7 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("parallax", PropKind::Number),
     ("repeat_x", PropKind::Flag),
     ("sway", PropKind::Number),
+    ("particles", PropKind::Text),
 ];
 
 #[derive(Debug, Clone)]
@@ -88,6 +92,9 @@ pub struct PropertyTable {
     terrain: Option<Arc<Terrain>>,
     /// «Лепка рельефа»: штампы `files.stamps` — по ним ставятся отпечатки файла рельефа и правки редактора.
     stamps: StampTable,
+    /// «Ветер и частицы»: виды частиц игры — по ним проверяется имя в `particles`; живая игра ставит
+    /// сюда же те виды, что поменял `set_wind_particles`.
+    particles: ParticleTable,
 }
 
 impl PropertyTable {
@@ -98,6 +105,7 @@ impl PropertyTable {
             three_d: false,
             terrain: None,
             stamps: StampTable::default(),
+            particles: ParticleTable::default(),
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -149,6 +157,14 @@ impl PropertyTable {
 
     pub fn stamps(&self) -> &StampTable {
         &self.stamps
+    }
+
+    pub fn set_particles(&mut self, particles: ParticleTable) {
+        self.particles = particles;
+    }
+
+    pub fn particles(&self) -> &ParticleTable {
+        &self.particles
     }
 
     pub fn resolve(&self, name: &str) -> Option<PropertyId> {
@@ -211,6 +227,8 @@ mod tests {
         assert_eq!(table.kind(REPEAT_X), PropKind::Flag);
         assert_eq!(table.resolve("sway"), Some(SWAY));
         assert_eq!(table.kind(SWAY), PropKind::Number);
+        assert_eq!(table.resolve("particles"), Some(PARTICLES));
+        assert_eq!(table.kind(PARTICLES), PropKind::Text);
     }
 
     #[test]

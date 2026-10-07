@@ -84,7 +84,8 @@
     { "position": [122, 23], "size": [10.875, 5.594], "image": "fg_fern", "layer": 60, "parallax": 1.4, "sway": 0.2 },
     { "position": [140, 23.4], "size": [13.333, 4.948], "image": "fg_panicles", "layer": 60, "parallax": 1.4, "sway": 0.3 },
     { "position": [160, 24.1], "size": [13.333, 5.042], "image": "fg_grass", "layer": 60, "parallax": 1.4, "flip_x": true, "sway": 0.25 },
-    { "position": [178, 23], "size": [10.875, 5.594], "image": "fg_fern", "layer": 60, "parallax": 1.4, "flip_x": true, "sway": 0.2 }
+    { "position": [178, 23], "size": [10.875, 5.594], "image": "fg_fern", "layer": 60, "parallax": 1.4, "flip_x": true, "sway": 0.2 },
+    { "name": "дым кузни", "position": [44.3, 15.95], "size": [0.6, 0.15], "particles": "дым", "layer": 29 }
   ],
   "wind": [1.5, 0]
 }

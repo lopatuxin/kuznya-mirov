@@ -53,6 +53,9 @@ struct InstanceInput {
     @location(10) glow_flag: f32,
     // «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх рисунка.
     @location(11) lean: f32,
+    // «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
+    // угол, градусов по часовой стрелке; 0 — прямоугольник стоит, как стоял.
+    @location(12) angle: f32,
 };
 
 struct VertexOutput {
@@ -78,7 +81,17 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     let shift = instance.lean * along * along;
     let reach = sqrt(max(above * above - shift * shift, 0.0));
     let drop = shift * shift / max(above + reach, 0.000001);
-    let corner = instance.position + vertex.unit * instance.size + vec2<f32>(shift, drop);
+    let straight = instance.position + vertex.unit * instance.size + vec2<f32>(shift, drop);
+    // Поворот частицы по часовой стрелке (`y` вниз); без угла `select` отдаёт угол прямоугольника как
+    // был, не пересчитанный через середину.
+    let radians = instance.angle * 0.017453292519943295;
+    let middle = instance.position + instance.size * 0.5;
+    let from_middle = straight - middle;
+    let turned = middle + vec2<f32>(
+        from_middle.x * cos(radians) - from_middle.y * sin(radians),
+        from_middle.x * sin(radians) + from_middle.y * cos(radians),
+    );
+    let corner = select(straight, turned, instance.angle != 0.0);
     let px = globals.offset + corner * globals.scale;
     let ndc_x = (px.x / globals.canvas_size_px.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (px.y / globals.canvas_size_px.y) * 2.0;

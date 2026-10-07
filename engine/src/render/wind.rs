@@ -5,6 +5,10 @@
 
 use std::f64::consts::TAU;
 
+use crate::core::particles::ParticleTable;
+
+use super::particles::{Emitter, Particles};
+
 /// «Часы движения», требование 18: пружины и кадры качающихся объектов идут шагами по 1/60 секунды,
 /// как шаг мира.
 const STEPS_PER_SECOND: f64 = 60.0;
@@ -32,13 +36,25 @@ pub fn gust(flat_x: f64, x: f64, t: f64) -> f64 {
     0.8 + 0.9 * gust_pattern(x - flat_x * t).max(0.0).powi(2)
 }
 
+/// «Ветер», требование 6: рябь `T` ветра в точке `x` в момент `t`.
+fn ripple(x: f64, t: f64) -> f64 {
+    0.12 * (TAU * (t / 1.7 + x / 5.3)).sin() + 0.08 * (TAU * (t / 0.9 - x / 3.7)).sin()
+}
+
 /// «Ветер», требование 6: ветер по `x` в точке сцены `x` (клетки) в момент `t` — ровный ветер `flat_x`
 /// с порывом, рябью и движением воздуха в безветрие.
 pub fn wind_at(flat_x: f64, x: f64, t: f64) -> f64 {
-    let ripple =
-        0.12 * (TAU * (t / 1.7 + x / 5.3)).sin() + 0.08 * (TAU * (t / 0.9 - x / 3.7)).sin();
     let air = 0.3 * (TAU * (t / 4.3 + x / 9.1)).sin();
-    flat_x * gust(flat_x, x, t) * (1.0 + ripple) + air
+    flat_x * gust(flat_x, x, t) * (1.0 + ripple(x, t)) + air
+}
+
+/// «Ветер и частицы» → «Частица», требование 12: ветер в точке частицы `(x, ·)` в момент `t` — по `x`
+/// как у `wind_at`, по `y` ровный ветер `flat[1]` с тем же порывом и рябью, без движения воздуха.
+pub fn wind_vector(flat: [f64; 2], x: f64, t: f64) -> [f64; 2] {
+    [
+        wind_at(flat[0], x, t),
+        flat[1] * gust(flat[0], x, t) * (1.0 + ripple(x, t)),
+    ]
 }
 
 /// «Качание», требование 10: на сколько клеток уходит вбок верх рисунка высоты `height` при ветре `u`
@@ -162,6 +178,8 @@ pub struct Motion {
     pass: u32,
     /// Мир собран заново: на ближайшем `update` картинка и высота объекта сверяются с прежними.
     compare_look: bool,
+    /// «Ветер и частицы» → «Частицы»: источники и частицы идут по тем же часам.
+    particles: Particles,
 }
 
 impl Motion {
@@ -214,6 +232,24 @@ impl Motion {
         self.clock_steps = steps;
         self.integrated_steps = steps.floor() as u64;
         self.states.fill(None);
+        self.particles.restart(steps);
+    }
+
+    /// Доводит частицы до часов — раз в кадр, после `tick`. `emitters` — источники мира сейчас,
+    /// `table` — виды частиц игры сейчас, `world_exists` — есть ли мир.
+    pub fn update_particles<'e>(
+        &mut self,
+        world_exists: bool,
+        flat: [f64; 2],
+        emitters: impl Iterator<Item = Emitter<'e>>,
+        table: &ParticleTable,
+    ) {
+        self.particles
+            .update(self.clock_steps, world_exists, flat, emitters, table);
+    }
+
+    pub fn particles(&self) -> &Particles {
+        &self.particles
     }
 
     /// Доводит наклоны и кадры `objects` до часов шагами по 1/60 секунды; остаток часов ждёт

@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  chooseParticlesFilePath,
   chooseTerrainFilePath,
   parseProjectCellPixels,
   parseProjectFilePaths,
@@ -12,8 +13,13 @@ describe("parseProjectFilePaths", () => {
   it("путь рельефа — из files.terrain, без него null", () => {
     const withTerrain = '{ "files": { "scene": "scene.json", "properties": "properties.json", "terrain": "world/terrain.json" } }';
     const without = '{ "files": { "scene": "scene.json", "properties": "properties.json" } }';
-    expect(parseProjectFilePaths(withTerrain)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: "world/terrain.json" });
-    expect(parseProjectFilePaths(without)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: null });
+    expect(parseProjectFilePaths(withTerrain)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: "world/terrain.json", particles: null });
+    expect(parseProjectFilePaths(without)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: null, particles: null });
+  });
+
+  it("путь видов частиц — из files.particles, без него null", () => {
+    const withParticles = '{ "files": { "scene": "scene.json", "properties": "properties.json", "particles": "fx/particles.json" } }';
+    expect(parseProjectFilePaths(withParticles)?.particles).toBe("fx/particles.json");
   });
 
   it("сцены и свойств нет — правка недоступна", () => {
@@ -32,6 +38,17 @@ describe("chooseTerrainFilePath", () => {
   it("занятое имя — terrain-2.json, terrain-3.json и так далее, чужой файл не затирается", async () => {
     const taken = new Set(["terrain.json", "terrain-2.json"]);
     expect(await chooseTerrainFilePath("scene.json", async (path) => taken.has(path))).toBe("terrain-3.json");
+  });
+});
+
+describe("chooseParticlesFilePath", () => {
+  it("particles.json рядом с game.json, если имя свободно", async () => {
+    expect(await chooseParticlesFilePath(async () => false)).toBe("particles.json");
+  });
+
+  it("занятое имя — particles-2.json, particles-3.json и так далее, чужой файл не затирается", async () => {
+    const taken = new Set(["particles.json", "particles-2.json"]);
+    expect(await chooseParticlesFilePath(async (path) => taken.has(path))).toBe("particles-3.json");
   });
 });
 

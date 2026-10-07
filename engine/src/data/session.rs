@@ -14,7 +14,7 @@ use crate::core::screens::{self, RecordedEvent, ScreenId, ScreenState, ScreensCo
 use crate::core::value::Value;
 
 use super::edit;
-use super::load::ImageDecl;
+use super::load::{ImageDecl, parse_edit_particles};
 use super::recording::{self, Recording, ReplayCommand, ReplayEdit, ReplayEvent, ReplayEventKind};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -627,6 +627,38 @@ pub fn set_wind(
         Some(session) if session.is_replay() => Err("в повторе мир не правится".to_string()),
         Some(session) if session.is_live() => session.set_wind(game, wind),
         _ => game.set_wind(wind),
+    }
+}
+
+/// «Редактор», «Вызовы движка», `set_wind_particles({ wind?, particles? })`: ставит то, что передано, и
+/// только если всё переданное прошло проверку. `wind` — как у `set_wind`; `particles` — таблица видов,
+/// как в файле, проверенная, как `particles.json` при загрузке: вне партии (и после «Стопа») она
+/// ставится собранному миру, в партии и на паузе — живой игре и в запись не идёт; в повторе — ошибка.
+/// Вылетевшие частицы не прерываются.
+pub fn set_wind_particles(
+    session: Option<&mut PlaySession>,
+    game: &mut Game,
+    images: &[ImageDecl],
+    wind: Option<&Json>,
+    particles: Option<&Json>,
+) -> Result<(), String> {
+    if session.as_ref().is_some_and(|session| session.is_replay()) {
+        return Err("в повторе мир не правится".to_string());
+    }
+    let wind = wind.map(parse_wind).transpose()?;
+    if wind.is_some() && game.scene.is_3d() {
+        return Err("ветер есть только в плоской сцене".to_string());
+    }
+    let particles = particles
+        .map(|table| parse_edit_particles(table, images))
+        .transpose()?;
+    if let Some(particles) = particles {
+        game.set_particles(particles)?;
+    }
+    match (wind, session) {
+        (None, _) => Ok(()),
+        (Some(wind), Some(session)) if session.is_live() => session.set_wind(game, wind),
+        (Some(wind), _) => game.set_wind(wind),
     }
 }
 

@@ -3,6 +3,7 @@ use super::code::{self, CodeError};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
 use super::math3::Vec3;
+use super::particles::ParticleTable;
 use super::pathfind::WalkCaches;
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, StepReport, StepReportBuilder};
@@ -30,6 +31,9 @@ pub struct Game {
 
     /// «Ветер и частицы» → «Ветер»: `scene.json → wind` — ветер, с которым собирается каждый мир.
     scene_wind: Vec2,
+    /// «Ветер и частицы» → «Частицы»: виды файла — с ними собирается каждый мир; виды живой игры лежат
+    /// в `properties` и меняются `set_particles`.
+    scene_particles: ParticleTable,
     /// Ровный ветер живой игры: ветер файла, пока его не поменяли (`set_wind`); сборка мира берёт
     /// его из сцены заново.
     wind: Vec2,
@@ -209,6 +213,7 @@ impl Game {
         tables: Vec<(String, serde_json::Value)>,
     ) -> Self {
         let mut game = Game {
+            scene_particles: properties.particles().clone(),
             properties,
             world,
             rules,
@@ -476,6 +481,7 @@ impl Game {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
         self.world_exists = true;
         self.wind = self.scene_wind;
+        self.restore_scene_particles();
         self.reset_camera_and_walk();
     }
 
@@ -543,6 +549,7 @@ impl Game {
         };
         self.world_exists = start_is_live;
         self.wind = self.scene_wind;
+        self.restore_scene_particles();
         self.step_count = 0;
         self.rng = Rng::new(self.random_seed);
         self.input_queue = InputQueue::new();
@@ -737,6 +744,45 @@ impl Game {
         }
         self.wind = wind;
         Ok(())
+    }
+
+    /// «Ветер и частицы» → «Частицы»: виды частиц, которые действуют в мире сейчас, — виды файла, пока
+    /// их не поменяли `set_particles`.
+    pub fn particles(&self) -> &ParticleTable {
+        self.properties.particles()
+    }
+
+    /// «Редактор», «Вызовы движка», `set_wind_particles`: ставит виды частиц этому миру; частицы,
+    /// которые уже вылетели, не прерываются. Ошибка по-русски — сцена трёхмерная или объект мира
+    /// называет вид, которого в таблице нет; тогда ничего не меняется.
+    pub fn set_particles(&mut self, particles: ParticleTable) -> Result<(), String> {
+        if self.scene.is_3d() {
+            return Err("частицы есть только в плоской сцене".to_string());
+        }
+        for id in self.world.ids() {
+            if let Some(name) = self.world.text(id, property::PARTICLES)
+                && !particles.has(name)
+            {
+                return Err(format!(
+                    "в таблице нет вида \"{name}\", который называет объект {id}"
+                ));
+            }
+        }
+        self.apply_particles(particles);
+        Ok(())
+    }
+
+    /// Сборка мира заново («Стоп», «Запуск», `show_scene`) возвращает виды файла; новая игра внутри
+    /// партии (`new_game_with_values`) живую таблицу видов сохраняет.
+    fn restore_scene_particles(&mut self) {
+        self.apply_particles(self.scene_particles.clone());
+    }
+
+    fn apply_particles(&mut self, particles: ParticleTable) {
+        if let Some(runner) = &self.code {
+            runner.set_particle_names(particles.names().map(str::to_string).collect());
+        }
+        self.properties.set_particles(particles);
     }
 
     pub fn is_running(&self) -> bool {

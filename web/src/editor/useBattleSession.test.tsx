@@ -2,6 +2,7 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeBattleEngine, type FakeBattleEngine } from "./fakeBattleEngine";
+import type { ParticleTable } from "./particlesFile";
 import { writeProjectFile } from "./projectFileWriter";
 import { useBattleSession, type BattleSessionState } from "./useBattleSession";
 
@@ -9,13 +10,14 @@ vi.mock("./projectFileWriter", () => ({ writeProjectFile: vi.fn(() => Promise.re
 
 const FILE_WIND = [1.5, 0] as const;
 
-function renderSession(engine: FakeBattleEngine): { current: BattleSessionState } {
+function renderSession(engine: FakeBattleEngine, particlesTable: ParticleTable | null = null): { current: BattleSessionState } {
   const { result } = renderHook(() =>
     useBattleSession({
       engine,
       memory: null,
       source: { kind: "listed", name: "qa-wind" },
       sceneAvailable: true,
+      particlesTable,
       loadedSounds: [],
       musicTracks: [],
       audioContext: null,
@@ -176,5 +178,130 @@ describe("useBattleSession: ветер живой игры", () => {
 
     expect(engine.setWindParticles).not.toHaveBeenCalled();
     expect(session.current.liveWind).toEqual([-3, 1]);
+  });
+});
+
+const FILE_PARTICLES: ParticleTable = { дым: { image: "puff", rate: 6, lifetime: 2, size: 1 }, искры: { image: "spark", rate: 9, lifetime: 1, size: 0.2 } };
+const EDITED_PARTICLES: ParticleTable = { ...FILE_PARTICLES, дым: { image: "puff", rate: 6, lifetime: 2, size: 1, gravity: 2 } };
+
+describe("useBattleSession: виды частиц живой игры", () => {
+  let engine: FakeBattleEngine;
+  let session: { current: BattleSessionState };
+
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.mocked(writeProjectFile).mockClear();
+    engine = createFakeBattleEngine();
+    session = renderSession(engine, FILE_PARTICLES);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  function startBattle(): void {
+    act(() => session.current.play());
+  }
+
+  it("вне партии живых видов нет — поля показывают виды файла", () => {
+    expect(session.current.liveParticles).toBeNull();
+  });
+
+  it("на «Запуске» живые виды — виды файла", () => {
+    startBattle();
+
+    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
+  });
+
+  it("правка на ходу зовёт set_wind_particles с таблицей видов, показывает правку и не пишет файл", () => {
+    startBattle();
+
+    let error: string | undefined;
+    act(() => {
+      error = session.current.setLiveParticles(EDITED_PARTICLES);
+    });
+
+    expect(error).toBeUndefined();
+    expect(engine.calls).toEqual(["play", `set_wind_particles particles ${JSON.stringify(EDITED_PARTICLES)}`]);
+    expect(session.current.liveParticles).toEqual(EDITED_PARTICLES);
+    expect(session.current.canUndoLiveEdit).toBe(true);
+    expect(writeProjectFile).not.toHaveBeenCalled();
+  });
+
+  it("Ctrl+Z возвращает прежние виды тем же вызовом движка", () => {
+    startBattle();
+    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
+
+    act(() => session.current.undoLiveEdit());
+
+    expect(engine.calls.at(-1)).toBe(`set_wind_particles particles ${JSON.stringify(FILE_PARTICLES)}`);
+    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
+    expect(session.current.canUndoLiveEdit).toBe(false);
+  });
+
+  it("движок не принял виды — возвращается его текст, виды и история прежние", () => {
+    startBattle();
+    engine.setWindParticles.mockReturnValueOnce({ ok: false, error: "дым → rate: должно быть больше нуля" });
+
+    let error: string | undefined;
+    act(() => {
+      error = session.current.setLiveParticles(EDITED_PARTICLES);
+    });
+
+    expect(error).toBe("дым → rate: должно быть больше нуля");
+    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
+    expect(session.current.canUndoLiveEdit).toBe(false);
+  });
+
+  it("на паузе виды ставятся так же, как на ходу", () => {
+    startBattle();
+    act(() => session.current.pauseOrResume());
+
+    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
+
+    expect(session.current.isRunning).toBe(false);
+    expect(session.current.liveParticles).toEqual(EDITED_PARTICLES);
+  });
+
+  it("«Стоп» возвращает виды файла: живых видов нет, история отмены пуста", () => {
+    startBattle();
+    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
+
+    act(() => session.current.stop());
+
+    expect(session.current.liveParticles).toBeNull();
+    expect(session.current.canUndoLiveEdit).toBe(false);
+  });
+
+  it("новая партия начинается с видов файла, а не с правок прежней", () => {
+    startBattle();
+    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
+    act(() => session.current.stop());
+
+    startBattle();
+
+    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
+  });
+
+  it("вне партии правка на ходу ничего не делает", () => {
+    act(() => {
+      session.current.setLiveParticles(EDITED_PARTICLES);
+    });
+
+    expect(engine.setWindParticles).not.toHaveBeenCalled();
+  });
+
+  it("в повторе живых видов нет и правка не доходит до движка", () => {
+    startBattle();
+    act(() => session.current.startReplay());
+
+    act(() => {
+      session.current.setLiveParticles(EDITED_PARTICLES);
+    });
+
+    expect(session.current.liveParticles).toBeNull();
+    expect(engine.setWindParticles).not.toHaveBeenCalled();
   });
 });

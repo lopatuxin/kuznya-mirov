@@ -1828,3 +1828,243 @@ body.is-resizing-panel {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* ——— Вкладка «Частицы» — по наброску, утверждённому хозяином: карточки слева, поля справа колонками без рамок ——— */
+
+.particles-panel {
+  display: flex;
+  align-items: stretch;
+}
+
+.particles-panel__kinds {
+  display: flex;
+  flex: none;
+  flex-direction: column;
+  gap: 10px;
+  width: 210px;
+  padding: 10px 12px 12px 14px;
+  border-right: 1px solid var(--editor-border);
+}
+
+.particles-panel__cards {
+  display: grid;
+  grid-template-columns: repeat(3, 56px);
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.particles-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  padding: 6px 2px 5px;
+  border: 1px solid var(--editor-border);
+  border-radius: 7px;
+  background: var(--editor-surface-raised);
+  cursor: pointer;
+}
+
+.particles-card:hover {
+  border-color: var(--editor-border-strong);
+  background: var(--editor-surface-hover);
+}
+
+.particles-card[draggable="true"] {
+  cursor: grab;
+}
+
+.particles-card--selected,
+.particles-card--selected:hover {
+  border-color: var(--editor-accent-ring);
+  background: var(--editor-accent-soft);
+}
+
+.particles-card--invalid {
+  border-color: var(--editor-error);
+}
+
+.particles-card__thumb {
+  display: flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  overflow: hidden;
+  border-radius: 50%;
+  background: var(--editor-surface);
+}
+
+.particles-card__thumb .images-panel__thumb {
+  width: 40px;
+  height: 40px;
+  border-radius: 0;
+}
+
+/* Вид без картинки: карточка показывает то, чем движок рисует его частицы, — клуб дыма, искру, лист или мягкую точку. */
+.particles-card__thumb--shape {
+  background: var(--editor-bg);
+}
+
+.particles-card__shape {
+  display: block;
+  width: 34px;
+  height: 34px;
+}
+
+.particles-card__dot {
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgb(255 255 255 / 0.95) 0%, rgb(255 255 255 / 0.55) 35%, rgb(255 255 255 / 0) 70%);
+}
+
+.particles-card__name {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--editor-text-muted);
+  font-size: 11.5px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.particles-card--selected .particles-card__name {
+  color: var(--editor-text);
+}
+
+.particles-panel__actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.particles-panel__actions .editor-button--icon {
+  width: 28px;
+  height: 28px;
+  border-color: var(--editor-border-strong);
+}
+
+.particles-panel__hint {
+  margin: 0;
+  color: var(--editor-text-faint);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+
+.particles-fields {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  padding: 10px 14px 12px 16px;
+}
+
+.particles-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.particles-name {
+  padding: 2px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--editor-text);
+  font: 600 14px var(--editor-font-display);
+  cursor: text;
+}
+
+.particles-name:hover:not(:disabled) {
+  background: var(--editor-surface-hover);
+}
+
+/* Имя готового вида не правится. */
+.particles-name--fixed,
+.particles-name--fixed:hover {
+  background: transparent;
+  cursor: default;
+}
+
+.particles-name-editor__input {
+  width: 180px;
+  padding: 2px 6px;
+  border: 1px solid var(--editor-accent-ring);
+  border-radius: 5px;
+  background: var(--editor-bg);
+  color: var(--editor-text);
+  font: 600 14px var(--editor-font-display);
+}
+
+.particles-groups {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  gap: 12px 36px;
+}
+
+.particles-group__title {
+  margin: 0 0 6px;
+  color: var(--editor-text-faint);
+  font: 500 12px var(--editor-font-ui);
+}
+
+.particles-group__rows {
+  display: grid;
+  grid-template-columns: auto auto;
+  align-items: center;
+  gap: 4px 10px;
+}
+
+.particles-field {
+  display: contents;
+}
+
+.particles-field__label {
+  color: var(--editor-text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.particles-field__error {
+  grid-column: 1 / -1;
+  max-width: 280px;
+  margin: 0 0 2px;
+  color: var(--editor-error-text);
+  font-size: 12px;
+}
+
+/* Одно поле на настройку: число, «4 – 6» или «0 · 0,7 · 0»; ширина — по набранному, не уже числа из пяти знаков. */
+.particles-input {
+  box-sizing: border-box;
+  min-width: 92px;
+  max-width: 220px;
+  field-sizing: content;
+  height: 24px;
+  padding: 0 7px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 5px;
+  background: var(--editor-bg);
+  color: var(--editor-text);
+  font: 12.5px var(--editor-font-ui);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Ключа в виде нет: показано значение по умолчанию, бледно. */
+.particles-input--default {
+  color: var(--editor-text-faint);
+}
+
+.particles-input:focus {
+  border-color: var(--editor-accent-ring);
+  outline: none;
+}
+
+.particles-input:disabled {
+  opacity: 0.4;
+}
+

@@ -7,6 +7,7 @@ pub mod imprints;
 pub mod input;
 pub mod keys;
 pub mod math3;
+pub mod particles;
 pub mod pathfind;
 pub mod property;
 pub mod report;

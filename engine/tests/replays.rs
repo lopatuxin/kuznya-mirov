@@ -68,7 +68,12 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
         .terrain
         .as_ref()
         .and_then(|p| read_optional(&dir.join(p)));
-    let (game_obj, screens_config, _warnings, _images) = load::load_rest_with_terrain(
+    let particles_text = config
+        .files
+        .particles
+        .as_ref()
+        .and_then(|p| read_optional(&dir.join(p)));
+    let (game_obj, screens_config, _warnings, _images) = load::load_rest_with_particles(
         &game_json,
         config,
         properties_json.as_deref(),
@@ -83,6 +88,10 @@ fn load_game(game: &str) -> (Game, ScreensConfig) {
         true,
         &table_texts,
         terrain_text.as_deref(),
+        &[],
+        &[],
+        &[],
+        particles_text.as_deref(),
     )
     .unwrap_or_else(|e| panic!("{game}: не прошла предстартовая проверка: {e:?}"));
     (game_obj, screens_config)
