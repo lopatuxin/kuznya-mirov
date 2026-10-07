@@ -39,7 +39,7 @@ function reformatEditContent(content: string, value: unknown): string {
  * остаются байт в байт. Значение `undefined` — удаление. Пути, у которых нет узла (объект не
  * существует), дают исходный текст без изменений — вызывающая сторона сама решает, что это значит.
  */
-function editAt(text: string, path: JSONPath, value: unknown, isArrayInsertion: boolean): string {
+export function editAt(text: string, path: JSONPath, value: unknown, isArrayInsertion: boolean): string {
   const edits = modify(text, path, value, { isArrayInsertion });
   if (edits.length === 0) return text;
   const patchedEdits = value === undefined ? edits : edits.map((edit) => ({ ...edit, content: reformatEditContent(edit.content, value) }));
@@ -89,7 +89,7 @@ export function declarePropertyKind(propertiesText: string, name: string, kind: 
  * байт; ключ встаёт на своей строке с отступом соседа, если объект набран по строке на ключ, и через запятую с
  * пробелом, если в одну строку; пустой объект заполняет `jsonc-parser`.
  */
-function appendLastKey(text: string, objectPath: JSONPath, key: string, value: unknown): string {
+export function appendLastKey(text: string, objectPath: JSONPath, key: string, value: unknown): string {
   const root = parseTree(text);
   const objectNode = root === undefined ? undefined : findNodeAtLocation(root, objectPath);
   const lastProperty = objectNode?.type === "object" ? objectNode.children?.at(-1) : undefined;
@@ -115,4 +115,9 @@ export function sceneTextWithWind(sceneText: string, wind: readonly [number, num
   const root = parseTree(sceneText);
   const hasWind = root !== undefined && findNodeAtLocation(root, ["wind"]) !== undefined;
   return hasWind ? editAt(sceneText, ["wind"], wind, false) : appendLastKey(sceneText, [], "wind", wind);
+}
+
+/** Дописывает `"particles": "<путь>"` в конец `files` файла `game.json` — «Ветер и частицы», «Редактор»: первый вид создаёт файл. */
+export function addParticlesFilePath(gameJsonText: string, path: string): string {
+  return appendLastKey(gameJsonText, ["files"], "particles", path);
 }

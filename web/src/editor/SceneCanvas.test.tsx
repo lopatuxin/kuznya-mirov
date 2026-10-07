@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import type { Engine } from "engine";
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, createEvent, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEditorCameraStore, createFlatCameraStore } from "./editorCamera";
+import { IMAGE_DRAG_TYPE, PARTICLES_DRAG_TYPE } from "./imageDrag";
 import { MAX_FRAME_SECONDS } from "./frameClock";
 import { NO_MASKS } from "./maskBytes";
 import { SceneCanvas } from "./SceneCanvas";
@@ -36,6 +37,7 @@ function sceneCanvasProps(engine: Engine): SceneCanvasProps {
     onSelect: noop,
     onCommitPlacement: noop,
     onDropImage: noop,
+    onDropParticles: noop,
     terrainWater: null,
     onCommitTerrain: noop,
     onWaterChange: noop,
@@ -132,5 +134,66 @@ describe("SceneCanvas: кадровый цикл", () => {
     runFrame(1500);
 
     expect(second.draw.mock.calls.map(([seconds]) => seconds)).toEqual([0]);
+  });
+});
+
+describe("SceneCanvas: вид частиц, отпущенный на сцену", () => {
+  beforeEach(() => {
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function dropOnScene(props: Partial<SceneCanvasProps>, types: string[], data: Record<string, string>): void {
+    const { engine } = createDrawRecordingEngine();
+    const { container } = render(<SceneCanvas {...sceneCanvasProps(engine)} {...props} />);
+    const overlay = container.querySelector(".scene-view__overlay") as HTMLElement;
+    // jsdom не знает DragEvent: точку отпускания кладём на событие сами.
+    const drop = createEvent.drop(overlay, { dataTransfer: { types, getData: (type: string) => data[type] ?? "" } });
+    Object.defineProperties(drop, { clientX: { value: 30 }, clientY: { value: 20 } });
+    fireEvent(overlay, drop);
+  }
+
+  it("имя вида и точка холста уходят onDropParticles, картинка — не его", () => {
+    const onDropParticles = vi.fn();
+    const onDropImage = vi.fn();
+
+    dropOnScene({ onDropParticles, onDropImage }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "дым" });
+
+    expect(onDropParticles).toHaveBeenCalledWith("дым", 30, 20);
+    expect(onDropImage).not.toHaveBeenCalled();
+  });
+
+  it("картинка уходит onDropImage, а не onDropParticles", () => {
+    const onDropParticles = vi.fn();
+    const onDropImage = vi.fn();
+
+    dropOnScene({ onDropParticles, onDropImage }, [IMAGE_DRAG_TYPE], { [IMAGE_DRAG_TYPE]: "izba" });
+
+    expect(onDropImage).toHaveBeenCalledWith("izba", 30, 20);
+    expect(onDropParticles).not.toHaveBeenCalled();
+  });
+
+  it("сцену нельзя править — вид не принимается", () => {
+    const onDropParticles = vi.fn();
+
+    dropOnScene({ onDropParticles, canEditScene: false }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "дым" });
+
+    expect(onDropParticles).not.toHaveBeenCalled();
+  });
+
+  it("в трёхмерной сцене вид не принимается", () => {
+    const onDropParticles = vi.fn();
+
+    dropOnScene({ onDropParticles, isThreeDimensionalScene: true }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "дым" });
+
+    expect(onDropParticles).not.toHaveBeenCalled();
   });
 });

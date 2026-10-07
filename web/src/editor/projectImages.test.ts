@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { LoadedProjectImage } from "../projectLoader";
 import type { ProjectImageDescription } from "./projectFiles";
-import { buildImageTiles, createImageObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
+import { buildImageTiles, createImageObject, createParticlesObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 
 function description(overrides: Partial<ProjectImageDescription> = {}): ProjectImageDescription {
   return { name: "izba", frames: null, columns: null, size: null, smooth: false, ...overrides };
@@ -76,6 +76,19 @@ describe("createImageObject", () => {
 
   it("position округляется до сотой клетки", () => {
     expect(createImageObject("izba", [1.67, 1], [10.123, 5.456], null).position).toEqual([9.29, 4.96]);
+  });
+});
+
+describe("createParticlesObject", () => {
+  it("источник в одну клетку серединой под указателем, с layer и parallax выбранного — требование 34", () => {
+    const object = createParticlesObject("дым", [48.5, 12.8], { position: [1, 1], layer: 20, parallax: 0.6, solid: true });
+
+    expect(object).toEqual({ position: [48, 12.3], size: [1, 1], particles: "дым", layer: 20, parallax: 0.6 });
+    expect(Object.keys(object)).toEqual(["position", "size", "particles", "layer", "parallax"]);
+  });
+
+  it("ничего не выбрано — только position, size и particles", () => {
+    expect(createParticlesObject("дым", [10, 10], null)).toEqual({ position: [9.5, 9.5], size: [1, 1], particles: "дым" });
   });
 });
 

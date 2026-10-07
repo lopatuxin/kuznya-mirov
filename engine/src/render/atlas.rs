@@ -8,6 +8,7 @@
 //! is the part of «Отрисовка» plain enough to run and test on any target, unlike the GPU resources
 //! built from its result (see `super::gpu`, wasm32-only).
 
+use crate::core::particles::{ParticleLook, ParticleShape};
 use crate::core::property;
 use crate::core::scene::{self, CellRange, GroundLayer, LayerView, SceneConfig};
 use crate::core::screens::Fill;
@@ -16,6 +17,8 @@ use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
+use super::particle_shapes::{self, DOT_SIZE, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
+use super::particles::{Emitter, Sprite};
 use super::wind::{Motion, SwayObject, swaying_frame};
 
 /// «Картинки» → «Атлас», требование 14: the canvas is this size in every browser, so the game
@@ -63,6 +66,65 @@ pub const WHITE_PIXEL: AtlasRect = AtlasRect {
     sheet: 0,
 };
 
+/// «Ветер и частицы» → «Частица»: встроенные рисунки частиц, которые движок рисует сам и кладёт в
+/// атлас в каждой игре, — в ряд на первом листе сразу правее белой точки; полки `pack` начинаются
+/// после них. Место мягкой точки:
+pub const DOT_RECT: AtlasRect = AtlasRect {
+    x: WHITE_PIXEL.w + PADDING,
+    y: 0,
+    w: DOT_SIZE,
+    h: DOT_SIZE,
+    sheet: 0,
+};
+
+pub const SMOKE_RECT: AtlasRect = AtlasRect {
+    x: DOT_RECT.x + DOT_RECT.w + PADDING,
+    y: 0,
+    w: SMOKE_SIZE,
+    h: SMOKE_SIZE,
+    sheet: 0,
+};
+
+pub const SPARK_RECT: AtlasRect = AtlasRect {
+    x: SMOKE_RECT.x + SMOKE_RECT.w + PADDING,
+    y: 0,
+    w: SPARK_SIZE,
+    h: SPARK_SIZE,
+    sheet: 0,
+};
+
+/// Кадры листа в ряд, слева направо.
+pub const LEAF_RECT: AtlasRect = AtlasRect {
+    x: SPARK_RECT.x + SPARK_RECT.w + PADDING,
+    y: 0,
+    w: LEAF_SIZE * ParticleShape::Leaf.frames(),
+    h: LEAF_SIZE,
+    sheet: 0,
+};
+
+const BUILT_IN_SHAPES: [(ParticleShape, AtlasRect); 4] = [
+    (ParticleShape::Dot, DOT_RECT),
+    (ParticleShape::Smoke, SMOKE_RECT),
+    (ParticleShape::Spark, SPARK_RECT),
+    (ParticleShape::Leaf, LEAF_RECT),
+];
+
+/// Место кадра `frame` встроенного рисунка `shape`; кадр больше числа кадров берётся по кругу.
+fn shape_frame_rect(shape: ParticleShape, frame: u32) -> AtlasRect {
+    let whole = match shape {
+        ParticleShape::Dot => DOT_RECT,
+        ParticleShape::Smoke => SMOKE_RECT,
+        ParticleShape::Spark => SPARK_RECT,
+        ParticleShape::Leaf => LEAF_RECT,
+    };
+    let frame_w = whole.w / shape.frames();
+    AtlasRect {
+        x: whole.x + frame % shape.frames() * frame_w,
+        w: frame_w,
+        ..whole
+    }
+}
+
 /// The packed layout, without the points themselves: `rects[i]` is where the `i`-th input image
 /// (its whole strip) landed, in the same order `pack` was given them, so `i` doubles as that
 /// image's `ImageId`; `sheet_count` sheets hold them all. The points are written by `fill_sheet`
@@ -104,13 +166,19 @@ fn blit(pixels: &mut [u8], rect: AtlasRect, src: &[u8]) {
     }
 }
 
-/// Total atlas-pixel area every image would occupy, `+1` for the white pixel — the "занятое
-/// место" a doesn't-fit error names next to the atlas's own `MAX_SHEETS` limit.
+/// Total atlas-pixel area every image would occupy, plus the white pixel and the built-in particle
+/// pictures — the "занятое место" a doesn't-fit error names next to the atlas's own `MAX_SHEETS`
+/// limit.
 fn occupied_area(images: &[AtlasImage]) -> u64 {
-    1 + images
+    let built_in: u64 = BUILT_IN_SHAPES
         .iter()
-        .map(|img| img.width as u64 * img.height as u64)
-        .sum::<u64>()
+        .map(|(_, rect)| rect.w as u64 * rect.h as u64)
+        .sum();
+    1 + built_in
+        + images
+            .iter()
+            .map(|img| img.width as u64 * img.height as u64)
+            .sum::<u64>()
 }
 
 /// Shelf-packs every image's whole strip into a stack of `ATLAS_SIZE`×`ATLAS_SIZE` sheets —
@@ -153,9 +221,13 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
         images.len()
     ];
     let mut sheet = 0u32;
-    let mut cursor_x = WHITE_PIXEL.w + PADDING;
+    let mut cursor_x = LEAF_RECT.x + LEAF_RECT.w + PADDING;
     let mut shelf_y = 0u32;
-    let mut shelf_height = WHITE_PIXEL.h;
+    let mut shelf_height = BUILT_IN_SHAPES
+        .iter()
+        .map(|(_, rect)| rect.h)
+        .max()
+        .unwrap_or(WHITE_PIXEL.h);
 
     for i in order {
         let img = &images[i];
@@ -195,12 +267,16 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
 
 /// «Картинки» → «Атлас», требование 14: writes sheet `sheet`'s points into `pixels`
 /// (`SHEET_BYTES` long, reused from one sheet to the next): cleared to transparent, the white
-/// pixel on the first sheet, and every image `atlas` placed on this sheet, color multiplied by
+/// pixel and the built-in particle pictures on the first sheet, and every image `atlas` placed on
+/// this sheet, color multiplied by
 /// alpha (требование 5). `images` is the same slice `pack` was given.
 pub fn fill_sheet(atlas: &Atlas, images: &[AtlasImage], sheet: u32, pixels: &mut [u8]) {
     pixels.fill(0);
     if sheet == WHITE_PIXEL.sheet {
         set_pixel(pixels, WHITE_PIXEL.x, WHITE_PIXEL.y, [255, 255, 255, 255]);
+        for (shape, rect) in BUILT_IN_SHAPES {
+            blit(pixels, rect, &particle_shapes::draw(shape).pixels);
+        }
     }
     for (img, rect) in images.iter().zip(&atlas.rects) {
         if rect.sheet == sheet {
@@ -384,6 +460,9 @@ pub struct RectPaint {
     /// «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх рисунка;
     /// нижний край стоит. 0 — рисунок не качается.
     pub lean: f32,
+    /// «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
+    /// угол, градусов по часовой стрелке; 0 у всего, кроме частиц.
+    pub angle: f32,
 }
 
 impl RectPaint {
@@ -408,6 +487,7 @@ impl RectPaint {
             object: None,
             glow,
             lean: 0.0,
+            angle: 0.0,
         }
     }
 }
@@ -432,13 +512,14 @@ pub fn compose_world_paints(
 ) -> Vec<RectPaint> {
     let three_d = world.three_d();
     // «Трёхмерная сцена», требование 19: фигуры рисует свой проход, плоскими прямоугольниками на земле
-    // остаются только объекты без фигуры.
+    // остаются только объекты без фигуры. «Ветер и частицы» → «Источник»: источник без картинки и цвета
+    // тоже стоит в порядке рисования — после него рисуются его частицы.
     let mut ordered: Vec<u32> = ids
         .filter(|&id| {
             world.vec2(id, property::POSITION).is_some()
                 && world.vec2(id, property::SIZE).is_some()
-                && (world.color(id, property::COLOR).is_some()
-                    || world.image(id, property::IMAGE).is_some())
+                && (object_fill(world, id).is_some()
+                    || (!three_d && world.text(id, property::PARTICLES).is_some()))
                 && !(three_d && world.shape(id, property::SHAPE).is_some())
         })
         .collect();
@@ -449,24 +530,22 @@ pub fn compose_world_paints(
         camera_middle + layers.window_cells / 2.0,
     ];
 
-    ordered
-        .into_iter()
-        .flat_map(|id| {
+    let particles = motion.particles();
+    let mut orphans: Vec<(i32, Sprite)> = particles.orphan_sprites(images).collect();
+    orphans.sort_by_key(|(layer, _)| *layer);
+    let mut orphans = orphans.into_iter().peekable();
+    let to_paint = |sprite: &Sprite| particle_paint(sprite, images, atlas_rects, layers);
+
+    let mut paints = Vec::with_capacity(ordered.len());
+    for id in ordered {
+        // «Источник», требование 15: частицы ушедшего источника лежат после всех объектов своего слоя.
+        let layer = world.layer(id, property::LAYER).unwrap_or(0);
+        while let Some((_, sprite)) = orphans.next_if(|(orphan_layer, _)| *orphan_layer < layer) {
+            paints.push(to_paint(&sprite));
+        }
+        if let Some(fill) = object_fill(world, id) {
             let p = world.vec2(id, property::POSITION).expect("filtered above");
             let s = world.vec2(id, property::SIZE).expect("filtered above");
-            let fill = match world.image(id, property::IMAGE) {
-                Some(image) => {
-                    // «Картинки»: `opacity` is checked to be within 0..=1 at load time, but a
-                    // rule can still push it out of range at runtime (`["add", "opacity", 5]`) —
-                    // clamped here rather than re-validated, since drawing never rejects data.
-                    let opacity = world
-                        .number_like(id, property::OPACITY)
-                        .unwrap_or(1.0)
-                        .clamp(0.0, 1.0) as f32;
-                    Fill::Image { image, opacity }
-                }
-                None => Fill::Color(world.color(id, property::COLOR).expect("filtered above")),
-            };
             let FillPaint {
                 color,
                 mut atlas_rect,
@@ -520,10 +599,100 @@ pub fn compose_world_paints(
                 object: Some(id),
                 glow,
                 lean: motion.lean(id, generation) as f32,
+                angle: 0.0,
             };
-            layered_paints(world, id, paint, s[0], layers, window)
+            paints.extend(layered_paints(world, id, paint, s[0], layers, window));
+        }
+        // «Источник», требование 15: частицы живого источника — сразу после него, от старших к младшим.
+        for sprite in particles.live_sprites(id, world.generation(id), images) {
+            paints.push(to_paint(&sprite));
+        }
+    }
+    for (_, sprite) in orphans {
+        paints.push(to_paint(&sprite));
+    }
+    paints
+}
+
+/// Чем объект заливает свой прямоугольник: картинкой с `opacity` или цветом; `None` — ничем.
+fn object_fill(world: &World, id: u32) -> Option<Fill> {
+    match world.image(id, property::IMAGE) {
+        Some(image) => {
+            // «Картинки»: `opacity` is checked to be within 0..=1 at load time, but a
+            // rule can still push it out of range at runtime (`["add", "opacity", 5]`) —
+            // clamped here rather than re-validated, since drawing never rejects data.
+            let opacity = world
+                .number_like(id, property::OPACITY)
+                .unwrap_or(1.0)
+                .clamp(0.0, 1.0) as f32;
+            Some(Fill::Image { image, opacity })
+        }
+        None => world.color(id, property::COLOR).map(Fill::Color),
+    }
+}
+
+/// «Ветер и частицы» → «Частица», требование 13: прямоугольник частицы — её середина со сдвигом слоя
+/// глубины источника, ширина рисунка и высота по пропорциям кадра картинки, поворот вокруг середины.
+fn particle_paint(
+    sprite: &Sprite,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+    layers: &LayerView,
+) -> RectPaint {
+    let (atlas_rect, smooth, glow) = match sprite.look {
+        ParticleLook::Image(image) => {
+            let decl = &images[image];
+            let rect = frame_atlas_rect_at(image, sprite.frame, images, atlas_rects);
+            (rect, decl.smooth, decl.glow)
+        }
+        ParticleLook::Shape(shape) => (
+            shape_frame_rect(shape, sprite.frame),
+            true,
+            shape == ParticleShape::Spark,
+        ),
+    };
+    let width = sprite.width as f32;
+    let height = width * atlas_rect.h as f32 / atlas_rect.w.max(1) as f32;
+    let shift = layers.displacement(sprite.parallax);
+    let middle = [
+        (sprite.center[0] + shift[0]) as f32,
+        (sprite.center[1] + shift[1]) as f32,
+    ];
+    RectPaint {
+        angle: sprite.angle as f32,
+        ..RectPaint::flat(
+            [middle[0] - width / 2.0, middle[1] - height / 2.0],
+            [width, height],
+            [1.0, 1.0, 1.0, sprite.opacity as f32],
+            atlas_rect,
+            smooth,
+            glow,
+        )
+    }
+}
+
+/// «Ветер и частицы» → «Источник»: источники мира плоской сцены — объекты со свойством `particles`, с
+/// записанным прямоугольником, слоем и `parallax`; в трёхмерной сцене их нет.
+pub fn particle_emitters(world: &World) -> impl Iterator<Item = Emitter<'_>> {
+    let slots = if world.three_d() {
+        0
+    } else {
+        world.slot_count() as u32
+    };
+    (0..slots).filter_map(move |id| {
+        let kind = world.text(id, property::PARTICLES)?;
+        let rect = world
+            .vec2(id, property::POSITION)
+            .zip(world.vec2(id, property::SIZE));
+        Some(Emitter {
+            id,
+            generation: world.generation(id),
+            kind,
+            rect,
+            layer: world.layer(id, property::LAYER).unwrap_or(0),
+            parallax: scene::parallax(world, id),
         })
-        .collect()
+    })
 }
 
 /// Нарисованный прямоугольник объекта и то, как он повёрнут и отражён, — для рисования и для
@@ -1055,6 +1224,7 @@ mod tests {
         let shader = include_str!("../../shaders/rect.wgsl");
         assert!(shader.contains("@location(10) glow_flag: f32"), "{shader}");
         assert!(shader.contains("@location(11) lean: f32"), "{shader}");
+        assert!(shader.contains("@location(12) angle: f32"), "{shader}");
         assert!(shader.contains("painted.a * (1.0 - in.glow)"), "{shader}");
         assert!(shader.contains("instance.lean * along * along"), "{shader}");
     }

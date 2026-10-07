@@ -7,7 +7,7 @@ import type { FlatSceneContext } from "./flatSceneController";
 import type { HandleMode } from "./handleGeometry";
 import { HandleModeToolbar, type TerrainTool } from "./HandleModeToolbar";
 import type { MaskSet } from "./maskBytes";
-import { IMAGE_DRAG_TYPE, resolveImageDropEffect } from "./imageDrag";
+import { IMAGE_DRAG_TYPE, PARTICLES_DRAG_TYPE, resolveSceneDropEffect } from "./imageDrag";
 import type { StampShape } from "./imprintGeometry";
 import type { PlacementChange } from "./objectPlacement";
 import { secondsSinceLastFrame } from "./frameClock";
@@ -68,6 +68,8 @@ type SceneCanvasProps = {
   onCommitPlacement: (objectIndex: number, changes: PlacementChange[]) => void;
   /** Картинку из вкладки «Картинки» отпустили над сценой: имя картинки и точка холста («Редактор», требование 25). */
   onDropImage: (imageName: string, x: number, y: number) => void;
+  /** Вид частиц из вкладки «Частицы» отпустили над сценой: имя вида и точка холста («Редактор», требование 34). */
+  onDropParticles: (kindName: string, x: number, y: number) => void;
   /** Вода рельефа из файла — поля воды над сценой; `null` — воды нет. */
   terrainWater: TerrainWater | null;
   /** Отпускание после мазка кисти: высоты всей сетки — одно действие. */
@@ -151,6 +153,7 @@ export function SceneCanvas({
   onSelect,
   onCommitPlacement,
   onDropImage,
+  onDropParticles,
   terrainWater,
   onCommitTerrain,
   onWaterChange,
@@ -432,23 +435,27 @@ export function SceneCanvas({
     if (isGameInputActiveRef.current && event.button === 0) engine?.mouse_up();
   }
 
-  /** Картинку принимает только плоская сцена, когда её можно править: иначе указатель показывает запрет («Редактор», требование 25). */
+  /** Картинку и вид частиц принимает только плоская сцена, когда её можно править: иначе указатель показывает запрет («Редактор», требование 25). */
   function handleDragOver(event: React.DragEvent<HTMLCanvasElement>): void {
-    const effect = resolveImageDropEffect(event.dataTransfer.types, canAcceptImages);
+    const effect = resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages);
     if (effect === null) return;
     event.dataTransfer.dropEffect = effect;
     if (effect === "copy") event.preventDefault();
   }
 
   function handleDrop(event: React.DragEvent<HTMLCanvasElement>): void {
-    if (resolveImageDropEffect(event.dataTransfer.types, canAcceptImages) !== "copy") return;
+    if (resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages) !== "copy") return;
     event.preventDefault();
     const imageName = event.dataTransfer.getData(IMAGE_DRAG_TYPE);
-    if (imageName === "") return;
+    const kindName = event.dataTransfer.getData(PARTICLES_DRAG_TYPE);
+    if (imageName === "" && kindName === "") return;
     // Открытое поле свойства записывается в прежний объект до появления нового — как при смене выбора щелчком.
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const bounds = event.currentTarget.getBoundingClientRect();
-    onDropImage(imageName, event.clientX - bounds.left, event.clientY - bounds.top);
+    const x = event.clientX - bounds.left;
+    const y = event.clientY - bounds.top;
+    if (imageName !== "") onDropImage(imageName, x, y);
+    else onDropParticles(kindName, x, y);
   }
 
   function handleAreaClick(event: React.MouseEvent<HTMLDivElement>): void {

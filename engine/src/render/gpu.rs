@@ -42,6 +42,9 @@ pub struct DrawRect {
     /// «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх прямоугольника;
     /// вершинный шейдер гнёт его по дуге по восьми полосам.
     pub lean: f32,
+    /// «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
+    /// угол, градусов по часовой стрелке; 0 — не повёрнут.
+    pub angle: f32,
 }
 
 /// One label or button caption to hand to `glyphon` this frame. `rect_px` is the element's
@@ -469,6 +472,11 @@ impl Renderer {
                     format: wgpu::VertexFormat::Float32,
                     offset: 68,
                     shader_location: 11,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 72,
+                    shader_location: 12,
                 },
             ],
         };

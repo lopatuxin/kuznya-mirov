@@ -1,5 +1,7 @@
 pub mod atlas;
 pub mod materials;
+mod particle_shapes;
+pub mod particles;
 pub mod relief;
 pub mod scene3d;
 pub mod wind;

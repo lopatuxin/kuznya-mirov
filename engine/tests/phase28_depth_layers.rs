@@ -16,7 +16,7 @@ use engine::core::scene::{
 use engine::core::step::apply_follow_mouse;
 use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{
-    ImageDecl, ImageVerdict, load_game_from_texts_with_code, load_rest, read_entry,
+    ImageDecl, ImageVerdict, load_game_from_texts_with_code, load_rest_with_particles, read_entry,
 };
 use engine::render::atlas::{AtlasImage, RectPaint, compose_world_paints, pack};
 use engine::render::wind::Motion;
@@ -864,7 +864,8 @@ fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
             )
         })
         .collect();
-    let (game, _screens, rest_warnings, images) = load_rest(
+    let particles_text = config.files.particles.as_deref().map(read);
+    let (game, _screens, rest_warnings, images) = load_rest_with_particles(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -877,6 +878,12 @@ fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
         &verdicts,
         Some(&read("code.lua")),
         false,
+        &[],
+        None,
+        &[],
+        &[],
+        &[],
+        particles_text.as_deref(),
     )
     .unwrap_or_else(|e| panic!("платформер не загрузился: {e:?}"));
     warnings.extend(rest_warnings);

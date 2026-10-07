@@ -22,6 +22,7 @@ type ReadEntryFiles = {
   stamps: StampEntry[];
   code?: string;
   terrain?: string;
+  particles?: string;
 };
 
 type ReadEntryResult =
@@ -158,7 +159,7 @@ export async function loadProject(
     return { status: "rejected", errors: entryResult.errors, warnings: entryResult.warnings, gameJsonText, sceneText: null };
   }
 
-  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText, stamps] = await Promise.all([
+  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText, stamps, particlesText] = await Promise.all([
     reader.readText(entryResult.files.properties),
     reader.readText(entryResult.files.scene),
     reader.readText(entryResult.files.rules),
@@ -169,6 +170,8 @@ export async function loadProject(
     // `undefined`, а не `null` — `null` он читает как «файл назван, но не найден».
     entryResult.files.terrain !== undefined ? reader.readText(entryResult.files.terrain) : Promise.resolve(undefined),
     fetchStampTexts(reader, entryResult.files.stamps),
+    // «Ветер и частицы», «Проверка перед запуском»: виды частиц читаются тем же заходом; без `files.particles` движку уходит `undefined`.
+    entryResult.files.particles !== undefined ? reader.readText(entryResult.files.particles) : Promise.resolve(undefined),
   ]);
 
   const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText, terrainText) as ReadTextsResult;
@@ -206,6 +209,7 @@ export async function loadProject(
     materialMapsPayload,
     coverMasksPayload,
     stamps,
+    particlesText,
   ) as LoadResult;
   // read_entry первым, load вторым — тот же порядок, в котором предупреждения собирает сам движок
   // при объединённой загрузке («Редактор», требование 15).

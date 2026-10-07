@@ -29,9 +29,12 @@ export function createFakeBattleEngine({ fileWind = [0, 0], replayWind = DEFAULT
   const setWorldWind = (wind: SceneWind): void => {
     worldWind = [wind[0], wind[1]];
   };
-  const setWindParticles = vi.fn((settings: { wind: [number, number] }) => {
-    calls.push(`set_wind_particles ${JSON.stringify(settings.wind)}`);
-    setWorldWind(settings.wind);
+  const setWindParticles = vi.fn((settings: { wind?: [number, number]; particles?: unknown }) => {
+    if (settings.wind !== undefined) {
+      calls.push(`set_wind_particles ${JSON.stringify(settings.wind)}`);
+      setWorldWind(settings.wind);
+    }
+    if (settings.particles !== undefined) calls.push(`set_wind_particles particles ${JSON.stringify(settings.particles)}`);
     return { ok: true };
   });
   const running = (): { running: true } => ({ running: true });
@@ -64,6 +67,9 @@ export function createFakeBattleEngine({ fileWind = [0, 0], replayWind = DEFAULT
       return { ok: true };
     }),
     world_objects: vi.fn(() => []),
+    scene_point: vi.fn(() => [5, 3]),
+    object_at: vi.fn((): number | undefined => undefined),
+    add_object: vi.fn(() => ({ ok: true, id: 1 })),
     object_properties: vi.fn(() => undefined),
     step_report: vi.fn(() => undefined),
     session_messages: vi.fn(() => []),

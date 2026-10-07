@@ -8,13 +8,16 @@ import { EditorIcon } from "./EditorIcon";
 import { ImprintPropertiesPanel } from "./ImprintPropertiesPanel";
 import { parseStampShape } from "./imprintGeometry";
 import { ObjectList } from "./ObjectList";
+import { applyParticles, invalidParticleKindNames, particleFieldErrorsByKind, particleTableOf, readParticleKinds, type ParticleTable } from "./particlesFile";
+import { tabParticleKinds, type TabParticleKind } from "./particlePresets";
+import { ParticlesPanel } from "./ParticlesPanel";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
 import { parseSceneWind } from "./sceneWind";
 import { readTerrainCovers, readTerrainImprints, readTerrainTint, readTerrainWater } from "./terrainFile";
-import { parseProjectCellPixels, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
-import { buildImageTiles, createImageObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
+import { parseProjectCellPixels, parseProjectFilePaths, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
+import { buildImageTiles, createImageObject, createParticlesObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { SceneCanvas, type BrushFields } from "./SceneCanvas";
@@ -101,7 +104,7 @@ function isEditableElementFocused(): boolean {
 export function ProjectWindow({ source, onBackToProjects, brushFields }: ProjectWindowProps): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const sceneEditing = useSceneEditing(canvasRef, source);
-  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, terrainText, saveState, canUndo, selectedIndex, setSelectedIndex, selectedImprintIndex } = sceneEditing;
+  const { engine, memory, result, loadedAt, headerNotice, engineError, sceneText, propertiesText, terrainText, particlesText, saveState, canUndo, selectedIndex, setSelectedIndex, selectedImprintIndex } = sceneEditing;
   const [objectsWidth, setObjectsWidth] = useStoredPanelWidth("kuznya-editor.objects-width", 260);
   const [propertiesWidth, setPropertiesWidth] = useStoredPanelWidth("kuznya-editor.properties-width", 320);
   // Колбэк-реф вместо обычного — «Редактор», партия: элемент нужен движку звука сразу после
@@ -150,12 +153,18 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     [result],
   );
   const selectedObject = selectedIndex !== null ? (objectSummaries[selectedIndex] ?? null) : null;
+  const particlesPath = useMemo(() => parseProjectFilePaths(gameJsonText)?.particles ?? null, [gameJsonText]);
+  const fileParticleKinds = useMemo(() => readParticleKinds(particlesText), [particlesText]);
+  const fileParticlesTable = useMemo(() => (particlesText === null ? null : particleTableOf(fileParticleKinds)), [particlesText, fileParticleKinds]);
+  const invalidParticleNames = useMemo(() => invalidParticleKindNames(result?.status === "rejected" ? result.errors : [], particlesPath), [result, particlesPath]);
+  const particleFieldErrors = useMemo(() => particleFieldErrorsByKind(result?.status === "rejected" ? result.errors : [], particlesPath), [result, particlesPath]);
 
   const battle = useBattleSession({
     engine,
     memory,
     source,
     sceneAvailable,
+    particlesTable: fileParticlesTable,
     loadedSounds: result?.status === "ok" ? result.loadedSounds : [],
     musicTracks: result?.status === "ok" ? result.musicTracks : [],
     audioContext: result?.status === "ok" ? result.audioContext : null,
@@ -174,6 +183,13 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const displayedPropertiesView = isLive ? battle.livePropertiesView : propertiesView;
   const displayedCanEdit = isLive ? battle.canLiveEdit : canEdit;
   const displayedOnSelect = isLive ? battle.setLiveSelectedId : setSelectedIndex;
+  // Виды вкладки «Частицы»: в партии — с правками на ходу, иначе из файла («Редактор», требование 35).
+  // Готовые дым, искры и листья вкладка показывает всегда — из файла или заготовкой; в партии поля берутся из живой игры.
+  const displayedParticleKinds = useMemo<TabParticleKind[]>(() => {
+    const live = battle.liveParticles;
+    const kinds = tabParticleKinds(fileParticleKinds);
+    return live === null ? kinds : kinds.map((kind) => ({ ...kind, fields: live[kind.name] ?? kind.fields }));
+  }, [fileParticleKinds, battle.liveParticles]);
   // Отпечаток выбирается только вне партии, паузы и повтора («Лепка рельефа», «Редактор», требование 26).
   const selectedImprint = !isLive && selectedImprintIndex !== null ? imprints[selectedImprintIndex] : undefined;
 
@@ -334,6 +350,66 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     else sceneEditing.addObject(object);
   }
 
+  // Вид частиц, отпущенный на плоскую сцену, встаёт источником туда, где его отпустили, — «Редактор», требование 34. Слой и
+  // глубину он берёт у объекта под указателем: дым, брошенный на трубу избы, идёт поверх неё; мимо объектов — у выбранного.
+  // Готовый вид, которого ещё нет в файле, записывается туда вместе с источником; в партии он сначала ставится живой игре.
+  function handleDropParticles(kindName: string, x: number, y: number): void {
+    const kind = displayedParticleKinds.find((candidate) => candidate.name === kindName);
+    if (engine === null || kind === undefined) return;
+    const objectProperties = isLive ? liveObjectProperties : sceneObjectProperties;
+    const underPointer = engine.object_at(x, y) as number | undefined;
+    const target = underPointer !== undefined ? objectProperties(underPointer) : displayedSelectedIndex === null ? null : objectProperties(displayedSelectedIndex);
+    const middle = toVec2(engine.scene_point(x, y, newObjectParallax(target)));
+    if (middle === undefined) return;
+    const object = createParticlesObject(kindName, middle, target);
+    if (!isLive) {
+      sceneEditing.addParticleSource(kindName, object);
+      return;
+    }
+    if (!kind.isInFile && battle.liveParticles?.[kindName] === undefined && battle.setLiveParticles(particleTableOf(displayedParticleKinds)) !== undefined) return;
+    battle.addLiveObject(object);
+  }
+
+  // Без загруженной игры (проект отвергнут) ставить виды некуда: предпросмотра нет, и его ошибки «игра не загружена» тоже.
+  const previewParticles = (table: ParticleTable): string | undefined => (engine === null || !engine.has_world() ? undefined : applyParticles(engine, table));
+
+  // Поле вида принято действием: вне партии оно пишется в `particles.json`, а ошибку проверки загрузкой панель берёт из
+  // `result` («Редактор», требование 27); в партии значение ставится живой игре без записи файла.
+  function commitParticleValue(name: string, key: string, value: unknown, table: ParticleTable): string | undefined {
+    if (isLive) return battle.setLiveParticles(table);
+    sceneEditing.setParticleValue(name, key, value);
+    return undefined;
+  }
+
+  const particleActionsBlockedReason = isLive
+    ? battle.mode === "replay"
+      ? "в повторе мир не правится"
+      : "вид копируется, удаляется и переименовывается после «Стопа»"
+    : canEdit
+      ? null
+      : "в проекте ошибки";
+
+  const particlesPanel = isThreeDimensionalScene ? null : (
+    <ParticlesPanel
+      // Смена партии и правки пересоздаёт поля: отказ, полученный в партии, после «Стопа» не висит над видами файла.
+      key={battle.mode}
+      kinds={displayedParticleKinds}
+      imageTiles={imageTiles}
+      selectedName={sceneEditing.selectedParticleName}
+      invalidNames={invalidParticleNames}
+      loadFieldErrors={particleFieldErrors}
+      isFieldsDisabled={!displayedCanEdit}
+      kindActionsBlockedReason={particleActionsBlockedReason}
+      isDragEnabled={displayedCanEdit}
+      onSelect={sceneEditing.setSelectedParticleName}
+      onPreview={previewParticles}
+      onCommitValue={commitParticleValue}
+      onCopy={sceneEditing.copyParticleKind}
+      onDelete={sceneEditing.deleteParticleKind}
+      onRename={sceneEditing.renameParticleKind}
+    />
+  );
+
   const errorLines = withCodeErrorLine(battle.codeError, [
     ...(engineError !== null ? [engineError] : []),
     ...(result === null
@@ -414,6 +490,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           onSelect={displayedOnSelect}
           onCommitPlacement={isLive ? battle.commitLiveTransform : sceneEditing.transformObject}
           onDropImage={handleDropImage}
+          onDropParticles={handleDropParticles}
           terrainWater={terrainWater}
           onCommitTerrain={sceneEditing.paintTerrain}
           onWaterChange={sceneEditing.setTerrainWater}
@@ -496,6 +573,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           stepReport={battle.stepReport}
           messages={battle.messages}
           imageTiles={imageTiles}
+          particlesPanel={particlesPanel}
           onSelectObject={battle.setLiveSelectedId}
         />
       </footer>

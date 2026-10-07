@@ -36,10 +36,25 @@ describe("вкладка «Картинки»", () => {
   });
 });
 
+describe("вкладка «Частицы» в нижней панели", () => {
+  const render = (particlesPanel: React.ReactNode | null): string =>
+    renderToStaticMarkup(<ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} particlesPanel={particlesPanel} onSelectObject={() => {}} />);
+
+  it("в плоской сцене стоит после «Картинок»", () => {
+    const html = render(<span />);
+
+    expect(html.indexOf(">Картинки")).toBeLessThan(html.indexOf(">Частицы"));
+  });
+
+  it("в трёхмерной сцене вкладки нет", () => {
+    expect(render(null)).not.toContain(">Частицы");
+  });
+});
+
 describe("нижняя панель", () => {
   it("после «Сообщений» — вкладка «Картинки»", () => {
     const html = renderToStaticMarkup(
-      <ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} onSelectObject={() => {}} />,
+      <ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} particlesPanel={null} onSelectObject={() => {}} />,
     );
 
     expect(html.indexOf(">Сообщения")).toBeLessThan(html.indexOf(">Картинки"));

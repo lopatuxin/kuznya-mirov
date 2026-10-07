@@ -9,7 +9,7 @@ use std::path::PathBuf;
 
 use engine::core::input::StepInput;
 use engine::core::property;
-use engine::data::load::{load_rest, read_entry};
+use engine::data::load::{load_rest_with_particles, read_entry};
 
 fn game_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -32,7 +32,8 @@ fn load() -> (
     let game_json = read("game.json");
     let (config, entry_warnings) =
         read_entry(&game_json).expect("game.json демо-тетриса должен разбираться");
-    let (game, screens, warnings, _images) = load_rest(
+    let particles_text = config.files.particles.as_deref().map(read);
+    let (game, screens, warnings, _images) = load_rest_with_particles(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -45,6 +46,12 @@ fn load() -> (
         &[],
         Some(&read("code.lua")),
         true,
+        &[],
+        None,
+        &[],
+        &[],
+        &[],
+        particles_text.as_deref(),
     )
     .expect("демо-тетрис должен проходить предстартовую проверку");
     let mut all_warnings = entry_warnings;

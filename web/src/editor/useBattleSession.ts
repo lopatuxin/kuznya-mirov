@@ -10,7 +10,8 @@ import { buildBattleSoundAssets } from "./battleSound";
 import { isPauseResumeShortcut, isPlayStopShortcut, isStepShortcut, type ShortcutKeyEvent } from "./battleShortcuts";
 import { buildLiveObjectSummaries, buildLivePropertiesView, findWorldObject, resolveCanStartReplay, resolveLiveSelection, type LiveSelection } from "./battleSelection";
 import type { EngineAddObjectResult, EngineEditResult, SessionMessage, StepReport, WorldObjectSummary } from "./battleTypes";
-import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, undoLiveWind, type LiveEditHistory } from "./liveEditHistory";
+import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveParticles, undoLiveTransform, undoLiveWind, type LiveEditHistory } from "./liveEditHistory";
+import { applyParticles, type ParticleTable } from "./particlesFile";
 import { applyWind, NO_WIND, readEngineWind, type SceneWind } from "./sceneWind";
 import type { PlacementChange } from "./objectPlacement";
 import type { ObjectPropertiesView, SceneObjectSummary } from "./sceneObjects";
@@ -41,6 +42,8 @@ export type BattleSessionState = {
   canUndoLiveEdit: boolean;
   /** Ветер живой игры — «Редактор», «Партия в редакторе», требования 30 и 32: тот, что движок читает сейчас, с правками на ходу и событиями ветра записи. */
   liveWind: SceneWind;
+  /** Виды частиц живой игры — «Редактор», «Партия в редакторе», требование 35: виды файла с правками на ходу; `null` вне партии и паузы — тогда поля показывают виды файла. */
+  liveParticles: ParticleTable | null;
   /** «Редактор», требование 13: мир существует прямо сейчас — список пуст, но с разными подписями. */
   hasWorld: boolean;
   /** «Редактор», требование 12: почему «Шаг» сейчас ничего не сделает — `undefined`, когда сделает. */
@@ -73,6 +76,8 @@ export type BattleSessionState = {
   commitLiveTransform(id: number, changes: PlacementChange[]): void;
   /** Ветер живой игре на паузе и на ходу: файл не пишется, правка идёт в запись и в историю отмены; текст ошибки движка, если он ветер не принял. */
   setLiveWind(wind: SceneWind): string | undefined;
+  /** Виды частиц живой игре на паузе и на ходу: файл не пишется и в запись партии они не идут, правка встаёт в историю отмены; текст ошибки движка, если он виды не принял. */
+  setLiveParticles(table: ParticleTable): string | undefined;
   undoLiveEdit(): void;
 };
 
@@ -83,6 +88,8 @@ type UseBattleSessionParams = {
   source: ProjectSource;
   /** Проект загружен без ошибок — «Редактор», требование 2. */
   sceneAvailable: boolean;
+  /** Виды частиц файла: с них начинается партия; `null` — у проекта нет файла видов. */
+  particlesTable: ParticleTable | null;
   loadedSounds: LoadedSound[];
   musicTracks: LoadedMusicVerdict[];
   audioContext: AudioContext | null;
@@ -166,6 +173,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
   const [openReplayError, setOpenReplayError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY_SNAPSHOT);
   const [liveHistory, setLiveHistory] = useState<LiveEditHistory>(createLiveEditHistory());
+  const [liveParticlesState, setLiveParticlesState] = useState<ParticleTable | null>(null);
 
   const paramsRef = useRef(params);
   paramsRef.current = params;
@@ -177,6 +185,8 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
   isMutedRef.current = isMuted;
   const liveHistoryRef = useRef(liveHistory);
   liveHistoryRef.current = liveHistory;
+  const liveParticlesRef = useRef(liveParticlesState);
+  liveParticlesRef.current = liveParticlesState;
   // Источник истины для выбора внутри кадрового цикла — состояние React обновляется асинхронно,
   // а следующий кадр может понадобиться раньше повторного рендера.
   const selectionRef = useRef<LiveSelection | null>(null);
@@ -293,6 +303,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     setSaveNotice(null);
     setOpenReplayError(null);
     setLiveHistory(createLiveEditHistory());
+    setLiveParticlesState(params.particlesTable);
     params.setReloadGateOpen(false);
     seedLiveSelection(engine);
   }
@@ -307,6 +318,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     setIsRunning(false);
     setCodeError(null);
     setLiveHistory(createLiveEditHistory());
+    setLiveParticlesState(null);
     applySnapshot(EMPTY_SNAPSHOT);
     params.onEditSelectionChange(lastSelectionId !== null && lastSelectionId < params.sceneObjectCount ? lastSelectionId : null);
     params.setReloadGateOpen(true);
@@ -531,6 +543,17 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     });
   }
 
+  function setLiveParticles(table: ParticleTable): string | undefined {
+    return withEngine((engine) => {
+      const previous = liveParticlesRef.current;
+      const error = applyParticles(engine, table);
+      if (error !== undefined) return error;
+      if (previous !== null) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "particles", previous }));
+      setLiveParticlesState(table);
+      return undefined;
+    });
+  }
+
   function previewLiveMove(id: number, position: readonly [number, number]): void {
     withEngine((engine) => engine.move_object(id, position[0], position[1]));
   }
@@ -594,6 +617,10 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
         case "wind":
           undoLiveWind(entry, engine);
           break;
+        case "particles":
+          undoLiveParticles(entry, engine);
+          setLiveParticlesState(entry.previous);
+          break;
       }
       refreshSnapshot(engine);
     });
@@ -651,6 +678,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     canLiveEdit,
     canUndoLiveEdit: canLiveEdit && liveHistory.length > 0,
     liveWind: snapshot.wind,
+    liveParticles: mode === "battle" ? liveParticlesState : null,
     hasWorld: snapshot.hasWorld,
     stepBlockedReason: snapshot.stepBlockedReason,
 
@@ -678,6 +706,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     previewLiveMove,
     commitLiveTransform,
     setLiveWind,
+    setLiveParticles,
     undoLiveEdit,
   };
 }

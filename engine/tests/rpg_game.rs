@@ -16,7 +16,7 @@ use engine::core::shapes::Body;
 use engine::core::surface;
 use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
 use engine::data::load::{
-    GameConfig, ImageVerdict, load_rest_with_stamps, read_entry, terrain_image_paths,
+    GameConfig, ImageVerdict, load_rest_with_particles, read_entry, terrain_image_paths,
 };
 use serde_json::json;
 
@@ -152,7 +152,8 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
         .map(|(name, path)| (name.clone(), Some(read(path))))
         .collect();
     let (map_verdicts, mask_verdicts) = map_data(&config, terrain_json);
-    let (game, _screens, warnings, _images) = load_rest_with_stamps(
+    let particles_text = config.files.particles.as_deref().map(read);
+    let (game, _screens, warnings, _images) = load_rest_with_particles(
         game_json,
         config,
         Some(&read("properties.json")),
@@ -170,6 +171,7 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
         &map_verdicts,
         &mask_verdicts,
         &stamp_texts,
+        particles_text.as_deref(),
     )
     .expect("ролевая игра должна проходить предстартовую проверку");
     let mut all_warnings = entry_warnings;

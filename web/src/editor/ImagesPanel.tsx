@@ -5,7 +5,7 @@ import { imageFrameSize, type ProjectImageTile } from "./projectImages";
 
 type ImagesPanelProps = { tiles: readonly ProjectImageTile[] };
 
-function ImageThumbnail({ tile }: { tile: ProjectImageTile }): React.JSX.Element {
+export function ImageThumbnail({ tile }: { tile: ProjectImageTile }): React.JSX.Element {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const { image, description } = tile;
 

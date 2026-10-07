@@ -14,7 +14,8 @@ import { createSerialQueue } from "./serialQueue";
 
 /**
  * Тексты, которые правка держит в памяти вместо прочитанных с диска: `game.json` (первый мазок дописывает
- * в него `files.terrain`), `scene.json`, `properties.json` и рельеф. `terrainText` `null` — файла рельефа нет.
+ * в него `files.terrain`, первый вид частиц — `files.particles`), `scene.json`, `properties.json`, рельеф и виды
+ * частиц. `terrainText` и `particlesText` `null` — файла нет.
  * `maskFiles` — PNG масок покрытий, что правка ещё не записала, по путям файлов.
  */
 export type EditedTexts = {
@@ -22,6 +23,7 @@ export type EditedTexts = {
   sceneText?: string;
   propertiesText?: string;
   terrainText?: string | null;
+  particlesText?: string | null;
   maskFiles?: Readonly<Record<string, Uint8Array>>;
 };
 
@@ -235,7 +237,7 @@ export function useProjectEngine(
       }
 
       /**
-       * Загрузка по правке — «Редактор», требование 1: пути `scene.json`/`properties.json`/рельефа берутся
+       * Загрузка по правке — «Редактор», требование 1: пути `scene.json`/`properties.json`/рельефа/видов частиц берутся
        * из `game.json` правки, а без него — из последнего прочитанного (как их назвал автор игры в `files`),
        * сами тексты — из `edited`, остальное — из кэша настоящей загрузки, без сети и диска.
        */
@@ -249,6 +251,7 @@ export function useProjectEngine(
           if (edited.sceneText !== undefined) overrides[paths.scene] = edited.sceneText;
           if (edited.propertiesText !== undefined) overrides[paths.properties] = edited.propertiesText;
           if (edited.terrainText !== undefined && edited.terrainText !== null && paths.terrain !== null) overrides[paths.terrain] = edited.terrainText;
+          if (edited.particlesText !== undefined && edited.particlesText !== null && paths.particles !== null) overrides[paths.particles] = edited.particlesText;
           const overrideReader = createOverridingReader(cache.cachedReader, overrides, edited.maskFiles);
           const loadResult = await loadProject(engineInstance, overrideReader, gameJsonText, () => audioContext);
           if (cancelled) return loadResult;

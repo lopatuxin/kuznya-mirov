@@ -19,6 +19,11 @@ impl Rng {
         z ^ (z >> 31)
     }
 
+    /// Uniform in `[0, 1)`, 53 bits.
+    pub fn next_unit(&mut self) -> f64 {
+        (self.next_u64() >> 11) as f64 / (1u64 << 53) as f64
+    }
+
     /// Uniform in `0..n`. `n == 0` returns 0.
     pub fn next_below(&mut self, n: u32) -> u32 {
         if n == 0 {
@@ -38,6 +43,15 @@ mod tests {
         let mut b = Rng::new(42);
         for _ in 0..10 {
             assert_eq!(a.next_u64(), b.next_u64());
+        }
+    }
+
+    #[test]
+    fn next_unit_stays_in_the_half_open_unit_interval() {
+        let mut rng = Rng::new(7);
+        for _ in 0..1000 {
+            let unit = rng.next_unit();
+            assert!((0.0..1.0).contains(&unit), "{unit}");
         }
     }
 

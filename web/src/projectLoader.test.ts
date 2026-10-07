@@ -123,6 +123,7 @@ describe("loadProject", () => {
       [],
       [],
       [],
+      undefined,
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -176,6 +177,7 @@ describe("loadProject", () => {
       [],
       [],
       [],
+      undefined,
     );
   });
 
@@ -220,7 +222,7 @@ describe("loadProject", () => {
 
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
 
-      expect(load.mock.calls[0]).toHaveLength(14);
+      expect(load.mock.calls[0]).toHaveLength(15);
       expect(load.mock.calls[0]?.[10]).toBeUndefined();
       expect(readText).not.toHaveBeenCalledWith("terrain.json");
     });
@@ -231,6 +233,60 @@ describe("loadProject", () => {
       await loadProject(engine, createReader({}), "{}", stubAudioContext);
 
       expect(load.mock.calls[0]?.[10]).toBeNull();
+    });
+  });
+
+  describe("файл видов частиц files.particles", () => {
+    const files: Record<string, string> = {
+      "game.json": "{}",
+      "properties.json": "{}",
+      "scene.json": '{"objects":[]}',
+      "rules.json": "{}",
+      "screens.json": "{}",
+      "particles.json": '{"дым":{"image":"puff","rate":6,"lifetime":2,"size":1}}',
+    };
+
+    function createEngine(particlesPath: string | undefined): { engine: ProjectLoadEngine; load: ReturnType<typeof vi.fn> } {
+      const load = vi.fn(() => ({ ok: true, warnings: NO_WARNINGS }));
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [], particles: particlesPath },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [] })),
+        load,
+      };
+      return { engine, load };
+    }
+
+    it("читается вторым заходом тем же читателем, что остальные файлы, и уходит в load последним аргументом", async () => {
+      const { engine, load } = createEngine("particles.json");
+      const recording = createRecordingProjectFileReader(createReader(files));
+
+      await loadProject(engine, recording.reader, "{}", stubAudioContext);
+
+      // Путь прошёл через читателя — значит, его же опрашивает редактор, и внешняя правка particles.json перечитывается.
+      expect(recording.getReadPaths()).toContain("particles.json");
+      expect(load.mock.calls[0]?.[14]).toBe(files["particles.json"]);
+    });
+
+    it("без files.particles в load идёт undefined, и файл не читается", async () => {
+      const { engine, load } = createEngine(undefined);
+      const readText = vi.fn(async () => null);
+
+      await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
+
+      expect(load.mock.calls[0]?.[14]).toBeUndefined();
+      expect(readText).not.toHaveBeenCalledWith("particles.json");
+    });
+
+    it("файл назван, но не читается — в load идёт null: движок назовёт ошибку", async () => {
+      const { engine, load } = createEngine("particles.json");
+
+      await loadProject(engine, createReader({}), "{}", stubAudioContext);
+
+      expect(load.mock.calls[0]?.[14]).toBeNull();
     });
   });
 
