@@ -28,6 +28,12 @@ pub struct Game {
     /// партии она не меняется).
     pub ground: Vec<GroundLayer>,
 
+    /// «Ветер и частицы» → «Ветер»: `scene.json → wind` — ветер, с которым собирается каждый мир.
+    scene_wind: Vec2,
+    /// Ровный ветер живой игры: ветер файла, пока его не поменяли (`set_wind`); сборка мира берёт
+    /// его из сцены заново.
+    wind: Vec2,
+
     scene_objects: Vec<ObjectSpec>,
     random_seed: u64,
     rng: Rng,
@@ -191,6 +197,7 @@ impl Game {
         scene: SceneConfig,
         max_objects: usize,
         ground: Vec<GroundLayer>,
+        scene_wind: Vec2,
         random_seed: u64,
         scene_objects: Vec<ObjectSpec>,
         sound_count: usize,
@@ -208,6 +215,8 @@ impl Game {
             scene,
             max_objects,
             ground,
+            scene_wind,
+            wind: scene_wind,
             scene_objects,
             random_seed,
             rng: Rng::new(random_seed),
@@ -433,6 +442,7 @@ impl Game {
     pub fn new_game_with_values(&mut self, initial_values: &[(String, PropertyId, Value)]) {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
         self.world_exists = true;
+        self.wind = self.scene_wind;
         for (name, prop, value) in initial_values {
             if let Some(id) = self
                 .world
@@ -465,6 +475,7 @@ impl Game {
     pub fn show_scene(&mut self) {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
         self.world_exists = true;
+        self.wind = self.scene_wind;
         self.reset_camera_and_walk();
     }
 
@@ -531,6 +542,7 @@ impl Game {
             World::new(&self.properties)
         };
         self.world_exists = start_is_live;
+        self.wind = self.scene_wind;
         self.step_count = 0;
         self.rng = Rng::new(self.random_seed);
         self.input_queue = InputQueue::new();
@@ -710,6 +722,21 @@ impl Game {
         };
         let current = self.current_flat_editor_camera(viewport).center;
         camera::fit_flat_object(&self.world, &self.scene, id, current, viewport)
+    }
+
+    /// «Ветер и частицы» → «Ветер»: ровный ветер сейчас — `[0, 0]` без `wind` и в трёхмерной сцене.
+    pub fn wind(&self) -> Vec2 {
+        self.wind
+    }
+
+    /// «Редактор», «Вызовы движка», `set_wind_particles`: ставит ровный ветер этому миру; наклоны и
+    /// кадры качающихся объектов не сбрасываются. Ошибка по-русски — сцена трёхмерная.
+    pub fn set_wind(&mut self, wind: Vec2) -> Result<(), String> {
+        if self.scene.is_3d() {
+            return Err("ветер есть только в плоской сцене".to_string());
+        }
+        self.wind = wind;
+        Ok(())
     }
 
     pub fn is_running(&self) -> bool {
@@ -914,6 +941,7 @@ impl Game {
                 // «Код игры»: предел операций — на все вызовы `run` этого шага вместе, не на
                 // каждый по отдельности (see `code::Runner::reset_step_budget`).
                 runner.reset_step_budget();
+                runner.set_wind(self.wind);
                 Some(step::CodeEnv {
                     runner,
                     messages: &mut self.messages,

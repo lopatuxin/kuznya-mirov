@@ -313,6 +313,9 @@ pub(crate) fn parse_scalar_value(
             if prop == property::PARALLAX && !validate_parallax(n, properties, file, path, errors) {
                 return None;
             }
+            if prop == property::SWAY && !validate_sway(n, properties, file, path, errors) {
+                return None;
+            }
             Some(Value::Number(n))
         }
         PropKind::Time => {
@@ -773,11 +776,14 @@ fn validate_opacity_range(n: f64, file: &str, path: &str, errors: &mut ErrorSink
 const SHAPE_IN_FLAT_SCENE: &str =
     "shape есть только в трёхмерной сцене: у scene в game.json нет camera";
 
+const WIND_IN_3D_SCENE: &str = "wind есть только в плоской сцене: у scene в game.json есть camera";
+
 const DECK_IN_FLAT_SCENE: &str =
     "deck есть только в трёхмерной сцене: у scene в game.json нет camera";
 
 /// «Мир на экране» → «Проверка перед запуском»: `parallax` и `repeat_x` есть только в плоской
-/// сцене — везде, где их можно записать: объект, шаблон, клавиша, `on_click`, правила.
+/// сцене — везде, где их можно записать: объект, шаблон, клавиша, `on_click`, правила. «Ветер и
+/// частицы» → «Проверка перед запуском»: `sway` — так же.
 fn depth_layer_fits_the_scene(
     prop: PropertyId,
     properties: &PropertyTable,
@@ -785,7 +791,11 @@ fn depth_layer_fits_the_scene(
     path: &str,
     errors: &mut ErrorSink,
 ) -> bool {
-    if matches!(prop, property::PARALLAX | property::REPEAT_X) && properties.three_d() {
+    if matches!(
+        prop,
+        property::PARALLAX | property::REPEAT_X | property::SWAY
+    ) && properties.three_d()
+    {
         errors.push(
             file,
             path,
@@ -817,6 +827,28 @@ fn validate_parallax(
         file,
         path,
         format!("parallax не может быть меньше нуля, получено {n}"),
+    );
+    false
+}
+
+/// «Ветер и частицы» → «Качание»: `sway` — число не меньше нуля, и только в плоской сцене.
+fn validate_sway(
+    n: f64,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if !depth_layer_fits_the_scene(property::SWAY, properties, file, path, errors) {
+        return false;
+    }
+    if n >= 0.0 {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!("sway не может быть меньше нуля, получено {n}"),
     );
     false
 }
@@ -1137,6 +1169,9 @@ fn parse_scene_object(
 struct ParsedSceneFile {
     objects: Vec<ParsedObject>,
     ground: Vec<GroundLayer>,
+    /// «Ветер и частицы» → «Ветер»: `wind` — скорость ровного ветра в клетках в секунду; без ключа
+    /// безветрие.
+    wind: Vec2,
 }
 
 fn parse_scene_json(
@@ -1153,7 +1188,7 @@ fn parse_scene_json(
     let Some(obj) = expect_object(&root, file, "", errors) else {
         return ParsedSceneFile::default();
     };
-    reject_unknown_keys(obj, &["objects", "ground"], file, "", errors);
+    reject_unknown_keys(obj, &["objects", "ground", "wind"], file, "", errors);
     let Some(objects_json) = obj.get("objects") else {
         // Same convention `require_field` uses: the path names the parent object (here the
         // root, `""`), not the missing key itself — a path pointing at a key that by definition
@@ -1173,7 +1208,29 @@ fn parse_scene_json(
         Some(v) => parse_ground(v, file, images, scene, errors),
         None => Vec::new(),
     };
-    ParsedSceneFile { objects, ground }
+    let wind = match obj.get("wind") {
+        Some(v) => parse_wind(v, file, scene, errors).unwrap_or_default(),
+        None => Vec2::default(),
+    };
+    ParsedSceneFile {
+        objects,
+        ground,
+        wind,
+    }
+}
+
+/// «Ветер и частицы» → «Проверка перед запуском»: `wind` — пара чисел, и только в плоской сцене.
+fn parse_wind(
+    value: &Json,
+    file: &str,
+    scene: &SceneConfig,
+    errors: &mut ErrorSink,
+) -> Option<Vec2> {
+    if scene.is_3d() {
+        errors.push(file, "wind", WIND_IN_3D_SCENE);
+        return None;
+    }
+    parse_vec2(value, file, "wind", errors)
 }
 
 /// «Мир на экране» → «Земля», требования 13, 24: `ground` — a list of layers; anything else is
@@ -1847,6 +1904,12 @@ pub struct ImageDecl {
     /// «Картинки» → «Сглаживание», требования 1–2: необязательный, `true`/`false`, по умолчанию
     /// `false` — линейная выборка вместо выборки по точкам, everywhere this image is drawn.
     pub smooth: bool,
+    /// «Картинки» → «Таблица картинок»: необязательный, `true`/`false`, по умолчанию `false` — точки
+    /// картинки прибавляют свет к тому, что под ней, чёрное в ней невидимо.
+    pub glow: bool,
+    /// `frame_time` в секундах, как записан в файле; без `frame_time` — 0. Кадры объекта с `sway`
+    /// идут своими часами в секундах, и округление до шагов (`frame_steps`) им не годится.
+    pub frame_seconds: f64,
 }
 
 /// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук» → «Загрузка и проверка»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
@@ -2487,6 +2550,7 @@ fn parse_images_table(
                 "anchor",
                 "offset",
                 "smooth",
+                "glow",
             ],
             file,
             &entry_path,
@@ -2680,21 +2744,11 @@ fn parse_images_table(
             },
         };
         // «Картинки» → «Сглаживание», требования 1–2: необязательный, true/false.
-        let smooth = match decl_obj.get("smooth") {
-            None => Some(false),
-            Some(v) => match v.as_bool() {
-                Some(b) => Some(b),
-                None => {
-                    errors.push(
-                        file,
-                        &join(&entry_path, "smooth"),
-                        format!("ожидался признак (true/false), получено {}", kind_name(v)),
-                    );
-                    None
-                }
-            },
+        let smooth = parse_image_flag(decl_obj, "smooth", file, &entry_path, errors);
+        let glow = parse_image_flag(decl_obj, "glow", file, &entry_path, errors);
+        let (Some(smooth), Some(glow)) = (smooth, glow) else {
+            continue;
         };
-        let Some(smooth) = smooth else { continue };
         out.push(ImageDecl {
             frame_by: None,
             frame_by_name,
@@ -2708,9 +2762,39 @@ fn parse_images_table(
             anchor,
             offset,
             smooth,
+            glow,
+            frame_seconds: decl_obj
+                .get("frame_time")
+                .and_then(Json::as_f64)
+                .unwrap_or(0.0),
         });
     }
     Some(out)
+}
+
+/// Необязательный признак описания картинки — `smooth`, `glow`: `true`/`false`, без ключа `false`.
+fn parse_image_flag(
+    decl_obj: &serde_json::Map<String, Json>,
+    key: &str,
+    file: &str,
+    entry_path: &str,
+    errors: &mut ErrorSink,
+) -> Option<bool> {
+    let Some(value) = decl_obj.get(key) else {
+        return Some(false);
+    };
+    let flag = value.as_bool();
+    if flag.is_none() {
+        errors.push(
+            file,
+            &join(entry_path, key),
+            format!(
+                "ожидался признак (true/false), получено {}",
+                kind_name(value)
+            ),
+        );
+    }
+    flag
 }
 
 fn resolve_property_list(
@@ -3134,14 +3218,18 @@ fn parse_set_value(
         let expr = parse_number_expr(value, kind, properties, file, path, errors)?;
         // «Мир на экране» → «Проверка перед запуском»: `parallax` меньше 0 — ошибка и в постоянных
         // правила, как в объекте, клавише и щелчке.
-        if prop == property::PARALLAX {
+        if matches!(prop, property::PARALLAX | property::SWAY) {
             let constants: &[f64] = match &expr {
                 NumberExpr::Const(n) => std::slice::from_ref(n),
                 NumberExpr::Table { table, .. } => table,
                 NumberExpr::Multiplier { .. } => &[],
             };
             if let Some(&n) = constants.iter().find(|&&n| n < 0.0) {
-                validate_parallax(n, properties, file, path, errors);
+                if prop == property::SWAY {
+                    validate_sway(n, properties, file, path, errors);
+                } else {
+                    validate_parallax(n, properties, file, path, errors);
+                }
                 return None;
             }
         }
@@ -8223,6 +8311,7 @@ pub fn load_rest_with_stamps(
     let ParsedSceneFile {
         objects: scene_objects,
         ground,
+        wind,
     } = match scene_json {
         Some(text) => parse_scene_json(
             text,
@@ -8541,6 +8630,7 @@ pub fn load_rest_with_stamps(
         config.scene,
         config.max_objects,
         ground,
+        wind,
         config.random_seed,
         scene_specs,
         sound_count,

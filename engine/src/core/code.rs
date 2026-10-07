@@ -77,6 +77,7 @@ const RESERVED_GLOBALS: &[&str] = &[
     "delete",
     "play_sound",
     "tables",
+    "wind",
     "_G",
     "_ENV",
 ];
@@ -666,7 +667,8 @@ fn check_height_write(properties: &PropertyTable, prop: PropertyId, z: f64) -> R
 
 /// «Трёхмерная сцена», «Загрузка и проверка»: что код не даёт объекту — `shape` и `height` в плоской
 /// сцене, `height` не больше нуля, `shape` вместе с `image`, `flip_x` или `opacity`. «Слои
-/// глубины», требование 24: `parallax` и `repeat_x` в трёхмерной сцене, `parallax` меньше нуля.
+/// глубины», требование 24: `parallax` и `repeat_x` в трёхмерной сцене, `parallax` меньше нуля. «Ветер
+/// и частицы»: `sway` в трёхмерной сцене; меньше нуля он считается нулём, не ошибкой.
 fn check_shape_rules(
     world: &World,
     properties: &PropertyTable,
@@ -682,7 +684,7 @@ fn check_shape_rules(
         property::HEIGHT if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
             Err("height должен быть больше нуля".to_string())
         }
-        property::PARALLAX | property::REPEAT_X if properties.three_d() => {
+        property::PARALLAX | property::REPEAT_X | property::SWAY if properties.three_d() => {
             Err(format!("{name} есть только в плоской сцене"))
         }
         property::PARALLAX if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
@@ -736,6 +738,49 @@ impl UserDataTrait for Globals {
     fn as_any_mut(&mut self) -> &mut dyn Any {
         self
     }
+}
+
+/// «Код игры» → «Что ещё доступно коду»: глобальная `wind` — ровный ветер сцены `{x, y}`, только для
+/// чтения; userdata без собственных полей, как [`Globals`], — читает и пишет её метатаблица.
+struct WindRef;
+
+impl UserDataTrait for WindRef {
+    fn type_name(&self) -> &'static str {
+        "wind"
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn Any {
+        self
+    }
+}
+
+/// Ветер сейчас — одна ячейка на исполнитель: `Game` ставит её перед каждым шагом
+/// (`Runner::set_wind`), а `__index` глобальной `wind` читает.
+type WindCell = Rc<Cell<[f64; 2]>>;
+
+fn install_wind_metatable(lua: &mut Lua, wind: &WindCell, mt: &LuaTable) -> LuaResult<()> {
+    let wind = Rc::clone(wind);
+    let index_fn =
+        lua.create_function(move |_wind: LuaValue, key: String| -> Result<f64, String> {
+            let [x, y] = wind.get();
+            match key.as_str() {
+                "x" => Ok(x),
+                "y" => Ok(y),
+                other => Err(format!("у ветра нет поля \"{other}\"")),
+            }
+        })?;
+    mt.set("__index", index_fn)?;
+    let newindex_fn = lua.create_function(
+        move |_wind: LuaValue, _key: LuaValue, _value: LuaValue| -> Result<(), String> {
+            Err("ветер только для чтения".to_string())
+        },
+    )?;
+    mt.set("__newindex", newindex_fn)?;
+    mt.set("__metatable", false)
 }
 
 /// «Код игры»: `rawset` не смотрит на `__newindex` — `rawset(env, 'x', 1)` писал бы в настоящий
@@ -1177,6 +1222,7 @@ pub struct Runner {
     declared_functions: Vec<String>,
     base_cell: CtxCell,
     world_cell: CtxCell,
+    wind_cell: WindCell,
     lua: Lua,
 }
 
@@ -1217,6 +1263,7 @@ impl Runner {
 
         let base_cell: CtxCell = Rc::new(Cell::new(std::ptr::null_mut()));
         let world_cell: CtxCell = Rc::new(Cell::new(std::ptr::null_mut()));
+        let wind_cell: WindCell = Rc::new(Cell::new([0.0, 0.0]));
 
         let mut base_ctx = BaseCtx { rng, messages };
         let prev = set_ctx(&base_cell, &mut base_ctx);
@@ -1229,6 +1276,7 @@ impl Runner {
             sound_names,
             &base_cell,
             &world_cell,
+            &wind_cell,
             tables_json,
         );
         restore_ctx(&base_cell, prev);
@@ -1242,6 +1290,7 @@ impl Runner {
                 declared_functions,
                 base_cell,
                 world_cell,
+                wind_cell,
                 lua,
             }),
             Err(err) => {
@@ -1266,6 +1315,7 @@ impl Runner {
         sound_names: &[String],
         base_cell: &CtxCell,
         world_cell: &CtxCell,
+        wind_cell: &WindCell,
         tables_json: &[(String, Json)],
     ) -> LuaResult<BuildOutput> {
         // «Код игры»: `Lua::new` не ставит стандартную библиотеку сама — `create_sandbox_env`
@@ -1328,12 +1378,29 @@ impl Runner {
         install_object_metatable(lua, world_cell, &env_shared, &obj_mt)?;
         install_vec2_metatable(lua, world_cell, &env_shared.properties, &vec2_mt)?;
 
+        let wind_mt = lua.create_table()?;
+        install_wind_metatable(lua, wind_cell, &wind_mt)?;
+        // SAFETY: `wind_mt` keeps the table registry-rooted until `build` returns; after that the
+        // userdata's own metatable reference keeps it alive (the GC marks a userdata's metatable).
+        let wind_mt_ptr = unsafe { wind_mt.to_value() }
+            .as_table_ptr()
+            .ok_or_else(|| {
+                lua.global_state_mut()
+                    .error("нет метатаблицы wind".to_string())
+            })?;
+        let state = lua.global_state_mut();
+        let wind_value =
+            state.create_userdata(LuaUserdata::with_metatable(WindRef, wind_mt_ptr))?;
+        // Registry-rooted until `build` returns; after that `env.wind` keeps it alive.
+        let wind_ref = state.to_ref(wind_value);
+
         let find_fn = install_find(lua, world_cell, &env_shared)?;
         let delete_fn = install_delete(lua, world_cell)?;
         let play_sound_fn = install_play_sound(lua, world_cell, env_shared.sound_names.clone())?;
         let print_fn = install_print(lua, base_cell)?;
         let random_fn = install_math_random(lua, base_cell)?;
 
+        env.set("wind", wind_ref.to_value())?;
         env.set("find", find_fn)?;
         env.set("delete", delete_fn)?;
         env.set("play_sound", play_sound_fn)?;
@@ -1436,6 +1503,12 @@ impl Runner {
     /// step together, not each call separately.
     pub fn reset_step_budget(&mut self) {
         self.lua.set_instruction_budget(INSTRUCTION_LIMIT);
+    }
+
+    /// «Код игры» → «Что ещё доступно коду»: ровный ветер, который читает глобальная `wind` —
+    /// `Game::step` ставит его перед каждым шагом.
+    pub fn set_wind(&self, wind: [f64; 2]) {
+        self.wind_cell.set(wind);
     }
 
     /// Вызывает `function` с объектами-аргументами по месту вызова правила — формы, которые

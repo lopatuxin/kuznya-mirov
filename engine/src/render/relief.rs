@@ -106,6 +106,8 @@ pub struct SurfaceVertex {
     pub uv_max: [f32; 2],
     pub layer: f32,
     pub smooth: f32,
+    /// 1 — картинка светится: свет не освещается солнцем и не затеняется, а прибавляется как есть.
+    pub glow: f32,
 }
 
 /// Общее у всех вершин одного прямоугольника.
@@ -144,6 +146,7 @@ impl<'a> Paint<'a> {
             uv_max: self.uv_max,
             layer: rect.atlas_rect.sheet as f32,
             smooth: f32::from(u8::from(rect.smooth)),
+            glow: f32::from(u8::from(rect.glow)),
         }
     }
 

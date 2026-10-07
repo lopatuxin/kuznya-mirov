@@ -36,6 +36,9 @@ pub const DECK: PropertyId = 21;
 pub const PARALLAX: PropertyId = 22;
 /// «Слои глубины»: повтор рисунка объекта влево и вправо до краёв окна.
 pub const REPEAT_X: PropertyId = 23;
+/// «Ветер и частицы» → «Качание»: гибкость объекта в клетках — на сколько уходит вбок верх рисунка
+/// при ровном ветре в одну клетку в секунду.
+pub const SWAY: PropertyId = 24;
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -62,6 +65,7 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("deck", PropKind::Flag),
     ("parallax", PropKind::Number),
     ("repeat_x", PropKind::Flag),
+    ("sway", PropKind::Number),
 ];
 
 #[derive(Debug, Clone)]
@@ -205,6 +209,8 @@ mod tests {
         assert_eq!(table.kind(PARALLAX), PropKind::Number);
         assert_eq!(table.resolve("repeat_x"), Some(REPEAT_X));
         assert_eq!(table.kind(REPEAT_X), PropKind::Flag);
+        assert_eq!(table.resolve("sway"), Some(SWAY));
+        assert_eq!(table.kind(SWAY), PropKind::Number);
     }
 
     #[test]

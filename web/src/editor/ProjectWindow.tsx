@@ -11,6 +11,7 @@ import { ObjectList } from "./ObjectList";
 import { PanelResizeHandle } from "./PanelResizeHandle";
 import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
+import { parseSceneWind } from "./sceneWind";
 import { readTerrainCovers, readTerrainImprints, readTerrainTint, readTerrainWater } from "./terrainFile";
 import { parseProjectCellPixels, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
 import { buildImageTiles, createImageObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
@@ -124,6 +125,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const objects = useMemo(() => parseSceneObjects(sceneText), [sceneText]);
   const objectSummaries = useMemo(() => summarizeSceneObjects(objects), [objects]);
   const propertiesView = useMemo(() => buildObjectPropertiesView(objects, selectedIndex), [objects, selectedIndex]);
+  const sceneWind = useMemo(() => parseSceneWind(sceneText), [sceneText]);
   const sceneSize = useMemo(() => parseSceneSize(gameJsonText), [gameJsonText]);
   const isThreeDimensionalScene = useMemo(() => parseSceneIsThreeDimensional(gameJsonText), [gameJsonText]);
   const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
@@ -415,6 +417,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           terrainWater={terrainWater}
           onCommitTerrain={sceneEditing.paintTerrain}
           onWaterChange={sceneEditing.setTerrainWater}
+          wind={isLive ? battle.liveWind : sceneWind}
+          onWindChange={isLive ? battle.setLiveWind : sceneEditing.setSceneWind}
           onStrokeActiveChange={handleStrokeActiveChange}
           brushFields={brushFields}
           imprints={imprints}

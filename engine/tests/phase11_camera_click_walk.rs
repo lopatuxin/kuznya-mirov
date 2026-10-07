@@ -13,6 +13,7 @@ use engine::data::load::{
     LoadFailure, load_game_from_texts, load_game_from_texts_with_code, load_rest, read_entry,
 };
 use engine::data::session::PlaySession;
+use engine::render::wind::Motion;
 
 const VIEWPORT: [f32; 2] = [800.0, 600.0];
 
@@ -162,7 +163,7 @@ fn y_sort_orders_by_the_lower_bottom_edge_when_layers_tie() {
         &game.world,
         &game.scene,
         game.world.ids(),
-        0.0,
+        &Motion::default(),
         &images,
         &atlas_rects,
         &LayerView::default(),
@@ -194,7 +195,7 @@ fn layer_wins_over_y_sort() {
         &game.world,
         &game.scene,
         game.world.ids(),
-        0.0,
+        &Motion::default(),
         &[],
         &[],
         &LayerView::default(),

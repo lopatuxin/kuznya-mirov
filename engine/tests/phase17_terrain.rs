@@ -22,6 +22,7 @@ use engine::data::load::{
 use engine::render::atlas::{self, AtlasImage, AtlasRect};
 use engine::render::relief::{SurfaceVertex, TerrainMesh};
 use engine::render::scene3d::{Frame3d, compose_frame3d};
+use engine::render::wind::Motion;
 use std::collections::HashSet;
 
 const WINDOW: [f64; 2] = [1920.0, 1080.0];
@@ -2890,7 +2891,7 @@ fn frame_from(
     images: &[ImageDecl],
     rects: &[AtlasRect],
 ) -> Frame3d {
-    compose_frame3d(game, camera, 0.0, images, rects)
+    compose_frame3d(game, camera, &Motion::default(), images, rects)
 }
 
 fn game_frame(game: &Game, images: &[ImageDecl], rects: &[AtlasRect]) -> Frame3d {

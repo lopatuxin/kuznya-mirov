@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorldObjectSummary } from "./battleTypes";
-import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, type LiveEditEntry } from "./liveEditHistory";
+import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, undoLiveWind, type LiveEditEntry } from "./liveEditHistory";
 
 describe("liveEditHistory", () => {
   it("пустая история — отмена недоступна", () => {
@@ -73,5 +73,19 @@ describe("запись «transform» — жест ручки на паузе", (
   it("объект под другой меткой жизни — запись не цела", () => {
     expect(isLiveEditTargetAlive(entry, [{ id: 4, generation: 2, name: null }])).toBe(true);
     expect(isLiveEditTargetAlive(entry, [{ id: 4, generation: 3, name: null }])).toBe(false);
+  });
+});
+
+describe("правка ветра на ходу", () => {
+  const WIND_EDIT: LiveEditEntry = { kind: "wind", previous: [1.5, 0], next: [-2, 0] };
+
+  it("запись ветра цела при любом составе мира: к объекту она не привязана", () => {
+    expect(isLiveEditTargetAlive(WIND_EDIT, [])).toBe(true);
+  });
+
+  it("отмена ставит прежний ветер тем же вызовом движка и файл не трогает", () => {
+    const calls: unknown[] = [];
+    undoLiveWind({ previous: [1.5, 0] }, { set_wind_particles: (settings) => (calls.push(settings), { ok: true }) });
+    expect(calls).toEqual([{ wind: [1.5, 0] }]);
   });
 });

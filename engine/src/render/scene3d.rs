@@ -13,6 +13,7 @@ use crate::data::load::ImageDecl;
 
 use super::atlas::{self, AtlasRect, RectPaint};
 use super::relief::{self, SurfaceVertex};
+use super::wind::Motion;
 
 /// Одна фигура кадра: место, размеры, поворот и цвет — всё, что вершинному шейдеру нужно поверх
 /// сетки единичной фигуры.
@@ -246,12 +247,12 @@ fn sun_projection(
     (math3::mul(&projection, &view), far - near)
 }
 
-/// Кадр трёхмерной сцены по миру `game` и камере `camera`. `elapsed_steps` — шаги партии, по ним
+/// Кадр трёхмерной сцены по миру `game` и камере `camera`. `motion` — часы движения, по ним
 /// выбирается кадр анимации картинок, как у плоской сцены.
 pub fn compose_frame3d(
     game: &Game,
     camera: &Camera3d,
-    elapsed_steps: f64,
+    motion: &Motion,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
 ) -> Frame3d {
@@ -276,7 +277,7 @@ pub fn compose_frame3d(
         &game.world,
         &game.scene,
         game.world.ids(),
-        elapsed_steps,
+        motion,
         images,
         atlas_rects,
         &LayerView::default(),

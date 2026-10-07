@@ -3,6 +3,7 @@ import {
   isImprintToolEnabled,
   isPaintToolEnabled,
   resolveSceneToolAvailability,
+  resolveWindMenuState,
   selectBrushTool,
   selectHandleModeTool,
   selectImprintTool,
@@ -116,5 +117,25 @@ describe("settleSelectedTool — «Покрасить»", () => {
     expect(settleSelectedTool(tool, true, true, true)).toBe(tool);
     expect(settleSelectedTool(tool, true, true, false)).toEqual(selectHandleModeTool("translate"));
     expect(settleSelectedTool(tool, false, false, false)).toEqual(selectHandleModeTool("translate"));
+  });
+});
+
+describe("resolveWindMenuState", () => {
+  const FLAT = { isThreeDimensionalScene: false, isSceneShown: true, canEditScene: true };
+
+  it("в плоской сцене кнопка есть и активна — и вне партии, и в идущей партии: ручки на ней не отражаются", () => {
+    expect(resolveWindMenuState(FLAT)).toBe("enabled");
+  });
+
+  it("в трёхмерной сцене кнопки нет", () => {
+    expect(resolveWindMenuState({ ...FLAT, isThreeDimensionalScene: true })).toBe("hidden");
+  });
+
+  it("при ошибках проекта кнопка неактивна", () => {
+    expect(resolveWindMenuState({ ...FLAT, isSceneShown: false })).toBe("disabled");
+  });
+
+  it("в повторе, где сцену править нельзя, кнопка неактивна", () => {
+    expect(resolveWindMenuState({ ...FLAT, canEditScene: false })).toBe("disabled");
   });
 });

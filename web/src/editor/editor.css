@@ -1340,6 +1340,14 @@ body.is-resizing-panel {
   opacity: 0.4;
 }
 
+/* Ошибка проверки в окошке настройки: текст движка под полями. */
+.tool-menu__error {
+  max-width: 220px;
+  color: var(--editor-error-text);
+  font-size: 12px;
+  white-space: normal;
+}
+
 .tool-menu__toggle-field {
   display: flex;
   align-items: center;

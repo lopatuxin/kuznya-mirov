@@ -16,6 +16,7 @@ use engine::core::screens::ScreenState;
 use engine::data::load::load_game_from_texts;
 use engine::data::session::PlaySession;
 use engine::render::scene3d::compose_frame3d;
+use engine::render::wind::Motion;
 use serde_json::json;
 
 const WINDOW: [f32; 2] = [1920.0, 1080.0];
@@ -641,7 +642,7 @@ fn a_frame_from_a_low_turned_editor_camera_has_finite_shadow_matrices() {
         distance: 14.0,
     });
     let camera = game.editor_camera_3d(WINDOW).expect("камера");
-    let frame = compose_frame3d(&game, &camera, 0.0, &[], &[]);
+    let frame = compose_frame3d(&game, &camera, &Motion::default(), &[], &[]);
     assert!(!frame.shapes.is_empty());
     for matrix in [frame.view_proj, frame.light_view_proj] {
         assert!(matrix.iter().flatten().all(|v| v.is_finite()), "{matrix:?}");

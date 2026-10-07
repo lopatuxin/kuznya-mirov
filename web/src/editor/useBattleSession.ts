@@ -10,7 +10,8 @@ import { buildBattleSoundAssets } from "./battleSound";
 import { isPauseResumeShortcut, isPlayStopShortcut, isStepShortcut, type ShortcutKeyEvent } from "./battleShortcuts";
 import { buildLiveObjectSummaries, buildLivePropertiesView, findWorldObject, resolveCanStartReplay, resolveLiveSelection, type LiveSelection } from "./battleSelection";
 import type { EngineAddObjectResult, EngineEditResult, SessionMessage, StepReport, WorldObjectSummary } from "./battleTypes";
-import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, type LiveEditHistory } from "./liveEditHistory";
+import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, undoLiveWind, type LiveEditHistory } from "./liveEditHistory";
+import { applyWind, NO_WIND, readEngineWind, type SceneWind } from "./sceneWind";
 import type { PlacementChange } from "./objectPlacement";
 import type { ObjectPropertiesView, SceneObjectSummary } from "./sceneObjects";
 import type { ProjectSource } from "./projectSource";
@@ -38,6 +39,8 @@ export type BattleSessionState = {
   liveSelectedSummary: SceneObjectSummary | null;
   canLiveEdit: boolean;
   canUndoLiveEdit: boolean;
+  /** Ветер живой игры — «Редактор», «Партия в редакторе», требования 30 и 32: тот, что движок читает сейчас, с правками на ходу и событиями ветра записи. */
+  liveWind: SceneWind;
   /** «Редактор», требование 13: мир существует прямо сейчас — список пуст, но с разными подписями. */
   hasWorld: boolean;
   /** «Редактор», требование 12: почему «Шаг» сейчас ничего не сделает — `undefined`, когда сделает. */
@@ -68,6 +71,8 @@ export type BattleSessionState = {
   previewLiveMove(id: number, position: readonly [number, number]): void;
   /** Отпускание жеста ручки или переноса на паузе: `set_property` каждого изменившегося свойства и одна запись отмены. */
   commitLiveTransform(id: number, changes: PlacementChange[]): void;
+  /** Ветер живой игре на паузе и на ходу: файл не пишется, правка идёт в запись и в историю отмены; текст ошибки движка, если он ветер не принял. */
+  setLiveWind(wind: SceneWind): string | undefined;
   undoLiveEdit(): void;
 };
 
@@ -102,6 +107,7 @@ type Snapshot = {
   recordingLength: number;
   hasWorld: boolean;
   stepBlockedReason: string | undefined;
+  wind: SceneWind;
 };
 
 const EMPTY_PROPERTIES_VIEW: ObjectPropertiesView = { status: "none" };
@@ -115,6 +121,7 @@ const EMPTY_SNAPSHOT: Snapshot = {
   recordingLength: 0,
   hasWorld: false,
   stepBlockedReason: "Нет партии",
+  wind: NO_WIND,
 };
 
 /** Живой список и свойства читаются с движка заново — «Редактор», требования 8, 13–14, 23–26, 44–45. */
@@ -132,6 +139,7 @@ function readSnapshot(engine: Engine, selection: LiveSelection | null): Snapshot
     recordingLength: engine.recording_length(),
     hasWorld: engine.has_world(),
     stepBlockedReason: engine.step_blocked() as string | undefined,
+    wind: readEngineWind(engine),
   };
 }
 
@@ -269,6 +277,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
       recordingLength: engine.recording_length(),
       hasWorld: engine.has_world(),
       stepBlockedReason: engine.step_blocked() as string | undefined,
+      wind: readEngineWind(engine),
     });
   }
 
@@ -511,6 +520,17 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     });
   }
 
+  function setLiveWind(wind: SceneWind): string | undefined {
+    return withEngine((engine) => {
+      const previous = readEngineWind(engine);
+      const error = applyWind(engine, wind);
+      if (error !== undefined) return error;
+      setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "wind", previous, next: wind }));
+      refreshSnapshot(engine);
+      return undefined;
+    });
+  }
+
   function previewLiveMove(id: number, position: readonly [number, number]): void {
     withEngine((engine) => engine.move_object(id, position[0], position[1]));
   }
@@ -571,6 +591,9 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
         case "transform":
           undoLiveTransform(entry, engine);
           break;
+        case "wind":
+          undoLiveWind(entry, engine);
+          break;
       }
       refreshSnapshot(engine);
     });
@@ -627,6 +650,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     liveSelectedSummary: liveSelectedSummary ? { index: liveSelectedSummary.id, name: liveSelectedSummary.name, color: null, image: null, isOnScene: true } : null,
     canLiveEdit,
     canUndoLiveEdit: canLiveEdit && liveHistory.length > 0,
+    liveWind: snapshot.wind,
     hasWorld: snapshot.hasWorld,
     stepBlockedReason: snapshot.stepBlockedReason,
 
@@ -653,6 +677,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     deleteLiveObject,
     previewLiveMove,
     commitLiveTransform,
+    setLiveWind,
     undoLiveEdit,
   };
 }

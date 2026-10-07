@@ -19,6 +19,7 @@ use engine::data::load::{
     ImageDecl, ImageVerdict, load_game_from_texts_with_code, load_rest, read_entry,
 };
 use engine::render::atlas::{AtlasImage, RectPaint, compose_world_paints, pack};
+use engine::render::wind::Motion;
 
 const WINDOW: [f32; 2] = [1280.0, 720.0];
 const SCREENS: &str = r#"{"screens":[{"name":"main","world_runs":true,"elements":[]}]}"#;
@@ -89,7 +90,7 @@ fn paints_of(game: &Game, viewport: [f32; 2]) -> Vec<RectPaint> {
         &game.world,
         &game.scene,
         game.world.ids(),
-        0.0,
+        &Motion::default(),
         &[],
         &[],
         &layers_of(game, viewport),
@@ -942,7 +943,7 @@ fn repeated_layers_cover_a_window_of_any_width() {
                 &game.world,
                 &game.scene,
                 once(id),
-                0.0,
+                &Motion::default(),
                 &images,
                 &atlas.rects,
                 &layers,

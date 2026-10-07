@@ -33,7 +33,11 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "on_click",
   "parallax",
   "repeat_x",
+  "sway",
 ];
+
+/** Свойства движка, которые есть только в плоской сцене: в трёхмерной «+ свойство» их не предлагает. */
+const FLAT_SCENE_ONLY_PROPERTY_NAMES: readonly string[] = ["sway"];
 
 /**
  * Свойства автора из `properties.json` — имя → вид. Не читается или не разбирается — пустой список:
@@ -58,11 +62,15 @@ export function parsePropertyDeclarations(propertiesText: string | null): Record
 
 /**
  * Подсказки для «+ свойство» — «Редактор», требование 15: свойства движка и объявленные свойства
- * автора, которых у объекта ещё нет, в исходном порядке списков.
+ * автора, которых у объекта ещё нет, в исходном порядке списков; `sway` — только в плоской сцене.
  */
-export function suggestPropertyNames(existingKeys: readonly string[], declaredProperties: Readonly<Record<string, PropertyKind>>): string[] {
+export function suggestPropertyNames(
+  existingKeys: readonly string[],
+  declaredProperties: Readonly<Record<string, PropertyKind>>,
+  isThreeDimensionalScene: boolean,
+): string[] {
   const existing = new Set(existingKeys);
-  const engineNames = ENGINE_PROPERTY_NAMES.filter((name) => !existing.has(name));
+  const engineNames = ENGINE_PROPERTY_NAMES.filter((name) => !existing.has(name) && !(isThreeDimensionalScene && FLAT_SCENE_ONLY_PROPERTY_NAMES.includes(name)));
   const authorNames = Object.keys(declaredProperties).filter((name) => !existing.has(name));
   return [...engineNames, ...authorNames];
 }

@@ -204,6 +204,7 @@ function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNam
 type AddPropertyRowProps = {
   existingKeys: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
+  isThreeDimensionalScene: boolean;
   onAdd: (key: string, value: unknown) => void | string;
   onDeclare: (key: string, kind: PropertyKind, value: unknown) => void;
   /**
@@ -215,7 +216,7 @@ type AddPropertyRowProps = {
 };
 
 /** Строка «+ свойство» — «Редактор», требования 15–16, 19. */
-function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare, disallowDeclare = false }: AddPropertyRowProps): React.JSX.Element {
+function AddPropertyRow({ existingKeys, declaredProperties, isThreeDimensionalScene, onAdd, onDeclare, disallowDeclare = false }: AddPropertyRowProps): React.JSX.Element {
   const [name, setName] = useState("");
   const [valueText, setValueText] = useState("");
   const [kind, setKind] = useState<PropertyKind | "">("");
@@ -224,7 +225,7 @@ function AddPropertyRow({ existingKeys, declaredProperties, onAdd, onDeclare, di
   const trimmedName = name.trim();
   const isKnown = trimmedName !== "" && ((ENGINE_PROPERTY_NAMES as readonly string[]).includes(trimmedName) || declaredProperties[trimmedName] !== undefined);
   const needsKind = !disallowDeclare && trimmedName !== "" && !isKnown && !existingKeys.includes(trimmedName);
-  const suggestions = suggestPropertyNames(existingKeys, declaredProperties);
+  const suggestions = suggestPropertyNames(existingKeys, declaredProperties, isThreeDimensionalScene);
 
   function reset(): void {
     setName("");
@@ -408,6 +409,7 @@ export function PropertiesPanel({
               <AddPropertyRow
                 existingKeys={view.properties.map((property) => property.key)}
                 declaredProperties={declaredProperties}
+                isThreeDimensionalScene={isThreeDimensionalScene}
                 onAdd={onAdd}
                 onDeclare={onDeclare}
                 disallowDeclare={disallowDeclare}

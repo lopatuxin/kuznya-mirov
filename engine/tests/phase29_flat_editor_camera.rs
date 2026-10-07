@@ -12,6 +12,7 @@ use engine::core::scene::{
 };
 use engine::data::load::load_game_from_texts;
 use engine::render::atlas::compose_world_paints;
+use engine::render::wind::Motion;
 use serde_json::Value;
 
 const WINDOW: [f32; 2] = [1200.0, 600.0];
@@ -214,7 +215,7 @@ fn depth_layers_follow_the_editor_camera() {
         &game.world,
         &game.scene,
         game.world.ids(),
-        0.0,
+        &Motion::default(),
         &[],
         &[],
         &layers,

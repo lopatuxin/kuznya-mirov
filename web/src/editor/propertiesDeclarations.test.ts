@@ -25,7 +25,7 @@ describe("parsePropertyDeclarations", () => {
 
 describe("suggestPropertyNames", () => {
   it("даёт свойства движка и автора, которых нет у объекта", () => {
-    const suggestions = suggestPropertyNames(["position", "size", "score"], { score: "number", hp: "flag" });
+    const suggestions = suggestPropertyNames(["position", "size", "score"], { score: "number", hp: "flag" }, false);
     expect(suggestions).toContain("collides");
     expect(suggestions).toContain("deck");
     expect(suggestions).toContain("hp");
@@ -34,7 +34,7 @@ describe("suggestPropertyNames", () => {
   });
 
   it("новые свойства движка Фазы 11 — среди подсказок, «+ свойство» не объявляет их автору", () => {
-    const suggestions = suggestPropertyNames([], {});
+    const suggestions = suggestPropertyNames([], {}, false);
     expect(suggestions).toContain("camera_follows");
     expect(suggestions).toContain("walk_to");
     expect(suggestions).toContain("walk_speed");
@@ -42,19 +42,26 @@ describe("suggestPropertyNames", () => {
   });
 
   it("flip_x Фазы 14 — среди подсказок", () => {
-    expect(suggestPropertyNames([], {})).toContain("flip_x");
+    expect(suggestPropertyNames([], {}, false)).toContain("flip_x");
   });
 
   it("parallax и repeat_x Фазы 28 — среди подсказок, пока их нет у объекта", () => {
-    const suggestions = suggestPropertyNames([], {});
+    const suggestions = suggestPropertyNames([], {}, false);
     expect(suggestions).toContain("parallax");
     expect(suggestions).toContain("repeat_x");
-    expect(suggestPropertyNames(["parallax", "repeat_x"], {})).not.toContain("parallax");
-    expect(suggestPropertyNames(["parallax", "repeat_x"], {})).not.toContain("repeat_x");
+    expect(suggestPropertyNames(["parallax", "repeat_x"], {}, false)).not.toContain("parallax");
+    expect(suggestPropertyNames(["parallax", "repeat_x"], {}, false)).not.toContain("repeat_x");
+  });
+
+  it("sway Фазы 30 — среди подсказок плоской сцены, в трёхмерной его нет", () => {
+    expect(suggestPropertyNames([], {}, false)).toContain("sway");
+    expect(suggestPropertyNames([], {}, true)).not.toContain("sway");
+    expect(suggestPropertyNames([], {}, true)).toContain("parallax");
+    expect(suggestPropertyNames(["sway"], {}, false)).not.toContain("sway");
   });
 
   it("shape и height Фазы 15 — среди подсказок", () => {
-    const suggestions = suggestPropertyNames([], {});
+    const suggestions = suggestPropertyNames([], {}, false);
     expect(suggestions).toContain("shape");
     expect(suggestions).toContain("height");
   });

@@ -598,6 +598,43 @@ impl PlaySession {
         });
         Ok(())
     }
+
+    /// «Ветер и частицы» → «Время и случайность»: ровный ветер живой партии — как правка объекта,
+    /// идёт в запись на текущем шаге. `Err` в повторе и при ошибке `Game::set_wind`.
+    pub fn set_wind(&mut self, game: &mut Game, wind: [f64; 2]) -> Result<(), String> {
+        if !self.is_live() {
+            return Err("правка мира недоступна вне партии".to_string());
+        }
+        game.set_wind(wind)?;
+        self.recording.events.push(ReplayEvent {
+            step: game.session_step_count(),
+            kind: ReplayEventKind::Edit(ReplayEdit::Wind(wind)),
+        });
+        Ok(())
+    }
+}
+
+/// «Редактор», «Вызовы движка», `set_wind_particles`: ставит ровный ветер `wind` — `[x, y]`. Вне
+/// партии (и после «Стопа») — собранному миру, без записи; в партии и на паузе — живой игре, и ветер
+/// идёт в запись на текущем шаге; в повторе — ошибка. Ничего не меняется, если ответ — `Err`.
+pub fn set_wind(
+    session: Option<&mut PlaySession>,
+    game: &mut Game,
+    wind: &Json,
+) -> Result<(), String> {
+    let wind = parse_wind(wind)?;
+    match session {
+        Some(session) if session.is_replay() => Err("в повторе мир не правится".to_string()),
+        Some(session) if session.is_live() => session.set_wind(game, wind),
+        _ => game.set_wind(wind),
+    }
+}
+
+fn parse_wind(wind: &Json) -> Result<[f64; 2], String> {
+    wind.as_array()
+        .filter(|pair| pair.len() == 2)
+        .and_then(|pair| Some([pair[0].as_f64()?, pair[1].as_f64()?]))
+        .ok_or_else(|| "wind должен быть парой конечных чисел".to_string())
 }
 
 fn replay_command_of(
@@ -710,6 +747,7 @@ fn apply_replay_edit(edit_event: &ReplayEdit, game: &mut Game, images: &[ImageDe
             edit::delete_object(&mut game.world, *id);
             Ok(())
         }
+        ReplayEdit::Wind(wind) => game.set_wind(*wind),
     };
     // «Камера», требование 6: как и живая правка, восстановленная из записи тоже не должна
     // ждать следующего шага, чтобы камера её увидела.

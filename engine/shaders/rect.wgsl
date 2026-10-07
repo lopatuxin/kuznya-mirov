@@ -48,6 +48,11 @@ struct InstanceInput {
     // «Картинки» → «Отражение», требование 9: 0.0/1.0 — mirrors the sampled point in the image's
     // own axes, after `rotation_quarters` above has already picked which corner maps where.
     @location(9) flip_x: f32,
+    // «Картинки», «Таблица картинок»: 0.0/1.0 — светящаяся картинка: фрагмент отдаёт `(цвет, 0)`, и
+    // смешивание `PREMULTIPLIED_ALPHA_BLENDING` прибавляет цвет к тому, что под ней.
+    @location(10) glow_flag: f32,
+    // «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх рисунка.
+    @location(11) lean: f32,
 };
 
 struct VertexOutput {
@@ -58,11 +63,22 @@ struct VertexOutput {
     @location(3) @interpolate(flat) uv_max: vec2<f32>,
     @location(4) @interpolate(flat) atlas_layer: i32,
     @location(5) @interpolate(flat) smooth_sample: f32,
+    @location(6) @interpolate(flat) glow: f32,
 };
 
 @vertex
 fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
-    let corner = instance.position + vertex.unit * instance.size;
+    // «Ветер и частицы» → «Качание», требование 14: нижний край стоит; точка на высоте `y` над ним
+    // (доля `s` высоты прямоугольника) уходит вбок на `lean · s²` и встаёт над своим местом на нижнем
+    // крае на `√(y² − сдвиг²)` — идёт по дуге и не растягивается. Опускание `y − √(y² − сдвиг²)`
+    // записано как `сдвиг² / (y + √(y² − сдвиг²))`: без вычитания близких чисел, и без наклона оно
+    // ровно ноль — углы там же, где были.
+    let along = 1.0 - vertex.unit.y;
+    let above = along * instance.size.y;
+    let shift = instance.lean * along * along;
+    let reach = sqrt(max(above * above - shift * shift, 0.0));
+    let drop = shift * shift / max(above + reach, 0.000001);
+    let corner = instance.position + vertex.unit * instance.size + vec2<f32>(shift, drop);
     let px = globals.offset + corner * globals.scale;
     let ndc_x = (px.x / globals.canvas_size_px.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (px.y / globals.canvas_size_px.y) * 2.0;
@@ -107,6 +123,7 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.uv_max = max(instance.atlas_pos + instance.atlas_size - vec2<f32>(0.5, 0.5), out.uv_min);
     out.atlas_layer = i32(instance.atlas_layer + 0.5);
     out.smooth_sample = instance.smooth_flag;
+    out.glow = instance.glow_flag;
     return out;
 }
 
@@ -121,5 +138,6 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let nearest = textureLoad(atlas_texture, vec2<i32>(floor(clamped)), in.atlas_layer, 0);
     let linear = textureSample(atlas_texture, atlas_sampler_linear, uv, in.atlas_layer);
     let sampled = select(nearest, linear, in.smooth_sample > 0.5);
-    return in.color * sampled;
+    let painted = in.color * sampled;
+    return vec4<f32>(painted.rgb, painted.a * (1.0 - in.glow));
 }

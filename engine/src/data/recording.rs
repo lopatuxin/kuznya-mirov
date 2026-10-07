@@ -26,6 +26,9 @@ pub enum ReplayEdit {
     Remove(u32, String),
     Add(Json),
     Delete(u32),
+    /// «Ветер и частицы» → «Время и случайность»: ровный ветер, поставленный в партии, — код игры его
+    /// читает, и повтор без него разошёлся бы с партией.
+    Wind([f64; 2]),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,7 +129,7 @@ fn command_to_json(cmd: &ReplayCommand) -> Json {
 }
 
 /// Parses one `events[]` entry — exactly one of `command`/`key_down`/`key_up`/`cursor`/`set`/
-/// `remove`/`add`/`delete` alongside `step`, unknown or missing being «Технические детали»'s
+/// `remove`/`add`/`delete`/`wind` alongside `step`, unknown or missing being «Технические детали»'s
 /// "неизвестное событие".
 fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
     let obj = json
@@ -200,9 +203,21 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
     } else if let Some(v) = obj.get("delete") {
         let id = want_u32(v, &format!("events[{index}].delete"))?;
         ReplayEventKind::Edit(ReplayEdit::Delete(id))
+    } else if let Some(v) = obj.get("wind") {
+        let arr = v
+            .as_array()
+            .filter(|a| a.len() == 2)
+            .ok_or_else(|| format!("events[{index}].wind должен быть парой чисел"))?;
+        let x = arr[0]
+            .as_f64()
+            .ok_or_else(|| format!("events[{index}].wind[0] должен быть числом"))?;
+        let y = arr[1]
+            .as_f64()
+            .ok_or_else(|| format!("events[{index}].wind[1] должен быть числом"))?;
+        ReplayEventKind::Edit(ReplayEdit::Wind([x, y]))
     } else {
         return Err(format!(
-            "events[{index}]: неизвестное событие — нет ни command, ни key_down/key_up/cursor, ни set/remove/add/delete"
+            "events[{index}]: неизвестное событие — нет ни command, ни key_down/key_up/cursor, ни set/remove/add/delete/wind"
         ));
     };
     Ok(ReplayEvent { step, kind })
@@ -252,6 +267,9 @@ fn event_to_json(event: &ReplayEvent) -> Json {
         }
         ReplayEventKind::Edit(ReplayEdit::Delete(id)) => {
             map.insert("delete".to_string(), Json::from(*id));
+        }
+        ReplayEventKind::Edit(ReplayEdit::Wind(wind)) => {
+            map.insert("wind".to_string(), serde_json::json!(wind));
         }
     }
     Json::Object(map)
@@ -368,6 +386,10 @@ mod tests {
                 ReplayEvent {
                     step: 302,
                     kind: ReplayEventKind::Edit(ReplayEdit::Delete(17)),
+                },
+                ReplayEvent {
+                    step: 303,
+                    kind: ReplayEventKind::Edit(ReplayEdit::Wind([3.0, -0.5])),
                 },
             ],
         };
