@@ -41,7 +41,6 @@
       "sky": { "path": "images/sky.png", "smooth": true },
       "smithy": { "path": "images/smithy.png", "smooth": true },
       "well": { "path": "images/well.png", "smooth": true }
-    },
-    "particles": "particles.json"
+    }
   }
 }

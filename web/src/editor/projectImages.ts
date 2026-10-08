@@ -45,15 +45,15 @@ export function newObjectParallax(selected: Record<string, unknown> | null): num
 }
 
 /**
- * Новый источник из вида частиц — «Редактор», требование 34: `position` серединой под указателем, `size` одна клетка,
- * `particles` — имя вида, за ними `layer` и `parallax`, если они есть у `target` — объекта, на который вид отпустили, а мимо
- * объектов — выбранного.
+ * Новый источник частиц — «Редактор», требование 34: `position` серединой под указателем, `size` одна клетка, главное
+ * свойство эффекта со значением `value` (`smoke` или `sparks` 0,5), за ними `layer` и `parallax`, если они есть у `target` —
+ * объекта, на который карточку отпустили, а мимо объектов — выбранного.
  */
-export function createParticlesObject(kindName: string, middle: Vec2, target: Record<string, unknown> | null): Record<string, unknown> {
+export function createParticlesObject(mainKey: string, value: number, middle: Vec2, target: Record<string, unknown> | null): Record<string, unknown> {
   const object: Record<string, unknown> = {
     position: [roundToHundredth(middle[0] - 0.5), roundToHundredth(middle[1] - 0.5)],
     size: [1, 1],
-    particles: kindName,
+    [mainKey]: value,
   };
   for (const key of INHERITED_KEYS) {
     const value = target?.[key];

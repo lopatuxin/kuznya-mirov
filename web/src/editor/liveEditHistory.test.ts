@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { WorldObjectSummary } from "./battleTypes";
-import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveParticles, undoLiveTransform, undoLiveWind, type LiveEditEntry } from "./liveEditHistory";
+import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, undoLiveWind, type LiveEditEntry } from "./liveEditHistory";
 
 describe("liveEditHistory", () => {
   it("пустая история — отмена недоступна", () => {
@@ -85,22 +85,7 @@ describe("правка ветра на ходу", () => {
 
   it("отмена ставит прежний ветер тем же вызовом движка и файл не трогает", () => {
     const calls: unknown[] = [];
-    undoLiveWind({ previous: [1.5, 0] }, { set_wind_particles: (settings) => (calls.push(settings), { ok: true }) });
-    expect(calls).toEqual([{ wind: [1.5, 0] }]);
-  });
-});
-
-describe("правка видов частиц на ходу", () => {
-  const PREVIOUS = { дым: { image: "puff", rate: 6, lifetime: 2, size: 1 } };
-  const PARTICLES_EDIT: LiveEditEntry = { kind: "particles", previous: PREVIOUS };
-
-  it("запись видов цела при любом составе мира: к объекту она не привязана", () => {
-    expect(isLiveEditTargetAlive(PARTICLES_EDIT, [])).toBe(true);
-  });
-
-  it("отмена ставит прежние виды тем же вызовом движка и файл не трогает", () => {
-    const calls: unknown[] = [];
-    undoLiveParticles({ previous: PREVIOUS }, { set_wind_particles: (settings) => (calls.push(settings), { ok: true }) });
-    expect(calls).toEqual([{ particles: PREVIOUS }]);
+    undoLiveWind({ previous: [1.5, 0] }, { set_wind: (wind) => (calls.push(wind), { ok: true }) });
+    expect(calls).toEqual([[1.5, 0]]);
   });
 });

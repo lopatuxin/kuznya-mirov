@@ -3,6 +3,8 @@
 //! glue that turns a `Value`/`GridSpec` back into the form a file would show it in — the shape
 //! `object_properties` reports and `add_object`/`set_property` accept.
 
+use std::collections::HashSet;
+
 use serde_json::Value as Json;
 
 use crate::core::game::Game;
@@ -15,7 +17,7 @@ use crate::core::world::World;
 
 use super::load::{
     CoverMask, ImageDecl, MaterialDecl, check_cover_masks, parse_edit_covers, parse_edit_imprints,
-    parse_grid, parse_scalar_value, read_terrain, terrain_from_numbers,
+    parse_grid, parse_scalar_value, particles_shape_errors, read_terrain, terrain_from_numbers,
 };
 use crate::data::error::{ErrorSink, GameError};
 
@@ -178,8 +180,44 @@ pub fn set_property(
         return Ok(());
     }
     let value = parse_edit_value(value_json, prop, properties, images)?;
+    let present_after = !matches!(value, Value::Flag(false));
+    check_particles_shape(world, properties, id, prop, present_after)?;
     world.set_value(id, prop, &value);
     Ok(())
+}
+
+/// «Ветер и частицы» → «Проверка перед запуском»: правка не должна оставить объект со свойствами
+/// частиц без `position` или `size` и вместе с `repeat_x` — то же, что отвергает загрузка. `present_after` —
+/// будет ли `prop` у объекта после правки.
+fn check_particles_shape(
+    world: &World,
+    properties: &PropertyTable,
+    id: u32,
+    prop: PropertyId,
+    present_after: bool,
+) -> Result<(), String> {
+    let touches_shape = property::PARTICLE_PROPERTIES.contains(&prop)
+        || matches!(
+            prop,
+            property::REPEAT_X | property::POSITION | property::SIZE
+        );
+    if !touches_shape {
+        return Ok(());
+    }
+    let mut shape: HashSet<PropertyId> = properties
+        .iter()
+        .map(|(present, _)| present)
+        .filter(|&present| world.has(id, present))
+        .collect();
+    if present_after {
+        shape.insert(prop);
+    } else {
+        shape.remove(&prop);
+    }
+    match particles_shape_errors(&shape, true).first() {
+        Some(message) => Err((*message).to_string()),
+        None => Ok(()),
+    }
 }
 
 /// «Редактор», требование 43: removes `prop_name` from a live object — a no-op past the object's
@@ -196,6 +234,7 @@ pub fn remove_property(
     let prop = properties
         .resolve(prop_name)
         .ok_or_else(|| format!("неизвестное свойство \"{prop_name}\""))?;
+    check_particles_shape(world, properties, id, prop, false)?;
     world.clear_property(id, prop);
     Ok(())
 }

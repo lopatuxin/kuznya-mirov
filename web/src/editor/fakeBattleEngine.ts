@@ -10,7 +10,7 @@ export type FakeBattleEngine = Engine & {
   calls: string[];
   /** Ветер мира глазами движка, как его отдаёт `wind()`; тест меняет его так же, как менял бы перезапуск партии с экрана или событие ветра записи. */
   setWorldWind(wind: SceneWind): void;
-  setWindParticles: ReturnType<typeof vi.fn>;
+  setWind: ReturnType<typeof vi.fn>;
   /** `seek` и `step_back` повтора: тест ставит им, какой ветер движок отдаёт после пересчёта с начала. */
   seekMock: ReturnType<typeof vi.fn>;
   stepBackMock: ReturnType<typeof vi.fn>;
@@ -29,12 +29,9 @@ export function createFakeBattleEngine({ fileWind = [0, 0], replayWind = DEFAULT
   const setWorldWind = (wind: SceneWind): void => {
     worldWind = [wind[0], wind[1]];
   };
-  const setWindParticles = vi.fn((settings: { wind?: [number, number]; particles?: unknown }) => {
-    if (settings.wind !== undefined) {
-      calls.push(`set_wind_particles ${JSON.stringify(settings.wind)}`);
-      setWorldWind(settings.wind);
-    }
-    if (settings.particles !== undefined) calls.push(`set_wind_particles particles ${JSON.stringify(settings.particles)}`);
+  const setWind = vi.fn((wind: [number, number]) => {
+    calls.push(`set_wind ${JSON.stringify(wind)}`);
+    setWorldWind(wind);
     return { ok: true };
   });
   const running = (): { running: true } => ({ running: true });
@@ -43,10 +40,10 @@ export function createFakeBattleEngine({ fileWind = [0, 0], replayWind = DEFAULT
   const engine = {
     calls,
     setWorldWind,
-    setWindParticles,
+    setWind,
     seekMock,
     stepBackMock,
-    set_wind_particles: setWindParticles,
+    set_wind: setWind,
     wind: vi.fn(() => [worldWind[0], worldWind[1]]),
     play: vi.fn(() => {
       calls.push("play");
@@ -69,8 +66,11 @@ export function createFakeBattleEngine({ fileWind = [0, 0], replayWind = DEFAULT
     world_objects: vi.fn(() => []),
     scene_point: vi.fn(() => [5, 3]),
     object_at: vi.fn((): number | undefined => undefined),
+    object_rect: vi.fn((): { x: number; y: number; width: number; height: number } | undefined => undefined),
     add_object: vi.fn(() => ({ ok: true, id: 1 })),
-    object_properties: vi.fn(() => undefined),
+    object_properties: vi.fn((): Record<string, unknown> | undefined => undefined),
+    set_property: vi.fn(() => ({ ok: true })),
+    remove_property: vi.fn(() => ({ ok: true })),
     step_report: vi.fn(() => undefined),
     session_messages: vi.fn(() => []),
     current_step: vi.fn(() => 0),

@@ -2,10 +2,10 @@ import { areMaskSetsEqual, changedMaskPaths, type MaskSet } from "./maskBytes";
 
 /**
  * Текст файлов, которые правит редактор, и маски покрытий; `terrainText` — `null`, пока у проекта нет файла рельефа
- * («Кисти рельефа», требование 19), `particlesText` — `null`, пока нет файла видов частиц («Ветер и частицы»). `masks` — маски слоёв из `covers` файла рельефа по путям, байты которых история
+ * («Кисти рельефа», требование 19). `masks` — маски слоёв из `covers` файла рельефа по путям, байты которых история
  * хранит рядом с текстами («Покраска», требование 16).
  */
-export type EditSnapshot = { sceneText: string; propertiesText: string; terrainText: string | null; particlesText: string | null; masks: MaskSet };
+export type EditSnapshot = { sceneText: string; propertiesText: string; terrainText: string | null; masks: MaskSet };
 export type SaveState = { status: "saved" } | { status: "unsaved"; reason: string };
 
 export type EditSessionState = {
@@ -37,14 +37,6 @@ export function beginTerrainCreation(state: EditSessionState, candidate: EditSna
 }
 
 /**
- * Первый вид частиц в проекте без файла видов — «Редактор», «Правка сцены»: файл заводится вместе с действием и остаётся
- * после отмены пустой таблицей, как файл рельефа, — снимок «до» получает `emptyParticlesText` вместо «файла нет».
- */
-export function beginParticlesCreation(state: EditSessionState, candidate: EditSnapshot, emptyParticlesText: string): EditSessionState {
-  return beginAction({ ...state, displayed: { ...state.displayed, particlesText: emptyParticlesText } }, candidate);
-}
-
-/**
  * Отмена — требование 21: последний снимок истории становится показанным текстом. Без своей
  * записи в историю — повтора отменённого нет (вне scope фазы). Истории нет — `null`, кнопка
  * «Отменить» неактивна.
@@ -69,12 +61,11 @@ export function markUnsaved(state: EditSessionState, reason: string): EditSessio
  * Какие файлы отличаются от `diskTruth` и поэтому должны быть записаны — требование 2: следующее
  * успешное действие или отмена дописывают то, что не записалось раньше, вместе со своей правкой.
  */
-export function dirtyFiles(state: EditSessionState): { scene: boolean; properties: boolean; terrain: boolean; particles: boolean } {
+export function dirtyFiles(state: EditSessionState): { scene: boolean; properties: boolean; terrain: boolean } {
   return {
     scene: state.displayed.sceneText !== state.diskTruth.sceneText,
     properties: state.displayed.propertiesText !== state.diskTruth.propertiesText,
     terrain: state.displayed.terrainText !== state.diskTruth.terrainText,
-    particles: state.displayed.particlesText !== state.diskTruth.particlesText,
   };
 }
 
@@ -106,9 +97,8 @@ export function applyExternalRead(state: EditSessionState, disk: EditSnapshot): 
   const sceneChanged = disk.sceneText !== state.diskTruth.sceneText;
   const propertiesChanged = disk.propertiesText !== state.diskTruth.propertiesText;
   const terrainChanged = disk.terrainText !== state.diskTruth.terrainText;
-  const particlesChanged = disk.particlesText !== state.diskTruth.particlesText;
   const masksChanged = !areMaskSetsEqual(disk.masks, state.diskTruth.masks);
-  if (!sceneChanged && !propertiesChanged && !terrainChanged && !particlesChanged && !masksChanged) return state;
+  if (!sceneChanged && !propertiesChanged && !terrainChanged && !masksChanged) return state;
   return {
     ...state,
     history: [...state.history, state.displayed],
@@ -116,7 +106,6 @@ export function applyExternalRead(state: EditSessionState, disk: EditSnapshot): 
       sceneText: sceneChanged ? disk.sceneText : state.displayed.sceneText,
       propertiesText: propertiesChanged ? disk.propertiesText : state.displayed.propertiesText,
       terrainText: terrainChanged ? disk.terrainText : state.displayed.terrainText,
-      particlesText: particlesChanged ? disk.particlesText : state.displayed.particlesText,
       masks: masksChanged ? disk.masks : state.displayed.masks,
     },
     diskTruth: disk,

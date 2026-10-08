@@ -102,10 +102,6 @@ fn js_entry_ok(config: &GameConfig, warnings: &[GameError]) -> JsValue {
     if let Some(terrain) = &config.files.terrain {
         set(&files, "terrain", &JsValue::from_str(terrain));
     }
-    // «Ветер и частицы»: путь файла видов частиц — страница читает его тем же заходом.
-    if let Some(particles) = &config.files.particles {
-        set(&files, "particles", &JsValue::from_str(particles));
-    }
     let fonts = Array::new();
     for (name, path) in &config.files.fonts {
         let entry = Object::new();
@@ -856,8 +852,7 @@ fn update_motion(motion: &mut Motion, game: &Game, images: &[ImageDecl]) {
     motion.update_particles(
         game.has_world(),
         wind,
-        atlas::particle_emitters(&game.world),
-        game.particles(),
+        atlas::particle_emitters(&game.world, images),
     );
 }
 
@@ -1389,7 +1384,6 @@ impl Engine {
     /// у `images`, по номерам из `read_texts()`'s `materials` и `masks`.
     /// «Лепка рельефа»: `stamps` — `[{name, text: string|null}]`, по одному на штамп из `files.stamps`
     /// `read_entry()`, как `tables`.
-    /// «Ветер и частицы»: `particles` — текст файла видов частиц из `files.particles` `read_entry()`.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -1407,7 +1401,6 @@ impl Engine {
         material_maps: JsValue,
         cover_masks: JsValue,
         stamps: JsValue,
-        particles: Option<String>,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -1448,7 +1441,7 @@ impl Engine {
             .unwrap_or_default();
         let map_verdicts = parse_image_verdicts(&material_maps, &path_table(&map_paths));
         let mask_verdicts = parse_image_verdicts(&cover_masks, &path_table(&mask_paths));
-        match load::load_rest_with_particles(
+        match load::load_rest_with_stamps(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -1466,7 +1459,6 @@ impl Engine {
             &map_verdicts,
             &mask_verdicts,
             &stamp_texts,
-            particles.as_deref(),
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -1523,6 +1515,8 @@ impl Engine {
                     }
                 };
                 self.atlas_rects = atlas_rects;
+                self.motion
+                    .set_opaque_masks(atlas::opaque_masks(&atlas_images, &image_order));
                 let relief = Relief::new(
                     &material_decls,
                     &map_verdicts,
@@ -2398,39 +2392,36 @@ impl Engine {
         }
     }
 
-    /// «Редактор», требование 43. `value` is a JS value (already parsed, not a JSON string).
+    /// «Редактор», требование 43, «Вызовы движка»: `value` is a JS value (already parsed, not a JSON
+    /// string). В партии и на паузе — живой игре, правка идёт в запись; вне партии (и после «Стопа»)
+    /// — собранному миру без записи, с той же проверкой значения, что у загрузки: так редактор
+    /// меняет настройку частиц, пока её тянут; в повторе — ошибка. Ответ `{ok: true}` или `{ok: false,
+    /// error}`.
     pub fn set_property(&mut self, id: u32, name: &str, value: JsValue) -> JsValue {
         let json = js_to_json(&value);
-        let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_mut()) else {
-            return js_edit_err("нет партии");
-        };
-        js_edit_result(session.set_property(game, &self.images, id, name, &json))
-    }
-
-    /// «Редактор», «Вызовы движка»: `settings = {wind?: [x, y], particles?: {имя: вид}}` — ровный ветер
-    /// плоской сцены, клеток в секунду, и таблица видов частиц, как в `particles.json`. Ставится то, что
-    /// передано, и только если всё переданное прошло проверку. Вне партии ставит собранному миру и сразу
-    /// проверяет, как загрузка; в партии и на паузе — живой игре, ветер идёт в запись на текущем шаге,
-    /// виды — нет; в повторе — ошибка. Файлы не меняются, наклоны, кадры и вылетевшие частицы не
-    /// сбрасываются. Ответ, как у `set_property`: `{ok: true}` или `{ok: false, error}`.
-    pub fn set_wind_particles(&mut self, settings: JsValue) -> JsValue {
-        let field = |name: &str| {
-            Reflect::get(&settings, &JsValue::from_str(name))
-                .ok()
-                .filter(|value| !value.is_undefined())
-                .map(|value| js_to_json(&value))
-        };
-        let (wind, particles) = (field("wind"), field("particles"));
         let Some(game) = self.game.as_mut() else {
             return js_edit_err("игра не загружена");
         };
-        js_edit_result(session::set_wind_particles(
+        js_edit_result(session::set_property(
             self.session.as_mut(),
             game,
             &self.images,
-            wind.as_ref(),
-            particles.as_ref(),
+            id,
+            name,
+            &json,
         ))
+    }
+
+    /// «Редактор», «Вызовы движка»: `wind = [x, y]` — ровный ветер плоской сцены, клеток в секунду.
+    /// Вне партии ставит собранному миру и сразу проверяет, как загрузка; в партии и на паузе — живой
+    /// игре, ветер идёт в запись на текущем шаге; в повторе — ошибка. Файлы не меняются, наклоны,
+    /// кадры и вылетевшие частицы не сбрасываются. Ответ, как у `set_property`.
+    pub fn set_wind(&mut self, wind: JsValue) -> JsValue {
+        let json = js_to_json(&wind);
+        let Some(game) = self.game.as_mut() else {
+            return js_edit_err("игра не загружена");
+        };
+        js_edit_result(session::set_wind(self.session.as_mut(), game, &json))
     }
 
     /// «Редактор», «Правка сцены»: ровный ветер, который действует в мире сейчас, — `[x, y]`, клеток в
@@ -2444,12 +2435,18 @@ impl Engine {
         wind
     }
 
-    /// «Редактор», требование 43.
+    /// «Редактор», требование 43, «Вызовы движка»: как `set_property` — в партии с записью, вне
+    /// партии собранному миру без записи.
     pub fn remove_property(&mut self, id: u32, name: &str) -> JsValue {
-        let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_mut()) else {
-            return js_edit_err("нет партии");
+        let Some(game) = self.game.as_mut() else {
+            return js_edit_err("игра не загружена");
         };
-        js_edit_result(session.remove_property(game, id, name))
+        js_edit_result(session::remove_property(
+            self.session.as_mut(),
+            game,
+            id,
+            name,
+        ))
     }
 
     /// «Редактор», требования 18, 43: a new object under the first free number. `props` is a JS

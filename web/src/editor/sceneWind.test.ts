@@ -20,14 +20,14 @@ describe("parseSceneWind", () => {
 });
 
 describe("applyWind", () => {
-  it("зовёт set_wind_particles с парой чисел и при успехе ничего не возвращает", () => {
-    const editor = { set_wind_particles: vi.fn(() => ({ ok: true })) };
+  it("зовёт set_wind с парой чисел и при успехе ничего не возвращает", () => {
+    const editor = { set_wind: vi.fn(() => ({ ok: true })) };
     expect(applyWind(editor, [3, -1])).toBeUndefined();
-    expect(editor.set_wind_particles).toHaveBeenCalledWith({ wind: [3, -1] });
+    expect(editor.set_wind).toHaveBeenCalledWith([3, -1]);
   });
 
   it("возвращает текст ошибки движка", () => {
-    const editor = { set_wind_particles: () => ({ ok: false, error: "ветер есть только в плоской сцене" }) };
+    const editor = { set_wind: () => ({ ok: false, error: "ветер есть только в плоской сцене" }) };
     expect(applyWind(editor, [1, 0])).toBe("ветер есть только в плоской сцене");
   });
 });

@@ -1,19 +1,19 @@
-//! «Ветер и частицы» → «Частицы»: встроенные рисунки частиц — мягкая точка, клуб дыма, искра и четыре
-//! кадра листа. Движок рисует их сам при сборке атласа; цвет — в самом рисунке, края прозрачные.
+//! «Ветер и частицы» → «Частицы»: встроенные рисунки частиц — клуб дыма, искра и по четыре кадра листа,
+//! осеннего и белого. Движок рисует их сам при сборке атласа; клуб, искра и белый лист белые —
+//! окрашивает их цвет прямоугольника, а осенний лист несёт свои цвета; края прозрачные.
 
 use crate::core::particles::ParticleShape;
 
 use super::atlas::AtlasImage;
 
-pub(super) const DOT_SIZE: u32 = 64;
 pub(super) const SMOKE_SIZE: u32 = 64;
 pub(super) const SPARK_SIZE: u32 = 32;
 /// Сторона одного кадра листа; кадры лежат в ряд слева направо.
 pub(super) const LEAF_SIZE: u32 = 32;
 
-/// Средне-серый, а не светлый: светлый клуб пропадал на белых облаках неба платформера.
-const SMOKE_TOP: [f32; 3] = [160.0, 160.0, 166.0];
-const SMOKE_BOTTOM: [f32; 3] = [118.0, 118.0, 126.0];
+/// Белый с запасом до 255: свет комков клуба не срезается, а серый дыма получается цветом по умолчанию.
+const SMOKE_TOP: [f32; 3] = [245.0, 245.0, 245.0];
+const SMOKE_BOTTOM: [f32; 3] = [181.0, 181.0, 181.0];
 const SMOKE_OPACITY: f32 = 0.9;
 /// Комки клуба: середина и радиус в долях стороны рисунка.
 const SMOKE_LUMPS: [(f32, f32, f32); 7] = [
@@ -26,9 +26,6 @@ const SMOKE_LUMPS: [(f32, f32, f32); 7] = [
     (0.62, 0.71, 0.14),
 ];
 
-const SPARK_CORE: [f32; 3] = [255.0, 245.0, 210.0];
-const SPARK_HALO: [f32; 3] = [255.0, 170.0, 60.0];
-
 const LEAF_COLORS: [[f32; 3]; 4] = [
     [95.0, 140.0, 45.0],
     [160.0, 165.0, 50.0],
@@ -36,6 +33,9 @@ const LEAF_COLORS: [[f32; 3]; 4] = [
     [195.0, 110.0, 40.0],
 ];
 const LEAF_VEIN: [f32; 3] = [235.0, 230.0, 170.0];
+/// Белый лист темнее белого, чтобы жилка была светлее листа.
+const WHITE_LEAF_BODY: [f32; 3] = [226.0, 226.0, 226.0];
+const WHITE_LEAF_VEIN: [f32; 3] = [255.0, 255.0, 255.0];
 /// Поворот листа в каждом кадре, градусов по часовой стрелке, и изгиб его средней линии.
 const LEAF_TURNS: [(f32, f32); 4] = [(-35.0, 0.14), (20.0, -0.12), (75.0, 0.13), (130.0, -0.14)];
 /// Половина длины и наибольшая половина ширины листа в долях половины кадра.
@@ -45,13 +45,15 @@ const LEAF_HALF_WIDTH: f32 = 0.3;
 /// Рисунок `shape` в прямых, не умноженных на прозрачность цветах — как картинка игры до атласа.
 pub(super) fn draw(shape: ParticleShape) -> AtlasImage {
     match shape {
-        ParticleShape::Dot => paint(DOT_SIZE, DOT_SIZE, dot),
         ParticleShape::Smoke => paint(SMOKE_SIZE, SMOKE_SIZE, smoke),
         ParticleShape::Spark => paint(SPARK_SIZE, SPARK_SIZE, spark),
-        ParticleShape::Leaf => paint(LEAF_SIZE * shape.frames(), LEAF_SIZE, |x, y| {
-            let frame = (x / LEAF_SIZE) as usize;
-            leaf(x % LEAF_SIZE, y, frame)
-        }),
+        ParticleShape::Leaf | ParticleShape::WhiteLeaf => {
+            let white = shape == ParticleShape::WhiteLeaf;
+            paint(LEAF_SIZE * shape.frames(), LEAF_SIZE, |x, y| {
+                let frame = (x / LEAF_SIZE) as usize;
+                leaf(x % LEAF_SIZE, y, frame, white)
+            })
+        }
     }
 }
 
@@ -106,14 +108,6 @@ fn noise(x: f32, y: f32) -> f32 {
     top + (bottom - top) * ty
 }
 
-/// Белая точка: прозрачность `(1 − r²)²` по доле радиуса `r`.
-fn dot(x: u32, y: u32) -> [f32; 4] {
-    let (u, v) = unit(x, y, DOT_SIZE);
-    let (dx, dy) = (u * 2.0 - 1.0, v * 2.0 - 1.0);
-    let falloff = (1.0 - (dx * dx + dy * dy)).max(0.0);
-    [255.0, 255.0, 255.0, falloff * falloff]
-}
-
 /// Клуб дыма: объединение размытых комков с рваным шумом краем; каждый комок светлее сверху, весь
 /// клуб — светлее сверху, темнее снизу.
 fn smoke(x: u32, y: u32) -> [f32; 4] {
@@ -139,17 +133,17 @@ fn smoke(x: u32, y: u32) -> [f32; 4] {
     ]
 }
 
-/// Искра: горячее бело-жёлтое ядро, вокруг жёлто-оранжевый ореол, к краю в ноль.
+/// Искра: белое светящееся пятно, плотное в середине и в ноль к краю.
 fn spark(x: u32, y: u32) -> [f32; 4] {
     let (u, v) = unit(x, y, SPARK_SIZE);
     let r = (u * 2.0 - 1.0).hypot(v * 2.0 - 1.0);
     let alpha = (1.0 - smoothstep(0.08, 1.0, r)).powf(1.3);
-    let [red, green, blue] = mix(SPARK_CORE, SPARK_HALO, smoothstep(0.06, 0.4, r));
-    [red, green, blue, alpha]
+    [255.0, 255.0, 255.0, alpha]
 }
 
-/// Лист кадра `frame`: вытянутый, с острыми концами, изогнутый, со светлой жилкой посередине.
-fn leaf(x: u32, y: u32, frame: usize) -> [f32; 4] {
+/// Лист кадра `frame`: вытянутый, с острыми концами, изогнутый, со светлой жилкой посередине; белый
+/// лист — того же рисунка, но без цветов.
+fn leaf(x: u32, y: u32, frame: usize, white: bool) -> [f32; 4] {
     let (u, v) = unit(x, y, LEAF_SIZE);
     let (px, py) = (u * 2.0 - 1.0, v * 2.0 - 1.0);
     let (degrees, bend) = LEAF_TURNS[frame];
@@ -162,8 +156,13 @@ fn leaf(x: u32, y: u32, frame: usize) -> [f32; 4] {
     let side = 0.85 + 0.15 * smoothstep(-half_width, half_width, across);
     let vein = (1.0 - across.abs() / (0.8 * point)).clamp(0.0, 1.0)
         * (1.0 - smoothstep(0.65, 0.95, along.abs()));
-    let color = LEAF_COLORS[frame].map(|channel| channel * side);
-    let [r, g, b] = mix(color, LEAF_VEIN, 0.45 * vein);
+    let (base, vein_color) = if white {
+        (WHITE_LEAF_BODY, WHITE_LEAF_VEIN)
+    } else {
+        (LEAF_COLORS[frame], LEAF_VEIN)
+    };
+    let color = base.map(|channel| channel * side);
+    let [r, g, b] = mix(color, vein_color, 0.45 * vein);
     [r, g, b, alpha]
 }
 
@@ -181,10 +180,10 @@ mod tests {
     #[test]
     fn every_picture_has_the_size_of_its_place() {
         for (shape, width, height) in [
-            (ParticleShape::Dot, DOT_SIZE, DOT_SIZE),
             (ParticleShape::Smoke, SMOKE_SIZE, SMOKE_SIZE),
             (ParticleShape::Spark, SPARK_SIZE, SPARK_SIZE),
             (ParticleShape::Leaf, LEAF_SIZE * 4, LEAF_SIZE),
+            (ParticleShape::WhiteLeaf, LEAF_SIZE * 4, LEAF_SIZE),
         ] {
             let image = draw(shape);
             assert_eq!((image.width, image.height), (width, height), "{shape:?}");
@@ -215,6 +214,31 @@ mod tests {
             .collect();
         let (low, high) = (reaches.iter().min(), reaches.iter().max());
         assert!(high > low, "край неровный, не круг: {reaches:?}");
+    }
+
+    #[test]
+    fn the_smoke_the_spark_and_the_white_leaf_are_white_so_that_a_colour_can_tint_them() {
+        for shape in [
+            ParticleShape::Smoke,
+            ParticleShape::Spark,
+            ParticleShape::WhiteLeaf,
+        ] {
+            let image = draw(shape);
+            let drawn: Vec<&[u8]> = image.pixels.chunks(4).filter(|p| p[3] > 0).collect();
+            assert!(!drawn.is_empty(), "{shape:?}");
+            assert!(
+                drawn.iter().all(|p| p[0] == p[1] && p[1] == p[2]),
+                "{shape:?} без своего цвета"
+            );
+        }
+        let autumn = draw(ParticleShape::Leaf);
+        assert!(
+            autumn
+                .pixels
+                .chunks(4)
+                .any(|p| p[3] > 0 && p[0].abs_diff(p[2]) > 40),
+            "осенний лист несёт цвета"
+        );
     }
 
     #[test]

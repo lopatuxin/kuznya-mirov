@@ -3,7 +3,7 @@ import type { Engine } from "engine";
 import { cleanup, createEvent, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEditorCameraStore, createFlatCameraStore } from "./editorCamera";
-import { IMAGE_DRAG_TYPE, PARTICLES_DRAG_TYPE } from "./imageDrag";
+import { IMAGE_DRAG_TYPE, LEAVES_DRAG_TYPE, PARTICLES_DRAG_TYPE } from "./imageDrag";
 import { MAX_FRAME_SECONDS } from "./frameClock";
 import { NO_MASKS } from "./maskBytes";
 import { SceneCanvas } from "./SceneCanvas";
@@ -38,6 +38,7 @@ function sceneCanvasProps(engine: Engine): SceneCanvasProps {
     onCommitPlacement: noop,
     onDropImage: noop,
     onDropParticles: noop,
+    leavesTargetAt: () => undefined,
     terrainWater: null,
     onCommitTerrain: noop,
     onWaterChange: noop,
@@ -137,7 +138,7 @@ describe("SceneCanvas: кадровый цикл", () => {
   });
 });
 
-describe("SceneCanvas: вид частиц, отпущенный на сцену", () => {
+describe("SceneCanvas: карточка частиц, отпущенная на сцену", () => {
   beforeEach(() => {
     vi.stubGlobal("requestAnimationFrame", () => 1);
     vi.stubGlobal("cancelAnimationFrame", () => {});
@@ -161,13 +162,13 @@ describe("SceneCanvas: вид частиц, отпущенный на сцену
     fireEvent(overlay, drop);
   }
 
-  it("имя вида и точка холста уходят onDropParticles, картинка — не его", () => {
+  it("ключ эффекта и точка холста уходят onDropParticles, картинка — не его", () => {
     const onDropParticles = vi.fn();
     const onDropImage = vi.fn();
 
-    dropOnScene({ onDropParticles, onDropImage }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "дым" });
+    dropOnScene({ onDropParticles, onDropImage }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "smoke" });
 
-    expect(onDropParticles).toHaveBeenCalledWith("дым", 30, 20);
+    expect(onDropParticles).toHaveBeenCalledWith("smoke", 30, 20);
     expect(onDropImage).not.toHaveBeenCalled();
   });
 
@@ -181,19 +182,130 @@ describe("SceneCanvas: вид частиц, отпущенный на сцену
     expect(onDropParticles).not.toHaveBeenCalled();
   });
 
-  it("сцену нельзя править — вид не принимается", () => {
+  it("сцену нельзя править — карточка не принимается", () => {
     const onDropParticles = vi.fn();
 
-    dropOnScene({ onDropParticles, canEditScene: false }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "дым" });
+    dropOnScene({ onDropParticles, canEditScene: false }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "smoke" });
 
     expect(onDropParticles).not.toHaveBeenCalled();
   });
 
-  it("в трёхмерной сцене вид не принимается", () => {
+  it("в трёхмерной сцене карточка не принимается", () => {
     const onDropParticles = vi.fn();
 
-    dropOnScene({ onDropParticles, isThreeDimensionalScene: true }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "дым" });
+    dropOnScene({ onDropParticles, isThreeDimensionalScene: true }, [PARTICLES_DRAG_TYPE], { [PARTICLES_DRAG_TYPE]: "smoke" });
 
     expect(onDropParticles).not.toHaveBeenCalled();
+  });
+});
+
+describe("SceneCanvas: рамка над целью, пока тянут листья", () => {
+  let pendingFrame: FrameRequestCallback | null;
+  const fillRect = vi.fn();
+
+  beforeEach(() => {
+    pendingFrame = null;
+    fillRect.mockClear();
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      pendingFrame = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
+    const context = new Proxy({ fillRect, canvas: { width: 400, height: 200 } } as Record<string, unknown>, {
+      get: (target, name) => (typeof name === "string" && name in target ? target[name] : () => ({ width: 10 })),
+    });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(context as unknown as CanvasRenderingContext2D);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  function runFrame(time: number): void {
+    const frame = pendingFrame;
+    pendingFrame = null;
+    frame?.(time);
+  }
+
+  function engineWithObjectUnderPointer(objectId: number | undefined): Engine {
+    const rect = { x: 20, y: 10, width: 60, height: 40 };
+    const overrides: Record<string, unknown> = {
+      draw: () => undefined,
+      object_rect: (id: number) => (id === objectId ? rect : undefined),
+    };
+    return new Proxy(overrides, { get: (target, name) => (typeof name === "string" && name in target ? target[name] : () => undefined) }) as unknown as Engine;
+  }
+
+  function dragOver(overlay: HTMLElement, types: string[]): void {
+    const event = createEvent.dragOver(overlay, { dataTransfer: { types, dropEffect: "none" } });
+    Object.defineProperties(event, { clientX: { value: 30 }, clientY: { value: 20 } });
+    fireEvent(overlay, event);
+  }
+
+  function renderScene(objectId: number | undefined, leavesTargetAt: SceneCanvasProps["leavesTargetAt"] = () => objectId): HTMLElement {
+    const { container } = render(<SceneCanvas {...sceneCanvasProps(engineWithObjectUnderPointer(objectId))} leavesTargetAt={leavesTargetAt} />);
+    return container.querySelector(".scene-view__overlay") as HTMLElement;
+  }
+
+  it("пока карточку листьев тянут над объектом, он обведён рамкой выбора", () => {
+    const overlay = renderScene(3);
+
+    dragOver(overlay, [PARTICLES_DRAG_TYPE, LEAVES_DRAG_TYPE]);
+    runFrame(1000);
+
+    expect(fillRect).toHaveBeenCalledWith(20, 10, 60, 40);
+  });
+
+  it("рамка достаётся цели, которую назвал выбор листьев, в точке указателя, а не объекту, которого движок видит сверху", () => {
+    const leavesTargetAt = vi.fn((): number | undefined => 3);
+    const overlay = renderScene(3, leavesTargetAt);
+
+    dragOver(overlay, [PARTICLES_DRAG_TYPE, LEAVES_DRAG_TYPE]);
+    runFrame(1000);
+
+    expect(leavesTargetAt).toHaveBeenCalledWith(30, 20);
+    expect(fillRect).toHaveBeenCalledWith(20, 10, 60, 40);
+  });
+
+  it("цели нет (сверху одно небо с repeat_x) — рамки нет", () => {
+    const overlay = renderScene(3, () => undefined);
+
+    dragOver(overlay, [PARTICLES_DRAG_TYPE, LEAVES_DRAG_TYPE]);
+    runFrame(1000);
+
+    expect(fillRect).not.toHaveBeenCalled();
+  });
+
+  it("мимо объектов, у карточки дыма и после ухода с холста рамки нет", () => {
+    const overlay = renderScene(undefined);
+    dragOver(overlay, [PARTICLES_DRAG_TYPE, LEAVES_DRAG_TYPE]);
+    runFrame(1000);
+    expect(fillRect).not.toHaveBeenCalled();
+    cleanup();
+
+    const smokeOverlay = renderScene(3);
+    dragOver(smokeOverlay, [PARTICLES_DRAG_TYPE]);
+    runFrame(1000);
+    expect(fillRect).not.toHaveBeenCalled();
+
+    dragOver(smokeOverlay, [PARTICLES_DRAG_TYPE, LEAVES_DRAG_TYPE]);
+    fireEvent.dragLeave(smokeOverlay);
+    runFrame(1016);
+    expect(fillRect).not.toHaveBeenCalled();
+  });
+
+  it("после отпускания рамка пропадает", () => {
+    const overlay = renderScene(3);
+    dragOver(overlay, [PARTICLES_DRAG_TYPE, LEAVES_DRAG_TYPE]);
+    const drop = createEvent.drop(overlay, { dataTransfer: { types: [PARTICLES_DRAG_TYPE, LEAVES_DRAG_TYPE], getData: () => "leaves" } });
+    Object.defineProperties(drop, { clientX: { value: 30 }, clientY: { value: 20 } });
+    fireEvent(overlay, drop);
+
+    runFrame(1000);
+
+    expect(fillRect).not.toHaveBeenCalled();
   });
 });

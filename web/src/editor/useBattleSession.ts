@@ -10,8 +10,7 @@ import { buildBattleSoundAssets } from "./battleSound";
 import { isPauseResumeShortcut, isPlayStopShortcut, isStepShortcut, type ShortcutKeyEvent } from "./battleShortcuts";
 import { buildLiveObjectSummaries, buildLivePropertiesView, findWorldObject, resolveCanStartReplay, resolveLiveSelection, type LiveSelection } from "./battleSelection";
 import type { EngineAddObjectResult, EngineEditResult, SessionMessage, StepReport, WorldObjectSummary } from "./battleTypes";
-import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveParticles, undoLiveTransform, undoLiveWind, type LiveEditHistory } from "./liveEditHistory";
-import { applyParticles, type ParticleTable } from "./particlesFile";
+import { createLiveEditHistory, isLiveEditTargetAlive, popLiveEdit, pushLiveEdit, undoLiveTransform, undoLiveWind, type LiveEditHistory, type LivePropertyOriginal } from "./liveEditHistory";
 import { applyWind, NO_WIND, readEngineWind, type SceneWind } from "./sceneWind";
 import type { PlacementChange } from "./objectPlacement";
 import type { ObjectPropertiesView, SceneObjectSummary } from "./sceneObjects";
@@ -42,8 +41,6 @@ export type BattleSessionState = {
   canUndoLiveEdit: boolean;
   /** Ветер живой игры — «Редактор», «Партия в редакторе», требования 30 и 32: тот, что движок читает сейчас, с правками на ходу и событиями ветра записи. */
   liveWind: SceneWind;
-  /** Виды частиц живой игры — «Редактор», «Партия в редакторе», требование 35: виды файла с правками на ходу; `null` вне партии и паузы — тогда поля показывают виды файла. */
-  liveParticles: ParticleTable | null;
   /** «Редактор», требование 13: мир существует прямо сейчас — список пуст, но с разными подписями. */
   hasWorld: boolean;
   /** «Редактор», требование 12: почему «Шаг» сейчас ничего не сделает — `undefined`, когда сделает. */
@@ -65,8 +62,14 @@ export type BattleSessionState = {
   handleShortcut(event: ShortcutKeyEvent): boolean;
 
   setLiveSelectedId(id: number | null): void;
-  setLiveProperty(id: number, key: string, value: unknown): string | undefined;
+  /**
+   * `original` — каким свойство было до жеста: поле частиц уже ставило значение миру на лету, и записи отмены нужно прежнее,
+   * а не то, что движок отдаёт сейчас.
+   */
+  setLiveProperty(id: number, key: string, value: unknown, original?: LivePropertyOriginal): string | undefined;
   removeLiveProperty(id: number, key: string): void;
+  /** Несколько свойств разом — «Убрать» во вкладке «Частицы»: одна запись отмены, которая возвращает все. */
+  removeLiveProperties(id: number, keys: readonly string[]): void;
   copyLiveObject(id: number): void;
   /** Новый объект в живой мир на паузе — как копия: запись отмены, выбор на нём, файл не пишется («Партия в редакторе», требование 25). */
   addLiveObject(properties: Record<string, unknown>): void;
@@ -76,8 +79,6 @@ export type BattleSessionState = {
   commitLiveTransform(id: number, changes: PlacementChange[]): void;
   /** Ветер живой игре на паузе и на ходу: файл не пишется, правка идёт в запись и в историю отмены; текст ошибки движка, если он ветер не принял. */
   setLiveWind(wind: SceneWind): string | undefined;
-  /** Виды частиц живой игре на паузе и на ходу: файл не пишется и в запись партии они не идут, правка встаёт в историю отмены; текст ошибки движка, если он виды не принял. */
-  setLiveParticles(table: ParticleTable): string | undefined;
   undoLiveEdit(): void;
 };
 
@@ -88,8 +89,6 @@ type UseBattleSessionParams = {
   source: ProjectSource;
   /** Проект загружен без ошибок — «Редактор», требование 2. */
   sceneAvailable: boolean;
-  /** Виды частиц файла: с них начинается партия; `null` — у проекта нет файла видов. */
-  particlesTable: ParticleTable | null;
   loadedSounds: LoadedSound[];
   musicTracks: LoadedMusicVerdict[];
   audioContext: AudioContext | null;
@@ -173,7 +172,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
   const [openReplayError, setOpenReplayError] = useState<string | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot>(EMPTY_SNAPSHOT);
   const [liveHistory, setLiveHistory] = useState<LiveEditHistory>(createLiveEditHistory());
-  const [liveParticlesState, setLiveParticlesState] = useState<ParticleTable | null>(null);
 
   const paramsRef = useRef(params);
   paramsRef.current = params;
@@ -185,8 +183,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
   isMutedRef.current = isMuted;
   const liveHistoryRef = useRef(liveHistory);
   liveHistoryRef.current = liveHistory;
-  const liveParticlesRef = useRef(liveParticlesState);
-  liveParticlesRef.current = liveParticlesState;
   // Источник истины для выбора внутри кадрового цикла — состояние React обновляется асинхронно,
   // а следующий кадр может понадобиться раньше повторного рендера.
   const selectionRef = useRef<LiveSelection | null>(null);
@@ -303,7 +299,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     setSaveNotice(null);
     setOpenReplayError(null);
     setLiveHistory(createLiveEditHistory());
-    setLiveParticlesState(params.particlesTable);
     params.setReloadGateOpen(false);
     seedLiveSelection(engine);
   }
@@ -318,7 +313,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     setIsRunning(false);
     setCodeError(null);
     setLiveHistory(createLiveEditHistory());
-    setLiveParticlesState(null);
     applySnapshot(EMPTY_SNAPSHOT);
     params.onEditSelectionChange(lastSelectionId !== null && lastSelectionId < params.sceneObjectCount ? lastSelectionId : null);
     params.setReloadGateOpen(true);
@@ -466,17 +460,17 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     applySnapshot({ ...snapshot, selection: { id: found.id, generation: found.generation }, properties: engine.object_properties(id) as Record<string, unknown> | undefined });
   }
 
-  function setLiveProperty(id: number, key: string, value: unknown): string | undefined {
+  function setLiveProperty(id: number, key: string, value: unknown, original?: LivePropertyOriginal): string | undefined {
     return withEngine((engine) => {
       const before = engine.object_properties(id) as Record<string, unknown> | undefined;
-      const hadKey = before !== undefined && key in before;
+      const hadKey = original?.hadKey ?? (before !== undefined && key in before);
       const result = engine.set_property(id, key, value) as EngineEditResult;
       if (!result.ok) return result.error;
       // Метка жизни — свежая, с этого самого момента, не унаследованная откуда-то раньше: запись
       // отмены должна знать, что это правда тот же объект, который правило может успеть подменить
       // до Ctrl+Z (крайний случай требования 21).
       const generation = findWorldObject(engine.world_objects() as WorldObjectSummary[], id)?.generation;
-      if (generation !== undefined) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "set", id, generation, key, hadKey, previous: hadKey ? before?.[key] : undefined }));
+      if (generation !== undefined) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "set", id, generation, key, hadKey, previous: hadKey ? (original !== undefined ? original.previous : before?.[key]) : undefined }));
       refreshSnapshot(engine);
       return undefined;
     });
@@ -490,6 +484,21 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
       if (!result.ok) return;
       const generation = findWorldObject(engine.world_objects() as WorldObjectSummary[], id)?.generation;
       if (generation !== undefined) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "remove", id, generation, key, previous: before[key] }));
+      refreshSnapshot(engine);
+    });
+  }
+
+  function removeLiveProperties(id: number, keys: readonly string[]): void {
+    withEngine((engine) => {
+      const before = engine.object_properties(id) as Record<string, unknown> | undefined;
+      if (before === undefined) return;
+      const removed = keys.filter((key) => key in before && (engine.remove_property(id, key) as EngineEditResult).ok);
+      if (removed.length === 0) return;
+      const generation = findWorldObject(engine.world_objects() as WorldObjectSummary[], id)?.generation;
+      if (generation !== undefined) {
+        const changes = removed.map((key) => ({ key, hadKey: true, previous: before[key] }));
+        setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "transform", id, generation, changes }));
+      }
       refreshSnapshot(engine);
     });
   }
@@ -539,17 +548,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
       if (error !== undefined) return error;
       setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "wind", previous, next: wind }));
       refreshSnapshot(engine);
-      return undefined;
-    });
-  }
-
-  function setLiveParticles(table: ParticleTable): string | undefined {
-    return withEngine((engine) => {
-      const previous = liveParticlesRef.current;
-      const error = applyParticles(engine, table);
-      if (error !== undefined) return error;
-      if (previous !== null) setLiveHistory(pushLiveEdit(liveHistoryRef.current, { kind: "particles", previous }));
-      setLiveParticlesState(table);
       return undefined;
     });
   }
@@ -617,10 +615,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
         case "wind":
           undoLiveWind(entry, engine);
           break;
-        case "particles":
-          undoLiveParticles(entry, engine);
-          setLiveParticlesState(entry.previous);
-          break;
       }
       refreshSnapshot(engine);
     });
@@ -678,7 +672,6 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     canLiveEdit,
     canUndoLiveEdit: canLiveEdit && liveHistory.length > 0,
     liveWind: snapshot.wind,
-    liveParticles: mode === "battle" ? liveParticlesState : null,
     hasWorld: snapshot.hasWorld,
     stepBlockedReason: snapshot.stepBlockedReason,
 
@@ -706,7 +699,7 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     previewLiveMove,
     commitLiveTransform,
     setLiveWind,
-    setLiveParticles,
+    removeLiveProperties,
     undoLiveEdit,
   };
 }

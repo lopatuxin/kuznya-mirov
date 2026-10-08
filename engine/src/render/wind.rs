@@ -5,9 +5,7 @@
 
 use std::f64::consts::TAU;
 
-use crate::core::particles::ParticleTable;
-
-use super::particles::{Emitter, Particles};
+use super::particles::{Emitter, OpaqueMask, Particles};
 
 /// «Часы движения», требование 18: пружины и кадры качающихся объектов идут шагами по 1/60 секунды,
 /// как шаг мира.
@@ -235,17 +233,21 @@ impl Motion {
         self.particles.restart(steps);
     }
 
-    /// Доводит частицы до часов — раз в кадр, после `tick`. `emitters` — источники мира сейчас,
-    /// `table` — виды частиц игры сейчас, `world_exists` — есть ли мир.
-    pub fn update_particles<'e>(
+    /// Доводит частицы до часов — раз в кадр, после `tick`. `emitters` — объекты мира с эффектами
+    /// сейчас, `world_exists` — есть ли мир.
+    pub fn update_particles(
         &mut self,
         world_exists: bool,
         flat: [f64; 2],
-        emitters: impl Iterator<Item = Emitter<'e>>,
-        table: &ParticleTable,
+        emitters: impl Iterator<Item = Emitter>,
     ) {
         self.particles
-            .update(self.clock_steps, world_exists, flat, emitters, table);
+            .update(self.clock_steps, world_exists, flat, emitters);
+    }
+
+    /// «Листопад»: непрозрачные точки первых кадров картинок загруженной игры, по номеру картинки.
+    pub fn set_opaque_masks(&mut self, masks: Vec<OpaqueMask>) {
+        self.particles.set_masks(masks);
     }
 
     pub fn particles(&self) -> &Particles {

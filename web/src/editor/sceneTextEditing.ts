@@ -116,8 +116,3 @@ export function sceneTextWithWind(sceneText: string, wind: readonly [number, num
   const hasWind = root !== undefined && findNodeAtLocation(root, ["wind"]) !== undefined;
   return hasWind ? editAt(sceneText, ["wind"], wind, false) : appendLastKey(sceneText, [], "wind", wind);
 }
-
-/** Дописывает `"particles": "<путь>"` в конец `files` файла `game.json` — «Ветер и частицы», «Редактор»: первый вид создаёт файл. */
-export function addParticlesFilePath(gameJsonText: string, path: string): string {
-  return appendLastKey(gameJsonText, ["files"], "particles", path);
-}

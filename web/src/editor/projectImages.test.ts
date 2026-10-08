@@ -81,14 +81,14 @@ describe("createImageObject", () => {
 
 describe("createParticlesObject", () => {
   it("источник в одну клетку серединой под указателем, с layer и parallax выбранного — требование 34", () => {
-    const object = createParticlesObject("дым", [48.5, 12.8], { position: [1, 1], layer: 20, parallax: 0.6, solid: true });
+    const object = createParticlesObject("smoke", 0.5, [48.5, 12.8], { position: [1, 1], layer: 20, parallax: 0.6, solid: true });
 
-    expect(object).toEqual({ position: [48, 12.3], size: [1, 1], particles: "дым", layer: 20, parallax: 0.6 });
-    expect(Object.keys(object)).toEqual(["position", "size", "particles", "layer", "parallax"]);
+    expect(object).toEqual({ position: [48, 12.3], size: [1, 1], smoke: 0.5, layer: 20, parallax: 0.6 });
+    expect(Object.keys(object)).toEqual(["position", "size", "smoke", "layer", "parallax"]);
   });
 
-  it("ничего не выбрано — только position, size и particles", () => {
-    expect(createParticlesObject("дым", [10, 10], null)).toEqual({ position: [9.5, 9.5], size: [1, 1], particles: "дым" });
+  it("ничего не выбрано — только position, size и главное свойство", () => {
+    expect(createParticlesObject("sparks", 0.5, [10, 10], null)).toEqual({ position: [9.5, 9.5], size: [1, 1], sparks: 0.5 });
   });
 });
 
