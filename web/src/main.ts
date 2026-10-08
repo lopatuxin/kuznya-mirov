@@ -4,6 +4,7 @@ import { formatError, formatErrorScreen, type EngineError } from "./engineErrors
 import { loadGameOptions, type GameOptionsResult } from "./gameOptions";
 import { gameListSearch, resolveGameName } from "./gameSelection";
 import { createHttpProjectFileReader, loadProject, type LoadedMusicVerdict, type LoadedSound } from "./projectLoader";
+import { createVideoPlayerKeeper, type VideoPlayerKeeper } from "./images/videoLoader";
 import { hideWebGpuIfRequested, logEngineBackend } from "./renderBackend";
 import { decodeSoundBuffer } from "./sound/soundLoader";
 import { createSoundPlayer, type MusicAsset, type SoundPlayer } from "./sound/soundPlayer";
@@ -242,7 +243,7 @@ function attachResize(engine: Engine, target: HTMLCanvasElement): void {
   });
 }
 
-function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundPlayer): void {
+function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundPlayer, videoPlayers: VideoPlayerKeeper): void {
   let loggedMessages = 0;
   let frame = 0;
 
@@ -257,12 +258,13 @@ function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundP
   /**
    * «Код игры»: ошибка кода останавливает партию на месте. Страница забирает `messages` в
    * последний раз (последние `print` уже случившегося шага), показывает ошибку тем же форматом,
-   * что ошибки загрузки, и глушит звук — дальше только перезагрузка страницы, кадровый цикл
-   * больше не планирует следующий кадр.
+   * что ошибки загрузки, глушит звук и освобождает проигрыватели видео — дальше только перезагрузка
+   * страницы, кадровый цикл больше не планирует следующий кадр, и движок видео уже не остановит.
    */
   function stopOnCodeError(error: EngineError): void {
     drainMessages();
     soundPlayer.handleTabHidden();
+    videoPlayers.releaseAll();
     showError(formatError(error));
   }
 
@@ -325,7 +327,8 @@ async function runGame(gameName: string): Promise<void> {
   // Создаётся внутри `loadProject`, сразу после `read_texts` — стоит в `suspended` до первого
   // нажатия игрока («Звук» → «Проигрывание на странице»), но нужен уже там: им же проверяются
   // треки из `files.music`.
-  const result = await loadProject(engine, reader, gameJsonText, () => new AudioContext());
+  const videoPlayers = createVideoPlayerKeeper();
+  const result = await loadProject(engine, reader, gameJsonText, () => new AudioContext(), videoPlayers);
   logWarnings(result.warnings);
   if (result.status === "rejected") {
     showError(formatErrorScreen(result.errors, result.warnings));
@@ -347,7 +350,7 @@ async function runGame(gameName: string): Promise<void> {
   attachPixelRatio(engine);
   attachResize(engine, canvas);
   applyCanvasLayout(canvas, engine);
-  runLoop(engine, wasm.memory, soundPlayer);
+  runLoop(engine, wasm.memory, soundPlayer, videoPlayers);
 }
 
 async function boot(): Promise<void> {

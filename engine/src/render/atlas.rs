@@ -34,12 +34,25 @@ const PADDING: u32 = 1;
 
 /// One image's whole strip, in RGBA8 — straight from the page's `getImageData`, not premultiplied
 /// by alpha. `pixels.len()` must be `width * height * 4`; `pack` checks this itself rather than
-/// trusting the caller, since it crosses the wasm/JS boundary before it ever gets here.
+/// trusting the caller, since it crosses the wasm/JS boundary before it ever gets here. Empty
+/// `pixels` — место без точек: кадр видео, его точки каждый кадр пишет видеокарта.
 #[derive(Debug, Clone)]
 pub struct AtlasImage {
     pub width: u32,
     pub height: u32,
     pub pixels: Vec<u8>,
+}
+
+impl AtlasImage {
+    /// «Картинки» → «Видео»: место кадра видео `width` × `height` точек — одного кадра, а не файла
+    /// двойной высоты, — без точек: пока видео не отдало кадр, оно прозрачное.
+    pub fn video_frame(width: u32, height: u32) -> AtlasImage {
+        AtlasImage {
+            width,
+            height,
+            pixels: Vec::new(),
+        }
+    }
 }
 
 /// A rectangle inside one atlas sheet, in that sheet's own pixels.
@@ -192,7 +205,7 @@ fn occupied_area(images: &[AtlasImage]) -> u64 {
 pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
     for img in images {
         let expected = img.width as usize * img.height as usize * 4;
-        if img.pixels.len() != expected {
+        if !img.pixels.is_empty() && img.pixels.len() != expected {
             return Err(format!(
                 "картинка {}×{}: получено {} байт точек, ожидалось {expected}",
                 img.width,
@@ -280,7 +293,7 @@ pub fn fill_sheet(atlas: &Atlas, images: &[AtlasImage], sheet: u32, pixels: &mut
         }
     }
     for (img, rect) in images.iter().zip(&atlas.rects) {
-        if rect.sheet == sheet {
+        if rect.sheet == sheet && !img.pixels.is_empty() {
             blit(pixels, *rect, &img.pixels);
         }
     }
@@ -1341,6 +1354,7 @@ mod tests {
             smooth: false,
             glow: false,
             frame_seconds: 0.0,
+            video: false,
         }
     }
 
@@ -1608,6 +1622,7 @@ mod tests {
             smooth: false,
             glow: false,
             frame_seconds: 0.0,
+            video: false,
         }];
         let atlas_rects = vec![AtlasRect {
             x: 0,
@@ -1700,6 +1715,7 @@ mod tests {
             smooth: false,
             glow: false,
             frame_seconds: 0.0,
+            video: false,
         }
     }
 
@@ -1902,6 +1918,7 @@ mod tests {
             smooth: false,
             glow: false,
             frame_seconds: 0.0,
+            video: false,
         }
     }
 

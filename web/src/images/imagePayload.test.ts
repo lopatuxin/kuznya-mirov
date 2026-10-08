@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { buildImagePayload, fetchImageBytes, type ImageEntry } from "./imagePayload";
+import { buildImagePayload, buildVideoPayload, fetchImageBytes, isVideoPath, type ImageEntry } from "./imagePayload";
 
 function stubWorkingBrowserDecoder(): void {
   const bitmap = { width: 1, height: 1, close: vi.fn() };
@@ -42,5 +42,20 @@ describe("fetchImageBytes + buildImagePayload", () => {
     expect(payload[1]).toEqual({ index: 2, verdict: "missing" });
     expect(payload[0].verdict).toBe("ok");
     expect(payload[2].verdict).toBe("ok");
+  });
+});
+
+describe("видео", () => {
+  it("видео — запись с путём на .mp4 в любом регистре, остальное картинка", () => {
+    expect(isVideoPath("images/grass.mp4")).toBe(true);
+    expect(isVideoPath("images/GRASS.MP4")).toBe(true);
+    expect(isVideoPath("images/grass.png")).toBe(false);
+    expect(isVideoPath("images/mp4.png")).toBe(false);
+  });
+
+  it("buildVideoPayload по номерам записей: файла нет — missing без проигрывателя", async () => {
+    const payload = await buildVideoPayload([{ index: 4, path: "images/grass.mp4", bytes: null }]);
+
+    expect(payload).toEqual([{ index: 4, verdict: "missing" }]);
   });
 });

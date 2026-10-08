@@ -1,6 +1,7 @@
 import type { Engine } from "engine";
 import { GAME_FILE_FETCH, fetchText } from "./gameOptions";
-import { buildImagePayload, fetchImageBytes, type ImageEntry, type ImageFileEntry } from "./images/imagePayload";
+import { buildImagePayload, buildVideoPayload, fetchImageBytes, isVideoPath, type ImageEntry, type ImageFileEntry } from "./images/imagePayload";
+import { releaseDecodedVideos, releaseVideoPlayer, type VideoPlayerKeeper } from "./images/videoLoader";
 import { probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import type { EngineError } from "./engineErrors";
 
@@ -51,13 +52,19 @@ type LoadedMusic = { index: number; path: string; bytes: Uint8Array | null };
  *  (только страница игры, не редактор), решает по приговору, кому строить Blob-адрес сам. */
 export type LoadedMusicVerdict = LoadedMusic & { verdict: MusicVerdict };
 type MusicVerdictEntry = { index: number; verdict: MusicVerdict };
+/** Ответ по одному видео для `load`: размер файла, проигрыватель и точки первого кадра только при `ok` — «Картинки» → «Видео». */
+type VideoAnswer = { index: number } & (
+  | { verdict: "ok"; width: number; height: number; player: HTMLVideoElement; pixels: Uint8Array }
+  | { verdict: "missing" | "rejected" }
+);
 
 /** Маска покрытия, как её прочитала страница: путь файла и байт на точку — красный канал картинки, как его читает движок. */
 export type LoadedCoverMask = { path: string; width: number; height: number; pixels: Uint8Array };
 
 /**
  * Картинка `files.images`, как её разжала страница: размер и точки RGBA. Редактор рисует по ним уменьшенные кадры и
- * считает размер нового объекта; не прочитанных и не разжатых картинок здесь нет.
+ * считает размер нового объекта; не прочитанных и не разжатых картинок здесь нет. У видео — его первый кадр:
+ * половина высоты файла, цвет верхней половины и прозрачность из нижней.
  */
 export type LoadedProjectImage = { name: string; width: number; height: number; pixels: Uint8Array };
 
@@ -145,13 +152,16 @@ async function readMusicVerdicts(audioContext: AudioContext, loaded: LoadedMusic
  * недоступном `game.json`, ещё до того, как заводить движок GPU («Редактор», требование про
  * отсутствующий game.json). `createAudioContext` зовётся один раз, сразу после `read_texts` — тем
  * же местом в порядке загрузки, что и раньше: приговор треку нужен даже там, где звук не играет
- * (редактор), иначе ошибки разошлись бы со страницей игры.
+ * (редактор), иначе ошибки разошлись бы со страницей игры. `videoPlayers` — кто освобождает проигрыватели видео:
+ * каждая загрузка отпускает прежние проигрыватели, редактор — и при закрытии проекта, страница игры — при ошибке
+ * кода игры («Картинки» → «Видео»).
  */
 export async function loadProject(
   engine: ProjectLoadEngine,
   reader: ProjectFileReader,
   gameJsonText: string,
   createAudioContext: () => AudioContext,
+  videoPlayers?: VideoPlayerKeeper,
 ): Promise<Exclude<ProjectLoadResult, { status: "entry-missing" }>> {
   const entryResult = engine.read_entry(gameJsonText) as ReadEntryResult;
   if (!entryResult.ok) {
@@ -183,30 +193,52 @@ export async function loadProject(
     fetchImageBytes(needed.materials, reader.readBinary),
     fetchImageBytes(needed.masks, reader.readBinary),
   ]);
-  const [musicTracks, imagesPayload, materialMapsPayload, coverMasksPayload] = await Promise.all([
+  const videosPayloadPromise = buildVideoPayload(loadedImages.filter((image) => isVideoPath(image.path)));
+  const [musicTracks, imagesPayload, videosPayload, materialMapsPayload, coverMasksPayload] = await Promise.all([
     readMusicVerdicts(audioContext, loadedMusic),
-    buildImagePayload(loadedImages),
+    buildImagePayload(loadedImages.filter((image) => !isVideoPath(image.path))),
+    videosPayloadPromise,
     buildImagePayload(loadedMaterials),
     buildImagePayload(loadedMasks),
-  ]);
+  ]).catch((error: unknown) => {
+    // Сбой соседнего чтения (трек, картинка) обрывает загрузку, а проигрыватели видео уже заведены или вот-вот заведутся.
+    void videosPayloadPromise.then(releaseDecodedVideos, () => undefined);
+    throw error;
+  });
   const musicPayload: MusicVerdictEntry[] = musicTracks.map((track) => ({ index: track.index, verdict: track.verdict }));
+  const videoAnswers: VideoAnswer[] = videosPayload.map((video) =>
+    video.verdict === "ok"
+      ? { index: video.index, verdict: "ok", width: video.width, height: video.height, player: video.player, pixels: video.frame.pixels }
+      : { index: video.index, verdict: video.verdict },
+  );
+  const players = videoAnswers.flatMap((answer) => (answer.verdict === "ok" ? [answer.player] : []));
 
-  const loadResult = engine.load(
-    propertiesText,
-    sceneText,
-    rulesText,
-    screensText,
-    fonts,
-    loadedSounds,
-    musicPayload,
-    imagesPayload,
-    codeText,
-    tableTexts,
-    terrainText,
-    materialMapsPayload,
-    coverMasksPayload,
-    stamps,
-  ) as LoadResult;
+  let loadResult: LoadResult;
+  try {
+    loadResult = engine.load(
+      propertiesText,
+      sceneText,
+      rulesText,
+      screensText,
+      fonts,
+      loadedSounds,
+      musicPayload,
+      imagesPayload,
+      codeText,
+      tableTexts,
+      terrainText,
+      materialMapsPayload,
+      coverMasksPayload,
+      stamps,
+      videoAnswers,
+    ) as LoadResult;
+  } catch (error) {
+    for (const player of players) releaseVideoPlayer(player);
+    throw error;
+  }
+  // Неудачный `load` забывает и прежние проигрыватели, и новые: ни тем, ни другим играть некому.
+  if (!loadResult.ok) for (const player of players) releaseVideoPlayer(player);
+  videoPlayers?.replace(loadResult.ok ? players : []);
   // read_entry первым, load вторым — тот же порядок, в котором предупреждения собирает сам движок
   // при объединённой загрузке («Редактор», требование 15).
   const warnings = [...entryResult.warnings, ...loadResult.warnings];
@@ -219,9 +251,13 @@ export async function loadProject(
     if (decoded?.verdict !== "ok") return [];
     return [{ path: image.path, width: decoded.width, height: decoded.height, pixels: redChannelOf(decoded.pixels) }];
   });
-  const images = needed.images.flatMap((entry, position): LoadedProjectImage[] => {
-    const decoded = imagesPayload[position];
-    return decoded?.verdict === "ok" ? [{ name: entry.name, width: decoded.width, height: decoded.height, pixels: decoded.pixels }] : [];
+  const decodedImages = new Map(imagesPayload.map((decoded) => [decoded.index, decoded]));
+  const decodedVideos = new Map(videosPayload.map((decoded) => [decoded.index, decoded]));
+  const images = needed.images.flatMap((entry): LoadedProjectImage[] => {
+    const decoded = decodedImages.get(entry.index);
+    if (decoded?.verdict === "ok") return [{ name: entry.name, width: decoded.width, height: decoded.height, pixels: decoded.pixels }];
+    const video = decodedVideos.get(entry.index);
+    return video?.verdict === "ok" ? [{ name: entry.name, ...video.frame }] : [];
   });
   return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, coverMasks, images, audioContext };
 }
