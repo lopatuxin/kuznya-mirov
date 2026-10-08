@@ -24,7 +24,7 @@ export function parseSceneWind(sceneText: string | null): SceneWind {
 }
 
 /** Вызов движка, которым ветер проверяется и ставится миру — «Редактор», «Вызовы движка». */
-export type WindEditor = { set_wind_particles(settings: unknown): unknown };
+export type WindEditor = { set_wind(wind: unknown): unknown };
 
 /** Вызов движка, который отдаёт ровный ветер мира сейчас: живой в партии и повторе, ветер файла вне них. */
 export type WindReader = { wind(): unknown };
@@ -37,6 +37,6 @@ export function readEngineWind(engine: WindReader): SceneWind {
 
 /** Ставит ветер миру движка; текст ошибки по-русски, если движок его не принял, иначе `undefined`. */
 export function applyWind(editor: WindEditor, wind: SceneWind): string | undefined {
-  const result = editor.set_wind_particles({ wind: [wind[0], wind[1]] }) as EngineEditResult;
+  const result = editor.set_wind([wind[0], wind[1]]) as EngineEditResult;
   return result.ok ? undefined : result.error;
 }

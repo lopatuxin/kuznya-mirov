@@ -1,3 +1,4 @@
+import { PARTICLE_COLOR_NAMES } from "./particleEffects";
 import { isSceneColor } from "./sceneObjects";
 
 export type PropertyFieldKind =
@@ -51,7 +52,7 @@ export function propertyFieldKind(
       ? { kind: "select", options: FOLLOW_MOUSE_OPTIONS }
       : { kind: "text" };
   }
-  if (key === "color") {
+  if (key === "color" || PARTICLE_COLOR_NAMES.includes(key)) {
     return typeof value === "string" && isSceneColor(value) ? { kind: "color" } : { kind: "text" };
   }
   return { kind: "text" };

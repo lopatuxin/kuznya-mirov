@@ -14,7 +14,7 @@
 //! только copy-значения (`LuaValue`) и `Rc` обычных, не-Lua данных.
 
 use std::any::Any;
-use std::cell::{Cell, RefCell};
+use std::cell::Cell;
 use std::rc::Rc;
 
 use serde_json::Value as Json;
@@ -596,9 +596,6 @@ fn write_property(
         }
         (PropKind::Layer, _) => Err("ожидалось целое число".to_string()),
         (PropKind::Text, AnyValue::Str(s)) => {
-            if prop == property::PARTICLES && !env.particle_names.borrow().contains(&s) {
-                return Err(format!("неизвестный вид частиц: {s}"));
-            }
             world.set_text(id, prop, s);
             Ok(())
         }
@@ -672,7 +669,8 @@ fn check_height_write(properties: &PropertyTable, prop: PropertyId, z: f64) -> R
 /// «Трёхмерная сцена», «Загрузка и проверка»: что код не даёт объекту — `shape` и `height` в плоской
 /// сцене, `height` не больше нуля, `shape` вместе с `image`, `flip_x` или `opacity`. «Слои
 /// глубины», требование 24: `parallax` и `repeat_x` в трёхмерной сцене, `parallax` меньше нуля. «Ветер
-/// и частицы»: `sway` в трёхмерной сцене; меньше нуля он считается нулём, не ошибкой.
+/// и частицы»: `sway` и свойства частиц в трёхмерной сцене; значение вне допустимого отрезка
+/// подтягивается к нему при рисовании, не ошибка.
 fn check_shape_rules(
     world: &World,
     properties: &PropertyTable,
@@ -688,8 +686,11 @@ fn check_shape_rules(
         property::HEIGHT if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
             Err("height должен быть больше нуля".to_string())
         }
-        property::PARALLAX | property::REPEAT_X | property::SWAY | property::PARTICLES
-            if properties.three_d() =>
+        _ if properties.three_d()
+            && (matches!(
+                prop,
+                property::PARALLAX | property::REPEAT_X | property::SWAY
+            ) || property::PARTICLE_PROPERTIES.contains(&prop)) =>
         {
             Err(format!("{name} есть только в плоской сцене"))
         }
@@ -723,7 +724,6 @@ struct Env {
     properties: Rc<PropertyTable>,
     image_names: Rc<Vec<String>>,
     sound_names: Rc<Vec<String>>,
-    particle_names: ParticleNames,
     obj_mt: LuaValue,
     vec2_mt: LuaValue,
 }
@@ -764,10 +764,6 @@ impl UserDataTrait for WindRef {
         self
     }
 }
-
-/// «Ветер и частицы»: имена видов частиц, которые код вправе записать в `particles` сейчас: виды файла
-/// или те, что поставил `set_wind_particles` (`Runner::set_particle_names`).
-type ParticleNames = Rc<RefCell<Vec<String>>>;
 
 /// Ветер сейчас — одна ячейка на исполнитель: `Game` ставит её перед каждым шагом
 /// (`Runner::set_wind`), а `__index` глобальной `wind` читает.
@@ -1226,7 +1222,6 @@ pub struct Runner {
     base_cell: CtxCell,
     world_cell: CtxCell,
     wind_cell: WindCell,
-    particle_names: ParticleNames,
     lua: Lua,
 }
 
@@ -1268,9 +1263,6 @@ impl Runner {
         let base_cell: CtxCell = Rc::new(Cell::new(std::ptr::null_mut()));
         let world_cell: CtxCell = Rc::new(Cell::new(std::ptr::null_mut()));
         let wind_cell: WindCell = Rc::new(Cell::new([0.0, 0.0]));
-        let particle_names: ParticleNames = Rc::new(RefCell::new(
-            properties.particles().names().map(str::to_string).collect(),
-        ));
 
         let mut base_ctx = BaseCtx { rng, messages };
         let prev = set_ctx(&base_cell, &mut base_ctx);
@@ -1284,7 +1276,6 @@ impl Runner {
             &base_cell,
             &world_cell,
             &wind_cell,
-            &particle_names,
             tables_json,
         );
         restore_ctx(&base_cell, prev);
@@ -1299,7 +1290,6 @@ impl Runner {
                 base_cell,
                 world_cell,
                 wind_cell,
-                particle_names,
                 lua,
             }),
             Err(err) => {
@@ -1325,7 +1315,6 @@ impl Runner {
         base_cell: &CtxCell,
         world_cell: &CtxCell,
         wind_cell: &WindCell,
-        particle_names: &ParticleNames,
         tables_json: &[(String, Json)],
     ) -> LuaResult<BuildOutput> {
         // «Код игры»: `Lua::new` не ставит стандартную библиотеку сама — `create_sandbox_env`
@@ -1381,7 +1370,6 @@ impl Runner {
             properties: Rc::new(properties.clone()),
             image_names: Rc::new(image_names.to_vec()),
             sound_names: Rc::new(sound_names.to_vec()),
-            particle_names: Rc::clone(particle_names),
             obj_mt: obj_mt_value,
             vec2_mt: vec2_mt_value,
         };
@@ -1520,12 +1508,6 @@ impl Runner {
     /// `Game::step` ставит его перед каждым шагом.
     pub fn set_wind(&self, wind: [f64; 2]) {
         self.wind_cell.set(wind);
-    }
-
-    /// «Ветер и частицы» → «Код игры»: виды частиц, которые код вправе записать, — `Game::set_particles`
-    /// ставит их, когда `set_wind_particles` меняет виды живой игры.
-    pub fn set_particle_names(&self, names: Vec<String>) {
-        *self.particle_names.borrow_mut() = names;
     }
 
     /// Вызывает `function` с объектами-аргументами по месту вызова правила — формы, которые

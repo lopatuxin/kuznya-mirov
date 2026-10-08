@@ -19,15 +19,6 @@ import type { EditorCameraStore, FlatCameraStore } from "./editorCamera";
 import { NO_MASKS, type MaskBytes, type MaskSet } from "./maskBytes";
 import type { PlacementChange } from "./objectPlacement";
 import type { PaintResult } from "./paintStroke";
-import {
-  particleCopyChange,
-  particleDeleteChange,
-  particleRenameChange,
-  particleSourceChange,
-  particleValueChange,
-  planParticlesEdit,
-  type ParticlesChange,
-} from "./particlesEditing";
 import { encodeMaskPng } from "./pngCodec";
 import type { PropertyKind } from "./propertiesDeclarations";
 import { parseProjectFilePaths } from "./projectFiles";
@@ -82,8 +73,6 @@ export type SceneEditingState = {
   propertiesText: string | null;
   /** Текст файла рельефа, показанный сейчас; `null` — у проекта нет файла рельефа. */
   terrainText: string | null;
-  /** Текст файла видов частиц, показанный сейчас; `null` — у проекта нет файла видов. */
-  particlesText: string | null;
   /** Маски слоёв покрытий, показанные сейчас, по путям файлов («Покраска»). */
   masks: MaskSet;
   saveState: SaveState;
@@ -94,9 +83,6 @@ export type SceneEditingState = {
   /** Номер выбранного отпечатка в `stamps` файла рельефа; `null` — отпечаток не выбран. */
   selectedImprintIndex: number | null;
   setSelectedImprintIndex: (index: number | null) => void;
-  /** Выбранный вид частиц во вкладке «Частицы»: имя; `null` — не выбран, вкладка берёт первый вид («Редактор», требование 25). */
-  selectedParticleName: string | null;
-  setSelectedParticleName: (name: string | null) => void;
   undo: () => void;
   /** Ручки и перенос: все изменившиеся свойства объекта — одна правка текста и одна отмена. */
   transformObject: (objectIndex: number, changes: PlacementChange[]) => void;
@@ -117,15 +103,10 @@ export type SceneEditingState = {
   setImprintValue: (index: number, key: string, value: unknown) => void;
   copyImprint: (index: number) => void;
   deleteImprint: (index: number) => void;
-  /** Вкладка «Частицы» — каждое действие одна правка файла видов, а удаление и переименование — ещё и `scene.json`; первый вид в проекте без файла заводит его («Редактор», требования 28–33). */
-  setParticleValue: (name: string, key: string, value: unknown) => void;
-  /** Вид перетащили на сцену: источник в конец `objects` и встаёт выбранным, готовый вид — в файл, если его там ещё нет (требование 34). */
-  addParticleSource: (name: string, source: Record<string, unknown>) => void;
-  copyParticleKind: (name: string) => void;
-  deleteParticleKind: (name: string) => void;
-  renameParticleKind: (name: string, newName: string) => void;
   setPropertyValue: (objectIndex: number, key: string, value: unknown) => void;
   removeProperty: (objectIndex: number, key: string) => void;
+  /** Несколько свойств объекта одной правкой текста и одним шагом отмены — «Убрать» во вкладке «Частицы» («Редактор», требование 31). */
+  removeProperties: (objectIndex: number, keys: readonly string[]) => void;
   addProperty: (objectIndex: number, key: string, value: unknown) => void;
   declareProperty: (objectIndex: number, key: string, kind: PropertyKind, value: unknown) => void;
   copyObject: (objectIndex: number) => void;
@@ -165,7 +146,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
   const diskGameJsonTextRef = useRef<string | null>(null);
   const [selectedIndex, setSelectedIndexState] = useState<number | null>(null);
   const [selectedImprintIndex, setSelectedImprintIndexState] = useState<number | null>(null);
-  const [selectedParticleName, setSelectedParticleName] = useState<string | null>(null);
 
   function updateSession(next: EditSessionState | null): void {
     sessionRef.current = next;
@@ -205,7 +185,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       sceneText: current.displayed.sceneText,
       propertiesText: current.displayed.propertiesText,
       terrainText: current.displayed.terrainText,
-      particlesText: current.displayed.particlesText,
       maskFiles,
     });
     const afterLoad = sessionRef.current;
@@ -217,16 +196,15 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     }
 
     const paths = parseProjectFilePaths(gameJsonTextRef.current);
-    const dirty = paths === null ? { scene: false, properties: false, terrain: false, particles: false } : dirtyFiles(afterLoad);
+    const dirty = paths === null ? { scene: false, properties: false, terrain: false } : dirtyFiles(afterLoad);
     let failureReason: string | null = paths === null ? "не удалось определить пути файлов проекта" : null;
 
-    // Маски раньше рельефа, а рельеф и виды частиц раньше `game.json`: слой не должен указывать на маску, а ключи `files.terrain` и `files.particles` — на файл, которых ещё нет.
+    // Маски раньше рельефа, а рельеф раньше `game.json`: слой не должен указывать на маску, а ключ `files.terrain` — на файл, которого ещё нет.
     const writes: { path: string | null | undefined; text: string | Uint8Array | null; isDirty: boolean }[] = [
       ...dirtyMasks.map((path) => ({ path, text: maskFiles[path] as Uint8Array, isDirty: true })),
       { path: paths?.scene, text: afterLoad.displayed.sceneText, isDirty: dirty.scene },
       { path: paths?.properties, text: afterLoad.displayed.propertiesText, isDirty: dirty.properties },
       { path: paths?.terrain, text: afterLoad.displayed.terrainText, isDirty: dirty.terrain },
-      { path: paths?.particles, text: afterLoad.displayed.particlesText, isDirty: dirty.particles },
       { path: GAME_JSON_PATH, text: gameJsonTextRef.current, isDirty: gameJsonTextRef.current !== diskGameJsonTextRef.current },
     ];
     for (const write of writes) {
@@ -256,15 +234,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       if (current === null) return;
       const candidate = build(current.displayed);
       if (candidate === null) return;
-      const { sceneText, propertiesText, terrainText, particlesText } = current.displayed;
-      if (
-        candidate.sceneText === sceneText &&
-        candidate.propertiesText === propertiesText &&
-        candidate.terrainText === terrainText &&
-        candidate.particlesText === particlesText
-      ) {
-        return;
-      }
+      const { sceneText, propertiesText, terrainText } = current.displayed;
+      if (candidate.sceneText === sceneText && candidate.propertiesText === propertiesText && candidate.terrainText === terrainText) return;
       updateSession(beginAction(current, candidate));
       await syncCurrent();
     });
@@ -295,14 +266,13 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       const sceneText = result.sceneText;
       const propertiesText = paths === null ? null : (getCachedText(paths.properties) ?? null);
       const terrainText = paths?.terrain == null ? null : (getCachedText(paths.terrain) ?? null);
-      const particlesText = paths?.particles == null ? null : (getCachedText(paths.particles) ?? null);
-      if (paths === null || sceneText === null || propertiesText === null || (paths.terrain !== null && terrainText === null) || (paths.particles !== null && particlesText === null)) {
+      if (paths === null || sceneText === null || propertiesText === null || (paths.terrain !== null && terrainText === null)) {
         updateSession(null);
         return;
       }
       // Маски читает сама загрузка; отказавшая загрузка их не отдаёт — тогда по ним прежняя «правда диска».
       const masks = result.status === "ok" ? masksOfLoad(result.coverMasks) : (sessionRef.current?.diskTruth.masks ?? NO_MASKS);
-      const disk: EditSnapshot = { sceneText, propertiesText, terrainText, particlesText, masks };
+      const disk: EditSnapshot = { sceneText, propertiesText, terrainText, masks };
       const current = sessionRef.current;
       if (current === null) {
         updateSession(createEditSessionState(disk));
@@ -334,7 +304,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     diskGameJsonTextRef.current = null;
     setSelectedIndexState(null);
     setSelectedImprintIndexState(null);
-    setSelectedParticleName(null);
     forceRender();
   }, [source]);
 
@@ -469,46 +438,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     dispatchImprintEdit((imprints) => imprintsWithout(imprints, index));
   }
 
-  /**
-   * Действие вкладки «Частицы»: `build` считает новые тексты файлов, выбор встаёт на вид, который действие просит.
-   * `selectAddedObject` — действие дописало объект в конец `objects`, и он встаёт выбранным.
-   */
-  function dispatchParticlesEdit(build: (displayed: EditSnapshot) => ParticlesChange | null, selectAddedObject = false): void {
-    void actionQueue.run(async () => {
-      const current = sessionRef.current;
-      const gameJsonText = gameJsonTextRef.current;
-      if (current === null || gameJsonText === null) return;
-      const addedIndex = parseSceneObjects(current.displayed.sceneText).length;
-      const plan = await planParticlesEdit(current, gameJsonText, engineApiRef.current.isFilePresent, build);
-      if (plan === null) return;
-      gameJsonTextRef.current = plan.gameJsonText;
-      updateSession(plan.state);
-      setSelectedParticleName(plan.selected);
-      if (selectAddedObject) selectObject(addedIndex);
-      await syncCurrent();
-    });
-  }
-
-  function setParticleValue(name: string, key: string, value: unknown): void {
-    dispatchParticlesEdit((displayed) => particleValueChange(displayed, name, key, value));
-  }
-
-  function addParticleSource(name: string, source: Record<string, unknown>): void {
-    dispatchParticlesEdit((displayed) => particleSourceChange(displayed, name, source), true);
-  }
-
-  function copyParticleKind(name: string): void {
-    dispatchParticlesEdit((displayed) => particleCopyChange(displayed, name));
-  }
-
-  function deleteParticleKind(name: string): void {
-    dispatchParticlesEdit((displayed) => particleDeleteChange(displayed, name));
-  }
-
-  function renameParticleKind(name: string, newName: string): void {
-    dispatchParticlesEdit((displayed) => particleRenameChange(displayed, name, newName));
-  }
-
   function setPropertyValue(objectIndex: number, key: string, value: unknown): void {
     dispatchEdit((displayed) => {
       const objects = parseSceneObjects(displayed.sceneText);
@@ -520,6 +449,10 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
 
   function removeProperty(objectIndex: number, key: string): void {
     dispatchEdit((displayed) => ({ ...displayed, sceneText: removeObjectProperty(displayed.sceneText, objectIndex, key) }));
+  }
+
+  function removeProperties(objectIndex: number, keys: readonly string[]): void {
+    dispatchEdit((displayed) => ({ ...displayed, sceneText: keys.reduce((text, key) => removeObjectProperty(text, objectIndex, key), displayed.sceneText) }));
   }
 
   function addProperty(objectIndex: number, key: string, value: unknown): void {
@@ -592,7 +525,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     sceneText: session?.displayed.sceneText ?? null,
     propertiesText: session?.displayed.propertiesText ?? null,
     terrainText,
-    particlesText: session?.displayed.particlesText ?? null,
     masks: session?.displayed.masks ?? NO_MASKS,
     saveState: session?.saveState ?? { status: "saved" },
     canUndo: (session?.history.length ?? 0) > 0,
@@ -600,8 +532,6 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     setSelectedIndex: selectObject,
     selectedImprintIndex,
     setSelectedImprintIndex: selectImprint,
-    selectedParticleName,
-    setSelectedParticleName,
     undo,
     transformObject,
     paintTerrain,
@@ -614,13 +544,9 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     setImprintValue,
     copyImprint,
     deleteImprint,
-    setParticleValue,
-    addParticleSource,
-    copyParticleKind,
-    deleteParticleKind,
-    renameParticleKind,
     setPropertyValue,
     removeProperty,
+    removeProperties,
     addProperty,
     declareProperty,
     copyObject,

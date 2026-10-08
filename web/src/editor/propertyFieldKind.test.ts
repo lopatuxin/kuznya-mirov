@@ -89,6 +89,12 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("color", "#e04040", NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "color" });
   });
 
+  it("цвета частиц smoke_color и leaf_color в виде #rrggbb — палитра, как у color", () => {
+    expect(propertyFieldKind("smoke_color", "#a6a6ac", NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "color" });
+    expect(propertyFieldKind("leaf_color", "#d9a531", NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "color" });
+    expect(propertyFieldKind("leaf_color", "gold", NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
+  });
+
   it("color не по образцу — текстовое поле", () => {
     expect(propertyFieldKind("color", "red", NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
   });

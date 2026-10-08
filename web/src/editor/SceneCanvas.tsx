@@ -7,13 +7,14 @@ import type { FlatSceneContext } from "./flatSceneController";
 import type { HandleMode } from "./handleGeometry";
 import { HandleModeToolbar, type TerrainTool } from "./HandleModeToolbar";
 import type { MaskSet } from "./maskBytes";
-import { IMAGE_DRAG_TYPE, PARTICLES_DRAG_TYPE, resolveSceneDropEffect } from "./imageDrag";
+import { IMAGE_DRAG_TYPE, LEAVES_DRAG_TYPE, PARTICLES_DRAG_TYPE, resolveSceneDropEffect } from "./imageDrag";
 import type { StampShape } from "./imprintGeometry";
 import type { PlacementChange } from "./objectPlacement";
 import { secondsSinceLastFrame } from "./frameClock";
 import { canPaintMaterial, resolvePaintMaterial } from "./paintLayers";
 import type { PaintResult } from "./paintStroke";
 import { focusSceneWhenGameStarts } from "./sceneInputDom";
+import { drawSelection, type CanvasRect } from "./selectionDrawing";
 import type { SceneSize } from "./sceneObjects";
 import type { SceneWind } from "./sceneWind";
 import { fitSceneStage } from "./sceneStageLayout";
@@ -68,8 +69,10 @@ type SceneCanvasProps = {
   onCommitPlacement: (objectIndex: number, changes: PlacementChange[]) => void;
   /** Картинку из вкладки «Картинки» отпустили над сценой: имя картинки и точка холста («Редактор», требование 25). */
   onDropImage: (imageName: string, x: number, y: number) => void;
-  /** Вид частиц из вкладки «Частицы» отпустили над сценой: имя вида и точка холста («Редактор», требование 34). */
-  onDropParticles: (kindName: string, x: number, y: number) => void;
+  /** Карточку из вкладки «Частицы» отпустили над сценой: ключ эффекта и точка холста («Редактор», требования 34–35). */
+  onDropParticles: (effectId: string, x: number, y: number) => void;
+  /** Объект, которому достанется листопад, если карточку листьев отпустить в точке холста; `undefined` — такого объекта нет («Редактор», требование 35). */
+  leavesTargetAt: (x: number, y: number) => number | undefined;
   /** Вода рельефа из файла — поля воды над сценой; `null` — воды нет. */
   terrainWater: TerrainWater | null;
   /** Отпускание после мазка кисти: высоты всей сетки — одно действие. */
@@ -154,6 +157,7 @@ export function SceneCanvas({
   onCommitPlacement,
   onDropImage,
   onDropParticles,
+  leavesTargetAt,
   terrainWater,
   onCommitTerrain,
   onWaterChange,
@@ -181,6 +185,8 @@ export function SceneCanvas({
   const areaRef = useRef<HTMLDivElement>(null);
   const stageRef = useRef<HTMLDivElement>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement>(null);
+  // Объект под карточкой листьев, пока её тянут над сценой: рамка видна в кадровом цикле, перерисовывать окно ради неё незачем.
+  const leavesTargetRef = useRef<number | null>(null);
   const isGameInputActiveRef = useRef(isGameInputActive);
   isGameInputActiveRef.current = isGameInputActive;
   const isThreeDimensionalSceneRef = useRef(isThreeDimensionalScene);
@@ -405,6 +411,7 @@ export function SceneCanvas({
         // Нефункциональное требование: пока ничего не выбрано, object_rect не зовётся.
         if (isThreeDimensionalSceneRef.current) spaceScene.draw(overlayContext, pixelRatio);
         else flatScene.draw(overlayContext, pixelRatio);
+        drawLeavesTarget(overlayContext, pixelRatio);
       }
       frameHandle = requestAnimationFrame(frame);
     }
@@ -435,27 +442,39 @@ export function SceneCanvas({
     if (isGameInputActiveRef.current && event.button === 0) engine?.mouse_up();
   }
 
-  /** Картинку и вид частиц принимает только плоская сцена, когда её можно править: иначе указатель показывает запрет («Редактор», требование 25). */
+  /** Картинку и карточку частиц принимает только плоская сцена, когда её можно править: иначе указатель показывает запрет («Редактор», требование 25). */
   function handleDragOver(event: React.DragEvent<HTMLCanvasElement>): void {
     const effect = resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages);
     if (effect === null) return;
     event.dataTransfer.dropEffect = effect;
-    if (effect === "copy") event.preventDefault();
+    if (effect !== "copy") return;
+    event.preventDefault();
+    // Листья достаются объекту под указателем («Редактор», требование 35): сцена обводит его, пока карточку тянут.
+    if (!Array.from(event.dataTransfer.types).includes(LEAVES_DRAG_TYPE) || !engine) return;
+    const bounds = event.currentTarget.getBoundingClientRect();
+    leavesTargetRef.current = leavesTargetAt(event.clientX - bounds.left, event.clientY - bounds.top) ?? null;
+  }
+
+  function drawLeavesTarget(context: CanvasRenderingContext2D, pixelRatio: number): void {
+    const target = leavesTargetRef.current;
+    const rect = target === null ? undefined : (engine?.object_rect(target) as CanvasRect | undefined);
+    if (rect !== undefined) drawSelection(context, rect, null, pixelRatio);
   }
 
   function handleDrop(event: React.DragEvent<HTMLCanvasElement>): void {
+    leavesTargetRef.current = null;
     if (resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages) !== "copy") return;
     event.preventDefault();
     const imageName = event.dataTransfer.getData(IMAGE_DRAG_TYPE);
-    const kindName = event.dataTransfer.getData(PARTICLES_DRAG_TYPE);
-    if (imageName === "" && kindName === "") return;
+    const effectId = event.dataTransfer.getData(PARTICLES_DRAG_TYPE);
+    if (imageName === "" && effectId === "") return;
     // Открытое поле свойства записывается в прежний объект до появления нового — как при смене выбора щелчком.
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const bounds = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - bounds.left;
     const y = event.clientY - bounds.top;
     if (imageName !== "") onDropImage(imageName, x, y);
-    else onDropParticles(kindName, x, y);
+    else onDropParticles(effectId, x, y);
   }
 
   function handleAreaClick(event: React.MouseEvent<HTMLDivElement>): void {
@@ -474,6 +493,9 @@ export function SceneCanvas({
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
           onDragOver={handleDragOver}
+          onDragLeave={() => {
+            leavesTargetRef.current = null;
+          }}
           onDrop={handleDrop}
         />
       </div>

@@ -1,5 +1,4 @@
 import type { WorldObjectSummary } from "./battleTypes";
-import { applyParticles, type ParticleTable } from "./particlesFile";
 import { applyWind, type SceneWind, type WindEditor } from "./sceneWind";
 
 /**
@@ -20,8 +19,10 @@ export type LiveEditEntry =
   | { kind: "delete"; id: number; properties: Record<string, unknown> }
   | { kind: "move"; id: number; generation: number; previous: readonly [number, number] }
   | { kind: "transform"; id: number; generation: number; changes: LiveTransformChange[] }
-  | { kind: "wind"; previous: SceneWind; next: SceneWind }
-  | { kind: "particles"; previous: ParticleTable };
+  | { kind: "wind"; previous: SceneWind; next: SceneWind };
+
+/** Каким свойство было до жеста поля: `hadKey` ложно — свойства не было, отмена его убирает. */
+export type LivePropertyOriginal = { hadKey: boolean; previous: unknown };
 
 /** Свойство, которое поменял жест ручки; `hadKey` `false` — свойства не было, отмена его убирает. */
 type LiveTransformChange = { key: string; hadKey: boolean; previous: unknown };
@@ -50,20 +51,15 @@ export function undoLiveWind(entry: { previous: SceneWind }, editor: WindEditor)
   applyWind(editor, entry.previous);
 }
 
-/** Отмена правки видов частиц на ходу — «Редактор», требование 35: прежние виды ставятся тем же вызовом движка, что и правка. */
-export function undoLiveParticles(entry: { previous: ParticleTable }, editor: WindEditor): void {
-  applyParticles(editor, entry.previous);
-}
-
 /**
  * Цела ли ещё запись отмены — «Редактор», требование 21, крайний случай: объект, к которому она
  * относится, уже не тот (правило его удалило, а номер занял новый) — отмена должна снять запись без
  * действия, а не сработать над чужим объектом. `delete` восстанавливает объект заново, поэтому её
  * цель всегда «жива» в этом смысле — сама запись и есть свидетельство, что объекта сейчас нет; ветер
- * и виды частиц к объекту не привязаны вовсе.
+ * к объекту не привязан вовсе.
  */
 export function isLiveEditTargetAlive(entry: LiveEditEntry, worldObjects: readonly WorldObjectSummary[]): boolean {
-  if (entry.kind === "delete" || entry.kind === "wind" || entry.kind === "particles") return true;
+  if (entry.kind === "delete" || entry.kind === "wind") return true;
   return worldObjects.some((object) => object.id === entry.id && object.generation === entry.generation);
 }
 

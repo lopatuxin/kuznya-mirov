@@ -29,7 +29,7 @@ const SCENE_SIZE = { width: 2, height: 1 };
 const NO_FILES = async (): Promise<boolean> => false;
 
 function sessionWithoutTerrain(): ReturnType<typeof createEditSessionState> {
-  return createEditSessionState({ sceneText: "scene", propertiesText: "props", terrainText: null, particlesText: null, masks: NO_MASKS });
+  return createEditSessionState({ sceneText: "scene", propertiesText: "props", terrainText: null, masks: NO_MASKS });
 }
 
 function raisedGrid(): ReturnType<typeof flatTerrainGrid> {
@@ -103,7 +103,7 @@ describe("первый мазок в проекте без рельефа", () =
 
 describe("проект с файлом рельефа", () => {
   const WITH_FILE_JSON = GAME_JSON.replace('"scene": "scene.json",', '"scene": "scene.json",\n    "terrain": "terrain.json",');
-  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: null }), particlesText: null, masks: NO_MASKS };
+  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: null }), masks: NO_MASKS };
 
   it("мазок — одно обычное действие: game.json не меняется, отмена возвращает высоты до мазка", async () => {
     const plan = await planTerrainEdit(createEditSessionState(EXISTING), WITH_FILE_JSON, NO_FILES, (displayed) =>
@@ -147,7 +147,7 @@ describe("проект с файлом рельефа", () => {
 describe("покраска — действие с масками («Покраска», требования 12, 15–16)", () => {
   const WITH_FILE_JSON = GAME_JSON.replace('"scene": "scene.json",', '"scene": "scene.json",\n    "terrain": "terrain.json",');
   const FLAT_WITH_GRASS = formatTerrainText({ ...flatTerrainGrid(SCENE_SIZE), water: null, covers: [{ material: "grass" }] });
-  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: FLAT_WITH_GRASS, particlesText: null, masks: NO_MASKS };
+  const EXISTING: EditSnapshot = { sceneText: "scene", propertiesText: "props", terrainText: FLAT_WITH_GRASS, masks: NO_MASKS };
   const COVERS = [{ material: "grass" }, { material: "rock", mask: "terrain/rock.png" }];
   const PAINTED = { "terrain/rock.png": { width: 8, height: 4, pixels: new Uint8Array(32).fill(7) } };
   const withCovers = (displayed: EditSnapshot, sceneSize: typeof SCENE_SIZE): string | null => terrainTextWithCovers(displayed.terrainText, sceneSize, COVERS);

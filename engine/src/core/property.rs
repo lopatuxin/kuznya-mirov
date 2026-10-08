@@ -2,7 +2,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use super::imprints::StampTable;
-use super::particles::ParticleTable;
 use super::terrain::Terrain;
 use super::value::PropKind;
 
@@ -40,8 +39,29 @@ pub const REPEAT_X: PropertyId = 23;
 /// «Ветер и частицы» → «Качание»: гибкость объекта в клетках — на сколько уходит вбок верх рисунка
 /// при ровном ветре в одну клетку в секунду.
 pub const SWAY: PropertyId = 24;
-/// «Ветер и частицы» → «Источник»: имя вида частиц, которые вылетают из объекта.
-pub const PARTICLES: PropertyId = 25;
+/// «Ветер и частицы» → «Частицы»: девять свойств дыма, искр и листопада.
+pub const SMOKE: PropertyId = 25;
+pub const SMOKE_HEIGHT: PropertyId = 26;
+pub const SMOKE_COLOR: PropertyId = 27;
+pub const SPARKS: PropertyId = 28;
+pub const SPARKS_REACH: PropertyId = 29;
+pub const SPARKS_DIRECTION: PropertyId = 30;
+pub const SPARKS_SPREAD: PropertyId = 31;
+pub const LEAF_FALL: PropertyId = 32;
+pub const LEAF_COLOR: PropertyId = 33;
+
+/// Свойства частиц: только плоская сцена, только объекту с `position` и `size`, без `repeat_x`.
+pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
+    SMOKE,
+    SMOKE_HEIGHT,
+    SMOKE_COLOR,
+    SPARKS,
+    SPARKS_REACH,
+    SPARKS_DIRECTION,
+    SPARKS_SPREAD,
+    LEAF_FALL,
+    LEAF_COLOR,
+];
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -69,7 +89,15 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("parallax", PropKind::Number),
     ("repeat_x", PropKind::Flag),
     ("sway", PropKind::Number),
-    ("particles", PropKind::Text),
+    ("smoke", PropKind::Number),
+    ("smoke_height", PropKind::Number),
+    ("smoke_color", PropKind::Color),
+    ("sparks", PropKind::Number),
+    ("sparks_reach", PropKind::Number),
+    ("sparks_direction", PropKind::Number),
+    ("sparks_spread", PropKind::Number),
+    ("leaf_fall", PropKind::Number),
+    ("leaf_color", PropKind::Color),
 ];
 
 #[derive(Debug, Clone)]
@@ -92,9 +120,6 @@ pub struct PropertyTable {
     terrain: Option<Arc<Terrain>>,
     /// «Лепка рельефа»: штампы `files.stamps` — по ним ставятся отпечатки файла рельефа и правки редактора.
     stamps: StampTable,
-    /// «Ветер и частицы»: виды частиц игры — по ним проверяется имя в `particles`; живая игра ставит
-    /// сюда же те виды, что поменял `set_wind_particles`.
-    particles: ParticleTable,
 }
 
 impl PropertyTable {
@@ -105,7 +130,6 @@ impl PropertyTable {
             three_d: false,
             terrain: None,
             stamps: StampTable::default(),
-            particles: ParticleTable::default(),
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -157,14 +181,6 @@ impl PropertyTable {
 
     pub fn stamps(&self) -> &StampTable {
         &self.stamps
-    }
-
-    pub fn set_particles(&mut self, particles: ParticleTable) {
-        self.particles = particles;
-    }
-
-    pub fn particles(&self) -> &ParticleTable {
-        &self.particles
     }
 
     pub fn resolve(&self, name: &str) -> Option<PropertyId> {
@@ -227,8 +243,22 @@ mod tests {
         assert_eq!(table.kind(REPEAT_X), PropKind::Flag);
         assert_eq!(table.resolve("sway"), Some(SWAY));
         assert_eq!(table.kind(SWAY), PropKind::Number);
-        assert_eq!(table.resolve("particles"), Some(PARTICLES));
-        assert_eq!(table.kind(PARTICLES), PropKind::Text);
+        for (name, id, kind) in [
+            ("smoke", SMOKE, PropKind::Number),
+            ("smoke_height", SMOKE_HEIGHT, PropKind::Number),
+            ("smoke_color", SMOKE_COLOR, PropKind::Color),
+            ("sparks", SPARKS, PropKind::Number),
+            ("sparks_reach", SPARKS_REACH, PropKind::Number),
+            ("sparks_direction", SPARKS_DIRECTION, PropKind::Number),
+            ("sparks_spread", SPARKS_SPREAD, PropKind::Number),
+            ("leaf_fall", LEAF_FALL, PropKind::Number),
+            ("leaf_color", LEAF_COLOR, PropKind::Color),
+        ] {
+            assert_eq!(table.resolve(name), Some(id), "{name}");
+            assert_eq!(table.kind(id), kind, "{name}");
+            assert!(PARTICLE_PROPERTIES.contains(&id), "{name}");
+        }
+        assert_eq!(table.resolve("particles"), None);
     }
 
     #[test]

@@ -16,7 +16,7 @@ use engine::core::scene::{
 use engine::core::step::apply_follow_mouse;
 use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{
-    ImageDecl, ImageVerdict, load_game_from_texts_with_code, load_rest_with_particles, read_entry,
+    ImageDecl, ImageVerdict, load_game_from_texts_with_code, load_rest_with_stamps, read_entry,
 };
 use engine::render::atlas::{AtlasImage, RectPaint, compose_world_paints, pack};
 use engine::render::wind::Motion;
@@ -864,8 +864,7 @@ fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
             )
         })
         .collect();
-    let particles_text = config.files.particles.as_deref().map(read);
-    let (game, _screens, rest_warnings, images) = load_rest_with_particles(
+    let (game, _screens, rest_warnings, images) = load_rest_with_stamps(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -883,7 +882,6 @@ fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
         &[],
         &[],
         &[],
-        particles_text.as_deref(),
     )
     .unwrap_or_else(|e| panic!("платформер не загрузился: {e:?}"));
     warnings.extend(rest_warnings);
@@ -899,6 +897,20 @@ fn the_platformer_loads_without_errors_or_warnings() {
         Some("viewer"),
         "точка осмотра — первый объект сцены"
     );
+}
+
+#[test]
+fn the_forge_smoke_is_a_built_in_effect_of_its_source_and_the_particle_file_is_gone() {
+    let (game, _warnings, _images) = platformer();
+    let source = game
+        .world
+        .ids()
+        .find(|&id| game.world.text(id, property::NAME) == Some("дым кузни"))
+        .expect("источник дыма кузни есть в сцене");
+    assert_eq!(game.world.number_like(source, property::SMOKE), Some(0.5));
+    assert!(!platformer_dir().join("particles.json").exists());
+    let game_json = fs::read_to_string(platformer_dir().join("game.json")).unwrap();
+    assert!(!game_json.contains("particles"));
 }
 
 #[test]

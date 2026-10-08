@@ -1829,18 +1829,15 @@ body.is-resizing-panel {
   white-space: nowrap;
 }
 
-/* ——— Вкладка «Частицы» — по наброску, утверждённому хозяином: карточки слева, поля справа колонками без рамок ——— */
+/* ——— Вкладка «Частицы»: слева три карточки, справа группы эффектов выбранного объекта, без рамок ——— */
 
 .particles-panel {
   display: flex;
   align-items: stretch;
 }
 
-.particles-panel__kinds {
-  display: flex;
+.particles-panel__cards-area {
   flex: none;
-  flex-direction: column;
-  gap: 10px;
   width: 210px;
   padding: 10px 12px 12px 14px;
   border-right: 1px solid var(--editor-border);
@@ -1865,26 +1862,15 @@ body.is-resizing-panel {
   border: 1px solid var(--editor-border);
   border-radius: 7px;
   background: var(--editor-surface-raised);
-  cursor: pointer;
-}
-
-.particles-card:hover {
-  border-color: var(--editor-border-strong);
-  background: var(--editor-surface-hover);
 }
 
 .particles-card[draggable="true"] {
   cursor: grab;
 }
 
-.particles-card--selected,
-.particles-card--selected:hover {
-  border-color: var(--editor-accent-ring);
-  background: var(--editor-accent-soft);
-}
-
-.particles-card--invalid {
-  border-color: var(--editor-error);
+.particles-card[draggable="true"]:hover {
+  border-color: var(--editor-border-strong);
+  background: var(--editor-surface-hover);
 }
 
 .particles-card__thumb {
@@ -1896,17 +1882,6 @@ body.is-resizing-panel {
   height: 40px;
   overflow: hidden;
   border-radius: 50%;
-  background: var(--editor-surface);
-}
-
-.particles-card__thumb .images-panel__thumb {
-  width: 40px;
-  height: 40px;
-  border-radius: 0;
-}
-
-/* Вид без картинки: карточка показывает то, чем движок рисует его частицы, — клуб дыма, искру, лист или мягкую точку. */
-.particles-card__thumb--shape {
   background: var(--editor-bg);
 }
 
@@ -1914,13 +1889,6 @@ body.is-resizing-panel {
   display: block;
   width: 34px;
   height: 34px;
-}
-
-.particles-card__dot {
-  width: 34px;
-  height: 34px;
-  border-radius: 50%;
-  background: radial-gradient(circle, rgb(255 255 255 / 0.95) 0%, rgb(255 255 255 / 0.55) 35%, rgb(255 255 255 / 0) 70%);
 }
 
 .particles-card__name {
@@ -1932,92 +1900,52 @@ body.is-resizing-panel {
   white-space: nowrap;
 }
 
-.particles-card--selected .particles-card__name {
-  color: var(--editor-text);
-}
-
-.particles-panel__actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.particles-panel__actions .editor-button--icon {
-  width: 28px;
-  height: 28px;
-  border-color: var(--editor-border-strong);
-}
-
-.particles-panel__hint {
-  margin: 0;
-  color: var(--editor-text-faint);
-  font-size: 11.5px;
-  line-height: 1.4;
-}
-
 .particles-fields {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
   min-width: 0;
   padding: 10px 14px 12px 16px;
 }
 
-.particles-head {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.particles-name {
-  padding: 2px 6px;
-  border: 1px solid transparent;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--editor-text);
-  font: 600 14px var(--editor-font-display);
-  cursor: text;
-}
-
-.particles-name:hover:not(:disabled) {
-  background: var(--editor-surface-hover);
-}
-
-/* Имя готового вида не правится. */
-.particles-name--fixed,
-.particles-name--fixed:hover {
-  background: transparent;
-  cursor: default;
-}
-
-.particles-name-editor__input {
-  width: 180px;
-  padding: 2px 6px;
-  border: 1px solid var(--editor-accent-ring);
-  border-radius: 5px;
-  background: var(--editor-bg);
-  color: var(--editor-text);
-  font: 600 14px var(--editor-font-display);
+.particles-panel__hint {
+  max-width: 420px;
+  margin: 0;
+  color: var(--editor-text-faint);
+  font-size: 12.5px;
+  line-height: 1.45;
 }
 
 .particles-groups {
   display: flex;
   flex-wrap: wrap;
   align-items: flex-start;
-  gap: 12px 36px;
+  gap: 14px 36px;
+}
+
+.particles-group__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
 }
 
 .particles-group__title {
-  margin: 0 0 6px;
-  color: var(--editor-text-faint);
-  font: 500 12px var(--editor-font-ui);
+  margin: 0;
+  color: var(--editor-text);
+  font: 600 13px var(--editor-font-display);
+}
+
+.particles-group__remove {
+  height: 22px;
+  padding: 0 8px;
+  border-color: var(--editor-border-strong);
+  font-size: 12px;
 }
 
 .particles-group__rows {
   display: grid;
   grid-template-columns: auto auto;
   align-items: center;
-  gap: 4px 10px;
+  gap: 6px 10px;
 }
 
 .particles-field {
@@ -2038,7 +1966,98 @@ body.is-resizing-panel {
   font-size: 12px;
 }
 
-/* Одно поле на настройку: число, «4 – 6» или «0 · 0,7 · 0»; ширина — по набранному, не уже числа из пяти знаков. */
+.particles-density {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.particles-density__end {
+  color: var(--editor-text-faint);
+  font-size: 11.5px;
+  white-space: nowrap;
+}
+
+.particles-density__range {
+  width: 120px;
+  accent-color: var(--editor-accent);
+}
+
+.particles-color--default {
+  opacity: 0.5;
+}
+
+.particles-leaf-color {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.particles-leaf-color__autumn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--editor-text-muted);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.particles-dial-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.particles-dial {
+  display: block;
+  width: 96px;
+  height: 96px;
+  touch-action: none;
+}
+
+.particles-dial--default {
+  opacity: 0.6;
+}
+
+.particles-dial__ring {
+  fill: var(--editor-bg);
+  stroke: var(--editor-border-strong);
+  stroke-width: 1;
+}
+
+.particles-dial__fan {
+  fill: rgb(255 138 61 / 0.22);
+  stroke: var(--editor-ember);
+  stroke-width: 1;
+}
+
+.particles-dial__arrow {
+  stroke: var(--editor-ember-glow);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+
+.particles-dial__handle {
+  stroke: var(--editor-bg);
+  stroke-width: 1.5;
+  cursor: grab;
+}
+
+.particles-dial__handle--direction {
+  fill: var(--editor-ember-glow);
+}
+
+.particles-dial__handle--spread {
+  fill: var(--editor-ember);
+}
+
+.particles-dial__text {
+  color: var(--editor-text-muted);
+  font-size: 12px;
+}
+
+/* Одно поле на настройку; ширина — по набранному, не уже числа из пяти знаков. */
 .particles-input {
   box-sizing: border-box;
   min-width: 92px;
@@ -2054,7 +2073,7 @@ body.is-resizing-panel {
   font-variant-numeric: tabular-nums;
 }
 
-/* Ключа в виде нет: показано значение по умолчанию, бледно. */
+/* Свойства у объекта нет: показано значение по умолчанию, бледно. */
 .particles-input--default {
   color: var(--editor-text-faint);
 }

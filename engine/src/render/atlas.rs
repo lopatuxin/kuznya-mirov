@@ -8,7 +8,7 @@
 //! is the part of «Отрисовка» plain enough to run and test on any target, unlike the GPU resources
 //! built from its result (see `super::gpu`, wasm32-only).
 
-use crate::core::particles::{ParticleLook, ParticleShape};
+use crate::core::particles::{ParticleShape, Settings};
 use crate::core::property;
 use crate::core::scene::{self, CellRange, GroundLayer, LayerView, SceneConfig};
 use crate::core::screens::Fill;
@@ -17,8 +17,8 @@ use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
-use super::particle_shapes::{self, DOT_SIZE, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
-use super::particles::{Emitter, Sprite};
+use super::particle_shapes::{self, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
+use super::particles::{Emitter, OpaqueMask, Picture, Sprite};
 use super::wind::{Motion, SwayObject, swaying_frame};
 
 /// «Картинки» → «Атлас», требование 14: the canvas is this size in every browser, so the game
@@ -68,17 +68,9 @@ pub const WHITE_PIXEL: AtlasRect = AtlasRect {
 
 /// «Ветер и частицы» → «Частица»: встроенные рисунки частиц, которые движок рисует сам и кладёт в
 /// атлас в каждой игре, — в ряд на первом листе сразу правее белой точки; полки `pack` начинаются
-/// после них. Место мягкой точки:
-pub const DOT_RECT: AtlasRect = AtlasRect {
-    x: WHITE_PIXEL.w + PADDING,
-    y: 0,
-    w: DOT_SIZE,
-    h: DOT_SIZE,
-    sheet: 0,
-};
-
+/// после них. Место клуба дыма:
 pub const SMOKE_RECT: AtlasRect = AtlasRect {
-    x: DOT_RECT.x + DOT_RECT.w + PADDING,
+    x: WHITE_PIXEL.w + PADDING,
     y: 0,
     w: SMOKE_SIZE,
     h: SMOKE_SIZE,
@@ -93,7 +85,7 @@ pub const SPARK_RECT: AtlasRect = AtlasRect {
     sheet: 0,
 };
 
-/// Кадры листа в ряд, слева направо.
+/// Кадры осеннего листа в ряд, слева направо.
 pub const LEAF_RECT: AtlasRect = AtlasRect {
     x: SPARK_RECT.x + SPARK_RECT.w + PADDING,
     y: 0,
@@ -102,20 +94,29 @@ pub const LEAF_RECT: AtlasRect = AtlasRect {
     sheet: 0,
 };
 
+/// Кадры белого листа, который окрашивает `leaf_color`.
+pub const WHITE_LEAF_RECT: AtlasRect = AtlasRect {
+    x: LEAF_RECT.x + LEAF_RECT.w + PADDING,
+    y: 0,
+    w: LEAF_SIZE * ParticleShape::WhiteLeaf.frames(),
+    h: LEAF_SIZE,
+    sheet: 0,
+};
+
 const BUILT_IN_SHAPES: [(ParticleShape, AtlasRect); 4] = [
-    (ParticleShape::Dot, DOT_RECT),
     (ParticleShape::Smoke, SMOKE_RECT),
     (ParticleShape::Spark, SPARK_RECT),
     (ParticleShape::Leaf, LEAF_RECT),
+    (ParticleShape::WhiteLeaf, WHITE_LEAF_RECT),
 ];
 
 /// Место кадра `frame` встроенного рисунка `shape`; кадр больше числа кадров берётся по кругу.
 fn shape_frame_rect(shape: ParticleShape, frame: u32) -> AtlasRect {
     let whole = match shape {
-        ParticleShape::Dot => DOT_RECT,
         ParticleShape::Smoke => SMOKE_RECT,
         ParticleShape::Spark => SPARK_RECT,
         ParticleShape::Leaf => LEAF_RECT,
+        ParticleShape::WhiteLeaf => WHITE_LEAF_RECT,
     };
     let frame_w = whole.w / shape.frames();
     AtlasRect {
@@ -221,7 +222,7 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
         images.len()
     ];
     let mut sheet = 0u32;
-    let mut cursor_x = LEAF_RECT.x + LEAF_RECT.w + PADDING;
+    let mut cursor_x = WHITE_LEAF_RECT.x + WHITE_LEAF_RECT.w + PADDING;
     let mut shelf_y = 0u32;
     let mut shelf_height = BUILT_IN_SHAPES
         .iter()
@@ -338,22 +339,17 @@ fn frame_atlas_rect_at(
     let decl = &images[image];
     let whole = atlas_rects[image];
     let frame = frame.min(decl.frames.saturating_sub(1));
+    let (frame_w, frame_h) = frame_size(decl, whole.w, whole.h);
     match decl.columns {
-        None => {
-            let frame_w = whole.w / decl.frames.max(1);
-            AtlasRect {
-                x: whole.x + frame * frame_w,
-                y: whole.y,
-                w: frame_w,
-                h: whole.h,
-                sheet: whole.sheet,
-            }
-        }
+        None => AtlasRect {
+            x: whole.x + frame * frame_w,
+            y: whole.y,
+            w: frame_w,
+            h: frame_h,
+            sheet: whole.sheet,
+        },
         Some(columns) => {
             let columns = columns.max(1);
-            let rows = decl.frames.div_ceil(columns);
-            let frame_w = whole.w / columns;
-            let frame_h = whole.h / rows.max(1);
             AtlasRect {
                 x: whole.x + (frame % columns) * frame_w,
                 y: whole.y + (frame / columns) * frame_h,
@@ -363,6 +359,31 @@ fn frame_atlas_rect_at(
             }
         }
     }
+}
+
+/// Ширина и высота одного кадра ленты `width`×`height` точек картинки `decl`.
+fn frame_size(decl: &ImageDecl, width: u32, height: u32) -> (u32, u32) {
+    match decl.columns {
+        None => (width / decl.frames.max(1), height),
+        Some(columns) => {
+            let columns = columns.max(1);
+            let rows = decl.frames.div_ceil(columns);
+            (width / columns, height / rows.max(1))
+        }
+    }
+}
+
+/// «Листопад»: непрозрачные точки первого кадра каждой картинки, по номеру картинки — считаются один
+/// раз при загрузке картинок. `images` и `decls` идут в одном порядке.
+pub fn opaque_masks(images: &[AtlasImage], decls: &[ImageDecl]) -> Vec<OpaqueMask> {
+    images
+        .iter()
+        .zip(decls)
+        .map(|(image, decl)| {
+            let (width, height) = frame_size(decl, image.width, image.height);
+            OpaqueMask::of_first_frame(&image.pixels, image.width, width, height)
+        })
+        .collect()
 }
 
 /// «Картинки», требование 23: `frame_by`'s own frame number — the named property, floored and
@@ -519,7 +540,7 @@ pub fn compose_world_paints(
             world.vec2(id, property::POSITION).is_some()
                 && world.vec2(id, property::SIZE).is_some()
                 && (object_fill(world, id).is_some()
-                    || (!three_d && world.text(id, property::PARTICLES).is_some()))
+                    || (!three_d && Settings::read(world, id).any_runs()))
                 && !(three_d && world.shape(id, property::SHAPE).is_some())
         })
         .collect();
@@ -531,10 +552,10 @@ pub fn compose_world_paints(
     ];
 
     let particles = motion.particles();
-    let mut orphans: Vec<(i32, Sprite)> = particles.orphan_sprites(images).collect();
+    let mut orphans: Vec<(i32, Sprite)> = particles.orphan_sprites().collect();
     orphans.sort_by_key(|(layer, _)| *layer);
     let mut orphans = orphans.into_iter().peekable();
-    let to_paint = |sprite: &Sprite| particle_paint(sprite, images, atlas_rects, layers);
+    let to_paint = |sprite: &Sprite| particle_paint(sprite, layers);
 
     let mut paints = Vec::with_capacity(ordered.len());
     for id in ordered {
@@ -604,7 +625,7 @@ pub fn compose_world_paints(
             paints.extend(layered_paints(world, id, paint, s[0], layers, window));
         }
         // «Источник», требование 15: частицы живого источника — сразу после него, от старших к младшим.
-        for sprite in particles.live_sprites(id, world.generation(id), images) {
+        for sprite in particles.live_sprites(id, world.generation(id)) {
             paints.push(to_paint(&sprite));
         }
     }
@@ -631,26 +652,10 @@ fn object_fill(world: &World, id: u32) -> Option<Fill> {
     }
 }
 
-/// «Ветер и частицы» → «Частица», требование 13: прямоугольник частицы — её середина со сдвигом слоя
+/// «Ветер и частицы» → «Частица»: прямоугольник частицы — её середина со сдвигом слоя
 /// глубины источника, ширина рисунка и высота по пропорциям кадра картинки, поворот вокруг середины.
-fn particle_paint(
-    sprite: &Sprite,
-    images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
-    layers: &LayerView,
-) -> RectPaint {
-    let (atlas_rect, smooth, glow) = match sprite.look {
-        ParticleLook::Image(image) => {
-            let decl = &images[image];
-            let rect = frame_atlas_rect_at(image, sprite.frame, images, atlas_rects);
-            (rect, decl.smooth, decl.glow)
-        }
-        ParticleLook::Shape(shape) => (
-            shape_frame_rect(shape, sprite.frame),
-            true,
-            shape == ParticleShape::Spark,
-        ),
-    };
+fn particle_paint(sprite: &Sprite, layers: &LayerView) -> RectPaint {
+    let atlas_rect = shape_frame_rect(sprite.shape, sprite.frame);
     let width = sprite.width as f32;
     let height = width * atlas_rect.h as f32 / atlas_rect.w.max(1) as f32;
     let shift = layers.displacement(sprite.parallax);
@@ -663,35 +668,84 @@ fn particle_paint(
         ..RectPaint::flat(
             [middle[0] - width / 2.0, middle[1] - height / 2.0],
             [width, height],
-            [1.0, 1.0, 1.0, sprite.opacity as f32],
+            [
+                sprite.color[0],
+                sprite.color[1],
+                sprite.color[2],
+                sprite.opacity as f32,
+            ],
             atlas_rect,
-            smooth,
-            glow,
+            true,
+            sprite.shape == ParticleShape::Spark,
         )
     }
 }
 
-/// «Ветер и частицы» → «Источник»: источники мира плоской сцены — объекты со свойством `particles`, с
-/// записанным прямоугольником, слоем и `parallax`; в трёхмерной сцене их нет.
-pub fn particle_emitters(world: &World) -> impl Iterator<Item = Emitter<'_>> {
+/// «Ветер и частицы» → «Частицы»: объекты плоской сцены, у которых идёт хоть один эффект, — с
+/// настройками, записанным прямоугольником, слоем, `parallax` и, для листопада, местом первого кадра
+/// картинки; в трёхмерной сцене их нет.
+pub fn particle_emitters<'a>(
+    world: &'a World,
+    images: &'a [ImageDecl],
+) -> impl Iterator<Item = Emitter> + 'a {
     let slots = if world.three_d() {
         0
     } else {
         world.slot_count() as u32
     };
     (0..slots).filter_map(move |id| {
-        let kind = world.text(id, property::PARTICLES)?;
+        let settings = Settings::read(world, id);
+        if !settings.any_runs() {
+            return None;
+        }
         let rect = world
             .vec2(id, property::POSITION)
             .zip(world.vec2(id, property::SIZE));
         Some(Emitter {
             id,
             generation: world.generation(id),
-            kind,
             rect,
             layer: world.layer(id, property::LAYER).unwrap_or(0),
             parallax: scene::parallax(world, id),
+            settings,
+            picture: rect
+                .filter(|_| settings.leaf_fall > 0.0)
+                .and_then(|(position, size)| leaf_picture(world, id, position, size, images)),
         })
+    })
+}
+
+/// «Листопад»: где нарисован первый кадр картинки объекта `id` — с учётом `size`, `anchor`, `offset`,
+/// `flip_x` и поворота; `None` у заливки цветом. Качание объекта не учитывается.
+fn leaf_picture(
+    world: &World,
+    id: u32,
+    position: Vec2,
+    size: Vec2,
+    images: &[ImageDecl],
+) -> Option<Picture> {
+    let image = world.image(id, property::IMAGE)?;
+    let drawn = drawn_rect(world, id, position, size, Some(image), images);
+    let [width, height] = if drawn.rotation_quarters % 2 == 1 {
+        [drawn.size[1], drawn.size[0]]
+    } else {
+        drawn.size
+    };
+    let middle = [
+        drawn.position[0] + drawn.size[0] / 2.0,
+        drawn.position[1] + drawn.size[1] / 2.0,
+    ];
+    let across = rotate_quarter(
+        [if drawn.flip_x { -width } else { width }, 0.0],
+        drawn.rotation_quarters,
+    );
+    let down = rotate_quarter([0.0, height], drawn.rotation_quarters);
+    Some(Picture {
+        image,
+        area: f64::from(width) * f64::from(height),
+        origin: [0, 1].map(|axis| f64::from(middle[axis] - across[axis] / 2.0 - down[axis] / 2.0)),
+        across: across.map(f64::from),
+        down: down.map(f64::from),
     })
 }
 

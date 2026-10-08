@@ -4,7 +4,6 @@ use crate::core::footprint::Footprint;
 use crate::core::game::{self, Game};
 use crate::core::imprints::StampTable;
 use crate::core::keys::{EditValue, KeyBinding, KeyEdit, KeyTable};
-use crate::core::particles::{ParticleLook, ParticleTable};
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::rules::{
     CollideEffect, CommonAction, CompareOp, Condition, NumberExpr, Outcome, Rule, RuleSet,
@@ -28,7 +27,6 @@ use super::error::ErrorSink;
 use super::wav;
 
 mod materials;
-mod particles;
 mod stamps;
 
 pub use super::error::{GameError, LoadFailure};
@@ -39,8 +37,6 @@ use materials::{
     declaration_order, parse_covers, parse_materials_table, validate_material_files,
     warn_unused_materials,
 };
-pub use particles::parse_edit_particles;
-use particles::{parse_particle_table, warn_unused_particles};
 pub use stamps::parse_edit_imprints;
 use stamps::{parse_imprints, parse_stamp_table, warn_unused_stamps};
 
@@ -320,6 +316,11 @@ pub(crate) fn parse_scalar_value(
             if prop == property::SWAY && !validate_sway(n, properties, file, path, errors) {
                 return None;
             }
+            if property::PARTICLE_PROPERTIES.contains(&prop)
+                && !validate_particle_number(prop, n, properties, file, path, errors)
+            {
+                return None;
+            }
             Some(Value::Number(n))
         }
         PropKind::Time => {
@@ -418,6 +419,9 @@ pub(crate) fn parse_scalar_value(
             Some(Value::Vec2(v))
         }
         PropKind::Color => {
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+                return None;
+            }
             let s = expect_string(value, file, path, errors)?;
             match parse_hex_color(&s) {
                 Some(c) => Some(Value::Color(c)),
@@ -443,15 +447,7 @@ pub(crate) fn parse_scalar_value(
             }
             Some(Value::Layer(n as i32))
         }
-        PropKind::Text => {
-            let text = expect_string(value, file, path, errors)?;
-            if prop == property::PARTICLES
-                && !validate_particle_name(&text, properties, file, path, errors)
-            {
-                return None;
-            }
-            Some(Value::Text(text))
-        }
+        PropKind::Text => expect_string(value, file, path, errors).map(Value::Text),
         PropKind::Image => {
             let name = expect_string(value, file, path, errors)?;
             resolve_image(&name, images, file, path, errors).map(Value::Image)
@@ -790,15 +786,12 @@ const SHAPE_IN_FLAT_SCENE: &str =
 
 const WIND_IN_3D_SCENE: &str = "wind есть только в плоской сцене: у scene в game.json есть camera";
 
-const PARTICLES_IN_3D_SCENE: &str =
-    "particles есть только в плоской сцене: у scene в game.json есть camera";
-
 const DECK_IN_FLAT_SCENE: &str =
     "deck есть только в трёхмерной сцене: у scene в game.json нет camera";
 
 /// «Мир на экране» → «Проверка перед запуском»: `parallax` и `repeat_x` есть только в плоской
 /// сцене — везде, где их можно записать: объект, шаблон, клавиша, `on_click`, правила. «Ветер и
-/// частицы» → «Проверка перед запуском»: `sway` — так же.
+/// частицы» → «Проверка перед запуском»: `sway` и свойства частиц — так же.
 fn depth_layer_fits_the_scene(
     prop: PropertyId,
     properties: &PropertyTable,
@@ -806,10 +799,11 @@ fn depth_layer_fits_the_scene(
     path: &str,
     errors: &mut ErrorSink,
 ) -> bool {
-    if matches!(
+    if (matches!(
         prop,
-        property::PARALLAX | property::REPEAT_X | property::SWAY | property::PARTICLES
-    ) && properties.three_d()
+        property::PARALLAX | property::REPEAT_X | property::SWAY
+    ) || property::PARTICLE_PROPERTIES.contains(&prop))
+        && properties.three_d()
     {
         errors.push(
             file,
@@ -868,38 +862,45 @@ fn validate_sway(
     false
 }
 
-/// «Ветер и частицы» → «Проверка перед запуском»: `particles` называет вид из `particles.json`, и
-/// только в плоской сцене. Текст ошибки неизвестного вида — тот же, что у кода игры, с перечнем
-/// объявленных видов.
-fn validate_particle_name(
-    name: &str,
+/// «Ветер и частицы» → «Проверка перед запуском»: числовое свойство частиц — только в плоской сцене;
+/// `smoke`, `sparks` и `leaf_fall` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
+/// `sparks_spread` — от 0 до 180, `sparks_direction` — любое число.
+fn validate_particle_number(
+    prop: PropertyId,
+    n: f64,
     properties: &PropertyTable,
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
 ) -> bool {
-    if !depth_layer_fits_the_scene(property::PARTICLES, properties, file, path, errors) {
+    if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
         return false;
     }
-    if properties.particles().has(name) {
+    let name = properties.name(prop);
+    let range = match prop {
+        property::SMOKE | property::SPARKS | property::LEAF_FALL => Some((0.0, 1.0)),
+        property::SPARKS_SPREAD => Some((0.0, 180.0)),
+        _ => None,
+    };
+    let fits = match (prop, range) {
+        (_, Some((low, high))) => (low..=high).contains(&n),
+        (property::SMOKE_HEIGHT | property::SPARKS_REACH, None) => n > 0.0,
+        _ => true,
+    };
+    if fits {
         return true;
     }
-    let declared = properties
-        .particles()
-        .names()
-        .map(|kind| format!("\"{kind}\""))
-        .collect::<Vec<_>>()
-        .join(", ");
-    let message = if declared.is_empty() {
-        format!("неизвестный вид частиц: {name}; виды не объявлены")
-    } else {
-        format!("неизвестный вид частиц: {name}; объявлены {declared}")
+    let message = match range {
+        Some((low, high)) => {
+            format!("{name}: нужно от {low} до {high} включительно, получено {n}")
+        }
+        None => format!("{name}: нужно больше нуля, получено {n}"),
     };
     errors.push(file, path, message);
     false
 }
 
-/// «Ветер и частицы» → «Проверка перед запуском»: источник — только объект с `position` и `size`, и
+/// «Ветер и частицы» → «Проверка перед запуском»: свойства частиц — только у объекта с `position` и `size`, и
 /// не с `repeat_x`. `check_position` — как у `validate_follow_mouse_shape`.
 fn validate_particles_shape(
     shape: &std::collections::HashSet<PropertyId>,
@@ -908,25 +909,36 @@ fn validate_particles_shape(
     path: &str,
     errors: &mut ErrorSink,
 ) {
-    if !shape.contains(&property::PARTICLES) {
-        return;
+    for message in particles_shape_errors(shape, check_position) {
+        errors.push(file, path, message);
+    }
+}
+
+const PARTICLES_NEED_POSITION_AND_SIZE: &str =
+    "свойства частиц разрешены только объекту с position и size";
+const PARTICLES_WITH_REPEAT_X: &str = "свойства частиц заданы вместе с repeat_x: частицы вылетают из одного места, повторить его нельзя";
+
+/// Тексты нарушений формы объекта со свойствами частиц — общие для загрузки и правки на ходу.
+pub(super) fn particles_shape_errors(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+) -> Vec<&'static str> {
+    let mut messages = Vec::new();
+    if !property::PARTICLE_PROPERTIES
+        .iter()
+        .any(|prop| shape.contains(prop))
+    {
+        return messages;
     }
     let missing_size = !shape.contains(&property::SIZE);
     let missing_position = check_position && !shape.contains(&property::POSITION);
     if missing_size || missing_position {
-        errors.push(
-            file,
-            path,
-            "particles разрешён только объекту с position и size",
-        );
+        messages.push(PARTICLES_NEED_POSITION_AND_SIZE);
     }
     if shape.contains(&property::REPEAT_X) {
-        errors.push(
-            file,
-            path,
-            "particles задан вместе с repeat_x: частицы вылетают из одного места, повторить его нельзя",
-        );
+        messages.push(PARTICLES_WITH_REPEAT_X);
     }
+    messages
 }
 
 /// «Слои глубины», требование 23: объект с `parallax`, отличным от 1, только рисуется — с этими
@@ -1938,8 +1950,6 @@ pub struct FilePaths {
     /// `files.terrain` — «Рельеф»: необязательный путь к файлу высот земли трёхмерной сцены. `None`
     /// — земля ровная на высоте 0.
     pub terrain: Option<String>,
-    /// `files.particles` — «Ветер и частицы»: необязательный путь к файлу видов частиц плоской сцены.
-    pub particles: Option<String>,
     /// `(имя, путь)`, в порядке объявления `files.stamps` — «Лепка рельефа»: номер штампа, на который
     /// ссылаются отпечатки файла рельефа. Пусто, если не объявлена.
     pub stamps: Vec<(String, String)>,
@@ -2235,7 +2245,6 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "terrain",
                 "materials",
                 "stamps",
-                "particles",
             ],
             "game.json",
             "files",
@@ -2293,10 +2302,6 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         let terrain = f
             .get("terrain")
             .and_then(|v| expect_string(v, "game.json", "files → terrain", errors));
-        // «Ветер и частицы»: необязателен — нет ключа, нет и видов частиц.
-        let particles = f
-            .get("particles")
-            .and_then(|v| expect_string(v, "game.json", "files → particles", errors));
         // «Свет и материалы»: необязательна — нет ключа, нет и материалов.
         let materials = f.get("materials").map(|v| {
             let order = declaration_order(text).materials;
@@ -2320,7 +2325,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         });
         (
             properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables,
-            terrain, materials, stamps, particles,
+            terrain, materials, stamps,
         )
     });
 
@@ -2350,7 +2355,6 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         terrain,
         materials,
         stamps,
-        particles,
     ) = files?;
     if terrain.is_some() && scene.camera.is_none() {
         errors.push(
@@ -2372,9 +2376,6 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             "files → stamps",
             "files.stamps есть только в трёхмерной сцене: у scene в game.json нет camera",
         );
-    }
-    if particles.is_some() && scene.camera.is_some() {
-        errors.push("game.json", "files → particles", PARTICLES_IN_3D_SCENE);
     }
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
@@ -2404,7 +2405,6 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             code,
             tables,
             terrain,
-            particles,
             stamps: stamps.unwrap_or_default(),
             materials: materials.unwrap_or_default(),
         },
@@ -3319,6 +3319,19 @@ fn parse_set_value(
                 } else {
                     validate_parallax(n, properties, file, path, errors);
                 }
+                return None;
+            }
+        }
+        if property::PARTICLE_PROPERTIES.contains(&prop) {
+            let constants: &[f64] = match &expr {
+                NumberExpr::Const(n) => std::slice::from_ref(n),
+                NumberExpr::Table { table, .. } => table,
+                NumberExpr::Multiplier { .. } => &[],
+            };
+            if !constants
+                .iter()
+                .all(|&n| validate_particle_number(prop, n, properties, file, path, errors))
+            {
                 return None;
             }
         }
@@ -8020,15 +8033,10 @@ fn validate_unused_images(
     rules: &RuleSet,
     screens: &[Screen],
     ground: &[GroundLayer],
-    particles: &ParticleTable,
     code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
-    let mut used = collect_used_images(scene, rules, screens, ground);
-    used.extend(particles.iter().filter_map(|(_, kind)| match kind.look {
-        ParticleLook::Image(image) => Some(image),
-        ParticleLook::Shape(_) => None,
-    }));
+    let used = collect_used_images(scene, rules, screens, ground);
     for (i, decl) in images.iter().enumerate() {
         if !used.contains(&i) && !code.is_some_and(|c| code_mentions_word(c, &decl.name)) {
             errors.push_warning(
@@ -8346,51 +8354,6 @@ pub fn load_rest_with_materials(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest_with_stamps(
     game_json: &str,
-    config: GameConfig,
-    properties_json: Option<&str>,
-    scene_json: Option<&str>,
-    rules_json: Option<&str>,
-    screens_json: Option<&str>,
-    font_bytes: &[(String, Option<Vec<u8>>)],
-    sound_bytes: &[(String, Option<Vec<u8>>)],
-    music_verdicts: &[(String, MusicVerdict)],
-    image_data: &[(String, ImageVerdict)],
-    code_json: Option<&str>,
-    skip_media_validation: bool,
-    table_texts: &[(String, Option<String>)],
-    terrain_text: Option<&str>,
-    material_data: &[(String, ImageVerdict)],
-    mask_data: &[(String, ImageVerdict)],
-    stamp_texts: &[(String, Option<String>)],
-) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
-    load_rest_with_particles(
-        game_json,
-        config,
-        properties_json,
-        scene_json,
-        rules_json,
-        screens_json,
-        font_bytes,
-        sound_bytes,
-        music_verdicts,
-        image_data,
-        code_json,
-        skip_media_validation,
-        table_texts,
-        terrain_text,
-        material_data,
-        mask_data,
-        stamp_texts,
-        None,
-    )
-}
-
-/// Same as `load_rest_with_stamps`, additionally accepting the text of `files.particles` — «Ветер и
-/// частицы»: файл видов читается тем же заходом, что остальные тексты. `None` — файла нет на месте;
-/// без `files.particles` в `game.json` текст не нужен.
-#[allow(clippy::too_many_arguments)]
-pub fn load_rest_with_particles(
-    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -8407,7 +8370,6 @@ pub fn load_rest_with_particles(
     material_data: &[(String, ImageVerdict)],
     mask_data: &[(String, ImageVerdict)],
     stamp_texts: &[(String, Option<String>)],
-    particles_text: Option<&str>,
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -8449,21 +8411,6 @@ pub fn load_rest_with_particles(
         _ => {}
     }
     properties.set_stamps(stamp_table);
-    let particle_table = match (&config.files.particles, particles_text) {
-        (Some(path), Some(text)) => {
-            parse_particle_table(text, path, &config.files.images, &mut errors)
-        }
-        (Some(path), None) => {
-            errors.push(
-                path,
-                "",
-                "файл не найден; ожидался JSON-файл, названный в game.json → files → particles",
-            );
-            ParticleTable::default()
-        }
-        (None, _) => ParticleTable::default(),
-    };
-    properties.set_particles(particle_table.clone());
 
     let ParsedSceneFile {
         objects: scene_objects,
@@ -8711,16 +8658,6 @@ pub fn load_rest_with_particles(
             .terrain()
             .map_or(&[][..], |terrain| terrain.imprints());
         warn_unused_stamps(&config.files.stamps, imprints, &mut errors);
-        if let Some(path) = &config.files.particles {
-            warn_unused_particles(
-                path,
-                &particle_table,
-                &scene_objects,
-                &rules,
-                code_json,
-                &mut errors,
-            );
-        }
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {
@@ -8731,7 +8668,6 @@ pub fn load_rest_with_particles(
                 &rules,
                 &sc.screens,
                 &ground,
-                &particle_table,
                 code_json,
                 &mut errors,
             );
@@ -8758,9 +8694,6 @@ pub fn load_rest_with_particles(
         errors.fill_locations(&config.files.screens, text);
     }
     if let (Some(path), Some(text)) = (&config.files.terrain, terrain_text) {
-        errors.fill_locations(path, text);
-    }
-    if let (Some(path), Some(text)) = (&config.files.particles, particles_text) {
         errors.fill_locations(path, text);
     }
 

@@ -1,52 +1,27 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { PARTICLES_DRAG_TYPE } from "./imageDrag";
-import { readParticleKinds, type ParticleKind, type ParticleTable } from "./particlesFile";
+import { LEAVES_DRAG_TYPE, PARTICLES_DRAG_TYPE } from "./imageDrag";
+import { LEAF_COLOR_START } from "./particleEffects";
 import { ParticlesPanel } from "./ParticlesPanel";
-import { tabParticleKinds, type TabParticleKind } from "./particlePresets";
-import type { ProjectImageTile } from "./projectImages";
-
-const FILE = `{
-  "дым": { "image": "puff", "rate": 6, "lifetime": [4, 6], "size": 0.6, "opacity": [0, 0.7, 0] },
-  "искры": { "image": "spark", "rate": 20, "lifetime": 1, "size": 0.2 }
-}`;
-
-/** Свои виды файла — не готовые: их можно удалить и переименовать. */
-function own(kinds: readonly ParticleKind[]): TabParticleKind[] {
-  return kinds.map((kind) => ({ ...kind, isBuiltIn: false, isInFile: true }));
-}
-
-function tile(name: string): ProjectImageTile {
-  return { description: { name, frames: null, columns: null, size: null, smooth: false }, image: null };
-}
 
 type PanelProps = Parameters<typeof ParticlesPanel>[0];
 
-function renderPanel(overrides: Partial<PanelProps> = {}): { props: PanelProps; rerender: (ui: React.JSX.Element) => void } {
+const SMOKE_AND_LEAVES = { position: [1, 1], size: [2, 2], smoke: 0.5, leaf_fall: 0.3 };
+const SPARKS = { position: [1, 1], size: [1, 1], sparks: 0.5, sparks_reach: 2 };
+
+function renderPanel(properties: PanelProps["properties"], overrides: Partial<PanelProps> = {}): { props: PanelProps; rerender: (next: PanelProps["properties"]) => void } {
   const props: PanelProps = {
-    kinds: own(readParticleKinds(FILE)),
-    imageTiles: [tile("puff"), tile("spark")],
-    selectedName: null,
-    invalidNames: new Set(),
-    loadFieldErrors: new Map(),
-    isFieldsDisabled: false,
-    kindActionsBlockedReason: null,
-    isDragEnabled: true,
-    onSelect: vi.fn(),
+    properties,
+    isEditable: true,
     onPreview: vi.fn(() => undefined),
-    onCommitValue: vi.fn(() => undefined),
-    onCopy: vi.fn(),
-    onDelete: vi.fn(),
-    onRename: vi.fn(),
+    onCommit: vi.fn(),
+    onRemove: vi.fn(),
+    onGestureActiveChange: vi.fn(),
     ...overrides,
   };
   const { rerender } = render(<ParticlesPanel {...props} />);
-  return { props, rerender };
-}
-
-function field(label: string): HTMLInputElement {
-  return screen.getByLabelText(label);
+  return { props, rerender: (next) => rerender(<ParticlesPanel {...props} properties={next} />) };
 }
 
 function type(input: HTMLElement, text: string): void {
@@ -54,475 +29,481 @@ function type(input: HTMLElement, text: string): void {
   fireEvent.change(input, { target: { value: text } });
 }
 
-function leave(input: HTMLElement): void {
-  act(() => input.blur());
-}
-
-describe("ParticlesPanel: готовые виды", () => {
-  afterEach(cleanup);
-
-  it("в проекте без видов во вкладке уже есть дым, искры и листья — каждый со своим рисунком, без картинок", () => {
-    renderPanel({ kinds: tabParticleKinds([]) });
-
-    const cards = within(screen.getByRole("listbox")).getAllByRole("option");
-    expect(cards.map((card) => card.textContent)).toEqual(["дым", "искры", "листья"]);
-    expect(cards.every((card) => card.querySelector("svg.particles-card__shape") !== null)).toBe(true);
-    expect(screen.queryByLabelText("картинка")).toBeNull();
-    expect(field("густота").value).toBe("12");
-  });
-
-  it("готовый вид не удаляется и не переименовывается, а копируется", () => {
-    const { props } = renderPanel({ kinds: tabParticleKinds([]) });
-
-    expect((screen.getByRole("button", { name: "Удалить" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.queryByRole("button", { name: "дым" })).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Копировать" }));
-    expect(props.onCopy).toHaveBeenCalledWith("дым");
-  });
-
-  it("свой вид из файла идёт после готовых", () => {
-    renderPanel({ kinds: tabParticleKinds(readParticleKinds('{ "туман": { "rate": 2, "lifetime": 3, "size": 1 } }')) });
-
-    expect(screen.getAllByRole("option").map((card) => card.textContent)).toEqual(["дым", "искры", "листья", "туман"]);
-  });
-});
+afterEach(cleanup);
 
 describe("ParticlesPanel: карточки", () => {
-  afterEach(cleanup);
+  it("три карточки — дым, искры, листья, без «Копировать» и «Удалить»", () => {
+    renderPanel(null);
 
-  it("карточки в порядке видов, при открытии выбрана первая", () => {
-    renderPanel();
-
-    const cards = within(screen.getByRole("listbox")).getAllByRole("option");
-    expect(cards.map((card) => card.textContent)).toEqual(["дым", "искры"]);
-    expect(cards.map((card) => card.getAttribute("aria-selected"))).toEqual(["true", "false"]);
-    expect(screen.getByText("дым", { selector: ".particles-name" })).toBeTruthy();
+    expect(within(screen.getByRole("list", { name: "Эффекты частиц" })).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья"]);
+    expect(screen.queryByRole("button", { name: "Копировать" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "Удалить" })).toBeNull();
   });
 
-  it("выбранный вид — названный; щелчок по карточке выбирает", () => {
-    const { props } = renderPanel({ selectedName: "искры" });
-
-    expect(field("густота").value).toBe("20");
-    fireEvent.click(screen.getAllByRole("option")[0] as HTMLElement);
-    expect(props.onSelect).toHaveBeenCalledWith("дым");
-  });
-
-  it("карточка перетаскивается на сцену с именем вида; в повторе — нет", () => {
-    renderPanel();
+  it("карточка при перетаскивании отдаёт ключ эффекта, листья — ещё и свой тип для рамки над целью", () => {
+    renderPanel(null);
     const setData = vi.fn();
-    fireEvent.dragStart(screen.getAllByRole("option")[1] as HTMLElement, { dataTransfer: { setData, effectAllowed: "" } });
-    expect(setData).toHaveBeenCalledWith(PARTICLES_DRAG_TYPE, "искры");
+    const [smoke, , leaves] = screen.getAllByRole("listitem");
+
+    fireEvent.dragStart(smoke as HTMLElement, { dataTransfer: { setData, effectAllowed: "" } });
+    expect(setData).toHaveBeenCalledTimes(1);
+    expect(setData).toHaveBeenCalledWith(PARTICLES_DRAG_TYPE, "smoke");
+
+    setData.mockClear();
+    fireEvent.dragStart(leaves as HTMLElement, { dataTransfer: { setData, effectAllowed: "" } });
+    expect(setData).toHaveBeenCalledWith(PARTICLES_DRAG_TYPE, "leaves");
+    expect(setData).toHaveBeenCalledWith(LEAVES_DRAG_TYPE, "leaves");
+  });
+
+  it("правка недоступна (повтор, проект с ошибками) — карточки не тянутся", () => {
+    renderPanel(null, { isEditable: false });
+
+    for (const card of screen.getAllByRole("listitem")) expect(card.getAttribute("draggable")).toBe("false");
+  });
+});
+
+describe("ParticlesPanel: группы выбранного объекта", () => {
+  it("объект с дымом и листопадом — группы «Дым» и «Листья» по порядку, искр нет", () => {
+    renderPanel(SMOKE_AND_LEAVES);
+
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Дым", "Листья"]);
+    expect(screen.queryByText(/Дым и искры перетащите/)).toBeNull();
+  });
+
+  it("объект без частиц и без выбора — подсказка", () => {
+    renderPanel({ position: [1, 1], size: [1, 1] });
+    expect(screen.getByText("Дым и искры перетащите туда, откуда они идут, — на трубу или костёр. Листья — на дерево")).toBeTruthy();
     cleanup();
 
-    renderPanel({ isDragEnabled: false });
-    expect(screen.getAllByRole("option")[0]?.getAttribute("draggable")).toBe("false");
+    renderPanel(null);
+    expect(screen.getByText(/Дым и искры перетащите туда, откуда они идут/)).toBeTruthy();
   });
 
-  it("вид без картинки и рисунка показан на карточке мягкой точкой", () => {
-    renderPanel({ kinds: own(readParticleKinds('{ "точки": { "rate": 8, "lifetime": 2, "size": 0.4 } }')) });
-
-    expect(screen.getAllByRole("option")[0]?.querySelector(".particles-card__dot")).not.toBeNull();
+  it("плотность 0 группу не прячет: эффект остаётся, пока его не уберут", () => {
+    renderPanel({ smoke: 0 });
+    expect(screen.getByRole("region", { name: "Дым" })).toBeTruthy();
   });
 
-  it("вид с ошибкой проверки помечен на карточке, у неизвестной картинки — пустой рисунок", () => {
-    renderPanel({ invalidNames: new Set(["искры"]), imageTiles: [tile("puff")] });
+  it("подписи полные русские слова: у слайдера концы, у полей единицы", () => {
+    renderPanel({ smoke: 0.5, sparks: 0.5, leaf_fall: 0.3 });
 
-    const cards = screen.getAllByRole("option");
-    expect(cards[0]?.className).not.toContain("particles-card--invalid");
-    expect(cards[1]?.className).toContain("particles-card--invalid");
-    expect(cards[1]?.querySelector(".images-panel__thumb--empty")).not.toBeNull();
-  });
-});
-
-describe("ParticlesPanel: кнопки", () => {
-  afterEach(cleanup);
-
-  it("«Копировать» и «Удалить» зовут действие с выбранным видом", () => {
-    const { props } = renderPanel({ selectedName: "искры" });
-
-    fireEvent.click(screen.getByRole("button", { name: "Копировать" }));
-    fireEvent.click(screen.getByRole("button", { name: "Удалить" }));
-
-    expect(props.onCopy).toHaveBeenCalledWith("искры");
-    expect(props.onDelete).toHaveBeenCalledWith("искры");
+    for (const text of ["струйка", "густой столб", "редкие", "густые", "изредка", "сильный", "высота столба, клеток", "как далеко летят, клеток", "направление и разброс", "цвет листьев", "осенние вперемешку"]) {
+      expect(screen.getByText(text)).toBeTruthy();
+    }
+    expect(document.body.textContent).not.toMatch(/smoke|sparks|leaf_/);
   });
 
-  it("в партии «Копировать», «Удалить» и правка имени неактивны, поля — нет", () => {
-    renderPanel({ kindActionsBlockedReason: "после «Стопа»" });
+  it("значения, которых у объекта нет, показаны бледно умолчаниями", () => {
+    renderPanel({ smoke: 0.5, sparks: 0.5 });
 
-    for (const name of ["Копировать", "Удалить"]) expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "дым" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(field("густота").disabled).toBe(false);
+    const height = screen.getByLabelText("высота столба, клеток") as HTMLInputElement;
+    const reach = screen.getByLabelText("как далеко летят, клеток") as HTMLInputElement;
+    expect(height.value).toBe("4");
+    expect(height.className).toContain("particles-input--default");
+    expect(reach.value).toBe("1,5");
+    expect(screen.getByText("вверх, ±30°")).toBeTruthy();
   });
 
-  it("в повторе неактивно всё", () => {
-    renderPanel({ kindActionsBlockedReason: "в повторе мир не правится", isFieldsDisabled: true, isDragEnabled: false });
+  it("значения объекта показаны обычно, число — по-русски", () => {
+    renderPanel({ smoke: 0.5, smoke_height: 2.5, sparks: 0.5, sparks_direction: 90, sparks_spread: 45 });
 
-    expect(field("густота").disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Копировать" }) as HTMLButtonElement).disabled).toBe(true);
+    const height = screen.getByLabelText("высота столба, клеток") as HTMLInputElement;
+    expect(height.value).toBe("2,5");
+    expect(height.className).not.toContain("particles-input--default");
+    expect(screen.getByText("вправо, ±45°")).toBeTruthy();
   });
 });
 
-describe("ParticlesPanel: поля", () => {
-  afterEach(cleanup);
+describe("ParticlesPanel: плотность", () => {
+  it("движение ползунка ставит значение сцене на лету, запись — только при отпускании", () => {
+    const { props } = renderPanel(SMOKE_AND_LEAVES);
+    const slider = screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement;
 
-  it("три группы с подписями и подсказкой — ключом файла", () => {
-    renderPanel();
+    fireEvent.input(slider, { target: { value: "0.7" } });
+    fireEvent.input(slider, { target: { value: "0.95" } });
 
-    expect(screen.getAllByRole("region").map((group) => group.getAttribute("aria-label"))).toEqual(["Вылет", "Вид", "Полёт"]);
-    expect(screen.getByText("густота").closest(".particles-field")?.getAttribute("title")).toMatch(/^rate — /);
+    expect(props.onPreview).toHaveBeenNthCalledWith(1, "smoke", 0.7);
+    expect(props.onPreview).toHaveBeenNthCalledWith(2, "smoke", 0.95);
+    expect(props.onCommit).not.toHaveBeenCalled();
+
+    fireEvent.change(slider);
+
+    expect(props.onCommit).toHaveBeenCalledTimes(1);
+    expect(props.onCommit).toHaveBeenCalledWith("smoke", 0.95, 0.5);
   });
 
-  it("значения из файла; ключа нет — значение по умолчанию бледно", () => {
-    renderPanel();
+  it("после отпускания ползунок держит новое значение, пока объект не получит его, — не прыгает назад", () => {
+    const { rerender } = renderPanel(SMOKE_AND_LEAVES);
+    const slider = (): HTMLInputElement => screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement;
 
-    expect(field("густота").value).toBe("6");
-    expect(field("густота").className).not.toContain("particles-input--default");
-    expect(field("тяжесть").value).toBe("0");
-    expect(field("тяжесть").className).toContain("particles-input--default");
-    expect(field("ветер, доля").value).toBe("1");
-    expect(field("ветер, доля").className).toContain("particles-input--default");
+    fireEvent.input(slider(), { target: { value: "0.8" } });
+    fireEvent.change(slider());
+    expect(slider().value).toBe("0.8");
+
+    rerender({ ...SMOKE_AND_LEAVES, smoke: 0.8 });
+    expect(slider().value).toBe("0.8");
   });
 
-  it("пара — одно поле «от – до», число — само, с запятой", () => {
-    renderPanel();
+  it("у листьев свой ползунок со своим ключом", () => {
+    const { props } = renderPanel(SMOKE_AND_LEAVES);
+    const leavesSlider = within(screen.getByRole("region", { name: "Листья" })).getByRole("slider", { name: "плотность" });
 
-    expect(field("живёт, с").value).toBe("4 – 6");
-    expect(field("размер").value).toBe("0,6");
+    fireEvent.input(leavesSlider, { target: { value: "0.6" } });
+    fireEvent.change(leavesSlider);
+
+    expect(props.onCommit).toHaveBeenCalledWith("leaf_fall", 0.6, 0.3);
   });
 
-  it("ошибка на весь вид — «и image, и shape» — видна под именем вида", () => {
-    renderPanel({ loadFieldErrors: new Map([["дым", { "": "у вида и image, и shape — оставьте одно" }]]) });
+  it("ползунок вернули на прежнее значение — запись не просят", () => {
+    const { props } = renderPanel(SMOKE_AND_LEAVES);
+    const slider = screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement;
 
-    expect(screen.getByRole("alert").textContent).toBe("у вида и image, и shape — оставьте одно");
+    fireEvent.input(slider, { target: { value: "0.9" } });
+    fireEvent.input(slider, { target: { value: "0.5" } });
+    fireEvent.change(slider);
+
+    expect(props.onCommit).not.toHaveBeenCalled();
   });
 
-  it("ошибка картинки, записанной в файл руками, видна под именем вида", () => {
-    renderPanel({ loadFieldErrors: new Map([["дым", { image: "картинки «puff» нет" }]]) });
+  it("правка недоступна — ползунок и «Убрать» неактивны", () => {
+    renderPanel(SMOKE_AND_LEAVES, { isEditable: false });
 
-    expect(screen.getByRole("alert").textContent).toBe("картинки «puff» нет");
-  });
-});
-
-describe("ParticlesPanel: ввод в поле", () => {
-  afterEach(cleanup);
-
-  it("каждое набранное значение сразу уходит движку, файл не пишется", () => {
-    const { props } = renderPanel();
-
-    type(field("тяжесть"), "1");
-    type(field("тяжесть"), "1,5");
-
-    const previews = vi.mocked(props.onPreview).mock.calls.map(([table]) => (table as ParticleTable).дым?.gravity);
-    expect(previews).toEqual([1, 1.5]);
-    expect(props.onCommitValue).not.toHaveBeenCalled();
-  });
-
-  it("не число не уходит движку", () => {
-    const { props } = renderPanel();
-
-    type(field("тяжесть"), "тяж");
-
-    expect(props.onPreview).not.toHaveBeenCalled();
-  });
-
-  it("Enter принимает значение действием вместе с таблицей видов", () => {
-    const { props } = renderPanel();
-
-    type(field("рост, раз"), "3");
-    fireEvent.keyDown(field("рост, раз"), { key: "Enter" });
-    leave(field("рост, раз"));
-
-    expect(props.onCommitValue).toHaveBeenCalledOnce();
-    const [name, key, value, table] = vi.mocked(props.onCommitValue).mock.calls[0] as [string, string, unknown, ParticleTable];
-    expect([name, key, value]).toEqual(["дым", "grow", 3]);
-    expect(table.дым?.grow).toBe(3);
-    expect(table.искры?.grow).toBeUndefined();
-  });
-
-  it("уход из поля принимает значение", () => {
-    const { props } = renderPanel();
-
-    type(field("густота"), "9");
-    leave(field("густота"));
-
-    expect(vi.mocked(props.onCommitValue).mock.calls[0]?.slice(0, 3)).toEqual(["дым", "rate", 9]);
-  });
-
-  it("Esc возвращает значение до правки: движку уходят виды как в файле, действия нет", () => {
-    const { props } = renderPanel();
-
-    type(field("густота"), "9");
-    fireEvent.keyDown(field("густота"), { key: "Escape" });
-    leave(field("густота"));
-
-    expect(props.onCommitValue).not.toHaveBeenCalled();
-    expect(vi.mocked(props.onPreview).mock.calls.at(-1)?.[0]).toEqual({
-      дым: readParticleKinds(FILE)[0]?.fields,
-      искры: readParticleKinds(FILE)[1]?.fields,
-    });
-    expect(field("густота").value).toBe("6");
-  });
-
-  it("значение не изменилось — действия нет", () => {
-    const { props } = renderPanel();
-
-    type(field("густота"), "6");
-    leave(field("густота"));
-
-    expect(props.onCommitValue).not.toHaveBeenCalled();
-  });
-
-  it("пустое поле убирает ключ", () => {
-    const { props } = renderPanel();
-
-    type(field("размер"), "");
-    leave(field("размер"));
-
-    expect(vi.mocked(props.onCommitValue).mock.calls[0]?.slice(0, 3)).toEqual(["дым", "size", undefined]);
-  });
-
-  it("пара равных значений пишется одним числом, разных — парой", () => {
-    const { props } = renderPanel();
-
-    type(field("живёт, с"), "6 – 6");
-    leave(field("живёт, с"));
-    type(field("живёт, с"), "6-9");
-    leave(field("живёт, с"));
-
-    expect(vi.mocked(props.onCommitValue).mock.calls.map((call) => call[2])).toEqual([6, [6, 9]]);
-  });
-
-  it("принятое значение стоит в поле, пока файл ещё не показал его", () => {
-    renderPanel();
-
-    type(field("живёт, с"), "5 – 9");
-    fireEvent.keyDown(field("живёт, с"), { key: "Enter" });
-    leave(field("живёт, с"));
-
-    expect(field("живёт, с").value).toBe("5 – 9");
-  });
-
-  it("когда значение дошло из файла, показано оно, а не набранный текст", () => {
-    const { props, rerender } = renderPanel();
-    type(field("живёт, с"), "5 – 9");
-    fireEvent.keyDown(field("живёт, с"), { key: "Enter" });
-
-    rerender(<ParticlesPanel {...props} kinds={own(readParticleKinds(FILE.replace("[4, 6]", "[5.5, 6]")))} />);
-
-    expect(field("живёт, с").value).toBe("5,5 – 6");
-  });
-
-  it("не число при уходе из поля не принимается, виды возвращаются как в файле", () => {
-    const { props } = renderPanel();
-
-    type(field("густота"), "много");
-    leave(field("густота"));
-
-    expect(props.onCommitValue).not.toHaveBeenCalled();
-    expect(props.onPreview).toHaveBeenCalledOnce();
-  });
-
-  it("ошибка движка стоит у поля, которое её дало, и пропадает, когда ввод принят", () => {
-    const onPreview = vi.fn<(table: ParticleTable) => string | undefined>().mockReturnValueOnce("дым → rate: должно быть больше нуля").mockReturnValue(undefined);
-    renderPanel({ onPreview });
-
-    type(field("густота"), "0");
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toBe("дым → rate: должно быть больше нуля");
-    expect(alert.closest(".particles-field")?.querySelector("input")).toBe(field("густота"));
-
-    type(field("густота"), "3");
-    expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("отказ принять значение (партия): ошибка у своего поля, в поле отвергнутое число, правка другого поля ошибку не снимает, Esc возвращает действующее", () => {
-    const onCommitValue = vi.fn<PanelProps["onCommitValue"]>().mockReturnValueOnce("в таблице нет вида").mockReturnValue(undefined);
-    const { props } = renderPanel({ onCommitValue });
-
-    type(field("густота"), "9");
-    leave(field("густота"));
-
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toBe("в таблице нет вида");
-    expect(alert.closest(".particles-field")?.querySelector("input")).toBe(field("густота"));
-    expect(field("густота").value).toBe("9");
-
-    type(field("тяжесть"), "2");
-    leave(field("тяжесть"));
-
-    expect(onCommitValue).toHaveBeenCalledTimes(2);
-    expect(screen.getByRole("alert").textContent).toBe("в таблице нет вида");
-    expect(field("густота").value).toBe("9");
-
-    fireEvent.keyDown(field("густота"), { key: "Escape" });
-
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(field("густота").value).toBe("6");
-    expect(vi.mocked(props.onPreview).mock.calls.at(-1)?.[0]).toEqual({
-      дым: readParticleKinds(FILE)[0]?.fields,
-      искры: readParticleKinds(FILE)[1]?.fields,
-    });
-  });
-
-  it("отказ у поля пары и у ряда точек тоже виден, пока действующее значение прежнее", () => {
-    renderPanel({ onCommitValue: () => "в таблице нет вида" });
-
-    type(field("видимость"), "0 · 1");
-    leave(field("видимость"));
-
-    expect(screen.getByRole("alert").closest(".particles-field")?.querySelector("input")).toBe(field("видимость"));
-    expect(field("видимость").value).toBe("0 · 1");
-  });
-
-  it("отказ принять значение стоит, пока поле не набрали снова: новый ввод снимает прежнюю ошибку", () => {
-    renderPanel({ onCommitValue: () => "в таблице нет вида" });
-    type(field("густота"), "9");
-    leave(field("густота"));
-
-    type(field("густота"), "8");
-
-    expect(screen.queryByRole("alert")).toBeNull();
-    expect(field("густота").value).toBe("8");
-  });
-
-  it("ошибка проверки загрузкой стоит у своего поля и пропадает, когда файл её больше не даёт", () => {
-    const loadFieldErrors = new Map([["дым", { rate: "rate: должно быть больше нуля" }]]);
-    const { props, rerender } = renderPanel({ loadFieldErrors });
-
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toBe("rate: должно быть больше нуля");
-    expect(alert.closest(".particles-field")?.querySelector("input")).toBe(field("густота"));
-
-    rerender(<ParticlesPanel {...props} loadFieldErrors={new Map()} />);
-
-    expect(screen.queryByRole("alert")).toBeNull();
+    expect((screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement).disabled).toBe(true);
+    expect((screen.getAllByRole("button", { name: "Убрать" })[0] as HTMLButtonElement).disabled).toBe(true);
   });
 });
 
-describe("ParticlesPanel: точки видимости", () => {
-  afterEach(cleanup);
+describe("ParticlesPanel: число настройки", () => {
+  it("набор ставит значение сцене, Enter принимает его с прежним значением для отмены", () => {
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 });
+    const input = screen.getByLabelText("высота столба, клеток");
 
-  it("ряд точек — одно поле через точку посередине", () => {
-    renderPanel();
+    type(input, "6,5");
+    expect(props.onPreview).toHaveBeenLastCalledWith("smoke_height", 6.5);
+    expect(props.onCommit).not.toHaveBeenCalled();
 
-    expect(field("видимость").value).toBe("0 · 0,7 · 0");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(props.onCommit).toHaveBeenCalledWith("smoke_height", 6.5, 4);
   });
 
-  it("правка точек пишет ряд целиком; через пробел тоже можно", () => {
-    const { props } = renderPanel();
+  it("уход из поля принимает значение так же, как Enter, и один раз", () => {
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 });
+    const input = screen.getByLabelText("высота столба, клеток");
 
-    type(field("видимость"), "0 · 0,9 · 0");
-    leave(field("видимость"));
-    type(field("видимость"), "0 1 0,2 0");
-    leave(field("видимость"));
-
-    expect(vi.mocked(props.onCommitValue).mock.calls.map((call) => call[2])).toEqual([
-      [0, 0.9, 0],
-      [0, 1, 0.2, 0],
-    ]);
-  });
-
-  it("одна точка пишется числом", () => {
-    const { props } = renderPanel();
-
-    type(field("видимость"), "0,5");
-    leave(field("видимость"));
-
-    expect(vi.mocked(props.onCommitValue).mock.calls[0]?.[2]).toBe(0.5);
-  });
-
-  it("ключа нет — точка по умолчанию бледно", () => {
-    renderPanel({ selectedName: "искры" });
-
-    expect(field("видимость").value).toBe("1");
-    expect(field("видимость").className).toContain("particles-input--default");
-  });
-});
-
-describe("ParticlesPanel: имя вида", () => {
-  afterEach(cleanup);
-
-  function startRename(): HTMLInputElement {
-    fireEvent.click(screen.getByRole("button", { name: "дым" }));
-    return screen.getByLabelText("Имя вида");
-  }
-
-  it("щелчок по имени, Enter — вид переименован", () => {
-    const { props } = renderPanel();
-
-    const input = startRename();
-    fireEvent.change(input, { target: { value: "туман" } });
+    type(input, "5");
     fireEvent.keyDown(input, { key: "Enter" });
     act(() => input.blur());
 
-    expect(props.onRename).toHaveBeenCalledWith("дым", "туман");
-    expect(screen.queryByLabelText("Имя вида")).toBeNull();
+    expect(props.onCommit).toHaveBeenCalledTimes(1);
   });
 
-  it("пустое имя и имя другого вида — текст ошибки, ничего не пишется", () => {
-    const { props } = renderPanel();
+  it("свойства не было — первая правка передаёт «не было», чтобы отмена в партии его сняла", () => {
+    const { props } = renderPanel({ smoke: 0.5 });
+    const input = screen.getByLabelText("высота столба, клеток");
 
-    const input = startRename();
-    fireEvent.change(input, { target: { value: "" } });
-    expect(screen.getByRole("alert").textContent).toBe("Имя вида не может быть пустым");
-    fireEvent.change(input, { target: { value: "искры" } });
-    expect(screen.getByRole("alert").textContent).toBe("Вид «искры» уже есть");
-    act(() => input.blur());
-
-    expect(props.onRename).not.toHaveBeenCalled();
-  });
-
-  it("Enter с именем другого вида или пустым правку не закрывает: текст ошибки виден, ничего не пишется", () => {
-    const { props } = renderPanel();
-
-    const input = startRename();
-    fireEvent.change(input, { target: { value: "искры" } });
+    type(input, "7");
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(screen.getByLabelText("Имя вида")).toBe(input);
-    expect(screen.getByRole("alert").textContent).toBe("Вид «искры» уже есть");
-    fireEvent.change(input, { target: { value: "" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-
-    expect(screen.getByLabelText("Имя вида")).toBe(input);
-    expect(screen.getByRole("alert").textContent).toBe("Имя вида не может быть пустым");
-    expect(props.onRename).not.toHaveBeenCalled();
+    expect(props.onCommit).toHaveBeenCalledWith("smoke_height", 7, undefined);
   });
 
-  it("после Enter с ошибкой уход фокуса закрывает правку, прежнее имя на месте", () => {
-    renderPanel();
+  it("Esc возвращает прежнее значение сцене и ничего не пишет", () => {
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 });
+    const input = screen.getByLabelText("высота столба, клеток") as HTMLInputElement;
 
-    const input = startRename();
-    fireEvent.change(input, { target: { value: "искры" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    act(() => input.blur());
-
-    expect(screen.queryByLabelText("Имя вида")).toBeNull();
-    expect(screen.getByRole("button", { name: "дым" })).toBeTruthy();
-
-    startRename();
-    expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("принятое имя ошибки не оставляет", () => {
-    renderPanel();
-
-    const input = startRename();
-    fireEvent.change(input, { target: { value: "туман" } });
-    act(() => input.blur());
-
-    expect(screen.queryByRole("alert")).toBeNull();
-  });
-
-  it("Esc отменяет правку имени", () => {
-    const { props } = renderPanel();
-
-    const input = startRename();
-    fireEvent.change(input, { target: { value: "туман" } });
+    type(input, "9");
     fireEvent.keyDown(input, { key: "Escape" });
 
-    expect(screen.queryByLabelText("Имя вида")).toBeNull();
-    expect(props.onRename).not.toHaveBeenCalled();
+    expect(props.onPreview).toHaveBeenLastCalledWith("smoke_height", 4);
+    expect(props.onCommit).not.toHaveBeenCalled();
+    expect(input.value).toBe("4");
+  });
+
+  it("то же число — запись не просят", () => {
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 });
+    const input = screen.getByLabelText("высота столба, клеток");
+
+    type(input, "4,0");
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(props.onCommit).not.toHaveBeenCalled();
+  });
+
+  it("не число после Enter — прежнее значение, ничего не пишется", () => {
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 });
+    const input = screen.getByLabelText("высота столба, клеток") as HTMLInputElement;
+
+    type(input, "много");
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(props.onCommit).not.toHaveBeenCalled();
+    expect(input.value).toBe("4");
+  });
+
+  it("движок не принял число — текст ошибки под полем, значение сцене возвращено, запись не просят", () => {
+    const onPreview = vi.fn((key: string, value: number | undefined) => (key === "smoke_height" && value === 0 ? "smoke_height должно быть больше нуля, получено 0" : undefined));
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 }, { onPreview });
+    const input = screen.getByLabelText("высота столба, клеток") as HTMLInputElement;
+
+    type(input, "0");
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(screen.getByRole("alert").textContent).toBe("высота столба, клеток должно быть больше нуля, получено 0");
+    expect(props.onCommit).not.toHaveBeenCalled();
+    expect(onPreview).toHaveBeenLastCalledWith("smoke_height", 4);
+    expect(input.value).toBe("0");
+  });
+
+  it("число, которого у объекта не было, не бледное с первой цифры и после Enter, пока запись не дошла до свойств", () => {
+    renderPanel({ smoke: 0.5 });
+    const input = screen.getByLabelText("высота столба, клеток") as HTMLInputElement;
+    expect(input.className).toContain("particles-input--default");
+
+    type(input, "7");
+    expect(input.className).not.toContain("particles-input--default");
+
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(input.className).not.toContain("particles-input--default");
+    expect(input.value).toBe("7");
+  });
+
+  it("в тексте ошибки ключи свойств частиц заменены русскими подписями, остальное слово в слово", () => {
+    const onPreview = vi.fn((key: string) => (key === "sparks_reach" ? "sparks_reach: нужно больше нуля, получено 0; sparks не трогаем, sparks_spread и smoke_color тоже" : undefined));
+    renderPanel(SPARKS, { onPreview });
+    const input = screen.getByLabelText("как далеко летят, клеток");
+
+    type(input, "0");
+
+    expect(screen.getByRole("alert").textContent).toBe("как далеко летят, клеток: нужно больше нуля, получено 0; плотность не трогаем, разброс и цвет тоже");
+  });
+});
+
+describe("ParticlesPanel: перечитывание файлов на время жеста", () => {
+  it("число держит перечитывание от первой цифры до Enter; Esc тоже отпускает", () => {
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 });
+    const input = screen.getByLabelText("высота столба, клеток");
+
+    type(input, "6");
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(true);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(false);
+
+    type(input, "7");
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(true);
+    fireEvent.keyDown(input, { key: "Escape" });
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("число, которое движок не принял, и не число после Enter перечитывание тоже отпускают", () => {
+    const onPreview = vi.fn((_key: string, value: number | undefined) => (value === 0 ? "нельзя" : undefined));
+    const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 }, { onPreview });
+    const input = screen.getByLabelText("высота столба, клеток");
+
+    type(input, "0");
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(false);
+
+    type(input, "много");
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(true);
+    fireEvent.keyDown(input, { key: "Enter" });
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("ползунок держит перечитывание от первого движения до отпускания", () => {
+    const { props } = renderPanel(SMOKE_AND_LEAVES);
+    const slider = screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement;
+
+    expect(props.onGestureActiveChange).not.toHaveBeenCalled();
+    fireEvent.input(slider, { target: { value: "0.7" } });
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(true);
+    fireEvent.change(slider);
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("круг держит перечитывание от нажатия на ручку до отпускания, мимо ручек — нет", () => {
+    const { props } = renderPanel(SPARKS);
+    const dial = screen.getByRole("group", { name: "направление и разброс искр" });
+
+    fireEvent.pointerDown(dial, { pointerId: 1 });
+    expect(props.onGestureActiveChange).not.toHaveBeenCalled();
+
+    fireEvent.pointerDown(dial.querySelector("[data-part=direction]") as Element, { pointerId: 1 });
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(true);
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("панель, ушедшая посреди жеста (другой объект, партия), отпускает перечитывание сама", () => {
+    const { props } = renderPanel(SMOKE_AND_LEAVES);
+    fireEvent.input(screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement, { target: { value: "0.7" } });
+
+    cleanup();
+
+    expect(props.onGestureActiveChange).toHaveBeenLastCalledWith(false);
+  });
+
+  it("панель без жеста при уходе перечитывания не трогает", () => {
+    const { props } = renderPanel(SMOKE_AND_LEAVES);
+
+    cleanup();
+
+    expect(props.onGestureActiveChange).not.toHaveBeenCalled();
+  });
+});
+
+describe("ParticlesPanel: цвет", () => {
+  it("палитра дыма — серый по умолчанию бледно; выбранный цвет принимается как свойство", () => {
+    const { props } = renderPanel({ smoke: 0.5 });
+    const picker = screen.getByRole("region", { name: "Дым" }).querySelector("input[type=color]") as HTMLInputElement;
+
+    expect(picker.value).toBe("#a6a6ac");
+    expect(picker.closest(".particles-color--default")).not.toBeNull();
+
+    picker.value = "#ff8800";
+    fireEvent.change(picker);
+
+    expect(props.onCommit).toHaveBeenCalledWith("smoke_color", "#ff8800", undefined);
+  });
+
+  it("листья по умолчанию осенние вперемешку: галочка стоит; снять её — цвет по умолчанию записывается", () => {
+    const { props } = renderPanel({ leaf_fall: 0.3 });
+    const autumn = screen.getByLabelText("осенние вперемешку") as HTMLInputElement;
+    expect(autumn.checked).toBe(true);
+
+    fireEvent.click(autumn);
+
+    expect(props.onCommit).toHaveBeenCalledWith("leaf_color", LEAF_COLOR_START, undefined);
+  });
+
+  it("с цветом листьев галочка снята; поставить её — leaf_color снимается", () => {
+    const { props } = renderPanel({ leaf_fall: 0.3, leaf_color: "#aa3300" });
+    const autumn = screen.getByLabelText("осенние вперемешку") as HTMLInputElement;
+    expect(autumn.checked).toBe(false);
+
+    fireEvent.click(autumn);
+
+    expect(props.onRemove).toHaveBeenCalledWith(["leaf_color"]);
+  });
+});
+
+describe("ParticlesPanel: «Убрать»", () => {
+  it("отдаёт все свойства эффекта, которые есть у объекта, и только их", () => {
+    const { props } = renderPanel({ ...SPARKS, sparks_spread: 60, smoke: 0.5 });
+
+    fireEvent.click(within(screen.getByRole("region", { name: "Искры" })).getByRole("button", { name: "Убрать" }));
+
+    expect(props.onRemove).toHaveBeenCalledWith(["sparks", "sparks_reach", "sparks_spread"]);
+  });
+});
+
+describe("ParticlesPanel: круг направления и разброса", () => {
+  const CENTER = 50;
+
+  function renderDial(properties: PanelProps["properties"] = SPARKS): { props: PanelProps; dial: SVGSVGElement; part: (name: "direction" | "spread") => Element } {
+    const { props } = renderPanel(properties);
+    const dial = screen.getByRole("group", { name: "направление и разброс искр" }) as unknown as SVGSVGElement;
+    Object.defineProperty(dial, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 100, height: 100, right: 100, bottom: 100, x: 0, y: 0, toJSON: () => ({}) }) });
+    return { props, dial, part: (name) => dial.querySelector(`[data-part=${name}]`) as Element };
+  }
+
+  function pointAtAngle(degrees: number, radius = 40): { clientX: number; clientY: number } {
+    const radians = (degrees * Math.PI) / 180;
+    return { clientX: CENTER + radius * Math.sin(radians), clientY: CENTER - radius * Math.cos(radians) };
+  }
+
+  it("конец стрелки тянут — меняется sparks_direction: на каждое движение сцена, при отпускании запись", () => {
+    const { props, dial, part } = renderDial();
+
+    fireEvent.pointerDown(part("direction"), { pointerId: 1, ...pointAtAngle(0) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ...pointAtAngle(45) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ...pointAtAngle(90) });
+
+    expect(props.onPreview).toHaveBeenNthCalledWith(1, "sparks_direction", 45);
+    expect(props.onPreview).toHaveBeenNthCalledWith(2, "sparks_direction", 90);
+    expect(props.onCommit).not.toHaveBeenCalled();
+    expect(screen.getByText("вправо, ±30°")).toBeTruthy();
+
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+
+    expect(props.onCommit).toHaveBeenCalledTimes(1);
+    expect(props.onCommit).toHaveBeenCalledWith("sparks_direction", 90, undefined);
+  });
+
+  it("край веера тянут — меняется sparks_spread, направление остаётся", () => {
+    const { props, dial, part } = renderDial({ ...SPARKS, sparks_direction: 90 });
+
+    fireEvent.pointerDown(part("spread"), { pointerId: 1, ...pointAtAngle(120) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ...pointAtAngle(150) });
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+
+    expect(props.onPreview).toHaveBeenLastCalledWith("sparks_spread", 60);
+    expect(props.onCommit).toHaveBeenCalledWith("sparks_spread", 60, undefined);
+    expect(screen.getByText("вправо, ±60°")).toBeTruthy();
+  });
+
+  it("с Ctrl направление и разброс идут шагом 15°", () => {
+    const { props, dial, part } = renderDial();
+
+    fireEvent.pointerDown(part("direction"), { pointerId: 1, ...pointAtAngle(0) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ctrlKey: true, ...pointAtAngle(98) });
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+    expect(props.onPreview).toHaveBeenLastCalledWith("sparks_direction", 105);
+
+    fireEvent.pointerDown(part("spread"), { pointerId: 1, ...pointAtAngle(135) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ctrlKey: true, ...pointAtAngle(160) });
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+    expect(props.onPreview).toHaveBeenLastCalledWith("sparks_spread", 60);
+  });
+
+  it("разброс не больше 180°", () => {
+    const { props, dial, part } = renderDial();
+
+    fireEvent.pointerDown(part("spread"), { pointerId: 1, ...pointAtAngle(30) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ...pointAtAngle(180) });
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+
+    expect(props.onCommit).toHaveBeenCalledWith("sparks_spread", 180, undefined);
+  });
+
+  it("за пределами ручек круг не тянется, при недоступной правке — тоже", () => {
+    const { props, dial } = renderDial();
+    fireEvent.pointerDown(dial, { pointerId: 1, ...pointAtAngle(0) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ...pointAtAngle(90) });
+    expect(props.onPreview).not.toHaveBeenCalled();
+    cleanup();
+
+    const disabled = renderPanel(SPARKS, { isEditable: false });
+    const disabledDial = screen.getByRole("group", { name: "направление и разброс искр" });
+    Object.defineProperty(disabledDial, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 100, height: 100 }) });
+    fireEvent.pointerDown(disabledDial.querySelector("[data-part=direction]") as Element, { pointerId: 1, ...pointAtAngle(0) });
+    fireEvent.pointerMove(disabledDial, { pointerId: 1, ...pointAtAngle(90) });
+    expect(disabled.props.onPreview).not.toHaveBeenCalled();
+  });
+
+  it("круг бледный, пока у объекта нет ни направления, ни разброса; с первого движения он уже показывает своё значение и не бледный", () => {
+    const { dial, part } = renderDial();
+    expect(dial.getAttribute("class")).toContain("particles-dial--default");
+
+    fireEvent.pointerDown(part("direction"), { pointerId: 1, ...pointAtAngle(0) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ...pointAtAngle(90) });
+    expect(dial.getAttribute("class")).not.toContain("particles-dial--default");
+
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+    expect(dial.getAttribute("class")).not.toContain("particles-dial--default");
+  });
+
+  it("ошибка движка стоит под кругом, запись не просят, сцене возвращено прежнее", () => {
+    const onPreview = vi.fn((key: string, value: number | undefined) => (value === 200 ? undefined : key === "sparks_direction" && value === 90 ? "направление не принято" : undefined));
+    const { props } = renderPanel(SPARKS, { onPreview });
+    const dial = screen.getByRole("group", { name: "направление и разброс искр" });
+    Object.defineProperty(dial, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 100, height: 100 }) });
+
+    fireEvent.pointerDown(dial.querySelector("[data-part=direction]") as Element, { pointerId: 1, ...pointAtAngle(0) });
+    fireEvent.pointerMove(dial, { pointerId: 1, ...pointAtAngle(90) });
+    fireEvent.pointerUp(dial, { pointerId: 1 });
+
+    expect(screen.getByRole("alert").textContent).toBe("направление не принято");
+    expect(props.onCommit).not.toHaveBeenCalled();
+    expect(onPreview).toHaveBeenLastCalledWith("sparks_direction", undefined);
   });
 });

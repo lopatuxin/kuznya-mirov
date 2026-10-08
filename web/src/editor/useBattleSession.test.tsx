@@ -2,7 +2,6 @@
 import { act, cleanup, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createFakeBattleEngine, type FakeBattleEngine } from "./fakeBattleEngine";
-import type { ParticleTable } from "./particlesFile";
 import { writeProjectFile } from "./projectFileWriter";
 import { useBattleSession, type BattleSessionState } from "./useBattleSession";
 
@@ -10,14 +9,13 @@ vi.mock("./projectFileWriter", () => ({ writeProjectFile: vi.fn(() => Promise.re
 
 const FILE_WIND = [1.5, 0] as const;
 
-function renderSession(engine: FakeBattleEngine, particlesTable: ParticleTable | null = null): { current: BattleSessionState } {
+function renderSession(engine: FakeBattleEngine): { current: BattleSessionState } {
   const { result } = renderHook(() =>
     useBattleSession({
       engine,
       memory: null,
       source: { kind: "listed", name: "qa-wind" },
       sceneAvailable: true,
-      particlesTable,
       loadedSounds: [],
       musicTracks: [],
       audioContext: null,
@@ -59,7 +57,7 @@ describe("useBattleSession: ветер живой игры", () => {
     expect(session.current.liveWind).toEqual(FILE_WIND);
   });
 
-  it("правка на ходу зовёт set_wind_particles, показывает новый ветер сразу и не пишет файл", () => {
+  it("правка на ходу зовёт set_wind, показывает новый ветер сразу и не пишет файл", () => {
     startBattle();
 
     let error: string | undefined;
@@ -68,7 +66,7 @@ describe("useBattleSession: ветер живой игры", () => {
     });
 
     expect(error).toBeUndefined();
-    expect(engine.calls).toEqual(["play", "set_wind_particles [-2,0.5]"]);
+    expect(engine.calls).toEqual(["play", "set_wind [-2,0.5]"]);
     expect(session.current.liveWind).toEqual([-2, 0.5]);
     expect(session.current.canUndoLiveEdit).toBe(true);
     expect(writeProjectFile).not.toHaveBeenCalled();
@@ -80,11 +78,11 @@ describe("useBattleSession: ветер живой игры", () => {
     act(() => session.current.setLiveWind([4, 4]));
 
     act(() => session.current.undoLiveEdit());
-    expect(engine.calls.at(-1)).toBe("set_wind_particles [-2,0.5]");
+    expect(engine.calls.at(-1)).toBe("set_wind [-2,0.5]");
     expect(session.current.liveWind).toEqual([-2, 0.5]);
 
     act(() => session.current.undoLiveEdit());
-    expect(engine.calls.at(-1)).toBe("set_wind_particles [1.5,0]");
+    expect(engine.calls.at(-1)).toBe("set_wind [1.5,0]");
     expect(session.current.liveWind).toEqual(FILE_WIND);
     expect(session.current.canUndoLiveEdit).toBe(false);
     expect(writeProjectFile).not.toHaveBeenCalled();
@@ -98,12 +96,12 @@ describe("useBattleSession: ветер живой игры", () => {
 
     act(() => session.current.undoLiveEdit());
 
-    expect(engine.calls.at(-1)).toBe("set_wind_particles [5,5]");
+    expect(engine.calls.at(-1)).toBe("set_wind [5,5]");
   });
 
   it("движок не принял ветер — возвращается его текст, ветер и история прежние", () => {
     startBattle();
-    engine.setWindParticles.mockReturnValueOnce({ ok: false, error: "ветер не пара конечных чисел" });
+    engine.setWind.mockReturnValueOnce({ ok: false, error: "ветер не пара конечных чисел" });
 
     let error: string | undefined;
     act(() => {
@@ -122,7 +120,7 @@ describe("useBattleSession: ветер живой игры", () => {
     act(() => session.current.setLiveWind([2, 0]));
 
     expect(session.current.isRunning).toBe(false);
-    expect(engine.calls).toEqual(["play", "set_wind_particles [2,0]"]);
+    expect(engine.calls).toEqual(["play", "set_wind [2,0]"]);
     expect(session.current.liveWind).toEqual([2, 0]);
   });
 
@@ -133,7 +131,7 @@ describe("useBattleSession: ветер живой игры", () => {
     });
 
     expect(error).toBeUndefined();
-    expect(engine.setWindParticles).not.toHaveBeenCalled();
+    expect(engine.setWind).not.toHaveBeenCalled();
   });
 
   it("ветер поменял сам мир — например, перезапуск партии с экрана вернул ветер файла — поля показывают его, а не последнюю правку", () => {
@@ -176,15 +174,12 @@ describe("useBattleSession: ветер живой игры", () => {
 
     act(() => session.current.setLiveWind([8, 8]));
 
-    expect(engine.setWindParticles).not.toHaveBeenCalled();
+    expect(engine.setWind).not.toHaveBeenCalled();
     expect(session.current.liveWind).toEqual([-3, 1]);
   });
 });
 
-const FILE_PARTICLES: ParticleTable = { дым: { image: "puff", rate: 6, lifetime: 2, size: 1 }, искры: { image: "spark", rate: 9, lifetime: 1, size: 0.2 } };
-const EDITED_PARTICLES: ParticleTable = { ...FILE_PARTICLES, дым: { image: "puff", rate: 6, lifetime: 2, size: 1, gravity: 2 } };
-
-describe("useBattleSession: виды частиц живой игры", () => {
+describe("useBattleSession: свойства частиц на ходу", () => {
   let engine: FakeBattleEngine;
   let session: { current: BattleSessionState };
 
@@ -193,7 +188,9 @@ describe("useBattleSession: виды частиц живой игры", () => {
     vi.stubGlobal("cancelAnimationFrame", () => {});
     vi.mocked(writeProjectFile).mockClear();
     engine = createFakeBattleEngine();
-    session = renderSession(engine, FILE_PARTICLES);
+    vi.mocked(engine.world_objects).mockReturnValue([{ id: 3, generation: 1, name: null }]);
+    session = renderSession(engine);
+    act(() => session.current.play());
   });
 
   afterEach(() => {
@@ -201,107 +198,49 @@ describe("useBattleSession: виды частиц живой игры", () => {
     vi.unstubAllGlobals();
   });
 
-  function startBattle(): void {
-    act(() => session.current.play());
-  }
+  it("поле уже ставило значение миру на лету: в отмену идёт прежнее из original, а не то, что движок отдаёт сейчас", () => {
+    vi.mocked(engine.object_properties).mockReturnValue({ smoke: 0.9 });
 
-  it("вне партии живых видов нет — поля показывают виды файла", () => {
-    expect(session.current.liveParticles).toBeNull();
-  });
-
-  it("на «Запуске» живые виды — виды файла", () => {
-    startBattle();
-
-    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
-  });
-
-  it("правка на ходу зовёт set_wind_particles с таблицей видов, показывает правку и не пишет файл", () => {
-    startBattle();
-
-    let error: string | undefined;
     act(() => {
-      error = session.current.setLiveParticles(EDITED_PARTICLES);
+      session.current.setLiveProperty(3, "smoke", 0.9, { hadKey: true, previous: 0.5 });
     });
+    act(() => session.current.undoLiveEdit());
 
-    expect(error).toBeUndefined();
-    expect(engine.calls).toEqual(["play", `set_wind_particles particles ${JSON.stringify(EDITED_PARTICLES)}`]);
-    expect(session.current.liveParticles).toEqual(EDITED_PARTICLES);
-    expect(session.current.canUndoLiveEdit).toBe(true);
+    expect(engine.set_property).toHaveBeenLastCalledWith(3, "smoke", 0.5);
     expect(writeProjectFile).not.toHaveBeenCalled();
   });
 
-  it("Ctrl+Z возвращает прежние виды тем же вызовом движка", () => {
-    startBattle();
-    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
+  it("свойства до жеста не было — отмена его снимает", () => {
+    vi.mocked(engine.object_properties).mockReturnValue({ sparks_reach: 2 });
+
+    act(() => {
+      session.current.setLiveProperty(3, "sparks_reach", 2, { hadKey: false, previous: undefined });
+    });
+    act(() => session.current.undoLiveEdit());
+
+    expect(engine.remove_property).toHaveBeenLastCalledWith(3, "sparks_reach");
+  });
+
+  it("«Убрать»: свойства объекта снимаются одной записью, одна отмена возвращает все", () => {
+    vi.mocked(engine.object_properties).mockReturnValue({ position: [1, 1], sparks: 0.5, sparks_reach: 2 });
+
+    act(() => session.current.removeLiveProperties(3, ["sparks", "sparks_reach", "sparks_spread"]));
+
+    expect(engine.remove_property).toHaveBeenCalledTimes(2);
+    expect(engine.remove_property).not.toHaveBeenCalledWith(3, "sparks_spread");
 
     act(() => session.current.undoLiveEdit());
 
-    expect(engine.calls.at(-1)).toBe(`set_wind_particles particles ${JSON.stringify(FILE_PARTICLES)}`);
-    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
+    expect(engine.set_property).toHaveBeenCalledWith(3, "sparks", 0.5);
+    expect(engine.set_property).toHaveBeenCalledWith(3, "sparks_reach", 2);
     expect(session.current.canUndoLiveEdit).toBe(false);
   });
 
-  it("движок не принял виды — возвращается его текст, виды и история прежние", () => {
-    startBattle();
-    engine.setWindParticles.mockReturnValueOnce({ ok: false, error: "дым → rate: должно быть больше нуля" });
+  it("снимать нечего — записи отмены нет", () => {
+    vi.mocked(engine.object_properties).mockReturnValue({ position: [1, 1] });
 
-    let error: string | undefined;
-    act(() => {
-      error = session.current.setLiveParticles(EDITED_PARTICLES);
-    });
+    act(() => session.current.removeLiveProperties(3, ["sparks"]));
 
-    expect(error).toBe("дым → rate: должно быть больше нуля");
-    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
     expect(session.current.canUndoLiveEdit).toBe(false);
-  });
-
-  it("на паузе виды ставятся так же, как на ходу", () => {
-    startBattle();
-    act(() => session.current.pauseOrResume());
-
-    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
-
-    expect(session.current.isRunning).toBe(false);
-    expect(session.current.liveParticles).toEqual(EDITED_PARTICLES);
-  });
-
-  it("«Стоп» возвращает виды файла: живых видов нет, история отмены пуста", () => {
-    startBattle();
-    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
-
-    act(() => session.current.stop());
-
-    expect(session.current.liveParticles).toBeNull();
-    expect(session.current.canUndoLiveEdit).toBe(false);
-  });
-
-  it("новая партия начинается с видов файла, а не с правок прежней", () => {
-    startBattle();
-    act(() => session.current.setLiveParticles(EDITED_PARTICLES));
-    act(() => session.current.stop());
-
-    startBattle();
-
-    expect(session.current.liveParticles).toEqual(FILE_PARTICLES);
-  });
-
-  it("вне партии правка на ходу ничего не делает", () => {
-    act(() => {
-      session.current.setLiveParticles(EDITED_PARTICLES);
-    });
-
-    expect(engine.setWindParticles).not.toHaveBeenCalled();
-  });
-
-  it("в повторе живых видов нет и правка не доходит до движка", () => {
-    startBattle();
-    act(() => session.current.startReplay());
-
-    act(() => {
-      session.current.setLiveParticles(EDITED_PARTICLES);
-    });
-
-    expect(session.current.liveParticles).toBeNull();
-    expect(engine.setWindParticles).not.toHaveBeenCalled();
   });
 });

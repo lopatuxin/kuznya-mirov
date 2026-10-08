@@ -16,7 +16,7 @@ use engine::core::game::Game;
 use engine::core::input::{MouseState, UiQueue};
 use engine::core::property;
 use engine::core::screens::ScreenState;
-use engine::data::load::{load_rest_with_particles, read_entry};
+use engine::data::load::{load_rest_with_stamps, read_entry};
 use engine::data::session::PlaySession;
 
 const VIEWPORT: [f32; 2] = [800.0, 600.0];
@@ -43,8 +43,7 @@ fn load() -> (
     let game_json = read("game.json");
     let (config, _entry_warnings) =
         read_entry(&game_json).expect("game.json демо-тетриса должен разбираться");
-    let particles_text = config.files.particles.as_deref().map(read);
-    let (game, screens, _warnings, _images) = load_rest_with_particles(
+    let (game, screens, _warnings, _images) = load_rest_with_stamps(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -62,7 +61,6 @@ fn load() -> (
         &[],
         &[],
         &[],
-        particles_text.as_deref(),
     )
     .expect("демо-тетрис должен проходить предстартовую проверку");
     (game, screens)

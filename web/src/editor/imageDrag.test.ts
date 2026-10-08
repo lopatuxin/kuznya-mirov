@@ -7,7 +7,7 @@ describe("resolveSceneDropEffect", () => {
     expect(resolveSceneDropEffect([IMAGE_DRAG_TYPE], false)).toBe("none");
   });
 
-  it("вид частиц из вкладки принимается так же, как картинка", () => {
+  it("карточка частиц из вкладки принимается так же, как картинка", () => {
     expect(resolveSceneDropEffect([PARTICLES_DRAG_TYPE], true)).toBe("copy");
     expect(resolveSceneDropEffect([PARTICLES_DRAG_TYPE], false)).toBe("none");
   });

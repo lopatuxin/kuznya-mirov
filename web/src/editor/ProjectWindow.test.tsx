@@ -21,13 +21,15 @@ vi.mock("./SceneCanvas", async () => {
     }: {
       wind: readonly [number, number];
       onWindChange: (wind: readonly [number, number]) => string | undefined;
-      onDropParticles: (kindName: string, x: number, y: number) => void;
+      onDropParticles: (effectId: string, x: number, y: number) => void;
     }) => (
       <>
         <WindFields wind={wind} onWindChange={onWindChange} />
-        <button type="button" onClick={() => onDropParticles("дым", 10, 20)}>
-          бросить вид
-        </button>
+        {["smoke", "sparks", "leaves"].map((effectId) => (
+          <button key={effectId} type="button" onClick={() => onDropParticles(effectId, 10, 20)}>
+            бросить {effectId}
+          </button>
+        ))}
       </>
     ),
   };
@@ -63,7 +65,6 @@ function createSceneEditing(engine: FakeBattleEngine, setSceneWind: SceneEditing
     sceneText: SCENE_TEXT,
     propertiesText: "{}",
     terrainText: null,
-    particlesText: null,
     masks: NO_MASKS,
     saveState: { status: "saved" },
     canUndo: false,
@@ -71,8 +72,6 @@ function createSceneEditing(engine: FakeBattleEngine, setSceneWind: SceneEditing
     setSelectedIndex: noop,
     selectedImprintIndex: null,
     setSelectedImprintIndex: noop,
-    selectedParticleName: null,
-    setSelectedParticleName: noop,
     undo: noop,
     transformObject: noop,
     paintTerrain: noop,
@@ -85,13 +84,9 @@ function createSceneEditing(engine: FakeBattleEngine, setSceneWind: SceneEditing
     setImprintValue: noop,
     copyImprint: noop,
     deleteImprint: noop,
-    setParticleValue: noop,
-    addParticleSource: noop,
-    copyParticleKind: noop,
-    deleteParticleKind: noop,
-    renameParticleKind: noop,
     setPropertyValue: noop,
     removeProperty: noop,
+    removeProperties: noop,
     addProperty: noop,
     declareProperty: noop,
     copyObject: noop,
@@ -155,7 +150,7 @@ describe("окошко «Ветер» в окне проекта: открыто
 
     await waitFor(() => expect(engine.play).toHaveBeenCalled());
     expect(engine.calls).toEqual(["setSceneWind [3,0]", "play"]);
-    expect(engine.setWindParticles).not.toHaveBeenCalled();
+    expect(engine.setWind).not.toHaveBeenCalled();
     expect(windInput("По x").value).toBe("1.5");
   });
 
@@ -178,7 +173,7 @@ describe("окошко «Ветер» в окне проекта: открыто
 
     pressPlayStopShortcut();
 
-    expect(engine.calls).toEqual(["play", "set_wind_particles [-2,0]", "stop"]);
+    expect(engine.calls).toEqual(["play", "set_wind [-2,0]", "stop"]);
     expect(setSceneWind).not.toHaveBeenCalled();
     expect(windInput("По x").value).toBe("1.5");
   });
@@ -192,27 +187,33 @@ describe("окошко «Ветер» в окне проекта: открыто
     act(() => screen.getByRole("button", { name: "Стоп" }).focus());
     fireEvent.click(screen.getByRole("button", { name: "Стоп" }));
 
-    expect(engine.calls).toEqual(["play", "set_wind_particles [1.5,2]", "stop"]);
+    expect(engine.calls).toEqual(["play", "set_wind [1.5,2]", "stop"]);
     expect(setSceneWind).not.toHaveBeenCalled();
   });
 });
 
-const PARTICLES_GAME_JSON_TEXT = '{ "name": "Тест", "scene": { "width": 100, "height": 50 }, "files": { "images": { "puff": {}, "spark": {} }, "particles": "particles.json" } }';
-const PARTICLES_TEXT = '{ "дым": { "image": "puff", "rate": 6, "lifetime": 2, "size": 1 }, "искры": { "image": "spark", "rate": 9, "lifetime": 1, "size": 0.2 } }';
-const PARTICLES_SCENE_TEXT = '{ "wind": [1.5, 0], "objects": [{ "position": [1, 1], "size": [1, 1], "particles": "дым", "layer": 2, "parallax": 0.6 }] }';
+const PARTICLES_GAME_JSON_TEXT = '{ "name": "Тест", "scene": { "width": 100, "height": 50 }, "files": { "images": { "izba": {}, "birch": {} } } }';
+const IZBA = { position: [1, 1], size: [4, 3], image: "izba", layer: 2, parallax: 0.6 };
+const SOURCE = { position: [6, 1], size: [1, 1], smoke: 0.5, sparks: 0.5, sparks_reach: 2, layer: 2 };
+const SOURCE_RECT = { x: 5, y: 15, width: 12, height: 8 };
+const PARTICLES_SCENE_TEXT =JSON.stringify({ wind: [1.5, 0], objects: [IZBA, SOURCE] });
 
 function createParticlesSceneEditing(engine: FakeBattleEngine, overrides: Partial<SceneEditingState> = {}, gameJsonText = PARTICLES_GAME_JSON_TEXT): SceneEditingState {
   const base = createSceneEditing(engine, vi.fn());
   return createSceneEditing(engine, vi.fn(), {
     result: { ...(base.result as Extract<SceneEditingState["result"], { status: "ok" }>), gameJsonText, sceneText: PARTICLES_SCENE_TEXT },
     sceneText: PARTICLES_SCENE_TEXT,
-    particlesText: PARTICLES_TEXT,
+    selectedIndex: 1,
     ...overrides,
   });
 }
 
 function openParticlesTab(): void {
   fireEvent.click(screen.getByRole("tab", { name: "Частицы" }));
+}
+
+function densitySlider(): HTMLInputElement {
+  return screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement;
 }
 
 describe("вкладка «Частицы» в окне проекта", () => {
@@ -241,173 +242,413 @@ describe("вкладка «Частицы» в окне проекта", () => {
     expect(screen.queryByRole("tab", { name: "Частицы" })).toBeNull();
   });
 
-  it("вне партии набор в поле ставит виды движку, Enter пишет файл через действие правки", () => {
-    const setParticleValue = vi.fn();
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { setParticleValue });
+  it("выбранный источник показывает группы «Дым» и «Искры», выбранная изба без частиц — подсказку", () => {
+    sceneEditingMock.current = createParticlesSceneEditing(engine);
     renderWindow();
     openParticlesTab();
 
-    const input = screen.getByLabelText("тяжесть");
-    act(() => input.focus());
-    fireEvent.change(input, { target: { value: "2" } });
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Дым", "Искры"]);
+    cleanup();
 
-    expect(engine.calls.at(-1)).toContain("set_wind_particles particles");
-    expect(JSON.parse(engine.calls.at(-1)?.replace("set_wind_particles particles ", "") ?? "{}").дым.gravity).toBe(2);
-    expect(setParticleValue).not.toHaveBeenCalled();
+    sceneEditingMock.current = createParticlesSceneEditing(engine, { selectedIndex: 0 });
+    renderWindow();
+    openParticlesTab();
 
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(setParticleValue).toHaveBeenCalledWith("дым", "gravity", 2);
+    expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
+    expect(screen.getByText(/Дым и искры перетащите туда, откуда они идут/)).toBeTruthy();
   });
 
-  it("в проекте без загруженной игры набор и Enter не зовут предпросмотр и не пишут «игра не загружена», файл пишется", () => {
-    const setParticleValue = vi.fn();
-    vi.mocked(engine.has_world).mockReturnValue(false);
-    engine.setWindParticles.mockReturnValue({ ok: false, error: "игра не загружена" });
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { setParticleValue });
+  it("вне партии ползунок зовёт set_property на каждое движение, а scene.json пишется один раз — при отпускании", () => {
+    const setPropertyValue = vi.fn();
+    sceneEditingMock.current = createParticlesSceneEditing(engine, { setPropertyValue });
     renderWindow();
     openParticlesTab();
 
-    const input = screen.getByLabelText("тяжесть");
+    fireEvent.input(densitySlider(), { target: { value: "0.7" } });
+    fireEvent.input(densitySlider(), { target: { value: "0.9" } });
+
+    expect(engine.set_property).toHaveBeenCalledTimes(2);
+    expect(engine.set_property).toHaveBeenLastCalledWith(1, "smoke", 0.9);
+    expect(setPropertyValue).not.toHaveBeenCalled();
+
+    fireEvent.change(densitySlider());
+
+    expect(setPropertyValue).toHaveBeenCalledTimes(1);
+    expect(setPropertyValue).toHaveBeenCalledWith(1, "smoke", 0.9);
+  });
+
+  it("ползунок вернули на прежнее значение — файл не пишется", () => {
+    const setPropertyValue = vi.fn();
+    sceneEditingMock.current = createParticlesSceneEditing(engine, { setPropertyValue });
+    renderWindow();
+    openParticlesTab();
+
+    fireEvent.input(densitySlider(), { target: { value: "0.8" } });
+    fireEvent.input(densitySlider(), { target: { value: "0.5" } });
+    fireEvent.change(densitySlider());
+
+    expect(setPropertyValue).not.toHaveBeenCalled();
+  });
+
+  it("число, которое движок не принял, стоит в поле с текстом ошибки, файл не пишется, мир возвращён", () => {
+    const setPropertyValue = vi.fn();
+    vi.mocked(engine.set_property).mockReturnValueOnce({ ok: false, error: "sparks_reach должно быть больше нуля, получено 0" });
+    sceneEditingMock.current = createParticlesSceneEditing(engine, { setPropertyValue });
+    renderWindow();
+    openParticlesTab();
+    const input = screen.getByLabelText("как далеко летят, клеток");
+
     act(() => input.focus());
-    fireEvent.change(input, { target: { value: "2" } });
+    fireEvent.change(input, { target: { value: "0" } });
+    vi.mocked(engine.set_property).mockReturnValueOnce({ ok: false, error: "sparks_reach должно быть больше нуля, получено 0" });
     fireEvent.keyDown(input, { key: "Enter" });
 
-    expect(engine.setWindParticles).not.toHaveBeenCalled();
-    expect(setParticleValue).toHaveBeenCalledWith("дым", "gravity", 2);
+    expect(screen.getByRole("alert").textContent).toBe("как далеко летят, клеток должно быть больше нуля, получено 0");
+    expect(setPropertyValue).not.toHaveBeenCalled();
+    expect(engine.set_property).toHaveBeenLastCalledWith(1, "sparks_reach", 2);
+  });
+
+  describe("перечитывание файлов проекта держат ползунок, круг и число, пока жест идёт", () => {
+    it("ползунок: первое движение закрывает перечитывание, отпускание открывает", () => {
+      const setReloadGateOpen = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { setReloadGateOpen });
+      renderWindow();
+      openParticlesTab();
+
+      fireEvent.input(densitySlider(), { target: { value: "0.7" } });
+      fireEvent.input(densitySlider(), { target: { value: "0.9" } });
+      expect(setReloadGateOpen.mock.calls).toEqual([[false], [false]]);
+
+      fireEvent.change(densitySlider());
+      expect(setReloadGateOpen).toHaveBeenLastCalledWith(true);
+    });
+
+    it("число: от первой набранной цифры до Enter", () => {
+      const setReloadGateOpen = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { setReloadGateOpen });
+      renderWindow();
+      openParticlesTab();
+      const input = screen.getByLabelText("как далеко летят, клеток");
+
+      act(() => input.focus());
+      fireEvent.change(input, { target: { value: "3" } });
+      expect(setReloadGateOpen).toHaveBeenLastCalledWith(false);
+
+      fireEvent.keyDown(input, { key: "Enter" });
+      expect(setReloadGateOpen).toHaveBeenLastCalledWith(true);
+    });
+
+    it("круг: от нажатия на ручку до отпускания", () => {
+      const setReloadGateOpen = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { setReloadGateOpen });
+      renderWindow();
+      openParticlesTab();
+      const dial = screen.getByRole("group", { name: "направление и разброс искр" });
+
+      fireEvent.pointerDown(dial.querySelector("[data-part=direction]") as Element, { pointerId: 1 });
+      expect(setReloadGateOpen).toHaveBeenLastCalledWith(false);
+
+      fireEvent.pointerUp(dial, { pointerId: 1 });
+      expect(setReloadGateOpen).toHaveBeenLastCalledWith(true);
+    });
+
+    it("жест, брошенный пересозданием панели (смена объекта), перечитывание не оставляет закрытым", () => {
+      const setReloadGateOpen = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { setReloadGateOpen });
+      renderWindow();
+      openParticlesTab();
+      fireEvent.input(densitySlider(), { target: { value: "0.7" } });
+      expect(setReloadGateOpen).toHaveBeenLastCalledWith(false);
+
+      cleanup();
+
+      expect(setReloadGateOpen).toHaveBeenLastCalledWith(true);
+    });
+
+    it("в партии ползунок перечитывание не трогает: его держит сама партия", async () => {
+      const setReloadGateOpen = vi.fn();
+      vi.mocked(engine.world_objects).mockReturnValue([{ id: 1, generation: 1, name: null }]);
+      vi.mocked(engine.object_properties).mockImplementation(() => ({ ...SOURCE }));
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { setReloadGateOpen });
+      renderWindow();
+      openParticlesTab();
+      pressPlayStopShortcut();
+      await waitFor(() => expect(engine.play).toHaveBeenCalled());
+      setReloadGateOpen.mockClear();
+
+      fireEvent.input(densitySlider(), { target: { value: "0.7" } });
+      fireEvent.change(densitySlider());
+
+      expect(setReloadGateOpen).not.toHaveBeenCalled();
+    });
+  });
+
+  it("в проекте без загруженной игры движок не зовётся, правка идёт в файл", () => {
+    const setPropertyValue = vi.fn();
+    vi.mocked(engine.has_world).mockReturnValue(false);
+    sceneEditingMock.current = createParticlesSceneEditing(engine, { setPropertyValue });
+    renderWindow();
+    openParticlesTab();
+    const input = screen.getByLabelText("как далеко летят, клеток");
+
+    act(() => input.focus());
+    fireEvent.change(input, { target: { value: "3" } });
+    fireEvent.keyDown(input, { key: "Enter" });
+
+    expect(engine.set_property).not.toHaveBeenCalled();
+    expect(setPropertyValue).toHaveBeenCalledWith(1, "sparks_reach", 3);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("ошибка проверки загрузкой стоит у своего поля, а у вида с ошибкой поля правятся", () => {
-    const errors = [
-      { file: "particles.json", path: "дым → gravity", message: "gravity: должно быть числом", line: null, column: null },
-      { file: "scene.json", path: "objects → 0", message: "чужая ошибка", line: null, column: null },
-    ];
-    const setParticleValue = vi.fn();
-    const gameJsonText = PARTICLES_GAME_JSON_TEXT.replace('"files": {', '"files": { "scene": "scene.json", "properties": "properties.json",');
+  it("«Убрать» снимает все свойства эффекта, которые есть у объекта, одним вызовом правки", () => {
+    const removeProperties = vi.fn();
+    sceneEditingMock.current = createParticlesSceneEditing(engine, { removeProperties });
+    renderWindow();
+    openParticlesTab();
+
+    fireEvent.click(within(screen.getByRole("region", { name: "Искры" })).getByRole("button", { name: "Убрать" }));
+
+    expect(removeProperties).toHaveBeenCalledWith(1, ["sparks", "sparks_reach"]);
+  });
+
+  it("проект со старым particles у объекта показывает ошибку движка во вкладке «Ошибки»", () => {
+    const error = { file: "scene.json", path: "objects → 1", message: 'неизвестное свойство "particles": нет ни среди встроенных, ни в properties.json', line: null, column: null };
     sceneEditingMock.current = {
-      ...createParticlesSceneEditing(engine, { setParticleValue }, gameJsonText),
-      result: { status: "rejected", errors, warnings: [], gameJsonText, sceneText: PARTICLES_SCENE_TEXT },
+      ...createParticlesSceneEditing(engine),
+      result: { status: "rejected", errors: [error], warnings: [], gameJsonText: PARTICLES_GAME_JSON_TEXT, sceneText: PARTICLES_SCENE_TEXT },
     };
-    vi.mocked(engine.has_world).mockReturnValue(false);
     renderWindow();
-    openParticlesTab();
 
-    const alert = screen.getByRole("alert");
-    expect(alert.textContent).toBe("gravity: должно быть числом");
-    expect(alert.closest(".particles-field")?.querySelector("input")).toBe(screen.getByLabelText("тяжесть"));
-
-    const input = screen.getByLabelText("тяжесть");
-    act(() => input.focus());
-    fireEvent.change(input, { target: { value: "1" } });
-    fireEvent.keyDown(input, { key: "Enter" });
-    expect(setParticleValue).toHaveBeenCalledWith("дым", "gravity", 1);
+    expect(screen.getByText(/неизвестное свойство "particles"/)).toBeTruthy();
+    expect(screen.getByText("scene.json: objects → 1")).toBeTruthy();
   });
 
-  it("в партии правка поля ставится живой игре без записи файла, а «Копировать» и «Удалить» неактивны", async () => {
-    const setParticleValue = vi.fn();
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { setParticleValue });
-    renderWindow();
-    openParticlesTab();
-    pressPlayStopShortcut();
-    await waitFor(() => expect(engine.play).toHaveBeenCalled());
+  describe("в партии", () => {
+    beforeEach(() => {
+      vi.mocked(engine.world_objects).mockReturnValue([
+        { id: 0, generation: 1, name: null },
+        { id: 1, generation: 1, name: null },
+      ]);
+      vi.mocked(engine.object_properties).mockImplementation((id: number) => (id === 1 ? { ...SOURCE } : { ...IZBA }));
+    });
 
-    const input = screen.getByLabelText("рост, раз");
-    act(() => input.focus());
-    fireEvent.change(input, { target: { value: "3" } });
-    fireEvent.keyDown(input, { key: "Enter" });
+    async function startBattle(): Promise<void> {
+      pressPlayStopShortcut();
+      await waitFor(() => expect(engine.play).toHaveBeenCalled());
+    }
 
-    expect(setParticleValue).not.toHaveBeenCalled();
-    expect(engine.calls.filter((call) => call.startsWith("set_wind_particles particles")).length).toBeGreaterThanOrEqual(2);
-    expect((screen.getByLabelText("рост, раз") as HTMLInputElement).value).toBe("3");
-    for (const name of ["Копировать", "Удалить"]) expect((screen.getByRole("button", { name }) as HTMLButtonElement).disabled).toBe(true);
+    it("ползунок правит живой мир без записи файла, а Ctrl+Z возвращает значение до жеста одним шагом", async () => {
+      const setPropertyValue = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { setPropertyValue });
+      renderWindow();
+      openParticlesTab();
+      await startBattle();
+
+      fireEvent.input(densitySlider(), { target: { value: "0.7" } });
+      fireEvent.input(densitySlider(), { target: { value: "0.9" } });
+      fireEvent.change(densitySlider());
+
+      expect(setPropertyValue).not.toHaveBeenCalled();
+      expect(engine.set_property).toHaveBeenLastCalledWith(1, "smoke", 0.9);
+
+      fireEvent.keyDown(window, { code: "KeyZ", key: "z", ctrlKey: true });
+
+      expect(engine.set_property).toHaveBeenLastCalledWith(1, "smoke", 0.5);
+    });
+
+    it("«Убрать» снимает свойства из живого мира, одна отмена возвращает их", async () => {
+      sceneEditingMock.current = createParticlesSceneEditing(engine);
+      renderWindow();
+      openParticlesTab();
+      await startBattle();
+
+      fireEvent.click(within(screen.getByRole("region", { name: "Искры" })).getByRole("button", { name: "Убрать" }));
+
+      expect(engine.remove_property).toHaveBeenCalledWith(1, "sparks");
+      expect(engine.remove_property).toHaveBeenCalledWith(1, "sparks_reach");
+
+      fireEvent.keyDown(window, { code: "KeyZ", key: "z", ctrlKey: true });
+
+      expect(engine.set_property).toHaveBeenCalledWith(1, "sparks", 0.5);
+      expect(engine.set_property).toHaveBeenCalledWith(1, "sparks_reach", 2);
+    });
+
+    it("в повторе поля и карточки неактивны", async () => {
+      sceneEditingMock.current = createParticlesSceneEditing(engine);
+      renderWindow();
+      openParticlesTab();
+      await startBattle();
+      pressPlayStopShortcut();
+      fireEvent.click(screen.getByTitle("Повтор и записи партий"));
+      fireEvent.click(screen.getByText("Повтор", { selector: ".tool-menu__item-label, span" }));
+
+      expect(densitySlider().disabled).toBe(true);
+      expect(screen.getAllByRole("listitem")[0]?.getAttribute("draggable")).toBe("false");
+    });
   });
 
-  it("«Стоп» возвращает виды файла в поля", async () => {
-    sceneEditingMock.current = createParticlesSceneEditing(engine);
-    renderWindow();
-    openParticlesTab();
-    pressPlayStopShortcut();
-    await waitFor(() => expect(engine.play).toHaveBeenCalled());
-    const input = screen.getByLabelText("рост, раз");
-    act(() => input.focus());
-    fireEvent.change(input, { target: { value: "3" } });
-    fireEvent.keyDown(input, { key: "Enter" });
+  describe("карточка, отпущенная на сцену", () => {
+    it("дым над источником, у которого дым уже есть, ничего не меняет", () => {
+      const addProperty = vi.fn();
+      const setSelectedIndex = vi.fn();
+      const addObject = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, setSelectedIndex, addObject });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      vi.mocked(engine.object_rect).mockImplementation((id) => (id === 1 ? SOURCE_RECT : undefined));
+      renderWindow();
 
-    pressPlayStopShortcut();
+      fireEvent.click(screen.getByRole("button", { name: "бросить smoke" }));
 
-    expect((screen.getByLabelText("рост, раз") as HTMLInputElement).value).toBe("1");
-  });
+      expect(addProperty).not.toHaveBeenCalled();
+      expect(addObject).not.toHaveBeenCalled();
+      expect(setSelectedIndex).not.toHaveBeenCalled();
+    });
 
-  it("в повторе неактивно всё", async () => {
-    sceneEditingMock.current = createParticlesSceneEditing(engine);
-    renderWindow();
-    openParticlesTab();
-    pressPlayStopShortcut();
-    await waitFor(() => expect(engine.play).toHaveBeenCalled());
-    pressPlayStopShortcut();
-    fireEvent.click(screen.getByTitle("Повтор и записи партий"));
-    fireEvent.click(screen.getByText("Повтор", { selector: ".tool-menu__item-label, span" }));
+    it("искры над источником без картинки и цвета, лежащим на избе, дописываются ему со значением 0,5", () => {
+      const addProperty = vi.fn();
+      const setSelectedIndex = vi.fn();
+      const addObject = vi.fn();
+      const sceneText = JSON.stringify({ objects: [IZBA, { position: [6, 1], size: [1, 1], smoke: 0.5 }] });
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, setSelectedIndex, addObject, sceneText });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      vi.mocked(engine.object_rect).mockImplementation((id) => (id === 1 ? SOURCE_RECT : undefined));
+      renderWindow();
 
-    expect((screen.getByLabelText("рост, раз") as HTMLInputElement).disabled).toBe(true);
-    expect((screen.getByRole("button", { name: "Копировать" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getAllByRole("option")[0]?.getAttribute("draggable")).toBe("false");
-  });
+      fireEvent.click(screen.getByRole("button", { name: "бросить sparks" }));
 
-  it("без файла видов вкладка показывает готовые дым, искры и листья", () => {
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { particlesText: null });
-    renderWindow();
-    openParticlesTab();
+      expect(addProperty).toHaveBeenCalledWith(1, "sparks", 0.5);
+      expect(setSelectedIndex).toHaveBeenCalledWith(1);
+      expect(addObject).not.toHaveBeenCalled();
+    });
 
-    expect(within(screen.getByRole("listbox", { name: "Виды частиц" })).getAllByRole("option").map((card) => card.textContent)).toEqual(["дым", "искры", "листья"]);
-  });
+    it("искры мимо источника, но над избой, создают новый объект", () => {
+      const addObject = vi.fn();
+      const addProperty = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addObject, addProperty });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      vi.mocked(engine.object_rect).mockImplementation((id) => (id === 1 ? { ...SOURCE_RECT, x: 200 } : undefined));
+      renderWindow();
 
-  it("вид, отпущенный на объект, встаёт источником с его layer и parallax — дым на трубе идёт поверх избы", () => {
-    const addParticleSource = vi.fn();
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { addParticleSource });
-    vi.mocked(engine.object_at).mockReturnValue(0);
-    renderWindow();
+      fireEvent.click(screen.getByRole("button", { name: "бросить sparks" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "бросить вид" }));
+      expect(addObject).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], sparks: 0.5, layer: 2, parallax: 0.6 });
+      expect(addProperty).not.toHaveBeenCalled();
+    });
 
-    expect(engine.object_at).toHaveBeenCalledWith(10, 20);
-    expect(engine.scene_point).toHaveBeenCalledWith(10, 20, 0.6);
-    expect(addParticleSource).toHaveBeenCalledWith("дым", { position: [4.5, 2.5], size: [1, 1], particles: "дым", layer: 2, parallax: 0.6 });
-  });
+    it("дым над избой создаёт новый объект 1×1 с smoke 0,5 и слоем избы, серединой под указателем", () => {
+      const addObject = vi.fn();
+      const addProperty = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addObject, addProperty });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      renderWindow();
 
-  it("вид, отпущенный мимо объектов, берёт layer и parallax выбранного", () => {
-    const addParticleSource = vi.fn();
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { addParticleSource, selectedIndex: 0 });
-    renderWindow();
+      fireEvent.click(screen.getByRole("button", { name: "бросить smoke" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "бросить вид" }));
+      expect(engine.scene_point).toHaveBeenCalledWith(10, 20, 0.6);
+      expect(addObject).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], smoke: 0.5, layer: 2, parallax: 0.6 });
+      expect(addProperty).not.toHaveBeenCalled();
+    });
 
-    expect(addParticleSource).toHaveBeenCalledWith("дым", { position: [4.5, 2.5], size: [1, 1], particles: "дым", layer: 2, parallax: 0.6 });
-  });
+    it("дым мимо объектов берёт слой выбранного", () => {
+      const addObject = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addObject, selectedIndex: 0 });
+      renderWindow();
 
-  it("на паузе вид, отпущенный на сцену, становится живым объектом через add_object", async () => {
-    const addObject = vi.fn();
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { addObject });
-    renderWindow();
-    pressPlayStopShortcut();
-    await waitFor(() => expect(engine.play).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole("button", { name: "бросить smoke" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "бросить вид" }));
+      expect(addObject).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], smoke: 0.5, layer: 2, parallax: 0.6 });
+    });
 
-    expect(addObject).not.toHaveBeenCalled();
-    expect(engine.add_object).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], particles: "дым" });
-  });
+    it("листья над берёзой дописываются ей со значением 0,3 и выбирают её; мимо объектов ничего не происходит", () => {
+      const addProperty = vi.fn();
+      const setSelectedIndex = vi.fn();
+      const addObject = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, setSelectedIndex, addObject });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      renderWindow();
 
-  it("в партии готовый вид, которого нет в файле, сначала ставится живой игре, потом встаёт источник", async () => {
-    sceneEditingMock.current = createParticlesSceneEditing(engine, { particlesText: '{ "туман": { "rate": 2, "lifetime": 3, "size": 1 } }' });
-    renderWindow();
-    pressPlayStopShortcut();
-    await waitFor(() => expect(engine.play).toHaveBeenCalled());
+      fireEvent.click(screen.getByRole("button", { name: "бросить leaves" }));
 
-    fireEvent.click(screen.getByRole("button", { name: "бросить вид" }));
+      expect(addProperty).toHaveBeenCalledWith(0, "leaf_fall", 0.3);
+      expect(setSelectedIndex).toHaveBeenCalledWith(0);
+      expect(addObject).not.toHaveBeenCalled();
 
-    const liveTable = engine.setWindParticles.mock.calls.at(-1)?.[0] as { particles?: Record<string, unknown> };
-    expect(Object.keys(liveTable.particles ?? {})).toEqual(["дым", "искры", "листья", "туман"]);
-    expect(engine.setWindParticles.mock.invocationCallOrder.at(-1)).toBeLessThan(vi.mocked(engine.add_object).mock.invocationCallOrder[0] as number);
-    expect(engine.add_object).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], particles: "дым" });
+      addProperty.mockClear();
+      vi.mocked(engine.object_at).mockReturnValue(undefined);
+      fireEvent.click(screen.getByRole("button", { name: "бросить leaves" }));
+
+      expect(addProperty).not.toHaveBeenCalled();
+      expect(addObject).not.toHaveBeenCalled();
+    });
+
+    it("листья не достаются небу и дальним холмам с repeat_x: цель — верхний объект, которому их можно дописать", () => {
+      const addProperty = vi.fn();
+      const setSelectedIndex = vi.fn();
+      const sky = { position: [0, 0], size: [100, 50], image: "sky", repeat_x: true, layer: 5 };
+      const sceneText = JSON.stringify({ objects: [IZBA, sky] });
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, setSelectedIndex, sceneText });
+      vi.mocked(engine.object_at).mockReturnValue(1);
+      vi.mocked(engine.object_rect).mockReturnValue(SOURCE_RECT);
+      renderWindow();
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить leaves" }));
+
+      expect(addProperty).toHaveBeenCalledTimes(1);
+      expect(addProperty).toHaveBeenCalledWith(0, "leaf_fall", 0.3);
+      expect(setSelectedIndex).toHaveBeenCalledWith(0);
+    });
+
+    it("под указателем одно небо с repeat_x или объект без position и size — это мимо объектов, ничего не происходит", () => {
+      const addProperty = vi.fn();
+      const setSelectedIndex = vi.fn();
+      const addObject = vi.fn();
+      const sky = { position: [0, 0], size: [100, 50], image: "sky", repeat_x: true };
+      const sceneText = JSON.stringify({ objects: [sky, { image: "birch" }] });
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, setSelectedIndex, addObject, sceneText });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      vi.mocked(engine.object_rect).mockReturnValue(SOURCE_RECT);
+      renderWindow();
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить leaves" }));
+
+      expect(addProperty).not.toHaveBeenCalled();
+      expect(setSelectedIndex).not.toHaveBeenCalled();
+      expect(addObject).not.toHaveBeenCalled();
+    });
+
+    it("дым над источником с repeat_x нового объекта не пропускает в него: дописать ему нельзя, встаёт новый", () => {
+      const addProperty = vi.fn();
+      const addObject = vi.fn();
+      const sceneText = JSON.stringify({ objects: [IZBA, { position: [6, 1], size: [1, 1], repeat_x: true }] });
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, addObject, sceneText });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      vi.mocked(engine.object_rect).mockImplementation((id) => (id === 1 ? SOURCE_RECT : undefined));
+      renderWindow();
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить smoke" }));
+
+      expect(addProperty).not.toHaveBeenCalled();
+      expect(addObject).toHaveBeenCalledTimes(1);
+    });
+
+    it("на паузе новый источник становится живым объектом через add_object, а существующему эффект ставится живым set_property", async () => {
+      const addObject = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addObject, selectedIndex: 0 });
+      vi.mocked(engine.world_objects).mockReturnValue([{ id: 0, generation: 1, name: null }]);
+      vi.mocked(engine.object_properties).mockImplementation(() => ({ ...IZBA }));
+      renderWindow();
+      pressPlayStopShortcut();
+      await waitFor(() => expect(engine.play).toHaveBeenCalled());
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить smoke" }));
+
+      expect(addObject).not.toHaveBeenCalled();
+      expect(engine.add_object).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], smoke: 0.5, layer: 2, parallax: 0.6 });
+
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      fireEvent.click(screen.getByRole("button", { name: "бросить leaves" }));
+
+      expect(engine.set_property).toHaveBeenCalledWith(0, "leaf_fall", 0.3);
+    });
   });
 });

@@ -1,3 +1,5 @@
+import { PARTICLE_PROPERTY_NAMES } from "./particleEffects";
+
 /** Виды свойств автора — «Формат игры»: `flag`, `number`, `time`, `timer`, `text`. */
 export type PropertyKind = "flag" | "number" | "time" | "timer" | "text";
 
@@ -34,10 +36,11 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "parallax",
   "repeat_x",
   "sway",
+  ...PARTICLE_PROPERTY_NAMES,
 ];
 
 /** Свойства движка, которые есть только в плоской сцене: в трёхмерной «+ свойство» их не предлагает. */
-const FLAT_SCENE_ONLY_PROPERTY_NAMES: readonly string[] = ["sway"];
+const FLAT_SCENE_ONLY_PROPERTY_NAMES: readonly string[] = ["sway", ...PARTICLE_PROPERTY_NAMES];
 
 /**
  * Свойства автора из `properties.json` — имя → вид. Не читается или не разбирается — пустой список:
@@ -62,7 +65,7 @@ export function parsePropertyDeclarations(propertiesText: string | null): Record
 
 /**
  * Подсказки для «+ свойство» — «Редактор», требование 15: свойства движка и объявленные свойства
- * автора, которых у объекта ещё нет, в исходном порядке списков; `sway` — только в плоской сцене.
+ * автора, которых у объекта ещё нет, в исходном порядке списков; `sway` и свойства частиц — только в плоской сцене.
  */
 export function suggestPropertyNames(
   existingKeys: readonly string[],

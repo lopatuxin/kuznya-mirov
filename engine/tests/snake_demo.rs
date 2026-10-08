@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use engine::core::input::StepInput;
 use engine::core::property;
-use engine::data::load::{ImageVerdict, MusicVerdict, load_rest_with_particles, read_entry};
+use engine::data::load::{ImageVerdict, MusicVerdict, load_rest_with_stamps, read_entry};
 
 fn game_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -74,8 +74,7 @@ fn load_demo() -> (
             )
         })
         .collect();
-    let particles_text = config.files.particles.as_deref().map(read);
-    let (game, screens, warnings, _images) = load_rest_with_particles(
+    let (game, screens, warnings, _images) = load_rest_with_stamps(
         &game_json,
         config,
         Some(&read("properties.json")),
@@ -93,7 +92,6 @@ fn load_demo() -> (
         &[],
         &[],
         &[],
-        particles_text.as_deref(),
     )
     .expect("демо-змейка должна проходить предстартовую проверку");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
