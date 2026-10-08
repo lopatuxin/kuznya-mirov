@@ -1,6 +1,6 @@
 use js_sys::{Array, Float64Array, JSON, Object, Reflect, Uint8Array};
 use wasm_bindgen::prelude::*;
-use web_sys::HtmlCanvasElement;
+use web_sys::{HtmlCanvasElement, HtmlVideoElement};
 
 use crate::core::camera::{Camera3d, EditorCamera, FlatEditorCamera};
 use crate::core::game::Game;
@@ -23,8 +23,10 @@ use crate::data::load::{
     self, CoverMask, GameConfig, ImageDecl, ImageVerdict, MaterialDecl, MusicVerdict, NeededMedia,
 };
 use crate::data::session::{self, PlaySession};
+use crate::render::VideoSource;
 use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint};
 use crate::render::materials::Relief;
+use crate::render::particles::OpaqueMask;
 use crate::render::relief::TerrainMesh;
 use crate::render::scene3d::{self, Frame3d};
 use crate::render::wind::Motion;
@@ -611,6 +613,108 @@ fn parse_image_verdicts(
     out
 }
 
+/// Проигрыватель видео по имени картинки из `files.images` и первый кадр видео в RGBA, как его
+/// разжала страница: цвет верхней половины, прозрачность из маски. По нему, как по первому кадру
+/// картинки, лист срывается с непрозрачной точки («Ветер и частицы» → «Листопад»): у места видео
+/// в атласе своих точек нет.
+struct VideoPlayer {
+    name: String,
+    player: HtmlVideoElement,
+    first_frame: Vec<u8>,
+}
+
+/// Reads `videos` — the page's `[{index, verdict: "ok"|"missing"|"rejected", width?, height?, player?:
+/// HTMLVideoElement, pixels?: Uint8Array}, ...]`, numbered the way `read_texts()` numbered `images` —
+/// into `(name, ImageVerdict)` pairs for `load::load_rest` and, apart, the players of the videos the
+/// browser plays. «Картинки» → «Видео»: `width`/`height` are the file's, both layers together;
+/// `pixels` is the first frame, half the file's height; an `"ok"` without a player is read as
+/// `"rejected"`, since there is nothing to play.
+fn parse_video_answers(
+    videos: &JsValue,
+    table: &[(String, String)],
+) -> (Vec<(String, ImageVerdict)>, Vec<VideoPlayer>) {
+    let mut verdicts = Vec::new();
+    let mut players = Vec::new();
+    if videos.is_undefined() || videos.is_null() {
+        return (verdicts, players);
+    }
+    for item in Array::from(videos).iter() {
+        let Some(name) = resolve_indexed_name(&item, table) else {
+            continue;
+        };
+        let verdict = Reflect::get(&item, &JsValue::from_str("verdict"))
+            .ok()
+            .and_then(|v| v.as_string());
+        let player = Reflect::get(&item, &JsValue::from_str("player"))
+            .ok()
+            .and_then(|v| v.dyn_into::<HtmlVideoElement>().ok());
+        let answer = match (verdict.as_deref(), player) {
+            (Some("ok"), Some(player)) => {
+                let first_frame = Reflect::get(&item, &JsValue::from_str("pixels"))
+                    .ok()
+                    .map(|v| Uint8Array::new(&v).to_vec())
+                    .unwrap_or_default();
+                players.push(VideoPlayer {
+                    name: name.clone(),
+                    player,
+                    first_frame,
+                });
+                ImageVerdict::Video {
+                    width: js_finite(&item, "width").map_or(0, |v| v as u32),
+                    height: js_finite(&item, "height").map_or(0, |v| v as u32),
+                }
+            }
+            (Some("ok" | "rejected"), _) => ImageVerdict::Rejected,
+            _ => ImageVerdict::Missing,
+        };
+        verdicts.push((name, answer));
+    }
+    (verdicts, players)
+}
+
+/// «Картинки» → «Видео»: проигрыватели видео игры с местом каждого в атласе. `atlas_images` и
+/// `atlas_rects` идут в порядке `images`; размер файла — кадр, удвоенный по высоте.
+fn video_sources(
+    images: &[ImageDecl],
+    atlas_images: &[atlas::AtlasImage],
+    atlas_rects: &[AtlasRect],
+    mut players: Vec<VideoPlayer>,
+) -> Vec<VideoSource> {
+    let mut sources = Vec::new();
+    for (index, decl) in images.iter().enumerate().filter(|(_, decl)| decl.video) {
+        let at = players
+            .iter()
+            .position(|video| video.name == decl.name)
+            .expect("load_rest succeeded: every declared video has a player");
+        sources.push(VideoSource {
+            player: players.remove(at).player,
+            width: atlas_images[index].width,
+            height: atlas_images[index].height * 2,
+            place: atlas_rects[index],
+        });
+    }
+    sources
+}
+
+/// Маски непрозрачных точек в порядке `images`: у картинки — по её первому кадру в атласе, у видео —
+/// по первому кадру, который разжала страница («Ветер и частицы» → «Листопад»).
+fn opaque_masks(
+    images: &[ImageDecl],
+    atlas_images: &[atlas::AtlasImage],
+    players: &[VideoPlayer],
+) -> Vec<OpaqueMask> {
+    let mut masks = atlas::opaque_masks(atlas_images, images);
+    for (index, decl) in images.iter().enumerate().filter(|(_, decl)| decl.video) {
+        let Some(video) = players.iter().find(|video| video.name == decl.name) else {
+            continue;
+        };
+        let frame = &atlas_images[index];
+        masks[index] =
+            OpaqueMask::of_first_frame(&video.first_frame, frame.width, frame.width, frame.height);
+    }
+    masks
+}
+
 fn js_point(point: [f64; 2]) -> JsValue {
     let pair = Array::new();
     pair.push(&JsValue::from_f64(point[0]));
@@ -1101,6 +1205,7 @@ fn render_world(
 ) -> Result<(), String> {
     match view {
         View::Flat { scale, offset } => {
+            renderer.refresh_videos();
             renderer.set_world_frame(*scale, *offset);
             let visible = game.scene.visible_cell_range(*scale, *offset, viewport);
             let mut world_instances =
@@ -1384,6 +1489,12 @@ impl Engine {
     /// у `images`, по номерам из `read_texts()`'s `materials` и `masks`.
     /// «Лепка рельефа»: `stamps` — `[{name, text: string|null}]`, по одному на штамп из `files.stamps`
     /// `read_entry()`, как `tables`.
+    /// «Картинки» → «Видео»: `videos` — ответы страницы по видео из `files.images` (путь на `.mp4`),
+    /// `[{index, verdict: "ok"|"missing"|"rejected", width?, height?, player?, pixels?}]`, по номерам из
+    /// `read_texts()`'s `images`, как у `images`; при `"ok"` `width` и `height` — размер файла видео,
+    /// оба слоя вместе, `player` — `HTMLVideoElement`: без звука, по кругу, с готовым первым кадром, а
+    /// `pixels` — первый кадр в RGBA с прозрачностью из маски: с его непрозрачных точек срываются листья.
+    /// Ответ по видео в `images` не читается, по картинке в `videos` тоже.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -1401,6 +1512,7 @@ impl Engine {
         material_maps: JsValue,
         cover_masks: JsValue,
         stamps: JsValue,
+        videos: JsValue,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -1426,7 +1538,9 @@ impl Engine {
         let font_bytes = parse_font_bytes(&fonts);
         let sound_bytes = parse_sound_bytes(&sounds, &config.files.sounds);
         let music_verdicts = parse_music_verdicts(&music, &config.files.music);
-        let image_verdicts = parse_image_verdicts(&images, &image_table);
+        let mut image_verdicts = parse_image_verdicts(&images, &image_table);
+        let (video_verdicts, video_players) = parse_video_answers(&videos, &image_table);
+        image_verdicts.extend(video_verdicts);
         let table_texts = parse_table_texts(&tables);
         let stamp_texts = parse_table_texts(&stamps);
         // «Свет и материалы»: те же списки, что отдал `read_texts()`, — ответы страницы идут по номерам.
@@ -1473,7 +1587,6 @@ impl Engine {
                 // the last of them while validation judged the first, so the two could disagree
                 // on which verdict a name actually has. `Vec::remove` takes the entry by value,
                 // so the pixel buffer moves into `AtlasImage` rather than being copied.
-                let mut image_verdicts = image_verdicts;
                 let atlas_images: Vec<atlas::AtlasImage> = image_order
                     .iter()
                     .map(|decl| {
@@ -1494,6 +1607,9 @@ impl Engine {
                                 height,
                                 pixels,
                             },
+                            ImageVerdict::Video { width, height } => {
+                                atlas::AtlasImage::video_frame(width, height / 2)
+                            }
                             ImageVerdict::Missing | ImageVerdict::Rejected => unreachable!(
                                 "load_rest succeeded: every declared image verdict is ok"
                             ),
@@ -1514,9 +1630,18 @@ impl Engine {
                         );
                     }
                 };
+                self.motion.set_opaque_masks(opaque_masks(
+                    &image_order,
+                    &atlas_images,
+                    &video_players,
+                ));
+                self.renderer.set_videos(video_sources(
+                    &image_order,
+                    &atlas_images,
+                    &atlas_rects,
+                    video_players,
+                ));
                 self.atlas_rects = atlas_rects;
-                self.motion
-                    .set_opaque_masks(atlas::opaque_masks(&atlas_images, &image_order));
                 let relief = Relief::new(
                     &material_decls,
                     &map_verdicts,
@@ -1578,6 +1703,7 @@ impl Engine {
         self.rules_path = String::new();
         self.renderer.reset_fonts();
         self.renderer.set_relief(None);
+        self.renderer.set_videos(Vec::new());
         self.session = None;
     }
 
@@ -1644,6 +1770,8 @@ impl Engine {
             .is_some_and(|session| session.is_live() || session.is_replay());
         self.motion.tick(show_ui.then(|| game.step_count()), dt);
         update_motion(&mut self.motion, game, &self.images);
+        self.renderer
+            .set_videos_playing(self.motion.clock_running(dt));
         let (ui_instances, texts) = match (
             show_ui,
             self.screens_config.as_ref(),
@@ -2141,6 +2269,8 @@ impl Engine {
         // без этого мир рисовался бы заглушкой, которую поставил последний `set_scene`/`resize`.
         self.motion.tick(Some(game.step_count()), 0.0);
         update_motion(&mut self.motion, game, &self.images);
+        self.renderer
+            .set_videos_playing(self.motion.clock_running(dt_seconds));
         let view = frame_for(game, self.battle_view, viewport);
         let screen = &config.screens[state.active()];
         let (ui_instances, texts) = compose_ui(

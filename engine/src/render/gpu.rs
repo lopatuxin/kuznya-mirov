@@ -4,6 +4,7 @@ use wgpu::util::DeviceExt;
 use super::atlas::{self, ATLAS_SIZE};
 use super::gpu3d;
 use super::materials::Relief;
+use super::video::{VideoSource, Videos};
 use super::wind;
 use crate::core::screens::{Align, FontId};
 use crate::core::terrain::Cover;
@@ -206,6 +207,9 @@ pub struct Renderer {
     /// «Свет и материалы»: материалы и маски покрытий игры; без них — пустые текстуры.
     materials: gpu3d::MaterialGpu,
     material_options: gpu3d::MaterialOptions,
+    /// «Картинки» → «Видео»: проигрыватели видео игры; их кадры каждую отрисовку пишутся в места
+    /// видео в `atlas_texture`.
+    videos: Videos,
 }
 
 impl Renderer {
@@ -588,6 +592,7 @@ impl Renderer {
             scene3d: None,
             materials,
             material_options,
+            videos: Videos::default(),
         })
     }
 
@@ -659,6 +664,7 @@ impl Renderer {
         &mut self,
         images: &[atlas::AtlasImage],
     ) -> Result<Vec<atlas::AtlasRect>, String> {
+        self.videos.release();
         let packed = atlas::pack(images)?;
         let layers = match self.backend {
             GpuBackend::WebGpu => packed.sheet_count,
@@ -695,6 +701,22 @@ impl Renderer {
             );
         }
         Ok(packed.rects)
+    }
+
+    /// «Картинки» → «Видео»: видео игры, чьи места `build_atlas` только что отдал; пустой список
+    /// останавливает и забывает прежние. Видео, чьё место уже не в атласе, рисовать нечем.
+    pub fn set_videos(&mut self, sources: Vec<VideoSource>) {
+        self.videos.set(&self.device, &self.atlas_texture, sources);
+    }
+
+    /// Кадры видео — в атлас; звать перед отрисовкой кадра плоской сцены.
+    pub fn refresh_videos(&self) {
+        self.videos.refresh(&self.device, &self.queue);
+    }
+
+    /// Часы кадров по времени идут — видео играют, стоят — на паузе.
+    pub fn set_videos_playing(&self, playing: bool) {
+        self.videos.set_playing(playing);
     }
 
     fn recreate_atlas_texture(&mut self, layers: u32) {
@@ -1212,7 +1234,8 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
 
 /// «Картинки» → «Атлас», требование 14: a `D2` texture of `layers` array layers, `ATLAS_SIZE`²
 /// each — shared by `Renderer::new` (the placeholder texture before any game has loaded) and
-/// `Renderer::recreate_atlas_texture` (a real game's own sheet count).
+/// `Renderer::recreate_atlas_texture` (a real game's own sheet count). `RENDER_ATTACHMENT` — в слои
+/// атласа пишет проход видео.
 fn create_atlas_texture(device: &wgpu::Device, layers: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("atlas"),
@@ -1224,11 +1247,17 @@ fn create_atlas_texture(device: &wgpu::Device, layers: u32) -> wgpu::Texture {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: wgpu::TextureFormat::Rgba8Unorm,
-        usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+        format: ATLAS_FORMAT,
+        usage: wgpu::TextureUsages::TEXTURE_BINDING
+            | wgpu::TextureUsages::COPY_DST
+            | wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     })
 }
+
+/// Формат текстуры атласа и текстур файлов видео: `Rgba8Unorm` несёт прозрачность, не умножая цвет на
+/// неё второй раз — точки атласа уже умножены (`atlas::blit`, `shaders/video.wgsl`).
+pub(super) const ATLAS_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Rgba8Unorm;
 
 /// One globals-uniform-plus-atlas bind group, shared by `Renderer::new` (`world_bind_group`/
 /// `ui_bind_group`) and `Renderer::recreate_atlas_texture`, which rebuilds both against a new

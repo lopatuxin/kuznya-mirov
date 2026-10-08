@@ -9,7 +9,12 @@
 
 - Земля — исходник ×1,25, `--fade-ends 48`, куски внахлёст на клетку. Верх тропы на 21,07: самый тонкий кусок, низ `ground_step`, доходит до нижнего края сцены.
 - Лес — ×1,2, `--fade-ends 96`, внахлёст на две клетки; склон с избами — ×1,2, `--fade-ends 192`. Низ леса и разрез под склоном ушли за землю на клетку с лишним: камера поднимается на три клетки, пока земля видна, и слой за ней не открывает неба.
-- Трава переднего плана `fg_grass` и `fg_panicles` — без увеличения, `--fade-ends 144`.
+- Трава переднего плана `fg_grass` и `fg_panicles` — видео игры из роликов нейросети `fg_grass_clip.mp4` и `fg_panicles_clip.mp4` (ролик по картинке `fg_grass.png` и `fg_panicles.png`), без увеличения; петлю программа находит сама — кадры 16–95 и 74–118:
+
+  ```
+  node tools/art/sheet.mjs art/platformer/fg_grass_clip.mp4 games/platformer/images/fg_grass.mp4 --key magenta --fade-ends 48
+  node tools/art/sheet.mjs art/platformer/fg_panicles_clip.mp4 games/platformer/images/fg_panicles.mp4 --key magenta --fade-ends 48
+  ```
 - Небо — высота 1300 точек, `--repeat-x 280`; дальние холмы — ×1,395, `--repeat-x 224`.
 - Остальные куски — по высоте в клетках из `size`.
 - `fg_branch` в уровне нет: при подъёме камеры ветка переднего плана съезжает вниз, и её срез повисает в воздухе.

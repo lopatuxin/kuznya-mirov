@@ -26,6 +26,15 @@ describe("imageFrameSize", () => {
   });
 });
 
+describe("видео в карточке", () => {
+  it("карточка видео — его кадр: размер нового объекта — кадр 1280 × 498 при cell_pixels 96", () => {
+    const frame = imageFrameSize(image("fg_grass", 1280, 498), description({ name: "fg_grass", smooth: true }));
+
+    expect(frame).toEqual([1280, 498]);
+    expect(newObjectSize(frame, description({ name: "fg_grass", smooth: true }), 96)).toEqual([13.33, 5.19]);
+  });
+});
+
 describe("newObjectSize", () => {
   it("кадр в точках, делённый на cell_pixels: 480 × 288 при 96 — [5, 3]", () => {
     expect(newObjectSize([480, 288], description(), 96)).toEqual([5, 3]);

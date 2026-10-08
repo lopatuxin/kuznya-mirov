@@ -6,7 +6,9 @@
 // сеткой: повторяющийся шаг находится сам, а движение без повтора (удар, падение) задаётся
 // номерами кадров через --range. Персонаж в видео должен двигаться на месте при неподвижной
 // камере: все кадры режутся одним общим прямоугольником, и если персонаж идёт через кадр, он
-// будет перемещаться внутри листа. Зависимости ставятся один раз: `npm install` в `tools/art/`.
+// будет перемещаться внутри листа. Видео с выходом `.mp4` становится видео игры двойной высоты:
+// сверху цвет, снизу маска прозрачности; петля без скачка находится сама или задаётся --range.
+// Зависимости ставятся один раз: `npm install` в `tools/art/`.
 
 import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
@@ -18,11 +20,14 @@ import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
-const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--fade-ends P] [--repeat-x P]";
+const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png|.mp4> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--fade-ends P] [--repeat-x P]";
 const MARGIN = 4;
 export const VISIBLE_ALPHA = 26;
 const THUMB_SIZE = 96;
 const MIN_PERIOD = 4;
+const MIN_LOOP = 36;
+const LUMA_EDGE = 0.1;
+const BLEED = 8;
 
 function positiveInt(name, text) {
   if (text === undefined) return undefined;
@@ -69,18 +74,21 @@ export function keyGreen(rgb) {
 /**
  * Точки RGB — в RGBA без ярко-розового фона. Прозрачность — по тому, насколько меньший из красного
  * и синего выше зелёного: у розового высоки оба, у бурой земли и красных цветов — только один.
- * Красный и синий снижаются на этот избыток, чтобы по краю не оставалась розовая кайма.
+ * Красный и синий снижаются на этот избыток, чтобы по краю не оставалась розовая кайма. У видео
+ * (`video`) цвет хранится вдвое грубее яркости, розовый фона заходит на соседние точки травы, и без
+ * него край темнел бы: снятый лишек возвращается тёплым светом той же яркости, 0,5 : 0,4 : 0,25.
  */
-export function keyMagenta(rgb) {
+export function keyMagenta(rgb, video = false) {
   const rgba = Buffer.alloc((rgb.length / 3) * 4);
   for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 4) {
     const red = rgb[src];
     const green = rgb[src + 1];
     const blue = rgb[src + 2];
     const excess = Math.max(0, Math.min(red, blue) - green);
-    rgba[dst] = red - excess;
-    rgba[dst + 1] = green;
-    rgba[dst + 2] = blue - excess;
+    const warm = video ? excess : 0;
+    rgba[dst] = Math.round(red - excess + 0.5 * warm);
+    rgba[dst + 1] = Math.round(green + 0.4 * warm);
+    rgba[dst + 2] = Math.round(blue - excess + 0.25 * warm);
     rgba[dst + 3] = Math.round(255 * (1 - smoothstep(25, 110, excess)));
   }
   return rgba;
@@ -88,42 +96,111 @@ export function keyMagenta(rgb) {
 
 const KEYS = { green: keyGreen, magenta: keyMagenta };
 
+/** Уровень, ниже которого лежит половина точек гистограммы; `undefined`, если она пуста. */
+function histogramMedian(histogram) {
+  const total = histogram.reduce((sum, count) => sum + count, 0);
+  if (total === 0) return undefined;
+  let seen = 0;
+  for (let level = 0; level < histogram.length; level++) {
+    seen += histogram[level];
+    if (seen * 2 >= total) return level;
+  }
+  return histogram.length - 1;
+}
+
+/**
+ * Добавляет к прозрачности кадра видео ключ по яркости. Видео хранит цвет вдвое грубее яркости, и
+ * тонкий тёмный стебель на розовом фоне по цвету наполовину розовый, а по яркости — трава. Уровни
+ * берутся из самого кадра: фон — медиана яркости точек, которые ключ по цвету счёл чистым фоном,
+ * трава — медиана сплошных. Между ними прозрачность растёт по прямой; на десятой доле промежутка от
+ * каждого края — уже 0 и 1. Ключ только добавляет непрозрачность: итог — большее из двух ключей.
+ */
+export function addLumaKey(rgba, luma) {
+  const background = new Array(256).fill(0);
+  const solid = new Array(256).fill(0);
+  for (let i = 0; i < luma.length; i++) {
+    const alpha = rgba[i * 4 + 3];
+    if (alpha === 0) background[luma[i]]++;
+    else if (alpha === 255) solid[luma[i]]++;
+  }
+  const backgroundLevel = histogramMedian(background);
+  const solidLevel = histogramMedian(solid);
+  if (backgroundLevel === undefined || solidLevel === undefined || backgroundLevel === solidLevel) return;
+  const span = backgroundLevel - solidLevel;
+  for (let i = 0; i < luma.length; i++) {
+    const t = (backgroundLevel - luma[i]) / span;
+    const alpha = Math.round(255 * Math.min(1, Math.max(0, (t - LUMA_EDGE) / (1 - 2 * LUMA_EDGE))));
+    if (alpha > rgba[i * 4 + 3]) rgba[i * 4 + 3] = alpha;
+  }
+}
+
+/** Кадр видео в RGBA без фона: ключ по цвету с тёплым краем и ключ по плоскости яркости `luma`. */
+export function keyVideoFrame(rgb, luma, key) {
+  const rgba = KEYS[key](rgb, true);
+  addLumaKey(rgba, luma);
+  return rgba;
+}
+
 export async function removeBackground(file, key) {
   const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   return { rgba: KEYS[key](data), width: info.width, height: info.height };
 }
 
-// Один прямоугольник на все кадры: иначе персонаж прыгал бы внутри листа от кадра к кадру.
-export function visibleBox(images) {
-  const { width, height } = images[0];
+async function keyFrame(frame, key) {
+  const { data, info } = await sharp(frame.color).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  const luma = await sharp(frame.luma).extractChannel(0).raw().toBuffer();
+  return { rgba: keyVideoFrame(data, luma, key), width: info.width, height: info.height };
+}
+
+/** Крайние видимые точки картинки, или `null`, если видимых нет. */
+export function visibleBounds({ rgba, width, height }) {
   let left = width;
   let top = height;
   let right = -1;
   let bottom = -1;
-  for (const { rgba } of images) {
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        if (rgba[(y * width + x) * 4 + 3] < VISIBLE_ALPHA) continue;
-        left = Math.min(left, x);
-        top = Math.min(top, y);
-        right = Math.max(right, x);
-        bottom = Math.max(bottom, y);
-      }
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      if (rgba[(y * width + x) * 4 + 3] < VISIBLE_ALPHA) continue;
+      left = Math.min(left, x);
+      top = Math.min(top, y);
+      right = Math.max(right, x);
+      bottom = Math.max(bottom, y);
     }
   }
-  if (right < 0) throw new Error("после удаления фона ничего не осталось");
-  left = Math.max(0, left - MARGIN);
-  top = Math.max(0, top - MARGIN);
-  right = Math.min(width - 1, right + MARGIN);
-  bottom = Math.min(height - 1, bottom + MARGIN);
+  return right < 0 ? null : { left, top, right, bottom };
+}
+
+function unionBounds(list) {
+  const present = list.filter((bounds) => bounds !== null);
+  if (present.length === 0) throw new Error("после удаления фона ничего не осталось");
+  return {
+    left: Math.min(...present.map((bounds) => bounds.left)),
+    top: Math.min(...present.map((bounds) => bounds.top)),
+    right: Math.max(...present.map((bounds) => bounds.right)),
+    bottom: Math.max(...present.map((bounds) => bounds.bottom)),
+  };
+}
+
+function boxAround(bounds, width, height) {
+  const left = Math.max(0, bounds.left - MARGIN);
+  const top = Math.max(0, bounds.top - MARGIN);
+  const right = Math.min(width - 1, bounds.right + MARGIN);
+  const bottom = Math.min(height - 1, bounds.bottom + MARGIN);
   return { left, top, width: right - left + 1, height: bottom - top + 1 };
 }
 
-export function cutOut({ rgba, width, height }, box, targetHeight) {
+// Один прямоугольник на все кадры: иначе персонаж прыгал бы внутри листа от кадра к кадру.
+export function visibleBox(images) {
+  return boxAround(unionBounds(images.map(visibleBounds)), images[0].width, images[0].height);
+}
+
+function cropped({ rgba, width, height }, box, targetHeight) {
   const image = sharp(rgba, { raw: { width, height, channels: 4 } }).extract(box);
-  return (targetHeight ? image.resize({ height: targetHeight, kernel: "lanczos3" }) : image)
-    .png()
-    .toBuffer({ resolveWithObject: true });
+  return targetHeight ? image.resize({ height: targetHeight, kernel: "lanczos3" }) : image;
+}
+
+export function cutOut(image, box, targetHeight) {
+  return cropped(image, box, targetHeight).png().toBuffer({ resolveWithObject: true });
 }
 
 function runFfmpeg(args) {
@@ -144,10 +221,18 @@ function readFps(input) {
   return Number(match[1]);
 }
 
+/** Кадры видео: цвет и плоскость яркости в полном разрешении — цвет видео хранит вдвое грубее. */
 function extractFrames(input, dir) {
-  const run = runFfmpeg(["-hide_banner", "-loglevel", "error", "-i", input, "-fps_mode", "passthrough", join(dir, "f%06d.png")]);
+  const run = runFfmpeg([
+    "-hide_banner", "-loglevel", "error", "-i", input,
+    "-fps_mode", "passthrough", join(dir, "f%06d.png"),
+    "-vf", "extractplanes=y", "-fps_mode", "passthrough", join(dir, "y%06d.png"),
+  ]);
   if (run.status !== 0) throw new Error(`ffmpeg не разрезал видео: ${lastLine(run.stderr)}`);
-  return readdirSync(dir).filter((name) => name.endsWith(".png")).sort().map((name) => join(dir, name));
+  return readdirSync(dir)
+    .filter((name) => name.startsWith("f") && name.endsWith(".png"))
+    .sort()
+    .map((name) => ({ color: join(dir, name), luma: join(dir, `y${name.slice(1)}`) }));
 }
 
 function meanDifference(a, b) {
@@ -206,6 +291,23 @@ export function findCycle(thumbs) {
   return { start, length: period };
 }
 
+/**
+ * Петля видео игры по эскизам масок кадров: отрезок не короче `MIN_LOOP` кадров, у которого кадр за
+ * последним меньше всего отличается от первого, — с последнего кадра видео переходит на первый как
+ * на следующий. Из равных берётся более короткий.
+ */
+export function findLoop(masks) {
+  let best = { start: 0, length: 0, difference: Infinity };
+  for (let length = MIN_LOOP; length < masks.length; length++) {
+    for (let start = 0; start + length < masks.length; start++) {
+      const difference = meanDifference(masks[start], masks[start + length]);
+      if (difference < best.difference) best = { start, length, difference };
+    }
+  }
+  if (best.length === 0) throw new Error(`в видео меньше ${MIN_LOOP + 1} кадров, петлю не найти — задай кадры через --range`);
+  return best;
+}
+
 /** `count` кадров, равномерно взятых из отрезка `span`. */
 export function pickFrames(span, count) {
   return Array.from({ length: count }, (_, k) => span.start + Math.round((k * span.length) / count));
@@ -220,11 +322,11 @@ async function makeSheet(input, output, options) {
     if (span && span.start + span.length > files.length) throw new Error(`--range выходит за конец видео (кадров в видео: ${files.length})`);
     if (!span) {
       const thumbs = await Promise.all(files.map((file) =>
-        sharp(file).resize(THUMB_SIZE, THUMB_SIZE, { fit: "fill" }).greyscale().raw().toBuffer()));
+        sharp(file.color).resize(THUMB_SIZE, THUMB_SIZE, { fit: "fill" }).greyscale().raw().toBuffer()));
       span = findCycle(thumbs);
     }
     const count = Math.min(options.frames ?? span.length, span.length);
-    const images = await Promise.all(pickFrames(span, count).map((i) => removeBackground(files[i], options.key)));
+    const images = await Promise.all(pickFrames(span, count).map((i) => keyFrame(files[i], options.key)));
     const box = visibleBox(images);
     const frames = await Promise.all(images.map((image) => cutOut(image, box, options.height)));
     const { width: frameWidth, height: frameHeight } = frames[0].info;
@@ -246,18 +348,12 @@ async function makeSheet(input, output, options) {
 /**
  * Плавно гасит левый и правый концы куска земли на `fade` точек от крайней видимой точки. Кусок
  * дорожки, заведённый на соседний на удвоенную длину угасания, ложится на него без шва: погашенный
- * конец одного лежит поверх или под непрозрачной серединой другого.
+ * конец одного лежит поверх или под непрозрачной серединой другого. У видео крайние точки `bounds`
+ * общие для всех кадров, иначе угасание ходило бы вслед за травинками.
  */
-export function fadeEnds(rgba, width, height, fade) {
-  let left = width;
-  let right = -1;
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      if (rgba[(y * width + x) * 4 + 3] < VISIBLE_ALPHA) continue;
-      left = Math.min(left, x);
-      right = Math.max(right, x);
-    }
-  }
+export function fadeEnds(rgba, width, height, fade, bounds = visibleBounds({ rgba, width, height })) {
+  if (bounds === null) return;
+  const { left, right } = bounds;
   for (let y = 0; y < height; y++) {
     for (let x = 0; x < width; x++) {
       const alpha = (y * width + x) * 4 + 3;
@@ -293,6 +389,161 @@ export function wrapEnds(rgba, width, height, overlap) {
     }
   }
   return out;
+}
+
+/**
+ * Дополняет кадр прозрачной строкой сверху и столбцом справа до чётных сторон: видео хранит цвет
+ * по квадратам 2 × 2 точки, и половины видео должны начинаться с целого квадрата.
+ */
+export function padToEven(rgba, width, height) {
+  const outWidth = width + (width % 2);
+  const outHeight = height + (height % 2);
+  if (outWidth === width && outHeight === height) return { rgba, width, height };
+  const out = Buffer.alloc(outWidth * outHeight * 4);
+  const top = outHeight - height;
+  for (let y = 0; y < height; y++) rgba.copy(out, ((y + top) * outWidth) * 4, y * width * 4, (y + 1) * width * 4);
+  return { rgba: out, width: outWidth, height: outHeight };
+}
+
+/**
+ * Под прозрачными точками — продолжение цвета ближайших видимых на `BLEED` точек, дальше чёрный.
+ * Видео сжимает цвет блоками и вдвое грубее яркости: чёрный или розовый под прозрачной точкой
+ * затёк бы на соседний край травы, и он потемнел бы или порозовел. Каждая новая точка берёт средний
+ * цвет уже окрашенных соседей, кольцо за кольцом.
+ */
+export function bleedColor(rgba, width, height) {
+  const filled = new Uint8Array(width * height);
+  for (let i = 0; i < filled.length; i++) {
+    if (rgba[i * 4 + 3] > 0) filled[i] = 1;
+    else rgba.fill(0, i * 4, i * 4 + 3);
+  }
+  const neighbours = (i, visit) => {
+    const x = i % width;
+    const y = (i - x) / width;
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx;
+        const ny = y + dy;
+        if ((dx !== 0 || dy !== 0) && nx >= 0 && nx < width && ny >= 0 && ny < height) visit(ny * width + nx);
+      }
+    }
+  };
+  const queued = new Uint8Array(width * height);
+  let ring = [];
+  for (let i = 0; i < filled.length; i++) {
+    if (filled[i]) continue;
+    neighbours(i, (n) => {
+      if (filled[n] && !queued[i]) {
+        queued[i] = 1;
+        ring.push(i);
+      }
+    });
+  }
+  for (let step = 0; step < BLEED && ring.length > 0; step++) {
+    const colors = ring.map((i) => {
+      const sum = [0, 0, 0];
+      let count = 0;
+      neighbours(i, (n) => {
+        if (!filled[n]) return;
+        for (let c = 0; c < 3; c++) sum[c] += rgba[n * 4 + c];
+        count++;
+      });
+      return sum.map((value) => Math.round(value / count));
+    });
+    ring.forEach((i, k) => {
+      for (let c = 0; c < 3; c++) rgba[i * 4 + c] = colors[k][c];
+      filled[i] = 1;
+    });
+    const next = [];
+    for (const i of ring) {
+      neighbours(i, (n) => {
+        if (filled[n] || queued[n]) return;
+        queued[n] = 1;
+        next.push(n);
+      });
+    }
+    ring = next;
+  }
+}
+
+/** Кадр видео игры в RGB двойной высоты: сверху цвет, снизу прозрачность серым — белое непрозрачно. */
+export function stackColorAndMask(rgba, width, height) {
+  const out = Buffer.alloc(width * height * 2 * 3);
+  const maskStart = width * height * 3;
+  for (let i = 0; i < width * height; i++) {
+    out[i * 3] = rgba[i * 4];
+    out[i * 3 + 1] = rgba[i * 4 + 1];
+    out[i * 3 + 2] = rgba[i * 4 + 2];
+    out.fill(rgba[i * 4 + 3], maskStart + i * 3, maskStart + i * 3 + 3);
+  }
+  return out;
+}
+
+async function maskThumb({ rgba, width, height }) {
+  return sharp(rgba, { raw: { width, height, channels: 4 } })
+    .resize(THUMB_SIZE, THUMB_SIZE, { fit: "fill" })
+    .extractChannel(3)
+    .raw()
+    .toBuffer();
+}
+
+/**
+ * Видео игры из ролика: петля кадров без скачка, фон снят ключами по цвету и яркости, кадр вырезан
+ * одним прямоугольником на все кадры. Каждый кадр выхода — цвет над маской; сжатие H.264 с цветом
+ * sRGB, чтобы браузер отдал маску теми же числами.
+ */
+export async function makeVideo(input, output, options) {
+  const dir = mkdtempSync(join(tmpdir(), "kuznya-video-"));
+  try {
+    const fps = readFps(input);
+    const frames = extractFrames(input, dir);
+    let span = options.range;
+    if (span && span.start + span.length > frames.length) throw new Error(`--range выходит за конец видео (кадров в видео: ${frames.length})`);
+    const bounds = [];
+    const masks = [];
+    let source;
+    for (const frame of frames) {
+      const image = await keyFrame(frame, options.key);
+      source = { width: image.width, height: image.height };
+      bounds.push(visibleBounds(image));
+      if (!span) masks.push(await maskThumb(image));
+    }
+    let jump;
+    if (!span) {
+      const loop = findLoop(masks);
+      span = { start: loop.start, length: loop.length };
+      jump = loop.difference;
+    }
+    const visible = unionBounds(bounds.slice(span.start, span.start + span.length));
+    const box = boxAround(visible, source.width, source.height);
+    const scale = options.height ? options.height / box.height : 1;
+    let size;
+    for (let k = 0; k < span.length; k++) {
+      const image = await keyFrame(frames[span.start + k], options.key);
+      if (options.fade !== undefined) fadeEnds(image.rgba, image.width, image.height, options.fade / scale, visible);
+      const { data, info } = await cropped(image, box, options.height).raw().toBuffer({ resolveWithObject: true });
+      const frame = padToEven(data, info.width, info.height);
+      bleedColor(frame.rgba, frame.width, frame.height);
+      size = { width: frame.width, height: frame.height };
+      await sharp(stackColorAndMask(frame.rgba, frame.width, frame.height), { raw: { width: frame.width, height: frame.height * 2, channels: 3 } })
+        .png({ compressionLevel: 1 })
+        .toFile(join(dir, `v${String(k + 1).padStart(6, "0")}.png`));
+    }
+    const run = runFfmpeg([
+      "-hide_banner", "-loglevel", "error", "-y",
+      "-framerate", String(fps), "-i", join(dir, "v%06d.png"),
+      "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+      "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
+      "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "iec61966-2-1", "-color_range", "tv",
+      "-an", "-movflags", "+faststart", output,
+    ]);
+    if (run.status !== 0) throw new Error(`ffmpeg не собрал видео: ${lastLine(run.stderr)}`);
+    console.log(`кадры видео ${span.start + 1}-${span.start + span.length} из ${frames.length}, длина ${span.length} (${(span.length / fps).toFixed(2)} с)`);
+    if (jump !== undefined) console.log(`скачок на стыке петли: ${jump.toFixed(2)} из 255`);
+    console.log(`кадр ${size.width}×${size.height}, видео ${size.width}×${size.height * 2}`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
 
 async function makeCutout(input, output, height, key, fade, overlap) {
@@ -331,20 +582,29 @@ async function main() {
   const [input, output] = positionals;
   const height = positiveInt("height", values.height);
   if (!Object.hasOwn(KEYS, values.key)) throw new Error(`--key должно быть green или magenta, а не «${values.key}»`);
+  const toVideo = extname(output).toLowerCase() === ".mp4";
   if (!VIDEO_EXTENSIONS.has(extname(input).toLowerCase())) {
+    if (toVideo) throw new Error("видео игры делается только из видео");
     if ([values.frames, values.columns, values.range].some((value) => value !== undefined)) throw new Error("--frames, --columns и --range — только для видео");
     if (values["fade-ends"] !== undefined && values["repeat-x"] !== undefined) throw new Error("--fade-ends и --repeat-x не бывают вместе: гашёные концы повтор не сведёт");
     await makeCutout(input, output, height, values.key, positiveInt("fade-ends", values["fade-ends"]), positiveInt("repeat-x", values["repeat-x"]));
     return;
   }
+  const range = values.range === undefined ? undefined : parseRange(values.range);
+  if (toVideo) {
+    const sheetOnly = ["frames", "columns", "repeat-x"].find((name) => values[name] !== undefined);
+    if (sheetOnly !== undefined) throw new Error(`--${sheetOnly} не бывает у видео игры`);
+    await makeVideo(input, output, { height, key: values.key, range, fade: positiveInt("fade-ends", values["fade-ends"]) });
+    return;
+  }
   const pictureOnly = ["fade-ends", "repeat-x"].find((name) => values[name] !== undefined);
-  if (pictureOnly !== undefined) throw new Error(`--${pictureOnly} — только для картинки`);
+  if (pictureOnly !== undefined) throw new Error(`--${pictureOnly} — только для картинки и видео игры`);
   await makeSheet(input, output, {
     height,
     key: values.key,
     frames: positiveInt("frames", values.frames),
     columns: positiveInt("columns", values.columns) ?? 8,
-    range: values.range === undefined ? undefined : parseRange(values.range),
+    range,
   });
 }
 

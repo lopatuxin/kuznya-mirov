@@ -1360,6 +1360,14 @@ fn parse_ground_layer(
         .and_then(|v| expect_string(v, file, &image_path, errors))?;
     let image = resolve_image(&image_name, images, file, &image_path, errors)?;
     let decl = &images[image];
+    if decl.video {
+        errors.push(
+            file,
+            &image_path,
+            format!("\"{image_name}\" объявлена видео: земля берёт только набор плиток"),
+        );
+        return None;
+    }
     if decl.frame_by.is_some() || decl.animated || decl.size.is_some() {
         errors.push(
             file,
@@ -1999,6 +2007,9 @@ pub struct ImageDecl {
     /// `frame_time` в секундах, как записан в файле; без `frame_time` — 0. Кадры объекта с `sway`
     /// идут своими часами в секундах, и округление до шагов (`frame_steps`) им не годится.
     pub frame_seconds: f64,
+    /// «Картинки» → «Видео»: `path` на `.mp4` — видео двойной высоты (цвет сверху, маска снизу), а
+    /// не картинка; кадров, столбцов и `frame_by` у него нет.
+    pub video: bool,
 }
 
 /// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук» → «Загрузка и проверка»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
@@ -2012,12 +2023,18 @@ pub enum MusicVerdict {
 /// Ответ страницы по одной картинке из `files.images` — «Картинки» → «Загрузка и проверка»:
 /// движок не разжимает PNG сам, страница уже разжала его и отдаёт размер и точки. `Ok`'s `pixels`
 /// is RGBA, four bytes per pixel, straight from `getImageData` — not premultiplied by alpha.
+/// У видео ответ `Video`: браузер взялся его играть, и здесь только размер файла, оба его слоя
+/// вместе; сам проигрыватель движку отдаёт `wasm::Engine::load`.
 #[derive(Debug, Clone)]
 pub enum ImageVerdict {
     Ok {
         width: u32,
         height: u32,
         pixels: Vec<u8>,
+    },
+    Video {
+        width: u32,
+        height: u32,
     },
     Missing,
     Rejected,
@@ -2650,14 +2667,19 @@ fn parse_images_table(
         else {
             continue;
         };
-        if !image_path.to_ascii_lowercase().ends_with(".png") {
+        let lower_path = image_path.to_ascii_lowercase();
+        let video = lower_path.ends_with(VIDEO_EXTENSION);
+        if !video && !lower_path.ends_with(".png") {
             errors.push(
                 file,
                 &join(&entry_path, "path"),
                 format!(
-                    "{image_path} — files.images берёт только PNG; путь должен оканчиваться на \".png\""
+                    "{image_path} — files.images берёт PNG и MP4; путь должен оканчиваться на \".png\" или \"{VIDEO_EXTENSION}\""
                 ),
             );
+            continue;
+        }
+        if video && reject_video_frame_keys(decl_obj, file, &entry_path, errors) {
             continue;
         }
         let frame_by_json = decl_obj.get("frame_by");
@@ -2856,9 +2878,35 @@ fn parse_images_table(
                 .get("frame_time")
                 .and_then(Json::as_f64)
                 .unwrap_or(0.0),
+            video,
         });
     }
     Some(out)
+}
+
+/// «Картинки» → «Видео»: путь на такое окончание — видео, а не PNG.
+const VIDEO_EXTENSION: &str = ".mp4";
+
+/// «Картинки» → «Видео»: у видео нет `frames`, `columns`, `frame_time` и `frame_by` — его кадры это
+/// кадры ролика. Каждый названный ключ — своя ошибка; `true`, если хоть один назван.
+fn reject_video_frame_keys(
+    decl_obj: &serde_json::Map<String, Json>,
+    file: &str,
+    entry_path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    let mut rejected = false;
+    for key in ["frames", "columns", "frame_time", "frame_by"] {
+        if decl_obj.contains_key(key) {
+            errors.push(
+                file,
+                &join(entry_path, key),
+                format!("{key} у видео не бывает: его кадры — кадры ролика"),
+            );
+            rejected = true;
+        }
+    }
+    rejected
 }
 
 /// Необязательный признак описания картинки — `smooth`, `glow`: `true`/`false`, без ключа `false`.
@@ -6751,6 +6799,15 @@ fn resolve_fill(
         (Some(c), None) => Some(Fill::Color(c)),
         (None, Some(name)) => {
             let image = resolve_image(name, images, file, image_path, errors)?;
+            // «Картинки» → «Видео»: видео рисует только объект плоской сцены.
+            if images[image].video {
+                errors.push(
+                    file,
+                    image_path,
+                    format!("\"{name}\" объявлена видео: панель и кнопка её не берут"),
+                );
+                return None;
+            }
             // «Картинки», требование 23: `frame_by` — у картинки панели или кнопки — ошибка.
             if images[image].frame_by.is_some() {
                 errors.push(
@@ -7799,11 +7856,23 @@ fn validate_image_files(
 ) {
     for decl in images {
         let field_path = format!("files → images → {}", decl.name);
-        match image_data
+        let verdict = image_data
             .iter()
             .find(|(n, _)| n == &decl.name)
-            .map(|(_, v)| v)
-        {
+            .map(|(_, v)| v);
+        if decl.video {
+            validate_video_file(decl, verdict, &field_path, errors);
+            continue;
+        }
+        match verdict {
+            Some(ImageVerdict::Video { .. }) => errors.push(
+                "game.json",
+                &field_path,
+                format!(
+                    "{} — страница ответила видео, а картинка объявлена PNG",
+                    decl.path
+                ),
+            ),
             Some(ImageVerdict::Ok {
                 width,
                 height,
@@ -7894,6 +7963,75 @@ fn validate_image_files(
                 ),
             ),
         }
+    }
+}
+
+/// Наибольшая ширина и высота кадра видео, как у картинки: лист атласа — 2048 × 2048 точек.
+const MAX_VIDEO_FRAME_SIDE: u32 = 2048;
+
+/// «Картинки» → «Загрузка и проверка»: файл видео — страница нашла его и браузер берётся его играть;
+/// высота файла чётная (верхняя половина — цвет, нижняя — маска), кадр — ширина файла на половину
+/// высоты — не шире и не выше листа атласа.
+fn validate_video_file(
+    decl: &ImageDecl,
+    verdict: Option<&ImageVerdict>,
+    field_path: &str,
+    errors: &mut ErrorSink,
+) {
+    let message = match verdict {
+        Some(ImageVerdict::Video { width, height }) => {
+            video_size_problem(&decl.path, *width, *height)
+        }
+        Some(ImageVerdict::Ok { .. }) => Some(format!(
+            "{} — страница ответила картинкой, а объявлено видео",
+            decl.path
+        )),
+        Some(ImageVerdict::Rejected) => Some(format!(
+            "{} — исполнитель (браузер) не берётся играть это видео",
+            decl.path
+        )),
+        Some(ImageVerdict::Missing) | None => Some(format!(
+            "файл \"{}\" не найден; ожидалось видео MP4, названное в game.json → files → images",
+            decl.path
+        )),
+    };
+    if let Some(message) = message {
+        errors.push("game.json", field_path, message);
+    }
+}
+
+/// Что не так с размером файла видео `width` × `height`.
+fn video_size_problem(path: &str, width: u32, height: u32) -> Option<String> {
+    if width == 0 || height == 0 {
+        return Some(format!(
+            "{path} — ширина и высота видео должны быть больше нуля, получено {width}×{height}"
+        ));
+    }
+    if !height.is_multiple_of(2) {
+        return Some(format!(
+            "{path} — высота видео {height} нечётная: цвет и маска занимают по половине высоты"
+        ));
+    }
+    let frame_height = height / 2;
+    (width > MAX_VIDEO_FRAME_SIDE || frame_height > MAX_VIDEO_FRAME_SIDE).then(|| {
+        format!(
+            "{path} — кадр видео {width}×{frame_height} шире или выше {MAX_VIDEO_FRAME_SIDE}×{MAX_VIDEO_FRAME_SIDE}"
+        )
+    })
+}
+
+/// «Картинки» → «Видео»: видео рисует только плоская сцена — в трёхмерной любое объявленное видео
+/// ошибка.
+fn validate_videos_in_flat_scene(images: &[ImageDecl], errors: &mut ErrorSink) {
+    for decl in images.iter().filter(|decl| decl.video) {
+        errors.push(
+            "game.json",
+            &format!("files → images → {}", decl.name),
+            format!(
+                "{} — видео в трёхмерной сцене не рисуется: видео берёт только плоская сцена",
+                decl.path
+            ),
+        );
     }
 }
 
@@ -8386,6 +8524,9 @@ pub fn load_rest_with_stamps(
     };
     properties.set_three_d(config.scene.is_3d());
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
+    if config.scene.is_3d() {
+        validate_videos_in_flat_scene(&config.files.images, &mut errors);
+    }
     let stamp_table = parse_stamp_table(&config.files.stamps, stamp_texts, &mut errors);
     match (&config.files.terrain, terrain_text) {
         (Some(path), Some(text)) if config.scene.is_3d() => {

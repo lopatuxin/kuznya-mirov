@@ -838,6 +838,69 @@ fn blank_image(path: &str) -> (u32, u32, Vec<u8>) {
     (width, height, vec![0u8; (width * height * 4) as usize])
 }
 
+/// Боксы MP4, лежащие подряд в `bytes`: тип и содержимое без заголовка. Размер 1 — настоящий размер
+/// восемью байтами следом, 0 — бокс до конца файла.
+fn mp4_boxes(bytes: &[u8]) -> impl Iterator<Item = ([u8; 4], &[u8])> {
+    let mut at = 0;
+    std::iter::from_fn(move || {
+        if at + 8 > bytes.len() {
+            return None;
+        }
+        let size = u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap()) as usize;
+        let kind: [u8; 4] = bytes[at + 4..at + 8].try_into().unwrap();
+        let (header, size) = match size {
+            0 => (8, bytes.len() - at),
+            1 => (
+                16,
+                u64::from_be_bytes(bytes[at + 8..at + 16].try_into().unwrap()) as usize,
+            ),
+            size => (8, size),
+        };
+        let body = &bytes[at + header..at + size];
+        at += size;
+        Some((kind, body))
+    })
+}
+
+fn mp4_child<'a>(bytes: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
+    mp4_boxes(bytes)
+        .find(|(found, _)| found == kind)
+        .map(|(_, body)| body)
+}
+
+/// Размер файла видео `.mp4` из заголовка `tkhd` его видеодорожки (`moov` → `trak` → `tkhd`):
+/// ширина и высота — числа 16.16 в последних восьми байтах заголовка. У звуковой дорожки они нули.
+fn video_file_size(path: &str) -> (u32, u32) {
+    let path = platformer_dir().join(path);
+    let bytes = fs::read(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"));
+    let moov = mp4_child(&bytes, b"moov").unwrap_or_else(|| panic!("в {path:?} нет moov"));
+    for (_, trak) in mp4_boxes(moov).filter(|(kind, _)| kind == b"trak") {
+        let tkhd = mp4_child(trak, b"tkhd").unwrap_or_else(|| panic!("в {path:?} trak без tkhd"));
+        let at = if tkhd[0] == 1 { 88 } else { 76 };
+        let width = u32::from_be_bytes(tkhd[at..at + 4].try_into().unwrap()) >> 16;
+        let height = u32::from_be_bytes(tkhd[at + 4..at + 8].try_into().unwrap()) >> 16;
+        if width > 0 {
+            return (width, height);
+        }
+    }
+    panic!("в {path:?} нет дорожки видео");
+}
+
+/// Что страница ответила бы про файл картинки уровня: у PNG — размер и пустые точки, у видео —
+/// размер файла.
+fn file_verdict(decl: &ImageDecl) -> ImageVerdict {
+    if decl.video {
+        let (width, height) = video_file_size(&decl.path);
+        return ImageVerdict::Video { width, height };
+    }
+    let (width, height, pixels) = blank_image(&decl.path);
+    ImageVerdict::Ok {
+        width,
+        height,
+        pixels,
+    }
+}
+
 /// Уровень грузится целиком, с картинками: страница отдала бы движку их размер и точки, здесь
 /// точки пустые — проверке и атласу важен только размер.
 fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
@@ -852,17 +915,7 @@ fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
         .files
         .images
         .iter()
-        .map(|decl| {
-            let (width, height, pixels) = blank_image(&decl.path);
-            (
-                decl.name.clone(),
-                ImageVerdict::Ok {
-                    width,
-                    height,
-                    pixels,
-                },
-            )
-        })
+        .map(|decl| (decl.name.clone(), file_verdict(decl)))
         .collect();
     let (game, _screens, rest_warnings, images) = load_rest_with_stamps(
         &game_json,
@@ -933,13 +986,18 @@ fn repeated_layers_cover_a_window_of_any_width() {
     let (game, _warnings, images) = platformer();
     let atlas_images: Vec<AtlasImage> = images
         .iter()
-        .map(|decl| {
-            let (width, height, pixels) = blank_image(&decl.path);
-            AtlasImage {
+        .map(|decl| match file_verdict(decl) {
+            ImageVerdict::Ok {
                 width,
                 height,
                 pixels,
-            }
+            } => AtlasImage {
+                width,
+                height,
+                pixels,
+            },
+            ImageVerdict::Video { width, height } => AtlasImage::video_frame(width, height / 2),
+            ImageVerdict::Missing | ImageVerdict::Rejected => unreachable!("файл уровня на месте"),
         })
         .collect();
     let atlas = pack(&atlas_images).expect("картинки уровня умещаются в атлас");

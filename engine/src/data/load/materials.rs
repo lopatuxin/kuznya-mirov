@@ -491,7 +491,7 @@ fn parse_terrain_image(
             height,
             pixels,
         }) => pixel_problem(&text, *width, *height, pixels.len()),
-        Some(ImageVerdict::Rejected) => Some(format!(
+        Some(ImageVerdict::Rejected | ImageVerdict::Video { .. }) => Some(format!(
             "{text} — исполнитель (браузер) не берётся разжимать этот файл"
         )),
         Some(ImageVerdict::Missing) | None => {
@@ -539,7 +539,7 @@ pub(super) fn validate_material_files(
                     pixels,
                 }) => pixel_problem(path, *width, *height, pixels.len())
                     .or_else(|| side_problem(path, *width, *height, &mut reference)),
-                Some(ImageVerdict::Rejected) => Some(format!(
+                Some(ImageVerdict::Rejected | ImageVerdict::Video { .. }) => Some(format!(
                     "{path} — исполнитель (браузер) не берётся разжимать этот файл"
                 )),
                 Some(ImageVerdict::Missing) | None => Some(format!(

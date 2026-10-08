@@ -1,10 +1,17 @@
 import { decodeImage, type DecodedImage } from "./imageLoader";
+import { decodeVideo, type DecodedVideo } from "./videoLoader";
 
 export type ImageEntry = { index: number; name: string; path: string };
 /** Карта материала и маска покрытия читаются как картинки, но имени у них нет — «Свет и материалы», «Загрузка». */
 export type ImageFileEntry = { index: number; path: string };
 export type LoadedImage = { index: number; path: string; bytes: Uint8Array | null };
 export type ImagePayloadEntry = { index: number } & DecodedImage;
+export type VideoPayloadEntry = { index: number } & DecodedVideo;
+
+/** Запись `files.images` с `path` на `.mp4` — видео, остальные — картинки («Картинки» → «Таблица картинок»). */
+export function isVideoPath(path: string): boolean {
+  return path.toLowerCase().endsWith(".mp4");
+}
 
 /**
  * По одному файлу на запись `read_texts().images` — все объявленные картинки, всегда: движок
@@ -27,4 +34,10 @@ export async function fetchImageBytes(
 export async function buildImagePayload(loaded: LoadedImage[]): Promise<ImagePayloadEntry[]> {
   const decoded = await Promise.all(loaded.map((image) => decodeImage(image.bytes)));
   return loaded.map((image, i) => ({ index: image.index, ...decoded[i] }));
+}
+
+/** Приговор и проигрыватель на каждое видео — «Картинки» → «Видео»: проигрыватель заводит браузер, движок получает его по номеру. */
+export async function buildVideoPayload(loaded: LoadedImage[]): Promise<VideoPayloadEntry[]> {
+  const decoded = await Promise.all(loaded.map((video) => decodeVideo(video.bytes)));
+  return loaded.map((video, i) => ({ index: video.index, ...decoded[i] }));
 }

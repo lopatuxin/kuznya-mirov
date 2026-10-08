@@ -1,6 +1,15 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
-import { fadeEnds, findCycle, keyGreen, keyMagenta, parseRange, pickFrames, wrapEnds } from "./sheet.mjs";
+import ffmpegPath from "ffmpeg-static";
+import sharp from "sharp";
+import {
+  bleedColor, fadeEnds, findCycle, findLoop, keyGreen, keyMagenta, keyVideoFrame, makeVideo, padToEven, parseRange,
+  pickFrames, stackColorAndMask, wrapEnds,
+} from "./sheet.mjs";
 
 const THUMB = 64;
 
@@ -54,6 +63,130 @@ describe("keyMagenta", () => {
     const [red, green, blue, alpha] = keyMagenta(Buffer.from([180, 100, 170]));
     assert.deepEqual([red, green, blue], [110, 100, 100]);
     assert.ok(alpha > 0 && alpha < 255, `прозрачность ${alpha}`);
+  });
+});
+
+describe("keyMagenta у видео", () => {
+  it("снятый с края розовый лишек возвращается тёплым светом в доле 0,5 : 0,4 : 0,25", () => {
+    // Лишек розового над зелёным — 70: у картинки он просто снимается, у видео часть возвращается.
+    const pixel = Buffer.from([180, 100, 170]);
+    const plain = keyMagenta(pixel);
+    const warm = keyMagenta(pixel, true);
+    assert.equal(warm[0] - plain[0], 35);
+    assert.equal(warm[1] - plain[1], 28);
+    assert.ok(Math.abs(warm[2] - plain[2] - 17.5) <= 0.5, `синий ${warm[2] - plain[2]}`);
+    assert.equal(warm[3], plain[3]);
+  });
+});
+
+describe("keyVideoFrame", () => {
+  // Десять точек розового фона яркостью 102 и десять точек травы яркостью 30 задают уровни ключа.
+  const BACKGROUND = [226, 45, 225];
+  const GRASS = [40, 90, 30];
+  function frame(extra) {
+    const pixels = [...Array(10).fill(BACKGROUND), ...Array(10).fill(GRASS), ...extra.map(([color]) => color)];
+    const luma = [...Array(10).fill(102), ...Array(10).fill(30), ...extra.map(([, level]) => level)];
+    return keyVideoFrame(Buffer.from(pixels.flat()), Uint8Array.from(luma), "magenta");
+  }
+  const alphaAt = (rgba, index) => rgba[index * 4 + 3];
+
+  it("тёмный стебель розового цвета с яркостью травы получает полную непрозрачность", () => {
+    assert.equal(alphaAt(frame([[[150, 40, 140], 30]]), 20), 255);
+  });
+
+  it("чистый розовый фон остаётся прозрачным", () => {
+    assert.equal(alphaAt(frame([[BACKGROUND, 102]]), 20), 0);
+  });
+
+  it("точка ровно посередине яркостей фона и травы — наполовину прозрачная", () => {
+    const alpha = alphaAt(frame([[BACKGROUND, 66]]), 20);
+    assert.ok(Math.abs(alpha - 128) <= 1, `прозрачность ${alpha}`);
+  });
+
+  it("у краёв промежутка яркостей — уже 0 и 1", () => {
+    // Промежуток 72, его десятая доля — 7,2: яркость 37 уже трава, 95 — ещё фон.
+    const rgba = frame([[BACKGROUND, 37], [BACKGROUND, 95]]);
+    assert.equal(alphaAt(rgba, 20), 255);
+    assert.equal(alphaAt(rgba, 21), 0);
+  });
+});
+
+describe("findLoop", () => {
+  it("находит длину повтора искусственной последовательности", () => {
+    const masks = Array.from({ length: 120 }, (_, i) => flat((i % 40) * 6));
+    assert.equal(findLoop(masks).length, 40);
+  });
+
+  it("не берёт петлю короче полутора секунд: повтор через 20 кадров даёт петлю в два повтора", () => {
+    const masks = Array.from({ length: 80 }, (_, i) => flat((i % 20) * 10));
+    assert.equal(findLoop(masks).length, 40);
+  });
+
+  it("сообщает, что кадров на петлю мало", () => {
+    assert.throws(() => findLoop(Array.from({ length: 36 }, () => flat(0))), /--range/);
+  });
+});
+
+describe("bleedColor", () => {
+  it("продолжает цвет видимой точки под прозрачные на 8 точек, дальше чёрный", () => {
+    const rgba = Buffer.alloc(12 * 4);
+    rgba.set([200, 100, 50, 255], 0);
+    for (let x = 1; x < 12; x++) rgba.set([226, 45, 225, 0], x * 4);
+    bleedColor(rgba, 12, 1);
+    const colorAt = (x) => [...rgba.subarray(x * 4, x * 4 + 4)];
+    assert.deepEqual(colorAt(0), [200, 100, 50, 255]);
+    assert.deepEqual(colorAt(1), [200, 100, 50, 0]);
+    assert.deepEqual(colorAt(8), [200, 100, 50, 0]);
+    assert.deepEqual(colorAt(9), [0, 0, 0, 0]);
+  });
+});
+
+describe("padToEven", () => {
+  it("дополняет нечётные стороны прозрачной строкой сверху и столбцом справа", () => {
+    const rgba = Buffer.from([...Array(3)].flatMap(() => [10, 20, 30, 255]));
+    const out = padToEven(rgba, 3, 1);
+    assert.equal(out.width, 4);
+    assert.equal(out.height, 2);
+    assert.deepEqual([...out.rgba.subarray(0, 16)], Array(16).fill(0));
+    assert.deepEqual([...out.rgba.subarray(16, 20)], [10, 20, 30, 255]);
+    assert.deepEqual([...out.rgba.subarray(28, 32)], [0, 0, 0, 0]);
+  });
+});
+
+describe("stackColorAndMask", () => {
+  it("кладёт цвет сверху, а прозрачность серым под ним", () => {
+    const rgba = Buffer.from([200, 100, 50, 255, 7, 8, 9, 0]);
+    assert.deepEqual([...stackColorAndMask(rgba, 2, 1)], [200, 100, 50, 7, 8, 9, 255, 255, 255, 0, 0, 0]);
+  });
+});
+
+describe("makeVideo", () => {
+  it("делает видео двойной высоты с чётными половинами и маской травы снизу", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kuznya-video-test-"));
+    try {
+      // Тёмно-зелёный прямоугольник нечётного размера на розовом фоне, 48 кадров.
+      const clip = join(dir, "clip.mp4");
+      const make = spawnSync(ffmpegPath, [
+        "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0xE22DE1:s=64x48:r=24:d=2",
+        "-vf", "drawbox=x=21:y=15:w=21:h=11:color=0x1E3C14:t=fill", "-c:v", "libx264", "-pix_fmt", "yuv420p", clip,
+      ], { encoding: "utf8" });
+      assert.equal(make.status, 0, make.stderr);
+      const output = join(dir, "out.mp4");
+      await makeVideo(clip, output, { key: "magenta", range: parseRange("1-40") });
+
+      const first = join(dir, "first.png");
+      const decode = spawnSync(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-i", output, "-frames:v", "1", first], { encoding: "utf8" });
+      assert.equal(decode.status, 0, decode.stderr);
+      const { data, info } = await sharp(first).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+      const half = info.height / 2;
+      assert.equal(info.width % 2, 0);
+      assert.equal(half % 2, 0);
+      const red = (x, y) => data[(y * info.width + x) * 3];
+      assert.ok(red(info.width / 2, half + half / 2) > 230, `маска травы ${red(info.width / 2, half + half / 2)}`);
+      assert.ok(red(1, half + 1) < 30, `маска фона ${red(1, half + 1)}`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

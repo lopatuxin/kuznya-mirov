@@ -1,5 +1,6 @@
 import init, { Engine } from "engine";
 import { useEffect, useRef, useState, type RefObject } from "react";
+import { createVideoPlayerKeeper } from "../images/videoLoader";
 import { loadProject, type ProjectLoadResult } from "../projectLoader";
 import { hideWebGpuIfRequested, logEngineBackend } from "../renderBackend";
 import { createCachingProjectFileReader, createOverridingReader } from "./cachingProjectFileReader";
@@ -127,6 +128,8 @@ export function useProjectEngine(
     let disposeDebouncer: (() => void) | null = null;
     let createdEngine: Engine | null = null;
     let createdAudioContext: AudioContext | null = null;
+    // Проигрыватели видео проекта: каждая загрузка отпускает прежние, закрытие проекта — последние.
+    const videoPlayers = createVideoPlayerKeeper();
     // Одна таблица путь → отпечаток на весь открытый проект («Редактор», требование 32): опрос
     // пересоздаётся на каждой загрузке, а эта таблица — нет, иначе отпечаток нового опроса не с
     // чем сравнить и правка между чтением файла загрузкой и первым тиком опроса теряется.
@@ -201,7 +204,7 @@ export function useProjectEngine(
         if (gameJsonText === null) {
           loadResult = { status: "entry-missing" };
         } else {
-          loadResult = await loadProject(engineInstance, reader, gameJsonText, () => audioContext);
+          loadResult = await loadProject(engineInstance, reader, gameJsonText, () => audioContext, videoPlayers);
           if (cancelled) return;
           // «Редактор», требование 16: собирает мир из сцены заново только на успешной загрузке —
           // без неё `show_scene` было бы нечего собирать, движок сам ничего не делает.
@@ -251,7 +254,7 @@ export function useProjectEngine(
           if (edited.propertiesText !== undefined) overrides[paths.properties] = edited.propertiesText;
           if (edited.terrainText !== undefined && edited.terrainText !== null && paths.terrain !== null) overrides[paths.terrain] = edited.terrainText;
           const overrideReader = createOverridingReader(cache.cachedReader, overrides, edited.maskFiles);
-          const loadResult = await loadProject(engineInstance, overrideReader, gameJsonText, () => audioContext);
+          const loadResult = await loadProject(engineInstance, overrideReader, gameJsonText, () => audioContext, videoPlayers);
           if (cancelled) return loadResult;
           if (loadResult.status === "ok") showScene();
           setResult(loadResult);
@@ -316,6 +319,7 @@ export function useProjectEngine(
       setMemory(null);
       void activeQueueTail.finally(() => {
         createdEngine?.free();
+        videoPlayers.releaseAll();
         createdAudioContext?.close().catch(() => {});
       });
     };

@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { EngineError } from "./engineErrors";
 import { createRecordingProjectFileReader } from "./editor/recordingProjectFileReader";
+import { FakeVideo } from "./images/fakeVideo";
+import { createVideoPlayerKeeper } from "./images/videoLoader";
 import { loadProject, type ProjectFileReader, type ProjectLoadEngine } from "./projectLoader";
 
 const NO_WARNINGS: EngineError[] = [];
@@ -123,6 +125,7 @@ describe("loadProject", () => {
       [],
       [],
       [],
+      [],
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -176,6 +179,7 @@ describe("loadProject", () => {
       [],
       [],
       [],
+      [],
     );
   });
 
@@ -220,7 +224,7 @@ describe("loadProject", () => {
 
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
 
-      expect(load.mock.calls[0]).toHaveLength(14);
+      expect(load.mock.calls[0]).toHaveLength(15);
       expect(load.mock.calls[0]?.[10]).toBeUndefined();
       expect(readText).not.toHaveBeenCalledWith("terrain.json");
     });
@@ -235,7 +239,7 @@ describe("loadProject", () => {
   });
 
   describe("частицы без файла видов", () => {
-    it("particles.json не читается, а load получает ровно четырнадцать аргументов", async () => {
+    it("particles.json не читается, а load получает ровно пятнадцать аргументов", async () => {
       const load = vi.fn(() => ({ ok: true, warnings: NO_WARNINGS }));
       const engine: ProjectLoadEngine = {
         read_entry: vi.fn(() => ({
@@ -251,7 +255,7 @@ describe("loadProject", () => {
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
 
       expect(readText).not.toHaveBeenCalledWith("particles.json");
-      expect(load.mock.calls[0]).toHaveLength(14);
+      expect(load.mock.calls[0]).toHaveLength(15);
     });
   });
 
@@ -437,6 +441,150 @@ describe("loadProject", () => {
       ];
       expect(load.mock.calls[0]?.[13]).toEqual(expected);
       expect(result.status === "ok" && result.stamps).toEqual(expected);
+    });
+  });
+
+  describe("видео files.images", () => {
+    const files: Record<string, string | Uint8Array> = {
+      "game.json": "{}",
+      "properties.json": "{}",
+      "scene.json": '{"objects":[]}',
+      "rules.json": "{}",
+      "screens.json": "{}",
+      "images/head.png": new Uint8Array([1]),
+      "images/grass.mp4": new Uint8Array([2]),
+    };
+    let players: FakeVideo[] = [];
+
+    /** `brokenImage` — разбор PNG 1 × 1 падает исключением на чтении точек, кадр видео 4 × 4 читается. */
+    function stubBrowser({ brokenImage = false } = {}): void {
+      players = [];
+      const bitmap = { width: 1, height: 1, close: vi.fn() };
+      vi.stubGlobal("createImageBitmap", vi.fn(async () => bitmap));
+      const getImageData = (_x: number, _y: number, width: number, height: number) => {
+        if (brokenImage && width === 1) throw new Error("не хватило памяти");
+        return { data: new Uint8ClampedArray(width * height * 4) };
+      };
+      vi.stubGlobal("document", {
+        createElement: (tag: string) => {
+          if (tag === "video") {
+            const player = new FakeVideo("loadeddata", 4, 4);
+            players.push(player);
+            return player;
+          }
+          return { width: 0, height: 0, getContext: () => ({ drawImage: vi.fn(), getImageData }) };
+        },
+      } as unknown as Document);
+      vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:video");
+      vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+    }
+
+    function createEngine(loadResult: { ok: true; warnings: EngineError[] } | { ok: false; errors: EngineError[]; warnings: EngineError[] }) {
+      const load = vi.fn((..._args: unknown[]) => loadResult);
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] },
+          warnings: NO_WARNINGS,
+        })),
+        // Номера из read_texts — дело движка, нарочно не по порядку.
+        read_texts: vi.fn(() => ({
+          fonts: [],
+          sounds: [],
+          music: [],
+          images: [
+            { index: 3, name: "grass", path: "images/grass.mp4" },
+            { index: 1, name: "head", path: "images/head.png" },
+            { index: 6, name: "gone", path: "images/gone.MP4" },
+          ],
+          materials: [],
+          masks: [],
+        })),
+        load,
+      };
+      return { engine, load };
+    }
+
+    it(".mp4 уходит в load только пятнадцатым аргументом: проигрыватель, размер файла и точки первого кадра при ok, missing без файла; PNG — только в images", async () => {
+      stubBrowser();
+      const { engine, load } = createEngine({ ok: true, warnings: NO_WARNINGS });
+
+      await loadProject(engine, createReader(files), "{}", stubAudioContext);
+
+      const args = load.mock.calls[0] ?? [];
+      expect(args[7]).toEqual([expect.objectContaining({ index: 1, verdict: "ok" })]);
+      // Кадр файла 4 × 4 — 4 × 2 точки по четыре байта: по ним движок решает, откуда срываются листья.
+      expect((args[14] as { pixels: Uint8Array }[])[0]?.pixels).toHaveLength(4 * 2 * 4);
+      expect(args[14]).toEqual([
+        { index: 3, verdict: "ok", width: 4, height: 4, player: players[0], pixels: expect.any(Uint8Array) },
+        { index: 6, verdict: "missing" },
+      ]);
+    });
+
+    it("редактору видео достаётся кадром: ширина файла, половина высоты и своё имя; картинка — как раньше", async () => {
+      stubBrowser();
+      const { engine } = createEngine({ ok: true, warnings: NO_WARNINGS });
+
+      const result = await loadProject(engine, createReader(files), "{}", stubAudioContext);
+
+      if (result.status !== "ok") throw new Error("unreachable");
+      expect(result.images.map(({ name, width, height }) => ({ name, width, height }))).toEqual([
+        { name: "grass", width: 4, height: 2 },
+        { name: "head", width: 1, height: 1 },
+      ]);
+    });
+
+    it("новая загрузка с тем же хранителем отпускает прежние проигрыватели, но не свои", async () => {
+      stubBrowser();
+      const { engine } = createEngine({ ok: true, warnings: NO_WARNINGS });
+      const keeper = createVideoPlayerKeeper();
+
+      await loadProject(engine, createReader(files), "{}", stubAudioContext, keeper);
+      await loadProject(engine, createReader(files), "{}", stubAudioContext, keeper);
+
+      expect(players).toHaveLength(2);
+      expect(players[0]?.pause).toHaveBeenCalled();
+      expect(players[0]?.removeAttribute).toHaveBeenCalledWith("src");
+      expect(players[1]?.pause).not.toHaveBeenCalled();
+    });
+
+    it("отказ load освобождает и новые проигрыватели, и прежние", async () => {
+      stubBrowser();
+      const keeper = createVideoPlayerKeeper();
+      await loadProject(createEngine({ ok: true, warnings: NO_WARNINGS }).engine, createReader(files), "{}", stubAudioContext, keeper);
+      const errors: EngineError[] = [{ file: "game.json", path: "files → images → grass", message: "плохо", line: null, column: null }];
+
+      const result = await loadProject(createEngine({ ok: false, errors, warnings: NO_WARNINGS }).engine, createReader(files), "{}", stubAudioContext, keeper);
+
+      expect(result.status).toBe("rejected");
+      expect(players).toHaveLength(2);
+      expect(players[0]?.pause).toHaveBeenCalled();
+      expect(players[1]?.pause).toHaveBeenCalled();
+    });
+
+    it("исключение в load освобождает новые проигрыватели и уходит дальше", async () => {
+      stubBrowser();
+      const { engine } = createEngine({ ok: true, warnings: NO_WARNINGS });
+      engine.load = vi.fn(() => {
+        throw new Error("движок упал");
+      });
+
+      await expect(loadProject(engine, createReader(files), "{}", stubAudioContext)).rejects.toThrow("движок упал");
+
+      expect(players).toHaveLength(1);
+      expect(players[0]?.pause).toHaveBeenCalled();
+      expect(players[0]?.removeAttribute).toHaveBeenCalledWith("src");
+    });
+
+    it("сбой разбора картинки рядом с видео освобождает проигрыватель видео", async () => {
+      stubBrowser({ brokenImage: true });
+      const { engine, load } = createEngine({ ok: true, warnings: NO_WARNINGS });
+
+      await expect(loadProject(engine, createReader(files), "{}", stubAudioContext)).rejects.toThrow("не хватило памяти");
+
+      expect(load).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(players[0]?.pause).toHaveBeenCalled());
+      expect(players[0]?.removeAttribute).toHaveBeenCalledWith("src");
     });
   });
 

@@ -16,6 +16,9 @@ const MAX_FRAME_SECONDS: f64 = 0.1;
 /// «Часы движения», требование 18: часы, ушедшие вперёд больше чем на столько шагов разом (две
 /// секунды), начинают качание заново.
 const MAX_JUMP_STEPS: f64 = 2.0 * STEPS_PER_SECOND;
+/// «Видео на объекте», требование 5: часы, не сдвинувшиеся столько секунд, стоят. Больше паузы между
+/// шагами мира на частом экране, иначе видео дёргалось бы между запуском и остановкой.
+const CLOCK_GRACE_SECONDS: f64 = 0.1;
 
 const DAMPING: f64 = 0.3;
 const MAX_LEAN_OF_HEIGHT: f64 = 0.7;
@@ -178,12 +181,28 @@ pub struct Motion {
     compare_look: bool,
     /// «Ветер и частицы» → «Частицы»: источники и частицы идут по тем же часам.
     particles: Particles,
+    /// Часы, какими их видел последний [`Motion::clock_running`], и сколько секунд после их
+    /// последнего сдвига они ещё считаются идущими.
+    watched_steps: f64,
+    running_grace: f64,
 }
 
 impl Motion {
     /// Часы, в шагах, — по ним кадры по времени выбирают кадр.
     pub fn clock_steps(&self) -> f64 {
         self.clock_steps
+    }
+
+    /// «Видео на объекте», требование 5: идут ли часы — звать раз в кадр, `frame_seconds` — сколько
+    /// длился кадр. Идут, если сдвинулись за последние [`CLOCK_GRACE_SECONDS`]; до первого сдвига стоят.
+    pub fn clock_running(&mut self, frame_seconds: f64) -> bool {
+        if self.clock_steps != self.watched_steps {
+            self.watched_steps = self.clock_steps;
+            self.running_grace = CLOCK_GRACE_SECONDS;
+        } else {
+            self.running_grace = (self.running_grace - frame_seconds.max(0.0)).max(0.0);
+        }
+        self.running_grace > 0.0
     }
 
     /// Часы одного кадра (требование 17): в партии и повторе — на шаге мира `party_steps`, вне
@@ -433,6 +452,46 @@ mod tests {
         let whole = run(&[0.025; 41]);
         let sliced = run(&[0.005; 205]);
         assert!(near(whole, sliced, 1e-9), "{whole} против {sliced}");
+    }
+
+    /// «Видео на объекте», требование 5: часы идут, пока сдвигаются, и стоят, когда замерли.
+    #[test]
+    fn the_clock_runs_while_it_moves_and_stands_when_it_stops() {
+        let mut motion = Motion::default();
+        assert!(!motion.clock_running(0.016), "до первого сдвига часы стоят");
+        motion.tick(Some(1), 0.0);
+        assert!(motion.clock_running(0.016));
+        for _ in 0..15 {
+            assert!(motion.clock_running(0.005), "запас ещё не кончился");
+        }
+        assert!(
+            !motion.clock_running(0.1),
+            "десятая доля секунды без шагов — часы стоят"
+        );
+        motion.tick(Some(2), 0.0);
+        assert!(motion.clock_running(0.016), "сдвинулись — снова идут");
+    }
+
+    /// Мир на частом экране шагает не каждый кадр: пауза между шагами часы не останавливает.
+    #[test]
+    fn a_pause_between_world_steps_does_not_stop_the_clock() {
+        let mut motion = Motion::default();
+        for step in 1..=20u64 {
+            motion.tick(Some(step), 0.0);
+            assert!(motion.clock_running(0.007), "шаг {step}");
+            assert!(motion.clock_running(0.007), "кадр без шага после {step}");
+        }
+    }
+
+    #[test]
+    fn the_editor_clock_runs_while_frames_move_it_and_stops_without_them() {
+        let mut motion = Motion::default();
+        motion.tick(None, 0.016);
+        assert!(motion.clock_running(0.016));
+        motion.tick(None, 0.0);
+        assert!(motion.clock_running(0.05), "запас ещё не кончился");
+        motion.tick(None, 0.0);
+        assert!(!motion.clock_running(0.1));
     }
 
     #[test]
