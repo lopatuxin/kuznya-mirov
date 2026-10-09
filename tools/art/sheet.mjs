@@ -27,6 +27,8 @@ const THUMB_SIZE = 96;
 const MIN_PERIOD = 4;
 const MIN_LOOP = 36;
 const LUMA_EDGE = 0.1;
+// Тёмная трава на розовом отличается от фона по яркости на ~70 уровней, светлый куст — на 0–8.
+const MIN_LUMA_GAP = 32;
 const BLEED = 8;
 
 function positiveInt(name, text) {
@@ -110,7 +112,9 @@ function histogramMedian(histogram) {
  * тонкий тёмный стебель на розовом фоне по цвету наполовину розовый, а по яркости — трава. Уровни
  * берутся из самого кадра: фон — медиана яркости точек, которые ключ по цвету счёл чистым фоном,
  * трава — медиана сплошных. Между ними прозрачность растёт по прямой; на десятой доле промежутка от
- * каждого края — уже 0 и 1. Ключ только добавляет непрозрачность: итог — большее из двух ключей.
+ * каждого края — уже 0 и 1. Ключ только добавляет непрозрачность: итог — большее из двух ключей. Если яркости
+ * фона и предмета ближе `MIN_LUMA_GAP`, ключа по яркости нет: светлый куст на розовом по яркости почти равен фону
+ * (разница 0–8 при ряби фона 1–2), и ключ делал бы видимой рябь фона по всему кадру.
  */
 export function addLumaKey(rgba, luma) {
   const background = new Array(256).fill(0);
@@ -122,8 +126,9 @@ export function addLumaKey(rgba, luma) {
   }
   const backgroundLevel = histogramMedian(background);
   const solidLevel = histogramMedian(solid);
-  if (backgroundLevel === undefined || solidLevel === undefined || backgroundLevel === solidLevel) return;
+  if (backgroundLevel === undefined || solidLevel === undefined) return;
   const span = backgroundLevel - solidLevel;
+  if (Math.abs(span) < MIN_LUMA_GAP) return;
   for (let i = 0; i < luma.length; i++) {
     const t = (backgroundLevel - luma[i]) / span;
     const alpha = Math.round(255 * Math.min(1, Math.max(0, (t - LUMA_EDGE) / (1 - 2 * LUMA_EDGE))));
