@@ -9,12 +9,17 @@
 
 - Земля — исходник ×1,25, `--fade-ends 48`, куски внахлёст на клетку. Верх тропы на 21,07: самый тонкий кусок, низ `ground_step`, доходит до нижнего края сцены.
 - Лес — ×1,2, `--fade-ends 96`, внахлёст на две клетки; склон с избами — ×1,2, `--fade-ends 192`. Низ леса и разрез под склоном ушли за землю на клетку с лишним: камера поднимается на три клетки, пока земля видна, и слой за ней не открывает неба.
-- Трава переднего плана `fg_grass` и `fg_panicles` — видео игры из роликов нейросети `fg_grass_clip.mp4` и `fg_panicles_clip.mp4` (ролик по картинке `fg_grass.png` и `fg_panicles.png`), без увеличения; петлю программа находит сама — кадры 16–95 и 74–118:
+- Кусты и передний план — видео игры из роликов нейросети `<имя>_clip.mp4`: ролик по картинке `<имя>.png`, его первый кадр совпадает с картинкой. Петлю программа находит сама. Трава `fg_grass`, метёлки `fg_panicles` и папоротник `fg_fern` — без увеличения, кусты — в масштабе прежних картинок (×0,48 и ×0,5). Видео выше картинки на размах движения, поэтому `position` кустов и папоротника сдвинута так, что низ и середина куста стоят там же, где стояли у картинки; у трав `position.y` прежний — верх кадра там же. `sway` у видео нет: движение в самом видео.
 
   ```
   node tools/art/sheet.mjs art/platformer/fg_grass_clip.mp4 games/platformer/images/fg_grass.mp4 --key magenta --fade-ends 48
   node tools/art/sheet.mjs art/platformer/fg_panicles_clip.mp4 games/platformer/images/fg_panicles.mp4 --key magenta --fade-ends 48
+  node tools/art/sheet.mjs art/platformer/fg_fern_clip.mp4 games/platformer/images/fg_fern.mp4 --key magenta
+  node tools/art/sheet.mjs art/platformer/bush_hazel_clip.mp4 games/platformer/images/bush_hazel.mp4 --key magenta --height 298
+  node tools/art/sheet.mjs art/platformer/bush_flowers_clip.mp4 games/platformer/images/bush_flowers.mp4 --key magenta --height 176
   ```
+
+  Петли: трава — кадры 66–106, метёлки — 9–117, папоротник — 8–120, орешник — 4–112, куст с цветами — 32–95.
 - Небо — высота 1300 точек, `--repeat-x 280`; дальние холмы — ×1,395, `--repeat-x 224`.
 - Остальные куски — по высоте в клетках из `size`.
 - `fg_branch` в уровне нет: при подъёме камеры ветка переднего плана съезжает вниз, и её срез повисает в воздухе.

@@ -127,6 +127,15 @@ describe("keyVideoFrame", () => {
     const color = colorAt(frame([]), 10);
     color.forEach((channel, c) => assert.ok(Math.abs(channel - GRASS[c]) <= 1, `трава ${color}`));
   });
+
+  it("у светлого куста, по яркости равного фону, рябь фона остаётся прозрачной", () => {
+    // Листва (120, 140, 40) яркостью 104 на розовом фоне яркостью 102: ключ по яркости сделал бы точку фона яркостью 104
+    // сплошной, хотя по цвету она чистый фон.
+    const pixels = [...Array(10).fill(BACKGROUND), ...Array(10).fill([120, 140, 40]), BACKGROUND];
+    const luma = [...Array(10).fill(102), ...Array(10).fill(104), 104];
+    const rgba = keyVideoFrame(Buffer.from(pixels.flat()), Uint8Array.from(luma), "magenta");
+    assert.equal(alphaAt(rgba, 20), 0);
+  });
 });
 
 describe("findLoop", () => {
