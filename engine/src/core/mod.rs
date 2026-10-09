@@ -1,4 +1,5 @@
 pub mod camera;
+pub mod clouds;
 pub mod code;
 pub mod footprint;
 pub mod game;

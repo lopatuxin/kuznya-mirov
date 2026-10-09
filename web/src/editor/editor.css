@@ -2087,3 +2087,110 @@ body.is-resizing-panel {
   opacity: 0.4;
 }
 
+/* Группа «Облака» в колонке «Свойства»: строки друг под другом — колонка узкая; выбранные картинки в ряд и список годных идут в потоке группы, а не поверх неё. */
+.clouds-group {
+  padding: 10px 14px 14px;
+  border-top: 1px solid var(--editor-border);
+}
+
+.clouds-group .particles-group__rows {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.clouds-group .particles-density__range {
+  flex: 1;
+  width: auto;
+  min-width: 60px;
+}
+
+.cloud-images {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  min-width: 0;
+}
+
+.cloud-images__row,
+.cloud-images__choices {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cloud-images__choices {
+  max-height: 150px;
+  overflow-y: auto;
+}
+
+.cloud-images__chip,
+.cloud-images__choice {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px 3px 3px;
+  border: 1px solid var(--editor-border);
+  border-radius: 7px;
+  background: var(--editor-surface-raised);
+  color: var(--editor-text-muted);
+  font-size: 12px;
+}
+
+.cloud-images__choice {
+  padding-right: 8px;
+  cursor: pointer;
+}
+
+.cloud-images__choice:hover {
+  border-color: var(--editor-border-strong);
+  background: var(--editor-surface-hover);
+}
+
+.cloud-images .images-panel__thumb {
+  width: 36px;
+  height: 36px;
+}
+
+.cloud-images__name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cloud-images__remove {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--editor-text-faint);
+  cursor: pointer;
+}
+
+.cloud-images__remove:hover:not(:disabled) {
+  background: var(--editor-surface-hover);
+  color: var(--editor-text);
+}
+
+.cloud-images__hint {
+  margin: 0;
+  color: var(--editor-text-faint);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.cloud-images__add {
+  height: 24px;
+  padding: 0 8px;
+  border-color: var(--editor-border-strong);
+  font-size: 12px;
+}
+

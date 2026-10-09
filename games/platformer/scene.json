@@ -13,7 +13,8 @@
         "KeyS":       { "press": [["velocity", [0, 16]]], "release": [["velocity", [0, 0]]] }
       } },
 
-    { "position": [69.4, 4], "size": [21.156, 13.542], "image": "sky", "layer": 0, "parallax": 0, "repeat_x": true },
+    { "position": [69.4, 4], "size": [21.156, 13.542], "image": "sky", "layer": 0, "parallax": 0, "repeat_x": true,
+      "clouds": 0.35, "cloud_images": ["cloud_big", "cloud_long", "cloud_pair", "cloud_small"] },
     { "position": [71.9, 10.65], "size": [16.271, 6.802], "image": "hills_far", "layer": 10, "parallax": 0.25, "repeat_x": true },
 
     { "position": [20, 14.49], "size": [16.01, 5.552], "image": "forest_spruce", "layer": 20, "parallax": 0.6, "sway": 0.02 },

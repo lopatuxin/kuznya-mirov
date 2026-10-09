@@ -1,4 +1,5 @@
 pub mod atlas;
+pub mod clouds;
 pub mod materials;
 mod particle_shapes;
 pub mod particles;

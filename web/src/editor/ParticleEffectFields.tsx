@@ -69,7 +69,7 @@ export function ParticleEffectGroup({ effect, editing }: ParticleEffectGroupProp
         </button>
       </div>
       <div className="particles-group__rows">
-        <DensityField effect={effect} editing={editing} />
+        <DensityField title="плотность" propertyKey={effect.mainKey} endLabels={effect.densityLabels} editing={editing} />
         <Body editing={editing} />
       </div>
     </section>

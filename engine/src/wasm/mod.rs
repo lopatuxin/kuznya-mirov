@@ -25,6 +25,7 @@ use crate::data::load::{
 use crate::data::session::{self, PlaySession};
 use crate::render::VideoSource;
 use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint};
+use crate::render::clouds::Camera;
 use crate::render::materials::Relief;
 use crate::render::relief::TerrainMesh;
 use crate::render::scene3d::{self, Frame3d};
@@ -928,9 +929,17 @@ fn to_draw_rects(paints: Vec<RectPaint>) -> Vec<DrawRect> {
     paints.iter().map(draw_rect).collect()
 }
 
-/// «Ветер и частицы» → «Часы движения»: доводит наклоны и кадры качающихся объектов `game` и его
-/// частицы до часов `motion` — раз в кадр, перед тем как их рисовать.
-fn update_motion(motion: &mut Motion, game: &Game, images: &[ImageDecl]) {
+/// «Облака»: небо при каждом запуске своё — зерно случайности облаков берётся у браузера.
+fn seeded_motion() -> Motion {
+    let mut motion = Motion::default();
+    motion.seed_clouds((js_sys::Math::random() * u64::MAX as f64) as u64);
+    motion
+}
+
+/// «Ветер и частицы» → «Часы движения»: доводит наклоны и кадры качающихся объектов `game`, его
+/// частицы и облака до часов `motion` — раз в кадр, перед тем как их рисовать. `layers` — как камера
+/// этого кадра видит сцену: от неё кольцо облаков.
+fn update_motion(motion: &mut Motion, game: &Game, images: &[ImageDecl], layers: &LayerView) {
     let wind = game.wind();
     motion.update(wind[0], atlas::sway_objects(&game.world, images));
     motion.update_particles(
@@ -938,6 +947,24 @@ fn update_motion(motion: &mut Motion, game: &Game, images: &[ImageDecl]) {
         wind,
         atlas::particle_emitters(&game.world, images),
     );
+    let camera = Camera {
+        scene_middle: f64::from(game.scene.width) / 2.0,
+        view: layers,
+    };
+    motion.update_clouds(
+        game.has_world(),
+        wind[0],
+        camera,
+        atlas::cloud_skies(&game.world),
+    );
+}
+
+/// Как камера кадра `view` видит плоскую сцену; у трёхмерной слоёв глубины нет.
+fn layers_of(game: &Game, view: &View, viewport: [f32; 2]) -> LayerView {
+    match view {
+        View::Flat { scale, offset } => LayerView::of_frame(&game.scene, *scale, *offset, viewport),
+        View::Space(_) => LayerView::default(),
+    }
 }
 
 fn compose_instances(
@@ -1394,7 +1421,7 @@ impl Engine {
             session: None,
             battle_view: true,
             last_mouse_window_pos: None,
-            motion: Motion::default(),
+            motion: seeded_motion(),
         })
     }
 
@@ -1619,6 +1646,11 @@ impl Engine {
                     &image_order,
                     &video_frames,
                 ));
+                self.motion.set_cloud_sizes(atlas::cloud_base_sizes(
+                    &atlas_images,
+                    &image_order,
+                    game.scene.cell_pixels,
+                ));
                 self.renderer.set_videos(video_sources(
                     &image_order,
                     &atlas_images,
@@ -1753,7 +1785,12 @@ impl Engine {
             .as_ref()
             .is_some_and(|session| session.is_live() || session.is_replay());
         self.motion.tick(show_ui.then(|| game.step_count()), dt);
-        update_motion(&mut self.motion, game, &self.images);
+        update_motion(
+            &mut self.motion,
+            game,
+            &self.images,
+            &layers_of(game, &view, viewport),
+        );
         self.renderer
             .set_videos_playing(self.motion.clock_running(dt));
         let (ui_instances, texts) = match (
@@ -2252,14 +2289,19 @@ impl Engine {
         // «Камера», требования 41–42: на игровой странице ничего кроме `tick` кадр не задаёт —
         // без этого мир рисовался бы заглушкой, которую поставил последний `set_scene`/`resize`.
         self.motion.tick(Some(game.step_count()), 0.0);
-        update_motion(&mut self.motion, game, &self.images);
+        let view = frame_for(game, self.battle_view, viewport);
+        update_motion(
+            &mut self.motion,
+            game,
+            &self.images,
+            &layers_of(game, &view, viewport),
+        );
         // В партии редактора кадр рисует `draw`, и видео ведёт он: второй опрос часов за кадр тратил
         // бы их запас вдвое быстрее. Страница игры партии редактора не открывает и `draw` не зовёт.
         if self.session.is_none() {
             self.renderer
                 .set_videos_playing(self.motion.clock_running(dt_seconds));
         }
-        let view = frame_for(game, self.battle_view, viewport);
         let screen = &config.screens[state.active()];
         let (ui_instances, texts) = compose_ui(
             screen,

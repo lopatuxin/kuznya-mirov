@@ -652,3 +652,172 @@ describe("вкладка «Частицы» в окне проекта", () => {
     });
   });
 });
+
+const CLOUDS_GAME_JSON_TEXT = JSON.stringify({
+  name: "Тест",
+  scene: { width: 100, height: 50 },
+  files: {
+    images: {
+      cloud_a: { path: "images/cloud_a.png", size: [6, 3] },
+      cloud_b: { path: "images/cloud_b.png", size: [5, 2] },
+      strip: { path: "images/strip.png", size: [2, 2], frames: 4 },
+      film: { path: "images/film.mp4", size: [4, 2] },
+    },
+  },
+});
+const SKY = { position: [0, 0], size: [100, 30], image: "sky", repeat_x: true, layer: 0 };
+const TREE = { position: [10, 8], size: [4, 8], image: "birch", layer: 2 };
+
+describe("группа «Облака» в колонке «Свойства»", () => {
+  let engine: FakeBattleEngine;
+
+  function createCloudsSceneEditing(overrides: Partial<SceneEditingState> = {}, objects: unknown[] = [SKY, TREE]): SceneEditingState {
+    const sceneText = JSON.stringify({ objects });
+    const base = createSceneEditing(engine, vi.fn());
+    return createSceneEditing(engine, vi.fn(), {
+      result: { ...(base.result as Extract<SceneEditingState["result"], { status: "ok" }>), gameJsonText: CLOUDS_GAME_JSON_TEXT, sceneText },
+      sceneText,
+      ...overrides,
+    });
+  }
+
+  function cloudsGroup(): HTMLElement {
+    return screen.getByRole("region", { name: "Облака" });
+  }
+
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    engine = createFakeBattleEngine();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("у неба без облаков одна кнопка «Добавить облака»: clouds 0,3 одной записью; у объекта без repeat_x группы нет", () => {
+    const setPropertyValue = vi.fn();
+    sceneEditingMock.current = createCloudsSceneEditing({ setPropertyValue, selectedIndex: 0 });
+    renderWindow();
+
+    expect(within(cloudsGroup()).getAllByRole("button").map((button) => button.textContent)).toEqual(["Добавить облака"]);
+    fireEvent.click(screen.getByRole("button", { name: "Добавить облака" }));
+
+    expect(setPropertyValue).toHaveBeenCalledTimes(1);
+    expect(setPropertyValue).toHaveBeenCalledWith(0, "clouds", 0.3);
+    cleanup();
+
+    sceneEditingMock.current = createCloudsSceneEditing({ selectedIndex: 1 });
+    renderWindow();
+    expect(screen.queryByRole("region", { name: "Облака" })).toBeNull();
+  });
+
+  it("во вкладке «Частицы» облаков нет: три карточки и нет группы", () => {
+    sceneEditingMock.current = createCloudsSceneEditing({ selectedIndex: 0 }, [{ ...SKY, clouds: 0.3 }]);
+    renderWindow();
+    openParticlesTab();
+
+    const particles = screen.getByRole("list", { name: "Эффекты частиц" });
+    expect(within(particles).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья"]);
+    expect(screen.getAllByRole("region", { name: "Облака" })).toHaveLength(1);
+  });
+
+  it("clouds и cloud_images не показаны строками общего списка свойств, остальные свойства на месте", () => {
+    sceneEditingMock.current = createCloudsSceneEditing({ selectedIndex: 0 }, [{ ...SKY, clouds: 0.3, cloud_images: ["cloud_a", "cloud_b"] }]);
+    renderWindow();
+
+    const keys = Array.from(document.querySelectorAll(".property-row__key")).map((key) => key.textContent);
+    expect(keys).toContain("repeat_x");
+    expect(keys).not.toContain("clouds");
+    expect(keys).not.toContain("cloud_images");
+    expect(within(cloudsGroup()).getByRole("list", { name: "Выбранные картинки облаков" }).textContent).toBe("cloud_acloud_b");
+  });
+
+  it("«+ картинка» предлагает только годные картинки игры, выбор пишет список одной правкой", () => {
+    const setPropertyValue = vi.fn();
+    sceneEditingMock.current = createCloudsSceneEditing({ setPropertyValue, selectedIndex: 0 }, [{ ...SKY, clouds: 0.3, cloud_images: ["cloud_a"] }]);
+    renderWindow();
+
+    fireEvent.click(screen.getByRole("button", { name: "+ картинка" }));
+    expect(within(screen.getByRole("list", { name: "Картинки, годные облакам" })).getAllByRole("button").map((button) => button.textContent)).toEqual(["cloud_b"]);
+    fireEvent.click(screen.getByRole("button", { name: "cloud_b" }));
+
+    expect(setPropertyValue).toHaveBeenCalledTimes(1);
+    expect(setPropertyValue).toHaveBeenCalledWith(0, "cloud_images", ["cloud_a", "cloud_b"]);
+  });
+
+  it("крестик пишет список без картинки одной правкой, «Убрать» снимает оба свойства одной правкой", () => {
+    const setPropertyValue = vi.fn();
+    const removeProperties = vi.fn();
+    sceneEditingMock.current = createCloudsSceneEditing({ setPropertyValue, removeProperties, selectedIndex: 0 }, [{ ...SKY, clouds: 0.3, cloud_images: ["cloud_a", "cloud_b"] }]);
+    renderWindow();
+
+    fireEvent.click(screen.getByRole("button", { name: "Убрать картинку cloud_a" }));
+    expect(setPropertyValue).toHaveBeenCalledTimes(1);
+    expect(setPropertyValue).toHaveBeenCalledWith(0, "cloud_images", ["cloud_b"]);
+
+    fireEvent.click(within(cloudsGroup()).getByRole("button", { name: "Убрать" }));
+    expect(removeProperties).toHaveBeenCalledTimes(1);
+    expect(removeProperties).toHaveBeenCalledWith(0, ["clouds", "cloud_images"]);
+  });
+
+  it("ползунок «сколько облаков» зовёт set_property на каждое движение, scene.json пишется один раз — при отпускании", () => {
+    const setPropertyValue = vi.fn();
+    sceneEditingMock.current = createCloudsSceneEditing({ setPropertyValue, selectedIndex: 0 }, [{ ...SKY, clouds: 0.3 }]);
+    renderWindow();
+    const slider = screen.getByRole("slider", { name: "сколько облаков" });
+
+    fireEvent.input(slider, { target: { value: "0.5" } });
+    fireEvent.input(slider, { target: { value: "0.75" } });
+    expect(engine.set_property).toHaveBeenCalledTimes(2);
+    expect(engine.set_property).toHaveBeenLastCalledWith(0, "clouds", 0.75);
+    expect(setPropertyValue).not.toHaveBeenCalled();
+
+    fireEvent.change(slider);
+    expect(setPropertyValue).toHaveBeenCalledTimes(1);
+    expect(setPropertyValue).toHaveBeenCalledWith(0, "clouds", 0.75);
+  });
+
+  describe("в партии", () => {
+    beforeEach(() => {
+      vi.mocked(engine.world_objects).mockReturnValue([
+        { id: 0, generation: 1, name: null },
+        { id: 1, generation: 1, name: null },
+      ]);
+    });
+
+    async function startBattle(): Promise<void> {
+      pressPlayStopShortcut();
+      await waitFor(() => expect(engine.play).toHaveBeenCalled());
+    }
+
+    it("«Добавить облака» на паузе — живой set_property, а не запись файла", async () => {
+      const setPropertyValue = vi.fn();
+      vi.mocked(engine.object_properties).mockImplementation((id: number) => ({ ...[SKY, TREE][id] }));
+      sceneEditingMock.current = createCloudsSceneEditing({ selectedIndex: 0, setPropertyValue });
+      renderWindow();
+      await startBattle();
+
+      fireEvent.click(screen.getByRole("button", { name: "Добавить облака" }));
+
+      expect(engine.set_property).toHaveBeenCalledWith(0, "clouds", 0.3);
+      expect(setPropertyValue).not.toHaveBeenCalled();
+    });
+
+    it("добавление картинки в партии — живой set_property со всем списком, а не запись файла", async () => {
+      const setPropertyValue = vi.fn();
+      vi.mocked(engine.object_properties).mockImplementation((id: number) => ({ ...[{ ...SKY, clouds: 0.3, cloud_images: ["cloud_a"] }, TREE][id] }));
+      sceneEditingMock.current = createCloudsSceneEditing({ selectedIndex: 0, setPropertyValue });
+      renderWindow();
+      await startBattle();
+
+      fireEvent.click(screen.getByRole("button", { name: "+ картинка" }));
+      fireEvent.click(screen.getByRole("button", { name: "cloud_b" }));
+
+      expect(engine.set_property).toHaveBeenLastCalledWith(0, "cloud_images", ["cloud_a", "cloud_b"]);
+      expect(setPropertyValue).not.toHaveBeenCalled();
+    });
+  });
+});

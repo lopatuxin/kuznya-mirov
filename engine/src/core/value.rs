@@ -18,6 +18,8 @@ pub enum PropKind {
     Grid,
     Keys,
     Image,
+    /// «Ветер и частицы» → «Облака»: список имён картинок игры (`cloud_images`), пустой допустим.
+    ImageList,
     Rotation,
     FollowMouse,
     /// «Трёхмерная сцена»: `shape` — имя простой фигуры; в плоской сцене недоступно.
@@ -42,6 +44,7 @@ impl PropKind {
             PropKind::Grid => "grid",
             PropKind::Keys => "keys",
             PropKind::Image => "картинка",
+            PropKind::ImageList => "список картинок",
             PropKind::Rotation => "поворот",
             PropKind::FollowMouse => "слежение за мышью",
             PropKind::Shape => "фигура",
@@ -193,6 +196,7 @@ pub enum Value {
     Layer(i32),
     Text(String),
     Image(ImageId),
+    ImageList(Vec<ImageId>),
     Rotation(Rotation),
     FollowMouse(FollowAxis),
     Shape(Shape),
@@ -210,6 +214,7 @@ impl Value {
             Value::Layer(_) => PropKind::Layer,
             Value::Text(_) => PropKind::Text,
             Value::Image(_) => PropKind::Image,
+            Value::ImageList(_) => PropKind::ImageList,
             Value::Rotation(_) => PropKind::Rotation,
             Value::FollowMouse(_) => PropKind::FollowMouse,
             Value::Shape(_) => PropKind::Shape,

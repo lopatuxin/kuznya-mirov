@@ -18,7 +18,7 @@ import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
 import { parseSceneWind } from "./sceneWind";
 import { readTerrainCovers, readTerrainImprints, readTerrainTint, readTerrainWater } from "./terrainFile";
-import { parseProjectCellPixels, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
+import { parseProjectCellPixels, parseProjectCloudImageNames, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
 import { buildImageTiles, createImageObject, createParticlesObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -136,6 +136,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const imageNames = useMemo(() => parseProjectImageNames(gameJsonText), [gameJsonText]);
   const imageDescriptions = useMemo(() => parseProjectImageDescriptions(gameJsonText), [gameJsonText]);
   const cellPixels = useMemo(() => parseProjectCellPixels(gameJsonText), [gameJsonText]);
+  const cloudImageNames = useMemo(() => parseProjectCloudImageNames(gameJsonText), [gameJsonText]);
   const imageTiles = useMemo(() => buildImageTiles(imageDescriptions, result?.status === "ok" ? result.images : []), [imageDescriptions, result]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
@@ -395,7 +396,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   }
 
   // Ползунок, число и круг ставят значение сцене на лету; без загруженной игры ставить некуда — ошибки «игра не загружена» не нужно.
-  function previewParticleProperty(key: string, value: number | undefined): string | undefined {
+  function previewParticleProperty(key: string, value: number | readonly string[] | undefined): string | undefined {
     if (engine === null || displayedSelectedIndex === null || !engine.has_world()) return undefined;
     const result = (value === undefined ? engine.remove_property(displayedSelectedIndex, key) : engine.set_property(displayedSelectedIndex, key, value)) as EngineEditResult;
     return result.ok || value === undefined ? undefined : result.error;
@@ -558,6 +559,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
             imageNames={imageNames}
             declaredProperties={declaredProperties}
             isThreeDimensionalScene={isThreeDimensionalScene}
+            cloudImages={{ tiles: imageTiles, cloudNames: cloudImageNames }}
+            cloudHandlers={{ onPreview: previewParticleProperty, onCommit: commitParticleProperty, onRemove: removeParticleProperties, onGestureActiveChange: handleParticleGestureChange }}
             disallowDeclare={isLive}
             onSetValue={(key, value) =>
               isLive

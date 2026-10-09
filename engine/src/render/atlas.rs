@@ -8,6 +8,7 @@
 //! is the part of «Отрисовка» plain enough to run and test on any target, unlike the GPU resources
 //! built from its result (see `super::gpu`, wasm32-only).
 
+use crate::core::clouds::Settings as CloudSettings;
 use crate::core::particles::{ParticleShape, Settings};
 use crate::core::property;
 use crate::core::scene::{self, CellRange, GroundLayer, LayerView, SceneConfig};
@@ -17,6 +18,7 @@ use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
+use super::clouds::{Sky, Sprite as CloudSprite};
 use super::particle_shapes::{self, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
 use super::particles::{Emitter, OpaqueMask, Picture, Sprite};
 use super::wind::{Motion, SwayObject, swaying_frame};
@@ -567,7 +569,8 @@ pub fn compose_world_paints(
             world.vec2(id, property::POSITION).is_some()
                 && world.vec2(id, property::SIZE).is_some()
                 && (object_fill(world, id).is_some()
-                    || (!three_d && Settings::read(world, id).any_runs()))
+                    || (!three_d
+                        && (Settings::read(world, id).any_runs() || carries_clouds(world, id))))
                 && !(three_d && world.shape(id, property::SHAPE).is_some())
         })
         .collect();
@@ -579,17 +582,29 @@ pub fn compose_world_paints(
     ];
 
     let particles = motion.particles();
-    let mut orphans: Vec<(i32, Sprite)> = particles.orphan_sprites().collect();
+    let clouds = motion.clouds();
+    let to_paint = |sprite: &Sprite| particle_paint(sprite, layers);
+    let to_cloud_paint =
+        |sprite: &CloudSprite| cloud_paint(sprite, images, atlas_rects, layers, window);
+    // «Облака»: облака уходящего неба лежат рядом с частицами ушедших источников; облака — под ними.
+    let mut orphans: Vec<(i32, RectPaint)> = clouds
+        .orphan_sprites()
+        .filter_map(|(layer, sprite)| Some((layer, to_cloud_paint(&sprite)?)))
+        .chain(
+            particles
+                .orphan_sprites()
+                .map(|(layer, sprite)| (layer, to_paint(&sprite))),
+        )
+        .collect();
     orphans.sort_by_key(|(layer, _)| *layer);
     let mut orphans = orphans.into_iter().peekable();
-    let to_paint = |sprite: &Sprite| particle_paint(sprite, layers);
 
     let mut paints = Vec::with_capacity(ordered.len());
     for id in ordered {
         // «Источник», требование 15: частицы ушедшего источника лежат после всех объектов своего слоя.
         let layer = world.layer(id, property::LAYER).unwrap_or(0);
-        while let Some((_, sprite)) = orphans.next_if(|(orphan_layer, _)| *orphan_layer < layer) {
-            paints.push(to_paint(&sprite));
+        while let Some((_, paint)) = orphans.next_if(|(orphan_layer, _)| *orphan_layer < layer) {
+            paints.push(paint);
         }
         if let Some(fill) = object_fill(world, id) {
             let p = world.vec2(id, property::POSITION).expect("filtered above");
@@ -651,15 +666,111 @@ pub fn compose_world_paints(
             };
             paints.extend(layered_paints(world, id, paint, s[0], layers, window));
         }
+        // «Облака», требование 22: облака неба — сразу после него и всех его копий, от дальних к ближним.
+        paints.extend(
+            clouds
+                .live_sprites(id, world.generation(id))
+                .filter_map(|sprite| to_cloud_paint(&sprite)),
+        );
         // «Источник», требование 15: частицы живого источника — сразу после него, от старших к младшим.
         for sprite in particles.live_sprites(id, world.generation(id)) {
             paints.push(to_paint(&sprite));
         }
     }
-    for (_, sprite) in orphans {
-        paints.push(to_paint(&sprite));
-    }
+    paints.extend(orphans.map(|(_, paint)| paint));
     paints
+}
+
+/// «Облака», требование 22: прямоугольник облака — его середина со сдвигом слоя глубины по `parallax`
+/// облака, первый кадр картинки с её `smooth` и свечением, отражённый, как выпало облаку. `None`,
+/// если облако целиком вне окна (`window` — его края в клетках сцены; пустое окно ничего не отсеивает).
+fn cloud_paint(
+    sprite: &CloudSprite,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+    layers: &LayerView,
+    window: [f64; 2],
+) -> Option<RectPaint> {
+    let decl = images.get(sprite.image)?;
+    let shift = layers.displacement(sprite.parallax);
+    let middle = [sprite.center[0] + shift[0], sprite.center[1] + shift[1]];
+    let half = [sprite.size[0] / 2.0, sprite.size[1] / 2.0];
+    if window[1] > window[0]
+        && (middle[0] + half[0] <= window[0] || middle[0] - half[0] >= window[1])
+    {
+        return None;
+    }
+    Some(RectPaint {
+        flip_x: sprite.mirrored,
+        ..RectPaint::flat(
+            [(middle[0] - half[0]) as f32, (middle[1] - half[1]) as f32],
+            sprite.size.map(|side| side as f32),
+            [1.0, 1.0, 1.0, sprite.opacity as f32],
+            frame_atlas_rect_at(sprite.image, 0, images, atlas_rects),
+            decl.smooth,
+            decl.glow,
+        )
+    })
+}
+
+/// «Облака»: объект плоской сцены с `repeat_x` и хоть одним из свойств облаков — небо; в трёхмерной
+/// сцене неба нет.
+fn carries_clouds(world: &World, id: u32) -> bool {
+    !world.three_d()
+        && world.flag(id, property::REPEAT_X)
+        && (world.has(id, property::CLOUDS) || world.has(id, property::CLOUD_IMAGES))
+}
+
+/// «Облака», требования 3, 20: небеса мира — объекты с `position`, `size`, `repeat_x` и свойствами
+/// облаков, со слоем, `parallax`, `clouds` и списком картинок.
+pub fn cloud_skies(world: &World) -> impl Iterator<Item = Sky<'_>> + '_ {
+    let slots = if world.three_d() {
+        0
+    } else {
+        world.slot_count() as u32
+    };
+    (0..slots).filter_map(move |id| {
+        if !world.is_alive(id) || !carries_clouds(world, id) {
+            return None;
+        }
+        let rect = world
+            .vec2(id, property::POSITION)
+            .zip(world.vec2(id, property::SIZE))?;
+        let settings = CloudSettings::read(world, id);
+        Some(Sky {
+            id,
+            generation: world.generation(id),
+            rect,
+            layer: world.layer(id, property::LAYER).unwrap_or(0),
+            parallax: scene::parallax(world, id),
+            clouds: settings.clouds,
+            images: settings.images,
+        })
+    })
+}
+
+/// «Облака», требование 7: основной размер картинки облака в клетках — её `size`, без него точки первого
+/// кадра, делённые на `cell_pixels`; `None` у видео и там, где нет ни `size`, ни `cell_pixels`. `images`
+/// и `decls` идут в одном порядке.
+pub fn cloud_base_sizes(
+    images: &[AtlasImage],
+    decls: &[ImageDecl],
+    cell_pixels: Option<f64>,
+) -> Vec<Option<Vec2>> {
+    images
+        .iter()
+        .zip(decls)
+        .map(|(image, decl)| {
+            if decl.video {
+                return None;
+            }
+            decl.size.or_else(|| {
+                let (width, height) = frame_size(decl, image.width, image.height);
+                let points = cell_pixels?;
+                Some([f64::from(width) / points, f64::from(height) / points])
+            })
+        })
+        .collect()
 }
 
 /// Чем объект заливает свой прямоугольник: картинкой с `opacity` или цветом; `None` — ничем.
@@ -1018,6 +1129,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         }
     }
 

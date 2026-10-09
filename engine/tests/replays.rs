@@ -263,9 +263,12 @@ fn read_property_as_json(game: &Game, id: u32, prop: PropertyId) -> Option<Json>
             .world
             .follow_mouse(id, prop)
             .map(|a| Json::String(a.as_str().to_string())),
-        PropKind::Color | PropKind::Image | PropKind::Grid | PropKind::Keys | PropKind::OnClick => {
-            None
-        }
+        PropKind::Color
+        | PropKind::Image
+        | PropKind::ImageList
+        | PropKind::Grid
+        | PropKind::Keys
+        | PropKind::OnClick => None,
     }
 }
 

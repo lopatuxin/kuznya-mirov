@@ -154,6 +154,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         Game::new(
             properties,

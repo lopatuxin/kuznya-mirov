@@ -19,6 +19,7 @@ enum Column {
     Grid(Vec<Option<GridSpec>>),
     Keys(Vec<Option<KeyTable>>),
     Image(Vec<Option<ImageId>>),
+    ImageList(Vec<Option<Vec<ImageId>>>),
     Rotation(Vec<Option<Rotation>>),
     FollowMouse(Vec<Option<FollowAxis>>),
     Shape(Vec<Option<Shape>>),
@@ -39,6 +40,7 @@ impl Column {
             PropKind::Grid => Column::Grid(Vec::new()),
             PropKind::Keys => Column::Keys(Vec::new()),
             PropKind::Image => Column::Image(Vec::new()),
+            PropKind::ImageList => Column::ImageList(Vec::new()),
             PropKind::Rotation => Column::Rotation(Vec::new()),
             PropKind::FollowMouse => Column::FollowMouse(Vec::new()),
             PropKind::Shape => Column::Shape(Vec::new()),
@@ -59,6 +61,7 @@ impl Column {
             Column::Grid(v) => v.push(None),
             Column::Keys(v) => v.push(None),
             Column::Image(v) => v.push(None),
+            Column::ImageList(v) => v.push(None),
             Column::Rotation(v) => v.push(None),
             Column::FollowMouse(v) => v.push(None),
             Column::Shape(v) => v.push(None),
@@ -79,6 +82,7 @@ impl Column {
             Column::Grid(v) => v[id] = None,
             Column::Keys(v) => v[id] = None,
             Column::Image(v) => v[id] = None,
+            Column::ImageList(v) => v[id] = None,
             Column::Rotation(v) => v[id] = None,
             Column::FollowMouse(v) => v[id] = None,
             Column::Shape(v) => v[id] = None,
@@ -99,6 +103,7 @@ impl Column {
             Column::Grid(v) => v[id].is_some(),
             Column::Keys(v) => v[id].is_some(),
             Column::Image(v) => v[id].is_some(),
+            Column::ImageList(v) => v[id].is_some(),
             Column::Rotation(v) => v[id].is_some(),
             Column::FollowMouse(v) => v[id].is_some(),
             Column::Shape(v) => v[id].is_some(),
@@ -495,6 +500,19 @@ impl World {
         }
     }
 
+    pub fn image_list(&self, id: u32, prop: PropertyId) -> Option<&[ImageId]> {
+        match &self.columns[prop as usize] {
+            Column::ImageList(v) => v[id as usize].as_deref(),
+            _ => None,
+        }
+    }
+
+    pub fn set_image_list(&mut self, id: u32, prop: PropertyId, value: Vec<ImageId>) {
+        if let Column::ImageList(v) = &mut self.columns[prop as usize] {
+            v[id as usize] = Some(value);
+        }
+    }
+
     pub fn rotation(&self, id: u32, prop: PropertyId) -> Option<Rotation> {
         match &self.columns[prop as usize] {
             Column::Rotation(v) => v[id as usize],
@@ -581,6 +599,7 @@ impl World {
             Value::Layer(l) => self.set_layer(id, prop, *l),
             Value::Text(s) => self.set_text(id, prop, s.clone()),
             Value::Image(i) => self.set_image(id, prop, *i),
+            Value::ImageList(list) => self.set_image_list(id, prop, list.clone()),
             Value::Rotation(r) => self.set_rotation(id, prop, *r),
             Value::FollowMouse(a) => self.set_follow_mouse(id, prop, *a),
             Value::Shape(s) => self.set_shape(id, prop, *s),
@@ -601,6 +620,9 @@ impl World {
             PropKind::Layer => self.layer(id, prop).map(Value::Layer),
             PropKind::Text => self.text(id, prop).map(|s| Value::Text(s.to_string())),
             PropKind::Image => self.image(id, prop).map(Value::Image),
+            PropKind::ImageList => self
+                .image_list(id, prop)
+                .map(|list| Value::ImageList(list.to_vec())),
             PropKind::Rotation => self.rotation(id, prop).map(Value::Rotation),
             PropKind::FollowMouse => self.follow_mouse(id, prop).map(Value::FollowMouse),
             PropKind::Shape => self.shape(id, prop).map(Value::Shape),

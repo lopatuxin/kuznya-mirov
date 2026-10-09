@@ -1,18 +1,18 @@
 import { useEffect, useReducer, useRef, useState } from "react";
-import { colorForPicker, DENSITY_STEP, formatParticleNumber, translateParticleKeys, type ParticleEffect } from "./particleEffects";
+import { colorForPicker, DENSITY_STEP, formatParticleNumber, translateParticleKeys } from "./particleEffects";
 import { ParticleNumberInput } from "./ParticleNumberInput";
 import { ColorPickerInput } from "./PropertiesPanel";
 import { parseNumberField } from "./terrainBrush";
 
 /**
- * Что поля вкладки «Частицы» знают о правке выбранного объекта. Ползунок, число и круг ставят значение сцене на лету
+ * Что поля вкладки «Частицы» и группы «Облака» колонки «Свойства» знают о правке выбранного объекта. Ползунок, число и круг ставят значение сцене на лету
  * (`onPreview`), а принятое значение отдают на запись (`onCommit`) — вне партии это `scene.json`, в партии живой мир.
  */
 export type ParticleEditing = {
   properties: Readonly<Record<string, unknown>>;
   isDisabled: boolean;
   /** Ставит значение сцене без записи; `undefined` возвращает объекту отсутствие свойства. Текст ошибки движка, если значение не принято. */
-  onPreview: (key: string, value: number | undefined) => string | undefined;
+  onPreview: (key: string, value: number | readonly string[] | undefined) => string | undefined;
   /** Принятое значение; `original` — каким свойство было до жеста (`undefined` — не было). */
   onCommit: (key: string, value: unknown, original: unknown) => void;
   /** «Убрать» и снятие `leaf_color`: свойства снимаются одной правкой. */
@@ -95,21 +95,21 @@ export function FieldError({ message }: FieldErrorProps): React.JSX.Element | nu
   );
 }
 
-type DensityFieldProps = { effect: ParticleEffect; editing: ParticleEditing };
+type DensityFieldProps = { title: string; propertyKey: string; endLabels: readonly [string, string]; editing: ParticleEditing };
 
-/** «Плотность» — ползунок главного свойства от 0 до 1: на каждое движение сцена меняется сразу, запись — при отпускании. */
-export function DensityField({ effect, editing }: DensityFieldProps): React.JSX.Element {
-  const value = editing.properties[effect.mainKey];
+/** Ползунок главного свойства от 0 до 1 («плотность», у облаков «сколько облаков»): на каждое движение сцена меняется сразу, запись — при отпускании. */
+export function DensityField({ title, propertyKey, endLabels, editing }: DensityFieldProps): React.JSX.Element {
+  const value = editing.properties[propertyKey];
   const held = useHeldValue<number>(typeof value === "number" ? value : undefined);
   const [error, setError] = useState<string | undefined>(undefined);
   const rangeRef = useRef<HTMLInputElement>(null);
   const finishRef = useRef<() => void>(() => {});
   finishRef.current = () => {
     if (error === undefined) {
-      finishGesture(held, effect.mainKey, editing);
+      finishGesture(held, propertyKey, editing);
     } else {
       held.drop();
-      editing.onPreview(effect.mainKey, held.original);
+      editing.onPreview(propertyKey, held.original);
     }
     editing.onGestureActiveChange(false);
   };
@@ -125,13 +125,13 @@ export function DensityField({ effect, editing }: DensityFieldProps): React.JSX.
 
   return (
     <div className="particles-field">
-      <span className="particles-field__label">плотность</span>
+      <span className="particles-field__label">{title}</span>
       <div className="particles-density">
-        <span className="particles-density__end">{effect.densityLabels[0]}</span>
+        <span className="particles-density__end">{endLabels[0]}</span>
         <input
           ref={rangeRef}
           type="range"
-          aria-label="плотность"
+          aria-label={title}
           className="particles-density__range"
           min={0}
           max={1}
@@ -142,10 +142,10 @@ export function DensityField({ effect, editing }: DensityFieldProps): React.JSX.
             const next = Number(event.target.value);
             if (!held.move(next)) return;
             editing.onGestureActiveChange(true);
-            setError(editing.onPreview(effect.mainKey, next));
+            setError(editing.onPreview(propertyKey, next));
           }}
         />
-        <span className="particles-density__end">{effect.densityLabels[1]}</span>
+        <span className="particles-density__end">{endLabels[1]}</span>
       </div>
       <FieldError message={error} />
     </div>
