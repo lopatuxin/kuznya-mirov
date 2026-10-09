@@ -5,6 +5,9 @@
 
 use std::f64::consts::TAU;
 
+use crate::core::value::Vec2;
+
+use super::clouds::{Camera, Clouds, Sky};
 use super::particles::{Emitter, OpaqueMask, Particles};
 
 /// «Часы движения», требование 18: пружины и кадры качающихся объектов идут шагами по 1/60 секунды,
@@ -181,6 +184,8 @@ pub struct Motion {
     compare_look: bool,
     /// «Ветер и частицы» → «Частицы»: источники и частицы идут по тем же часам.
     particles: Particles,
+    /// «Ветер и частицы» → «Облака»: облака неба идут по тем же часам.
+    clouds: Clouds,
     /// Часы, какими их видел последний [`Motion::clock_running`], и сколько секунд после их
     /// последнего сдвига они ещё считаются идущими.
     watched_steps: f64,
@@ -250,6 +255,7 @@ impl Motion {
         self.integrated_steps = steps.floor() as u64;
         self.states.fill(None);
         self.particles.restart(steps);
+        self.clouds.restart(steps);
     }
 
     /// Доводит частицы до часов — раз в кадр, после `tick`. `emitters` — объекты мира с эффектами
@@ -271,6 +277,33 @@ impl Motion {
 
     pub fn particles(&self) -> &Particles {
         &self.particles
+    }
+
+    /// Доводит облака до часов — раз в кадр, после `tick`. `skies` — объекты мира с облаками сейчас,
+    /// `wind` — ровный ветер сцены по `x`, `camera` — как кадр видит сцену.
+    pub fn update_clouds<'a>(
+        &mut self,
+        world_exists: bool,
+        wind: f64,
+        camera: Camera,
+        skies: impl Iterator<Item = Sky<'a>>,
+    ) {
+        self.clouds
+            .update(self.clock_steps, world_exists, wind, camera, skies);
+    }
+
+    /// «Облака»: основные размеры картинок загруженной игры в клетках, по номеру картинки.
+    pub fn set_cloud_sizes(&mut self, sizes: Vec<Option<Vec2>>) {
+        self.clouds.set_base_sizes(sizes);
+    }
+
+    /// «Облака»: своё зерно случайности облаков — небо при каждом запуске своё.
+    pub fn seed_clouds(&mut self, seed: u64) {
+        self.clouds.seed(seed);
+    }
+
+    pub fn clouds(&self) -> &Clouds {
+        &self.clouds
     }
 
     /// Доводит наклоны и кадры `objects` до часов шагами по 1/60 секунды; остаток часов ждёт

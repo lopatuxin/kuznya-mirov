@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from "react";
+import type { CloudImages } from "./CloudImagesField";
+import { CLOUD_PROPERTY_NAMES, CloudsGroup, type CloudsHandlers } from "./CloudsGroup";
 import { EditorIcon } from "./EditorIcon";
 import { splitJsonTokens } from "./jsonTokens";
 import { propertyFieldKind } from "./propertyFieldKind";
@@ -21,6 +23,9 @@ type PropertiesPanelProps = {
   declaredProperties: Readonly<Record<string, PropertyKind>>;
   /** Сцена трёхмерная — `rotation` там любое число, а не выбор из четырёх значений. */
   isThreeDimensionalScene: boolean;
+  /** Картинки игры, из которых группа «Облака» собирает список. */
+  cloudImages: CloudImages;
+  cloudHandlers: CloudsHandlers;
   onSetValue: (key: string, value: unknown) => void;
   onRemove: (key: string) => void;
   onAdd: (key: string, value: unknown) => void | string;
@@ -323,7 +328,7 @@ function AddPropertyRow({ existingKeys, declaredProperties, isThreeDimensionalSc
 
 /**
  * Свойства выбранного объекта — «Редактор», требования 11–19: вид поля по свойству, кнопка × у
- * строки, «+ свойство» внизу, «Копия» и «Удалить» в шапке. Значение показывается так, как записано
+ * строки, «+ свойство» внизу, «Копия» и «Удалить» в шапке; у неба под списком — группа «Облака». Значение показывается так, как записано
  * в файле; элемент `objects`, который не объект, — одной строкой его JSON, без правки.
  */
 export function PropertiesPanel({
@@ -333,6 +338,8 @@ export function PropertiesPanel({
   imageNames,
   declaredProperties,
   isThreeDimensionalScene,
+  cloudImages,
+  cloudHandlers,
   onSetValue,
   onRemove,
   onAdd,
@@ -354,11 +361,13 @@ export function PropertiesPanel({
     );
   }
 
+  const listedProperties = view.status === "object" ? view.properties.filter(({ key }) => !CLOUD_PROPERTY_NAMES.includes(key)) : [];
+
   return (
     <div className="properties-panel">
       <div className="editor-panel-header">
         Свойства
-        {view.status === "object" && <span className="editor-count">{view.properties.length}</span>}
+        {view.status === "object" && <span className="editor-count">{listedProperties.length}</span>}
         <div className="properties-panel__actions">
           <button type="button" className="editor-button" title="Копия (Ctrl+D)" disabled={!canEdit} onClick={onCopy}>
             <EditorIcon name="copy" size={14} />
@@ -379,7 +388,7 @@ export function PropertiesPanel({
         ) : (
           <>
             <dl className="property-list">
-              {view.properties.map((property) => (
+              {listedProperties.map((property) => (
                 <div
                   key={property.key}
                   className={property.valueText.length > WIDE_VALUE_LENGTH ? "property-row property-row--wide" : "property-row"}
@@ -413,6 +422,14 @@ export function PropertiesPanel({
                 onAdd={onAdd}
                 onDeclare={onDeclare}
                 disallowDeclare={disallowDeclare}
+              />
+            )}
+            {!isThreeDimensionalScene && (
+              <CloudsGroup
+                properties={Object.fromEntries(view.properties.map(({ key, value }) => [key, value]))}
+                isEditable={canEdit}
+                images={cloudImages}
+                handlers={cloudHandlers}
               />
             )}
           </>

@@ -66,6 +66,12 @@ describe("suggestPropertyNames", () => {
     expect(suggestPropertyNames(["leaf_fall"], {}, false)).not.toContain("leaf_fall");
   });
 
+  it("clouds и cloud_images не предлагаются: их ставит группа «Облака» колонки «Свойства»", () => {
+    const suggestions = suggestPropertyNames([], {}, false);
+    expect(suggestions).not.toContain("clouds");
+    expect(suggestions).not.toContain("cloud_images");
+  });
+
   it("shape и height Фазы 15 — среди подсказок", () => {
     const suggestions = suggestPropertyNames([], {}, false);
     expect(suggestions).toContain("shape");

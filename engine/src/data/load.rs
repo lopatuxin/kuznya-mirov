@@ -1,5 +1,6 @@
 use serde_json::Value as Json;
 
+use crate::core::clouds::CloudMisfit;
 use crate::core::footprint::Footprint;
 use crate::core::game::{self, Game};
 use crate::core::imprints::StampTable;
@@ -316,7 +317,7 @@ pub(crate) fn parse_scalar_value(
             if prop == property::SWAY && !validate_sway(n, properties, file, path, errors) {
                 return None;
             }
-            if property::PARTICLE_PROPERTIES.contains(&prop)
+            if (property::PARTICLE_PROPERTIES.contains(&prop) || prop == property::CLOUDS)
                 && !validate_particle_number(prop, n, properties, file, path, errors)
             {
                 return None;
@@ -452,6 +453,12 @@ pub(crate) fn parse_scalar_value(
             let name = expect_string(value, file, path, errors)?;
             resolve_image(&name, images, file, path, errors).map(Value::Image)
         }
+        PropKind::ImageList => {
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+                return None;
+            }
+            parse_image_list(value, properties, images, file, path, errors).map(Value::ImageList)
+        }
         PropKind::Grid | PropKind::Keys | PropKind::OnClick => {
             errors.push(
                 file,
@@ -461,6 +468,56 @@ pub(crate) fn parse_scalar_value(
             None
         }
     }
+}
+
+/// «Ветер и частицы» → «Проверка перед запуском»: `cloud_images` — список имён объявленных картинок, и
+/// каждая годится облакам (`PropertyTable::cloud_misfit`). Пустой список допустим.
+fn parse_image_list(
+    value: &Json,
+    properties: &PropertyTable,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<ImageId>> {
+    let Some(items) = value.as_array() else {
+        errors.push(
+            file,
+            path,
+            format!(
+                "ожидался список имён картинок, получено {}",
+                kind_name(value)
+            ),
+        );
+        return None;
+    };
+    let mut list = Vec::with_capacity(items.len());
+    let mut fits = true;
+    for (index, item) in items.iter().enumerate() {
+        let item_path = join(path, &format!("[{index}]"));
+        let Some(name) = expect_string(item, file, &item_path, errors) else {
+            fits = false;
+            continue;
+        };
+        let Some(image) = resolve_image(&name, images, file, &item_path, errors) else {
+            fits = false;
+            continue;
+        };
+        if let Some(misfit) = properties.cloud_misfit(image) {
+            errors.push(
+                file,
+                &item_path,
+                format!(
+                    "картинка \"{name}\" не годится облакам: {}",
+                    misfit.reason()
+                ),
+            );
+            fits = false;
+            continue;
+        }
+        list.push(image);
+    }
+    fits.then_some(list)
 }
 
 pub(crate) fn parse_grid(
@@ -802,7 +859,8 @@ fn depth_layer_fits_the_scene(
     if (matches!(
         prop,
         property::PARALLAX | property::REPEAT_X | property::SWAY
-    ) || property::PARTICLE_PROPERTIES.contains(&prop))
+    ) || property::PARTICLE_PROPERTIES.contains(&prop)
+        || property::CLOUD_PROPERTIES.contains(&prop))
         && properties.three_d()
     {
         errors.push(
@@ -862,8 +920,8 @@ fn validate_sway(
     false
 }
 
-/// «Ветер и частицы» → «Проверка перед запуском»: числовое свойство частиц — только в плоской сцене;
-/// `smoke`, `sparks` и `leaf_fall` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
+/// «Ветер и частицы» → «Проверка перед запуском»: числовое свойство частиц и облаков — только в плоской
+/// сцене; `smoke`, `sparks`, `leaf_fall` и `clouds` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
 /// `sparks_spread` — от 0 до 180, `sparks_direction` — любое число.
 fn validate_particle_number(
     prop: PropertyId,
@@ -878,7 +936,9 @@ fn validate_particle_number(
     }
     let name = properties.name(prop);
     let range = match prop {
-        property::SMOKE | property::SPARKS | property::LEAF_FALL => Some((0.0, 1.0)),
+        property::SMOKE | property::SPARKS | property::LEAF_FALL | property::CLOUDS => {
+            Some((0.0, 1.0))
+        }
         property::SPARKS_SPREAD => Some((0.0, 180.0)),
         _ => None,
     };
@@ -937,6 +997,48 @@ pub(super) fn particles_shape_errors(
     }
     if shape.contains(&property::REPEAT_X) {
         messages.push(PARTICLES_WITH_REPEAT_X);
+    }
+    messages
+}
+
+/// «Ветер и частицы» → «Проверка перед запуском»: свойства облаков — только у объекта с `position`,
+/// `size` и `repeat_x`. `check_position` — как у `validate_follow_mouse_shape`.
+fn validate_clouds_shape(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    for message in clouds_shape_errors(shape, check_position) {
+        errors.push(file, path, message);
+    }
+}
+
+const CLOUDS_NEED_POSITION_AND_SIZE: &str =
+    "свойства облаков разрешены только объекту с position и size";
+const CLOUDS_NEED_REPEAT_X: &str =
+    "свойства облаков заданы без repeat_x: облака идут по небу, а небо — объект с repeat_x";
+
+/// Тексты нарушений формы объекта со свойствами облаков — общие для загрузки и правки на ходу.
+pub(super) fn clouds_shape_errors(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+) -> Vec<&'static str> {
+    let mut messages = Vec::new();
+    if !property::CLOUD_PROPERTIES
+        .iter()
+        .any(|prop| shape.contains(prop))
+    {
+        return messages;
+    }
+    let missing_size = !shape.contains(&property::SIZE);
+    let missing_position = check_position && !shape.contains(&property::POSITION);
+    if missing_size || missing_position {
+        messages.push(CLOUDS_NEED_POSITION_AND_SIZE);
+    }
+    if !shape.contains(&property::REPEAT_X) {
+        messages.push(CLOUDS_NEED_REPEAT_X);
     }
     messages
 }
@@ -1234,6 +1336,7 @@ fn parse_scene_object(
     validate_shape_fill(&shape, true, file, &path, errors);
     validate_deck_shape(&shape, true, file, &path, errors);
     validate_particles_shape(&shape, true, file, &path, errors);
+    validate_clouds_shape(&shape, true, file, &path, errors);
     let is_layer = matches!(
         find_value(&values, property::PARALLAX),
         Some(Value::Number(n)) if *n != 1.0
@@ -1717,6 +1820,7 @@ struct SceneJsonConfig {
     y_sort: bool,
     camera: Option<CameraConfig>,
     light: LightConfig,
+    cell_pixels: Option<f64>,
 }
 
 /// «Трёхмерная сцена» → «Камера», требование 30: `camera` — объект с одним числом `pitch` от 30 до
@@ -1894,9 +1998,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
             "y_sort вместе с camera: порядок рисования в трёхмерной сцене задаёт глубина",
         );
     }
-    if !valid_cell_pixels(obj, errors) {
-        return None;
-    }
+    let cell_pixels = parse_cell_pixels(obj, errors);
     Some(SceneJsonConfig {
         width: width?,
         height: height?,
@@ -1905,26 +2007,31 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         y_sort: y_sort?,
         camera: camera?,
         light: light?,
+        cell_pixels: cell_pixels?,
     })
 }
 
-/// «Редактор», «Формат игры»: `cell_pixels` — необязательное число больше нуля. Движок значение не
-/// использует: редактор читает его из текста `game.json`, здесь только проверка.
-fn valid_cell_pixels(scene: &serde_json::Map<String, Json>, errors: &mut ErrorSink) -> bool {
+/// «Редактор», «Формат игры»: `cell_pixels` — необязательное число больше нуля. Редактор читает его из
+/// текста `game.json`; движку оно нужно для размера облака по точкам его картинки. Внешний `None` —
+/// значение не годится, внутренний — поля нет.
+fn parse_cell_pixels(
+    scene: &serde_json::Map<String, Json>,
+    errors: &mut ErrorSink,
+) -> Option<Option<f64>> {
     let Some(value) = scene.get("cell_pixels") else {
-        return true;
+        return Some(None);
     };
     match expect_number(value, "game.json", "scene → cell_pixels", errors) {
-        Some(n) if n > 0.0 => true,
+        Some(n) if n > 0.0 => Some(Some(n)),
         Some(n) => {
             errors.push(
                 "game.json",
                 "scene → cell_pixels",
                 format!("cell_pixels должен быть больше нуля, получено {n}"),
             );
-            false
+            None
         }
-        None => false,
+        None => None,
     }
 }
 
@@ -2010,6 +2117,25 @@ pub struct ImageDecl {
     /// «Картинки» → «Видео»: `path` на `.mp4` — видео двойной высоты (цвет сверху, маска снизу), а
     /// не картинка; кадров, столбцов и `frame_by` у него нет.
     pub video: bool,
+}
+
+impl ImageDecl {
+    /// «Ветер и частицы» → «Проверка перед запуском», требование 27: чем картинка не годится облакам;
+    /// `None` — годится. Облако — одна картинка без кадров, с размером в клетках из `size` или из точек и
+    /// `cell_pixels`.
+    pub fn cloud_misfit(&self, cell_pixels: Option<f64>) -> Option<CloudMisfit> {
+        if self.video {
+            Some(CloudMisfit::Video)
+        } else if self.animated || self.frame_by_name.is_some() || self.frames > 1 {
+            Some(CloudMisfit::Frames)
+        } else if self.anchor != Anchor::Center || self.offset != [0.0, 0.0] {
+            Some(CloudMisfit::Placement)
+        } else if self.size.is_none() && cell_pixels.is_none() {
+            Some(CloudMisfit::NoSize)
+        } else {
+            None
+        }
+    }
 }
 
 /// Ответ исполнителя (браузера) по одному треку из `files.music` — «Звук» → «Загрузка и проверка»: движок не разжимает MP3 сам, а получает уже готовый вердикт.
@@ -2407,6 +2533,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             y_sort: scene.y_sort,
             camera: scene.camera,
             light: scene.light,
+            cell_pixels: scene.cell_pixels,
         },
         random_seed,
         max_objects: max_objects as usize,
@@ -3370,7 +3497,7 @@ fn parse_set_value(
                 return None;
             }
         }
-        if property::PARTICLE_PROPERTIES.contains(&prop) {
+        if property::PARTICLE_PROPERTIES.contains(&prop) || prop == property::CLOUDS {
             let constants: &[f64] = match &expr {
                 NumberExpr::Const(n) => std::slice::from_ref(n),
                 NumberExpr::Table { table, .. } => table,
@@ -3994,6 +4121,7 @@ fn parse_template(
     validate_shape_fill(&shape, false, file, path, errors);
     validate_deck_shape(&shape, false, file, path, errors);
     validate_particles_shape(&shape, false, file, path, errors);
+    validate_clouds_shape(&shape, false, file, path, errors);
     let is_layer = template.iter().any(|(prop, value)| {
         *prop == property::PARALLAX
             && matches!(value, TemplateValue::Const(Value::Number(n)) if *n != 1.0)
@@ -5628,6 +5756,28 @@ fn validate_unused_properties(
 
 fn find_value(values: &[(PropertyId, Value)], prop: PropertyId) -> Option<&Value> {
     values.iter().find(|(p, _)| *p == prop).map(|(_, v)| v)
+}
+
+/// «Ветер и частицы» → «Проверка перед запуском»: предупреждение, если у объекта сцены `clouds` больше
+/// нуля, а `cloud_images` нет или он пуст, — облаков не будет.
+fn warn_clouds_without_images(scene: &[ParsedObject], scene_file: &str, errors: &mut ErrorSink) {
+    for obj in scene {
+        let wanted = matches!(
+            find_value(&obj.values, property::CLOUDS),
+            Some(Value::Number(n)) if *n > 0.0
+        );
+        let chosen = matches!(
+            find_value(&obj.values, property::CLOUD_IMAGES),
+            Some(Value::ImageList(images)) if !images.is_empty()
+        );
+        if wanted && !chosen {
+            errors.push_warning(
+                scene_file,
+                &join(&obj.path, "clouds"),
+                "облаков нет: не выбраны картинки облаков",
+            );
+        }
+    }
 }
 
 fn name_suffix(obj: &ParsedObject) -> String {
@@ -8041,11 +8191,22 @@ fn mark_fill_used(used: &mut std::collections::HashSet<ImageId>, fill: &Fill) {
     }
 }
 
+/// Картинки, которые называет значение: `image` одну, `cloud_images` — все из списка.
+fn mark_value_used(used: &mut std::collections::HashSet<ImageId>, value: &Value) {
+    match value {
+        Value::Image(id) => {
+            used.insert(*id);
+        }
+        Value::ImageList(ids) => used.extend(ids),
+        _ => {}
+    }
+}
+
 fn mark_key_table_used(used: &mut std::collections::HashSet<ImageId>, table: &KeyTable) {
     for binding in table.values() {
         for edit in binding.press.iter().chain(&binding.release) {
-            if let EditValue::Const(Value::Image(id)) = &edit.value {
-                used.insert(*id);
+            if let EditValue::Const(value) = &edit.value {
+                mark_value_used(used, value);
             }
         }
     }
@@ -8067,17 +8228,15 @@ fn collect_used_images(
     }
     for obj in scene {
         for (_, v) in &obj.values {
-            if let Value::Image(id) = v {
-                used.insert(*id);
-            }
+            mark_value_used(&mut used, v);
         }
         if let Some(table) = &obj.keys {
             mark_key_table_used(&mut used, table);
         }
         if let Some(edits) = &obj.on_click {
             for edit in edits {
-                if let EditValue::Const(Value::Image(id)) = &edit.value {
-                    used.insert(*id);
+                if let EditValue::Const(value) = &edit.value {
+                    mark_value_used(&mut used, value);
                 }
             }
         }
@@ -8085,19 +8244,19 @@ fn collect_used_images(
     let mark_template = |used: &mut std::collections::HashSet<ImageId>,
                          template: &[(PropertyId, TemplateValue)]| {
         for (_, tv) in template {
-            if let TemplateValue::Const(Value::Image(id)) = tv {
-                used.insert(*id);
+            if let TemplateValue::Const(value) = tv {
+                mark_value_used(used, value);
             }
         }
     };
     let mark_do = |used: &mut std::collections::HashSet<ImageId>, do_: &[CommonAction]| {
         walk_common_actions(do_, &mut |action| {
             if let CommonAction::SetAll {
-                value: SetValue::Const(Value::Image(id)),
+                value: SetValue::Const(value),
                 ..
             } = action
             {
-                used.insert(*id);
+                mark_value_used(used, value);
             }
         });
     };
@@ -8128,11 +8287,11 @@ fn collect_used_images(
             } => {
                 for effect in effects_a.iter().chain(effects_b) {
                     if let CollideEffect::Set {
-                        value: SetValue::Const(Value::Image(id)),
+                        value: SetValue::Const(value),
                         ..
                     } = effect
                     {
-                        used.insert(*id);
+                        mark_value_used(&mut used, value);
                     }
                 }
                 mark_do(&mut used, do_);
@@ -8524,6 +8683,14 @@ pub fn load_rest_with_stamps(
     };
     properties.set_three_d(config.scene.is_3d());
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
+    properties.set_cloud_misfits(
+        config
+            .files
+            .images
+            .iter()
+            .map(|decl| decl.cloud_misfit(config.scene.cell_pixels))
+            .collect(),
+    );
     if config.scene.is_3d() {
         validate_videos_in_flat_scene(&config.files.images, &mut errors);
     }
@@ -8771,6 +8938,7 @@ pub fn load_rest_with_stamps(
             &config.scene,
             &mut errors,
         );
+        warn_clouds_without_images(&scene_objects, &config.files.scene, &mut errors);
         validate_selectors_not_empty(
             &shapes,
             &rules,

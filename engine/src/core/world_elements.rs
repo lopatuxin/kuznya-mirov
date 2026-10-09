@@ -306,6 +306,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         }
     }
 
@@ -813,6 +814,7 @@ mod tests {
             y_sort: true,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
             ..scene_config()
         };
         // Two objects at the same layer, y_sort on: the lower bottom edge draws on top.

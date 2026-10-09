@@ -1,9 +1,10 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use super::clouds::CloudMisfit;
 use super::imprints::StampTable;
 use super::terrain::Terrain;
-use super::value::PropKind;
+use super::value::{ImageId, PropKind};
 
 pub type PropertyId = u16;
 
@@ -49,6 +50,9 @@ pub const SPARKS_DIRECTION: PropertyId = 30;
 pub const SPARKS_SPREAD: PropertyId = 31;
 pub const LEAF_FALL: PropertyId = 32;
 pub const LEAF_COLOR: PropertyId = 33;
+/// «Ветер и частицы» → «Облака»: сколько облаков на небе и из каких картинок они.
+pub const CLOUDS: PropertyId = 34;
+pub const CLOUD_IMAGES: PropertyId = 35;
 
 /// Свойства частиц: только плоская сцена, только объекту с `position` и `size`, без `repeat_x`.
 pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
@@ -62,6 +66,9 @@ pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
     LEAF_FALL,
     LEAF_COLOR,
 ];
+
+/// Свойства облаков: только плоская сцена, только объекту с `position`, `size` и `repeat_x`.
+pub const CLOUD_PROPERTIES: [PropertyId; 2] = [CLOUDS, CLOUD_IMAGES];
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -98,6 +105,8 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("sparks_spread", PropKind::Number),
     ("leaf_fall", PropKind::Number),
     ("leaf_color", PropKind::Color),
+    ("clouds", PropKind::Number),
+    ("cloud_images", PropKind::ImageList),
 ];
 
 #[derive(Debug, Clone)]
@@ -120,6 +129,9 @@ pub struct PropertyTable {
     terrain: Option<Arc<Terrain>>,
     /// «Лепка рельефа»: штампы `files.stamps` — по ним ставятся отпечатки файла рельефа и правки редактора.
     stamps: StampTable,
+    /// «Ветер и частицы» → «Облака»: по номеру картинки — чем она не годится облакам; пусто, пока игра не
+    /// загружена, и тогда годится любая. Таблицу свойств видят все места, что пишут `cloud_images`.
+    cloud_misfits: Vec<Option<CloudMisfit>>,
 }
 
 impl PropertyTable {
@@ -130,6 +142,7 @@ impl PropertyTable {
             three_d: false,
             terrain: None,
             stamps: StampTable::default(),
+            cloud_misfits: Vec::new(),
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -181,6 +194,14 @@ impl PropertyTable {
 
     pub fn stamps(&self) -> &StampTable {
         &self.stamps
+    }
+
+    pub fn set_cloud_misfits(&mut self, misfits: Vec<Option<CloudMisfit>>) {
+        self.cloud_misfits = misfits;
+    }
+
+    pub fn cloud_misfit(&self, image: ImageId) -> Option<CloudMisfit> {
+        self.cloud_misfits.get(image).copied().flatten()
     }
 
     pub fn resolve(&self, name: &str) -> Option<PropertyId> {
@@ -257,6 +278,15 @@ mod tests {
             assert_eq!(table.resolve(name), Some(id), "{name}");
             assert_eq!(table.kind(id), kind, "{name}");
             assert!(PARTICLE_PROPERTIES.contains(&id), "{name}");
+        }
+        for (name, id, kind) in [
+            ("clouds", CLOUDS, PropKind::Number),
+            ("cloud_images", CLOUD_IMAGES, PropKind::ImageList),
+        ] {
+            assert_eq!(table.resolve(name), Some(id), "{name}");
+            assert_eq!(table.kind(id), kind, "{name}");
+            assert!(CLOUD_PROPERTIES.contains(&id), "{name}");
+            assert!(!PARTICLE_PROPERTIES.contains(&id), "{name}");
         }
         assert_eq!(table.resolve("particles"), None);
     }

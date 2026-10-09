@@ -1,3 +1,5 @@
+import { isVideoPath } from "../images/imagePayload";
+
 /**
  * `terrain` — путь из `files.terrain`; `null`, пока у проекта нет файла рельефа («Кисти рельефа», требование 19).
  */
@@ -119,4 +121,24 @@ export function parseProjectCellPixels(gameJsonText: string | null): number | nu
   } catch {
     return null;
   }
+}
+
+function isCloudImageDescription(description: unknown, cellPixels: number | null): boolean {
+  const fields = description !== null && typeof description === "object" && !Array.isArray(description) ? (description as Record<string, unknown>) : {};
+  if (typeof fields.path === "string" && isVideoPath(fields.path)) return false;
+  if (fields.frame_time !== undefined || fields.frame_by !== undefined || (readPositiveNumber(fields.frames) ?? 1) > 1) return false;
+  if ((fields.anchor !== undefined && fields.anchor !== "center") || (fields.offset !== undefined && !(Array.isArray(fields.offset) && fields.offset.every((part) => part === 0)))) return false;
+  const hasSize = Array.isArray(fields.size) && readPositiveNumber(fields.size[0]) !== null && readPositiveNumber(fields.size[1]) !== null;
+  return hasSize || cellPixels !== null;
+}
+
+/**
+ * Имена картинок, годных облакам, в порядке объявления — «Ветер и частицы», «Проверка перед запуском», требование 27: не видео, без кадров
+ * (`frame_time`, `frame_by`, больше одного кадра), без `anchor` и `offset` и со своим `size` или при `cell_pixels` в игре.
+ */
+export function parseProjectCloudImageNames(gameJsonText: string | null): string[] {
+  const images = readFilesSection(gameJsonText)?.images;
+  if (images === null || typeof images !== "object" || Array.isArray(images)) return [];
+  const cellPixels = parseProjectCellPixels(gameJsonText);
+  return Object.entries(images).flatMap(([name, description]) => (isCloudImageDescription(description, cellPixels) ? [name] : []));
 }

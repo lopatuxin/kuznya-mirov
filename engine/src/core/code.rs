@@ -21,14 +21,14 @@ use serde_json::Value as Json;
 
 use luars::{
     FromLua, IntoLua, Lua, LuaApi, LuaError, LuaFunction, LuaResult, LuaSandboxApi, LuaState,
-    LuaTable, LuaUserdata, LuaValue, SafeOption, SandboxConfig, Stdlib, UserDataTrait,
+    LuaTable, LuaTableRef, LuaUserdata, LuaValue, SafeOption, SandboxConfig, Stdlib, UserDataTrait,
     lua_float_to_string,
 };
 
 use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
 use super::sound::SoundMarks;
-use super::value::{PropKind, Rotation, Shape, parse_color};
+use super::value::{ImageId, PropKind, Rotation, Shape, parse_color};
 use super::world::World;
 
 /// «Код игры»: предел операций Lua — на прогон файла при загрузке (свой, отдельный бюджет) и на
@@ -334,7 +334,12 @@ enum PropValue {
     Bool(bool),
     Number(f64),
     Str(String),
-    Vec2 { pair: PairRef, mt: LuaValue },
+    /// «Облака»: имена картинок списка — в Lua новая таблица на каждое чтение.
+    List(Vec<String>),
+    Vec2 {
+        pair: PairRef,
+        mt: LuaValue,
+    },
 }
 
 impl IntoLua for PropValue {
@@ -344,6 +349,19 @@ impl IntoLua for PropValue {
             PropValue::Bool(b) => b.into_lua(state),
             PropValue::Number(n) => n.into_lua(state),
             PropValue::Str(s) => s.into_lua(state),
+            PropValue::List(names) => {
+                let list = state
+                    .create_table_ref(names.len(), 0)
+                    .map_err(|e| format!("{e:?}"))?;
+                for (index, name) in names.into_iter().enumerate() {
+                    list.rawseti_typed((index + 1) as i64, name)
+                        .map_err(|e| format!("{e:?}"))?;
+                }
+                state
+                    .push_value(list.to_value())
+                    .map_err(|e| format!("{e:?}"))?;
+                Ok(1)
+            }
             PropValue::Vec2 { pair, mt } => {
                 let value = new_handle(state, pair, mt)?;
                 state.push_value(value).map_err(|e| format!("{e:?}"))?;
@@ -362,6 +380,8 @@ enum AnyValue {
     Bool(bool),
     Number(f64),
     Str(String),
+    /// «Облака»: таблица-список; элемент не строка — `None`, и запись такого списка отвергнута.
+    List(Vec<Option<String>>),
     /// «Рельеф»: `z` — третье поле таблицы, высота основания у `position` и высота цели у `walk_to`.
     Vec2 {
         x: f64,
@@ -369,6 +389,9 @@ enum AnyValue {
         z: Option<f64>,
     },
     Pair(PairRef),
+    /// Таблица — не список и не пара `{x=.., y=..}`; внутри — почему не пара. Списку облаков отвечают
+    /// ошибкой списка, остальным свойствам — этой.
+    NotPair(String),
 }
 
 impl FromLua for AnyValue {
@@ -389,22 +412,46 @@ impl FromLua for AnyValue {
             return Ok(AnyValue::Str(s.to_string()));
         }
         if let Some(table) = state.to_table_ref(value) {
-            let x: f64 = table
-                .get_typed("x")
-                .map_err(|_| "пара без числового x".to_string())?;
-            let y: f64 = table
-                .get_typed("y")
-                .map_err(|_| "пара без числового y".to_string())?;
-            let z: Option<f64> = table
-                .get_typed("z")
-                .map_err(|_| "z пары должно быть числом".to_string())?;
-            return Ok(AnyValue::Vec2 { x, y, z });
+            if let Some(items) = sequence_items(&table) {
+                return Ok(AnyValue::List(items));
+            }
+            return Ok(table_pair(&table).unwrap_or_else(AnyValue::NotPair));
         }
         if let Ok(pair) = PairRef::from_value(value) {
             return Ok(AnyValue::Pair(pair));
         }
         Err(format!("неожиданное значение вида {}", kind_name(value)))
     }
+}
+
+/// Пара `{x=.., y=..}` с необязательной высотой `z`; ошибка — чего в таблице не хватает.
+fn table_pair(table: &LuaTableRef) -> Result<AnyValue, String> {
+    let x: f64 = table
+        .get_typed("x")
+        .map_err(|_| "пара без числового x".to_string())?;
+    let y: f64 = table
+        .get_typed("y")
+        .map_err(|_| "пара без числового y".to_string())?;
+    let z: Option<f64> = table
+        .get_typed("z")
+        .map_err(|_| "z пары должно быть числом".to_string())?;
+    Ok(AnyValue::Vec2 { x, y, z })
+}
+
+/// Элементы таблицы-списка, если её ключи ровно `1..n`: строка — `Some`, всё прочее — `None`. Таблица
+/// с другими ключами (пара `{x=.., y=..}`) — не список.
+fn sequence_items(table: &LuaTableRef) -> Option<Vec<Option<String>>> {
+    let pairs = table.pairs().ok()?;
+    let mut items: Vec<Option<Option<String>>> = vec![None; pairs.len()];
+    for (key, value) in pairs {
+        let slot = usize::try_from(key.as_integer()?.checked_sub(1)?).ok()?;
+        let item = items.get_mut(slot)?;
+        if item.is_some() {
+            return None;
+        }
+        *item = Some(value.as_str().map(str::to_string));
+    }
+    items.into_iter().collect()
 }
 
 /// Обёртка над таблицей-аргументом `find{has=..., without=...}` — заворачивает
@@ -478,6 +525,13 @@ fn read_property(
                 None => PropValue::Nil,
             },
         ),
+        PropKind::ImageList => Ok(world.image_list(id, prop).map_or(PropValue::Nil, |list| {
+            PropValue::List(
+                list.iter()
+                    .filter_map(|&image| image_names.get(image).cloned())
+                    .collect(),
+            )
+        })),
         PropKind::Vec2 => {
             if world.vec2(id, prop).is_none() {
                 return Ok(PropValue::Nil);
@@ -530,6 +584,7 @@ fn write_property(
                 .filter(|_| matches!(prop, property::POSITION | property::WALK_TO));
             AnyValue::Vec2 { x, y, z }
         }
+        AnyValue::NotPair(message) if kind != PropKind::ImageList => return Err(message),
         other => other,
     };
     check_shape_rules(world, properties, id, prop, &value)?;
@@ -626,6 +681,11 @@ fn write_property(
             }
         },
         (PropKind::Image, _) => Err("ожидалось имя картинки строкой".to_string()),
+        (PropKind::ImageList, AnyValue::List(items)) => {
+            world.set_image_list(id, prop, cloud_image_list(items, image_names, properties)?);
+            Ok(())
+        }
+        (PropKind::ImageList, _) => Err(CLOUD_LIST_EXPECTED.to_string()),
         (PropKind::Vec2, AnyValue::Vec2 { x, y, z }) => {
             match z {
                 None => world.set_vec2(id, prop, [x, y]),
@@ -649,6 +709,30 @@ fn write_property(
             unreachable!("checked above")
         }
     }
+}
+
+const CLOUD_LIST_EXPECTED: &str = "ожидался список имён картинок облаков";
+
+/// «Облака», требование 25: каждый элемент — имя объявленной картинки, которая годится облакам.
+fn cloud_image_list(
+    items: Vec<Option<String>>,
+    image_names: &[String],
+    properties: &PropertyTable,
+) -> Result<Vec<ImageId>, String> {
+    items
+        .into_iter()
+        .map(|item| {
+            let name = item.ok_or(CLOUD_LIST_EXPECTED)?;
+            let image = image_names
+                .iter()
+                .position(|known| *known == name)
+                .ok_or(CLOUD_LIST_EXPECTED)?;
+            match properties.cloud_misfit(image) {
+                Some(_) => Err(CLOUD_LIST_EXPECTED.to_string()),
+                None => Ok(image),
+            }
+        })
+        .collect()
 }
 
 /// «Рельеф», требования 30, 38: третье число `position` и `walk_to` есть только в трёхмерной сцене,
@@ -690,7 +774,8 @@ fn check_shape_rules(
             && (matches!(
                 prop,
                 property::PARALLAX | property::REPEAT_X | property::SWAY
-            ) || property::PARTICLE_PROPERTIES.contains(&prop)) =>
+            ) || property::PARTICLE_PROPERTIES.contains(&prop)
+                || property::CLOUD_PROPERTIES.contains(&prop)) =>
         {
             Err(format!("{name} есть только в плоской сцене"))
         }

@@ -241,7 +241,7 @@ describe("ParticlesPanel: число настройки", () => {
   });
 
   it("движок не принял число — текст ошибки под полем, значение сцене возвращено, запись не просят", () => {
-    const onPreview = vi.fn((key: string, value: number | undefined) => (key === "smoke_height" && value === 0 ? "smoke_height должно быть больше нуля, получено 0" : undefined));
+    const onPreview = vi.fn((key: string, value: unknown) => (key === "smoke_height" && value === 0 ? "smoke_height должно быть больше нуля, получено 0" : undefined));
     const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 }, { onPreview });
     const input = screen.getByLabelText("высота столба, клеток") as HTMLInputElement;
 
@@ -295,7 +295,7 @@ describe("ParticlesPanel: перечитывание файлов на врем�
   });
 
   it("число, которое движок не принял, и не число после Enter перечитывание тоже отпускают", () => {
-    const onPreview = vi.fn((_key: string, value: number | undefined) => (value === 0 ? "нельзя" : undefined));
+    const onPreview = vi.fn((_key: string, value: unknown) => (value === 0 ? "нельзя" : undefined));
     const { props } = renderPanel({ smoke: 0.5, smoke_height: 4 }, { onPreview });
     const input = screen.getByLabelText("высота столба, клеток");
 
@@ -493,7 +493,7 @@ describe("ParticlesPanel: круг направления и разброса", 
   });
 
   it("ошибка движка стоит под кругом, запись не просят, сцене возвращено прежнее", () => {
-    const onPreview = vi.fn((key: string, value: number | undefined) => (value === 200 ? undefined : key === "sparks_direction" && value === 90 ? "направление не принято" : undefined));
+    const onPreview = vi.fn((key: string, value: unknown) => (value === 200 ? undefined : key === "sparks_direction" && value === 90 ? "направление не принято" : undefined));
     const { props } = renderPanel(SPARKS, { onPreview });
     const dial = screen.getByRole("group", { name: "направление и разброс искр" });
     Object.defineProperty(dial, "getBoundingClientRect", { value: () => ({ left: 0, top: 0, width: 100, height: 100 }) });

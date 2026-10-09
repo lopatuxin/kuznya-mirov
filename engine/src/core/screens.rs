@@ -237,6 +237,7 @@ pub(crate) fn format_property(
         | PropKind::Grid
         | PropKind::Keys
         | PropKind::Image
+        | PropKind::ImageList
         | PropKind::FollowMouse
         | PropKind::OnClick => String::new(),
     }

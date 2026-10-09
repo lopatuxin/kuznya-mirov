@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   chooseTerrainFilePath,
   parseProjectCellPixels,
+  parseProjectCloudImageNames,
   parseProjectFilePaths,
   parseProjectImageDescriptions,
   parseProjectMaterialNames,
@@ -115,5 +116,37 @@ describe("parseProjectCellPixels", () => {
     expect(parseProjectCellPixels('{ "width": 160 }')).toBeNull();
     expect(parseProjectCellPixels("{")).toBeNull();
     expect(parseProjectCellPixels(null)).toBeNull();
+  });
+});
+
+describe("parseProjectCloudImageNames", () => {
+  const gameJson = (images: Record<string, unknown>, cellPixels?: number): string => JSON.stringify({ scene: cellPixels === undefined ? {} : { cell_pixels: cellPixels }, files: { images } });
+
+  it("годны картинка со своим size и, при cell_pixels в игре, любая без кадров; порядок объявления сохраняется", () => {
+    const images = { sized: { path: "a.png", size: [4, 2] }, plain: { path: "b.png" }, smooth_one: { path: "c.png", smooth: true, frames: 1 } };
+
+    expect(parseProjectCloudImageNames(gameJson(images))).toEqual(["sized"]);
+    expect(parseProjectCloudImageNames(gameJson(images, 96))).toEqual(["sized", "plain", "smooth_one"]);
+  });
+
+  it("не годятся видео, кадры, frame_time, frame_by, anchor и offset", () => {
+    const images = {
+      video: { path: "images/cloud.mp4", size: [4, 2] },
+      loud_video: { path: "images/CLOUD.MP4", size: [4, 2] },
+      strip: { path: "a.png", size: [4, 2], frames: 4 },
+      timed: { path: "a.png", size: [4, 2], frames: 4, frame_time: 0.1 },
+      driven: { path: "a.png", size: [4, 2], frames: 4, frame_by: "step" },
+      anchored: { path: "a.png", size: [4, 2], anchor: "bottom" },
+      shifted: { path: "a.png", size: [4, 2], offset: [0, 1] },
+      centered: { path: "a.png", size: [4, 2], anchor: "center", offset: [0, 0] },
+    };
+
+    expect(parseProjectCloudImageNames(gameJson(images))).toEqual(["centered"]);
+  });
+
+  it("картинок или game.json нет — пусто", () => {
+    expect(parseProjectCloudImageNames('{ "files": {} }')).toEqual([]);
+    expect(parseProjectCloudImageNames("{")).toEqual([]);
+    expect(parseProjectCloudImageNames(null)).toEqual([]);
   });
 });

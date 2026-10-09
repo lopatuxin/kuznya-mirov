@@ -73,6 +73,9 @@ pub struct SceneConfig {
     /// «Трёхмерная сцена»: есть камера — сцена трёхмерная; `None` — плоская, как раньше.
     pub camera: Option<CameraConfig>,
     pub light: LightConfig,
+    /// Точек картинки на клетку из `scene` в `game.json`: по нему размер картинки без `size` — в клетках
+    /// («Облака»). `None` — поля нет.
+    pub cell_pixels: Option<f64>,
 }
 
 impl SceneConfig {
@@ -808,6 +811,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         // A 10x20 scene into an 800x600 window scales by 30 (600/20), letterboxed 100px on
         // each side horizontally (800 - 10*30 = 500, halved).
@@ -829,6 +833,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let cell = scene.window_to_scene([-500.0, -500.0], [800.0, 600.0]);
         assert_eq!(cell, [0.0, 0.0]);
@@ -851,6 +856,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let id = world.create();
         world.set_vec2(id, property::POSITION, [1.0, 2.0]);
@@ -875,6 +881,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let bare = world.create();
         assert_eq!(object_rect(&world, &scene, bare, [800.0, 600.0]), None);
@@ -893,6 +900,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let moved = world.create();
         world.set_vec2(moved, property::POSITION, [1.0, 2.0]);
@@ -942,6 +950,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let viewport = [100.0, 100.0]; // scale 10, no letterbox margin
 
@@ -972,6 +981,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let viewport = [800.0, 600.0]; // scale 30, offset [250, 0]
 
@@ -997,6 +1007,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let viewport = [100.0, 100.0]; // scale 10, no margin
 
@@ -1037,6 +1048,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         }
     }
 
@@ -1050,6 +1062,7 @@ mod tests {
             y_sort: false,
             camera: None,
             light: Default::default(),
+            cell_pixels: None,
         };
         let (scale, offset) = letterbox([800.0, 600.0], [20.0, 15.0]);
         let visible = scene.visible_cell_range(scale, offset, [800.0, 600.0]);

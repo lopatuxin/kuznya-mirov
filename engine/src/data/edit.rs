@@ -16,8 +16,9 @@ use crate::core::value::{GridSpec, PropKind, Value};
 use crate::core::world::World;
 
 use super::load::{
-    CoverMask, ImageDecl, MaterialDecl, check_cover_masks, parse_edit_covers, parse_edit_imprints,
-    parse_grid, parse_scalar_value, particles_shape_errors, read_terrain, terrain_from_numbers,
+    CoverMask, ImageDecl, MaterialDecl, check_cover_masks, clouds_shape_errors, parse_edit_covers,
+    parse_edit_imprints, parse_grid, parse_scalar_value, particles_shape_errors, read_terrain,
+    terrain_from_numbers,
 };
 use crate::data::error::{ErrorSink, GameError};
 
@@ -64,6 +65,12 @@ pub fn value_to_json(value: &Value, images: &[ImageDecl]) -> Json {
             .get(*id)
             .map(|decl| Json::String(decl.name.clone()))
             .unwrap_or(Json::Null),
+        Value::ImageList(ids) => Json::Array(
+            ids.iter()
+                .filter_map(|id| images.get(*id))
+                .map(|decl| Json::String(decl.name.clone()))
+                .collect(),
+        ),
         Value::Rotation(r) => rotation_to_json(r.angle()),
         Value::Shape(shape) => Json::String(shape.as_str().to_string()),
         Value::FollowMouse(a) => Json::String(a.as_str().to_string()),
@@ -187,8 +194,9 @@ pub fn set_property(
 }
 
 /// «Ветер и частицы» → «Проверка перед запуском»: правка не должна оставить объект со свойствами
-/// частиц без `position` или `size` и вместе с `repeat_x` — то же, что отвергает загрузка. `present_after` —
-/// будет ли `prop` у объекта после правки.
+/// частиц без `position` или `size` и вместе с `repeat_x`, а со свойствами облаков — без `position`,
+/// `size` или `repeat_x` — то же, что отвергает загрузка. `present_after` — будет ли `prop` у объекта после
+/// правки.
 fn check_particles_shape(
     world: &World,
     properties: &PropertyTable,
@@ -197,6 +205,7 @@ fn check_particles_shape(
     present_after: bool,
 ) -> Result<(), String> {
     let touches_shape = property::PARTICLE_PROPERTIES.contains(&prop)
+        || property::CLOUD_PROPERTIES.contains(&prop)
         || matches!(
             prop,
             property::REPEAT_X | property::POSITION | property::SIZE
@@ -214,8 +223,12 @@ fn check_particles_shape(
     } else {
         shape.remove(&prop);
     }
-    match particles_shape_errors(&shape, true).first() {
-        Some(message) => Err((*message).to_string()),
+    match particles_shape_errors(&shape, true)
+        .into_iter()
+        .chain(clouds_shape_errors(&shape, true))
+        .next()
+    {
+        Some(message) => Err(message.to_string()),
         None => Ok(()),
     }
 }

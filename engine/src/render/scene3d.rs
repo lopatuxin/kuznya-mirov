@@ -322,6 +322,7 @@ mod tests {
             y_sort: false,
             camera: Some(CameraConfig { pitch: 55.0 }),
             light: LightConfig::default(),
+            cell_pixels: None,
         }
     }
 
