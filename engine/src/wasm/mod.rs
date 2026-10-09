@@ -26,7 +26,6 @@ use crate::data::session::{self, PlaySession};
 use crate::render::VideoSource;
 use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint};
 use crate::render::materials::Relief;
-use crate::render::particles::OpaqueMask;
 use crate::render::relief::TerrainMesh;
 use crate::render::scene3d::{self, Frame3d};
 use crate::render::wind::Motion;
@@ -694,25 +693,6 @@ fn video_sources(
         });
     }
     sources
-}
-
-/// Маски непрозрачных точек в порядке `images`: у картинки — по её первому кадру в атласе, у видео —
-/// по первому кадру, который разжала страница («Ветер и частицы» → «Листопад»).
-fn opaque_masks(
-    images: &[ImageDecl],
-    atlas_images: &[atlas::AtlasImage],
-    players: &[VideoPlayer],
-) -> Vec<OpaqueMask> {
-    let mut masks = atlas::opaque_masks(atlas_images, images);
-    for (index, decl) in images.iter().enumerate().filter(|(_, decl)| decl.video) {
-        let Some(video) = players.iter().find(|video| video.name == decl.name) else {
-            continue;
-        };
-        let frame = &atlas_images[index];
-        masks[index] =
-            OpaqueMask::of_first_frame(&video.first_frame, frame.width, frame.width, frame.height);
-    }
-    masks
 }
 
 fn js_point(point: [f64; 2]) -> JsValue {
@@ -1630,10 +1610,14 @@ impl Engine {
                         );
                     }
                 };
-                self.motion.set_opaque_masks(opaque_masks(
-                    &image_order,
+                let video_frames: Vec<(&str, &[u8])> = video_players
+                    .iter()
+                    .map(|video| (video.name.as_str(), video.first_frame.as_slice()))
+                    .collect();
+                self.motion.set_opaque_masks(atlas::opaque_masks(
                     &atlas_images,
-                    &video_players,
+                    &image_order,
+                    &video_frames,
                 ));
                 self.renderer.set_videos(video_sources(
                     &image_order,
@@ -2269,8 +2253,12 @@ impl Engine {
         // без этого мир рисовался бы заглушкой, которую поставил последний `set_scene`/`resize`.
         self.motion.tick(Some(game.step_count()), 0.0);
         update_motion(&mut self.motion, game, &self.images);
-        self.renderer
-            .set_videos_playing(self.motion.clock_running(dt_seconds));
+        // В партии редактора кадр рисует `draw`, и видео ведёт он: второй опрос часов за кадр тратил
+        // бы их запас вдвое быстрее. Страница игры партии редактора не открывает и `draw` не зовёт.
+        if self.session.is_none() {
+            self.renderer
+                .set_videos_playing(self.motion.clock_running(dt_seconds));
+        }
         let view = frame_for(game, self.battle_view, viewport);
         let screen = &config.screens[state.active()];
         let (ui_instances, texts) = compose_ui(

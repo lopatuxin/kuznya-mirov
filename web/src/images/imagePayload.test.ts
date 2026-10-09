@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { FakeVideo } from "./fakeVideo";
 import { buildImagePayload, buildVideoPayload, fetchImageBytes, isVideoPath, type ImageEntry } from "./imagePayload";
 
 function stubWorkingBrowserDecoder(): void {
@@ -46,6 +47,11 @@ describe("fetchImageBytes + buildImagePayload", () => {
 });
 
 describe("видео", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
   it("видео — запись с путём на .mp4 в любом регистре, остальное картинка", () => {
     expect(isVideoPath("images/grass.mp4")).toBe(true);
     expect(isVideoPath("images/GRASS.MP4")).toBe(true);
@@ -57,5 +63,29 @@ describe("видео", () => {
     const payload = await buildVideoPayload([{ index: 4, path: "images/grass.mp4", bytes: null }]);
 
     expect(payload).toEqual([{ index: 4, verdict: "missing" }]);
+  });
+
+  it("buildVideoPayload: сбой чтения кадра одного видео освобождает проигрыватели всех и уходит дальше", async () => {
+    const players = [new FakeVideo("loadeddata", 4, 4), new FakeVideo("loadeddata", 4, 4)];
+    let made = 0;
+    let read = 0;
+    const getImageData = (_x: number, _y: number, width: number, height: number) => {
+      read += 1;
+      if (read === 2) throw new Error("не хватило памяти");
+      return { data: new Uint8ClampedArray(width * height * 4) };
+    };
+    vi.stubGlobal("document", {
+      createElement: (tag: string) => (tag === "video" ? players[made++] : { width: 0, height: 0, getContext: () => ({ drawImage: vi.fn(), getImageData }) }),
+    } as unknown as Document);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:video");
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+
+    const loading = buildVideoPayload([
+      { index: 1, path: "images/grass.mp4", bytes: new Uint8Array([1]) },
+      { index: 2, path: "images/panicles.mp4", bytes: new Uint8Array([2]) },
+    ]);
+
+    await expect(loading).rejects.toThrow("не хватило памяти");
+    for (const player of players) expect(player.removeAttribute).toHaveBeenCalledWith("src");
   });
 });

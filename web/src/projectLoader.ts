@@ -161,7 +161,7 @@ export async function loadProject(
   reader: ProjectFileReader,
   gameJsonText: string,
   createAudioContext: () => AudioContext,
-  videoPlayers?: VideoPlayerKeeper,
+  videoPlayers: VideoPlayerKeeper,
 ): Promise<Exclude<ProjectLoadResult, { status: "entry-missing" }>> {
   const entryResult = engine.read_entry(gameJsonText) as ReadEntryResult;
   if (!entryResult.ok) {
@@ -238,7 +238,7 @@ export async function loadProject(
   }
   // Неудачный `load` забывает и прежние проигрыватели, и новые: ни тем, ни другим играть некому.
   if (!loadResult.ok) for (const player of players) releaseVideoPlayer(player);
-  videoPlayers?.replace(loadResult.ok ? players : []);
+  videoPlayers.replace(loadResult.ok ? players : []);
   // read_entry первым, load вторым — тот же порядок, в котором предупреждения собирает сам движок
   // при объединённой загрузке («Редактор», требование 15).
   const warnings = [...entryResult.warnings, ...loadResult.warnings];

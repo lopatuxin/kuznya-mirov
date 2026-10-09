@@ -387,14 +387,28 @@ fn frame_size(decl: &ImageDecl, width: u32, height: u32) -> (u32, u32) {
 }
 
 /// «Листопад»: непрозрачные точки первого кадра каждой картинки, по номеру картинки — считаются один
-/// раз при загрузке картинок. `images` и `decls` идут в одном порядке.
-pub fn opaque_masks(images: &[AtlasImage], decls: &[ImageDecl]) -> Vec<OpaqueMask> {
+/// раз при загрузке картинок. `images` и `decls` идут в одном порядке. У места видео в атласе своих
+/// точек нет: его первый кадр берётся из `video_frames` — имя картинки и точки RGBA кадра, как их
+/// разжала страница; видео без кадра там листьев не роняет.
+pub fn opaque_masks(
+    images: &[AtlasImage],
+    decls: &[ImageDecl],
+    video_frames: &[(&str, &[u8])],
+) -> Vec<OpaqueMask> {
     images
         .iter()
         .zip(decls)
         .map(|(image, decl)| {
+            let pixels = if decl.video {
+                video_frames
+                    .iter()
+                    .find(|(name, _)| *name == decl.name)
+                    .map_or(&[][..], |(_, frame)| *frame)
+            } else {
+                &image.pixels
+            };
             let (width, height) = frame_size(decl, image.width, image.height);
-            OpaqueMask::of_first_frame(&image.pixels, image.width, width, height)
+            OpaqueMask::of_first_frame(pixels, image.width, width, height)
         })
         .collect()
 }
@@ -1356,6 +1370,29 @@ mod tests {
             frame_seconds: 0.0,
             video: false,
         }
+    }
+
+    /// «Ветер и частицы» → «Листопад»: у места видео в атласе своих точек нет — листья берут
+    /// непрозрачные точки первого кадра, который разжала страница; без кадра листьев нет.
+    #[test]
+    fn a_video_mask_comes_from_the_pages_first_frame() {
+        let video = ImageDecl {
+            name: "grass".to_string(),
+            path: "grass.mp4".to_string(),
+            video: true,
+            ..one_frame_image()
+        };
+        let place = AtlasImage::video_frame(2, 1);
+        let frame = [0, 0, 0, 0, 10, 20, 30, 255];
+        let with_frame = opaque_masks(
+            std::slice::from_ref(&place),
+            std::slice::from_ref(&video),
+            &[("grass", &frame)],
+        );
+        assert_eq!(with_frame[0], OpaqueMask::of_first_frame(&frame, 2, 2, 1));
+        let without_frame = opaque_masks(&[place], &[video], &[]);
+        assert_eq!(without_frame[0], OpaqueMask::of_first_frame(&[], 2, 2, 1));
+        assert_ne!(with_frame[0], without_frame[0]);
     }
 
     /// «Картинки»: план фазы 04 — «объект с color и объект с image попадают в один список
