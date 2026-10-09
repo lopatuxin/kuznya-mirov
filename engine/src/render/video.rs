@@ -11,6 +11,7 @@ use web_sys::{HtmlMediaElement, HtmlVideoElement};
 
 use super::atlas::AtlasRect;
 use super::gpu::ATLAS_FORMAT;
+use super::video_play::{self, PlayRequest, PlayerAction};
 
 /// Видео игры, как его отдаёт загрузка: проигрыватель, размер файла (оба слоя вместе) и место одного
 /// кадра в атласе.
@@ -19,15 +20,6 @@ pub struct VideoSource {
     pub width: u32,
     pub height: u32,
     pub place: AtlasRect,
-}
-
-/// Что стало с последней просьбой играть. Пока браузер не ответил, новая не шлётся; после отказа
-/// видео стоит, пока часы кадров не встанут и не пойдут снова.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum PlayRequest {
-    None,
-    Pending,
-    Refused,
 }
 
 struct Video {
@@ -98,22 +90,19 @@ impl Videos {
         queue.submit(std::iter::once(encoder.finish()));
     }
 
-    /// Часы кадров идут (`playing`) — проигрыватели играют, стоят — на паузе. Браузер мог
-    /// остановить видео сам (скрытая вкладка): на первом кадре с идущими часами оно запускается снова.
-    /// Отказ браузера играть — не ошибка, видео стоит на текущем кадре; снова его просят играть, когда
-    /// часы встанут и пойдут.
+    /// Часы кадров идут (`playing`) — проигрыватели играют, стоят — на паузе; когда просить играть,
+    /// решает [`video_play::next_step`].
     pub fn set_playing(&self, playing: bool) {
         for video in &self.items {
-            let paused = video.player.paused();
-            if playing && paused {
-                video.start();
-            } else if !playing {
-                if !paused {
+            let (action, request) =
+                video_play::next_step(playing, video.player.paused(), video.play_request.get());
+            video.play_request.set(request);
+            match action {
+                PlayerAction::Play => video.start(),
+                PlayerAction::Pause => {
                     let _ = video.player.pause();
                 }
-                if video.play_request.get() == PlayRequest::Refused {
-                    video.play_request.set(PlayRequest::None);
-                }
+                PlayerAction::Nothing => {}
             }
         }
     }
@@ -287,32 +276,22 @@ impl Video {
         render.draw(0..4, 0..1);
     }
 
-    /// Просьба играть, если прошлая не ждёт ответа и не получила отказ. Ответ браузера дожидается,
-    /// чтобы отказ не стал необработанным и запомнился.
+    /// Просьба играть. Ответ браузера дожидается, чтобы отказ не стал необработанным и запомнился;
+    /// просьбу, которую прервала пауза самого движка (`AbortError`), отказом не считают.
     fn start(&self) {
-        if self.play_request.get() != PlayRequest::None {
-            return;
-        }
         let Ok(promise) = self.player.play() else {
-            self.play_request.set(PlayRequest::Refused);
+            self.play_request.set(video_play::after_answer(true));
             return;
         };
-        self.play_request.set(PlayRequest::Pending);
         let play_request = Rc::clone(&self.play_request);
         wasm_bindgen_futures::spawn_local(async move {
-            let answer = match wasm_bindgen_futures::JsFuture::from(promise).await {
-                Ok(_) => PlayRequest::None,
-                // Просьбу прервала пауза самого движка: часы встали, пока браузер готовился играть.
-                Err(error)
-                    if error
-                        .dyn_ref::<js_sys::Error>()
-                        .is_some_and(|error| error.name() == "AbortError") =>
-                {
-                    PlayRequest::None
-                }
-                Err(_) => PlayRequest::Refused,
+            let refused = match wasm_bindgen_futures::JsFuture::from(promise).await {
+                Ok(_) => false,
+                Err(error) => !error
+                    .dyn_ref::<js_sys::Error>()
+                    .is_some_and(|error| error.name() == "AbortError"),
             };
-            play_request.set(answer);
+            play_request.set(video_play::after_answer(refused));
         });
     }
 }

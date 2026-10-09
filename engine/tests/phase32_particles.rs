@@ -644,7 +644,7 @@ impl Rig {
             .collect();
         let rects = pack(&atlas_images).expect("умещаются").rects;
         let mut motion = Motion::default();
-        motion.set_opaque_masks(opaque_masks(&atlas_images, &images));
+        motion.set_opaque_masks(opaque_masks(&atlas_images, &images, &[]));
         Rig {
             game,
             images,

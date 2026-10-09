@@ -4,6 +4,7 @@ mod particle_shapes;
 pub mod particles;
 pub mod relief;
 pub mod scene3d;
+pub mod video_play;
 pub mod wind;
 
 #[cfg(target_arch = "wasm32")]

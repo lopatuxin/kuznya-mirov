@@ -44,7 +44,7 @@ describe("loadProject", () => {
     };
     const reader = createReader({});
 
-    const result = await loadProject(engine, reader, "{}", stubAudioContext);
+    const result = await loadProject(engine, reader, "{}", stubAudioContext, createVideoPlayerKeeper());
 
     expect(result).toEqual({ status: "rejected", errors, warnings: NO_WARNINGS, gameJsonText: "{}", sceneText: null });
     expect(readTexts).not.toHaveBeenCalled();
@@ -98,7 +98,7 @@ describe("loadProject", () => {
     const engine: ProjectLoadEngine = { read_entry: readEntry, read_texts: readTexts, load };
     const reader = createReader(files);
 
-    const result = await loadProject(engine, reader, files["game.json"] as string, stubAudioContext);
+    const result = await loadProject(engine, reader, files["game.json"] as string, stubAudioContext, createVideoPlayerKeeper());
 
     expect(readEntry).toHaveBeenCalledWith(files["game.json"]);
     expect(readTexts).toHaveBeenCalledWith(
@@ -162,7 +162,7 @@ describe("loadProject", () => {
     };
     const reader = createReader(files);
 
-    await loadProject(engine, reader, files["game.json"] as string, stubAudioContext);
+    await loadProject(engine, reader, files["game.json"] as string, stubAudioContext, createVideoPlayerKeeper());
 
     expect(load).toHaveBeenCalledWith(
       files["properties.json"],
@@ -211,7 +211,7 @@ describe("loadProject", () => {
       const { engine, load } = createEngine("terrain.json");
       const recording = createRecordingProjectFileReader(createReader(files));
 
-      await loadProject(engine, recording.reader, "{}", stubAudioContext);
+      await loadProject(engine, recording.reader, "{}", stubAudioContext, createVideoPlayerKeeper());
 
       // Путь прошёл через читателя — значит, его же опрашивает редактор, и правка terrain.json перезагружает проект.
       expect(recording.getReadPaths()).toContain("terrain.json");
@@ -222,7 +222,7 @@ describe("loadProject", () => {
       const { engine, load } = createEngine(undefined);
       const readText = vi.fn(async () => null);
 
-      await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
+      await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(load.mock.calls[0]).toHaveLength(15);
       expect(load.mock.calls[0]?.[10]).toBeUndefined();
@@ -232,7 +232,7 @@ describe("loadProject", () => {
     it("файл назван, но не читается — в load идёт null: движок назовёт ошибку", async () => {
       const { engine, load } = createEngine("terrain.json");
 
-      await loadProject(engine, createReader({}), "{}", stubAudioContext);
+      await loadProject(engine, createReader({}), "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(load.mock.calls[0]?.[10]).toBeNull();
     });
@@ -252,7 +252,7 @@ describe("loadProject", () => {
       };
       const readText = vi.fn(async () => null);
 
-      await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext);
+      await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(readText).not.toHaveBeenCalledWith("particles.json");
       expect(load.mock.calls[0]).toHaveLength(15);
@@ -308,7 +308,7 @@ describe("loadProject", () => {
         load,
       };
 
-      await loadProject(engine, createReader(files), "{}", stubAudioContext);
+      await loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(readTexts.mock.calls[0]?.[5]).toBe(files["terrain.json"]);
       const decoded = { verdict: "ok", width: 1, height: 1, pixels: new Uint8Array([9, 8, 7, 255]) };
@@ -341,7 +341,7 @@ describe("loadProject", () => {
         load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
       };
 
-      const result = await loadProject(engine, createReader(files), "{}", stubAudioContext);
+      const result = await loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(result.status === "ok" && result.coverMasks).toEqual([{ path: "terrain/earth.png", width: 1, height: 1, pixels: new Uint8Array([9]) }]);
     });
@@ -368,7 +368,7 @@ describe("loadProject", () => {
         load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
       };
 
-      const result = await loadProject(engine, createReader({ ...files, "images/izba.png": new Uint8Array([5]) }), "{}", stubAudioContext);
+      const result = await loadProject(engine, createReader({ ...files, "images/izba.png": new Uint8Array([5]) }), "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(result.status === "ok" && result.images).toEqual([{ name: "izba", width: 1, height: 1, pixels: new Uint8Array([9, 8, 7, 255]) }]);
     });
@@ -385,7 +385,7 @@ describe("loadProject", () => {
         load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
       };
 
-      await loadProject(engine, createReader(files), "{}", stubAudioContext);
+      await loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(readTexts.mock.calls[0]).toHaveLength(6);
       expect(readTexts.mock.calls[0]?.[5]).toBeUndefined();
@@ -431,7 +431,7 @@ describe("loadProject", () => {
       const { engine, load } = createEngine();
       const recording = createRecordingProjectFileReader(createReader(files));
 
-      const result = await loadProject(engine, recording.reader, "{}", stubAudioContext);
+      const result = await loadProject(engine, recording.reader, "{}", stubAudioContext, createVideoPlayerKeeper());
 
       // Пути прошли через читателя — значит, их же опрашивает редактор, и правка штампа перезагружает проект.
       expect(recording.getReadPaths()).toEqual(expect.arrayContaining(["stamps/beluha.json", "stamps/chuya.json"]));
@@ -509,7 +509,7 @@ describe("loadProject", () => {
       stubBrowser();
       const { engine, load } = createEngine({ ok: true, warnings: NO_WARNINGS });
 
-      await loadProject(engine, createReader(files), "{}", stubAudioContext);
+      await loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper());
 
       const args = load.mock.calls[0] ?? [];
       expect(args[7]).toEqual([expect.objectContaining({ index: 1, verdict: "ok" })]);
@@ -525,7 +525,7 @@ describe("loadProject", () => {
       stubBrowser();
       const { engine } = createEngine({ ok: true, warnings: NO_WARNINGS });
 
-      const result = await loadProject(engine, createReader(files), "{}", stubAudioContext);
+      const result = await loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper());
 
       if (result.status !== "ok") throw new Error("unreachable");
       expect(result.images.map(({ name, width, height }) => ({ name, width, height }))).toEqual([
@@ -569,7 +569,7 @@ describe("loadProject", () => {
         throw new Error("движок упал");
       });
 
-      await expect(loadProject(engine, createReader(files), "{}", stubAudioContext)).rejects.toThrow("движок упал");
+      await expect(loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper())).rejects.toThrow("движок упал");
 
       expect(players).toHaveLength(1);
       expect(players[0]?.pause).toHaveBeenCalled();
@@ -580,7 +580,7 @@ describe("loadProject", () => {
       stubBrowser({ brokenImage: true });
       const { engine, load } = createEngine({ ok: true, warnings: NO_WARNINGS });
 
-      await expect(loadProject(engine, createReader(files), "{}", stubAudioContext)).rejects.toThrow("не хватило памяти");
+      await expect(loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper())).rejects.toThrow("не хватило памяти");
 
       expect(load).not.toHaveBeenCalled();
       await vi.waitFor(() => expect(players[0]?.pause).toHaveBeenCalled());
@@ -608,7 +608,7 @@ describe("loadProject", () => {
     };
     const reader = createReader(files);
 
-    const result = await loadProject(engine, reader, files["game.json"], stubAudioContext);
+    const result = await loadProject(engine, reader, files["game.json"], stubAudioContext, createVideoPlayerKeeper());
 
     expect(result).toEqual({
       status: "rejected",

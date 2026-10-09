@@ -74,21 +74,18 @@ export function keyGreen(rgb) {
 /**
  * Точки RGB — в RGBA без ярко-розового фона. Прозрачность — по тому, насколько меньший из красного
  * и синего выше зелёного: у розового высоки оба, у бурой земли и красных цветов — только один.
- * Красный и синий снижаются на этот избыток, чтобы по краю не оставалась розовая кайма. У видео
- * (`video`) цвет хранится вдвое грубее яркости, розовый фона заходит на соседние точки травы, и без
- * него край темнел бы: снятый лишек возвращается тёплым светом той же яркости, 0,5 : 0,4 : 0,25.
+ * Красный и синий снижаются на этот избыток, чтобы по краю не оставалась розовая кайма.
  */
-export function keyMagenta(rgb, video = false) {
+export function keyMagenta(rgb) {
   const rgba = Buffer.alloc((rgb.length / 3) * 4);
   for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 4) {
     const red = rgb[src];
     const green = rgb[src + 1];
     const blue = rgb[src + 2];
     const excess = Math.max(0, Math.min(red, blue) - green);
-    const warm = video ? excess : 0;
-    rgba[dst] = Math.round(red - excess + 0.5 * warm);
-    rgba[dst + 1] = Math.round(green + 0.4 * warm);
-    rgba[dst + 2] = Math.round(blue - excess + 0.25 * warm);
+    rgba[dst] = red - excess;
+    rgba[dst + 1] = green;
+    rgba[dst + 2] = blue - excess;
     rgba[dst + 3] = Math.round(255 * (1 - smoothstep(25, 110, excess)));
   }
   return rgba;
@@ -134,10 +131,77 @@ export function addLumaKey(rgba, luma) {
   }
 }
 
-/** Кадр видео в RGBA без фона: ключ по цвету с тёплым краем и ключ по плоскости яркости `luma`. */
+const lumaOf = (red, green, blue) => 0.299 * red + 0.587 * green + 0.114 * blue;
+const chromaBlue = (red, green, blue) => -0.168736 * red - 0.331264 * green + 0.5 * blue;
+const chromaRed = (red, green, blue) => 0.5 * red - 0.418688 * green - 0.081312 * blue;
+
+/**
+ * Уровни кадра по ключу по цвету: цвет фона — медиана каждого канала по точкам чистого фона, яркость травы — медиана
+ * яркости сплошных точек. `undefined`, если чистого фона или сплошных точек нет.
+ */
+function frameLevels(rgb, rgba) {
+  const background = [0, 1, 2].map(() => new Array(256).fill(0));
+  const solid = new Array(256).fill(0);
+  for (let i = 0; i < rgb.length / 3; i++) {
+    const alpha = rgba[i * 4 + 3];
+    if (alpha === 0) {
+      for (let c = 0; c < 3; c++) background[c][rgb[i * 3 + c]]++;
+    } else if (alpha === 255) {
+      solid[Math.round(lumaOf(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]))]++;
+    }
+  }
+  const color = background.map(histogramMedian);
+  const solidLuma = histogramMedian(solid);
+  return color[0] === undefined || solidLuma === undefined ? undefined : { background: color, solidLuma };
+}
+
+/**
+ * Цвет кадра видео на розовом фоне без розовой примеси. Видео хранит цвет вдвое грубее яркости, и розовый фона
+ * подмешан к цвету тонких колосков и краёв травинок; ключ по цвету снимает только избыток меньшего из красного и
+ * синего над зелёным, и оливковый колосок с такой примесью оставался красноватым. Здесь из цветности каждой точки
+ * (Cb, Cr) убирается её составляющая вдоль цветности фона `background`. Зелёный, оливковый и золотистый лежат против
+ * розового — их собственный оттенок не трогается; красный и синий предмет потерял бы свою розовую часть, поэтому их
+ * снимают не на розовом фоне. Яркость сплошной точки остаётся, а у полупрозрачной точки края из яркости вычитается
+ * доля фона по её прозрачности: иначе край был бы светлой смесью травы с розовым и светился бы на тёмном. Прозрачность
+ * у самого края ключ по яркости нарочно занижает, и вычитание по ней ушло бы в чёрное, поэтому край не темнее
+ * сплошной травы `solidLuma`, если сама точка не темнее её. Цвет пишется в `rgba` поверх цвета ключа.
+ */
+function removeBackgroundChroma(rgb, rgba, { background, solidLuma }) {
+  const towardBlue = chromaBlue(...background);
+  const towardRed = chromaRed(...background);
+  const length = Math.hypot(towardBlue, towardRed);
+  const backgroundLuma = lumaOf(...background);
+  if (length === 0) return;
+  for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 4) {
+    const red = rgb[src];
+    const green = rgb[src + 1];
+    const blue = rgb[src + 2];
+    const alpha = rgba[dst + 3] / 255;
+    const mixed = lumaOf(red, green, blue);
+    const unmixed = alpha > 0 ? (mixed - (1 - alpha) * backgroundLuma) / alpha : mixed;
+    const luma = Math.max(unmixed, Math.min(mixed, solidLuma));
+    let cb = chromaBlue(red, green, blue);
+    let cr = chromaRed(red, green, blue);
+    const along = (cb * towardBlue + cr * towardRed) / length;
+    if (along > 0) {
+      cb -= (along * towardBlue) / length;
+      cr -= (along * towardRed) / length;
+    }
+    rgba[dst] = Math.round(Math.min(255, Math.max(0, luma + 1.402 * cr)));
+    rgba[dst + 1] = Math.round(Math.min(255, Math.max(0, luma - 0.344136 * cb - 0.714136 * cr)));
+    rgba[dst + 2] = Math.round(Math.min(255, Math.max(0, luma + 1.772 * cb)));
+  }
+}
+
+/**
+ * Кадр видео в RGBA без фона: ключ по цвету, ключ по плоскости яркости `luma` и, на розовом фоне, цвет без розовой
+ * примеси.
+ */
 export function keyVideoFrame(rgb, luma, key) {
-  const rgba = KEYS[key](rgb, true);
+  const rgba = KEYS[key](rgb);
+  const levels = key === "magenta" ? frameLevels(rgb, rgba) : undefined;
   addLumaKey(rgba, luma);
+  if (levels !== undefined) removeBackgroundChroma(rgb, rgba, levels);
   return rgba;
 }
 

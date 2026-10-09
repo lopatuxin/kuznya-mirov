@@ -118,7 +118,14 @@ export async function decodeVideo(bytes: Uint8Array | null): Promise<DecodedVide
   const hasFirstFrame = waitForFirstFrame(player);
   player.src = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "video/mp4" }));
 
-  const frame = (await hasFirstFrame) ? readFirstFrame(player) : null;
+  let frame: VideoFirstFrame | null;
+  try {
+    frame = (await hasFirstFrame) ? readFirstFrame(player) : null;
+  } catch (error) {
+    // Чтение кадра упало (не хватило памяти под холст) — проигрыватель с источником не должен остаться играть.
+    releaseVideoPlayer(player);
+    throw error;
+  }
   if (frame === null) {
     releaseVideoPlayer(player);
     return { verdict: "rejected" };

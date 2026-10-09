@@ -1,5 +1,5 @@
 import { decodeImage, type DecodedImage } from "./imageLoader";
-import { decodeVideo, type DecodedVideo } from "./videoLoader";
+import { decodeVideo, releaseDecodedVideos, type DecodedVideo } from "./videoLoader";
 
 export type ImageEntry = { index: number; name: string; path: string };
 /** Карта материала и маска покрытия читаются как картинки, но имени у них нет — «Свет и материалы», «Загрузка». */
@@ -36,8 +36,18 @@ export async function buildImagePayload(loaded: LoadedImage[]): Promise<ImagePay
   return loaded.map((image, i) => ({ index: image.index, ...decoded[i] }));
 }
 
-/** Приговор и проигрыватель на каждое видео — «Картинки» → «Видео»: проигрыватель заводит браузер, движок получает его по номеру. */
+/**
+ * Приговор и проигрыватель на каждое видео — «Картинки» → «Видео»: проигрыватель заводит браузер, движок получает его по
+ * номеру. Если разбор одного видео упал исключением, проигрыватели остальных освобождаются: загрузка оборвётся, и играть
+ * им будет некому.
+ */
 export async function buildVideoPayload(loaded: LoadedImage[]): Promise<VideoPayloadEntry[]> {
-  const decoded = await Promise.all(loaded.map((video) => decodeVideo(video.bytes)));
+  const settled = await Promise.allSettled(loaded.map((video) => decodeVideo(video.bytes)));
+  const failed = settled.find((result) => result.status === "rejected");
+  const decoded = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
+  if (failed !== undefined) {
+    releaseDecodedVideos(decoded);
+    throw failed.reason;
+  }
   return loaded.map((video, i) => ({ index: video.index, ...decoded[i] }));
 }

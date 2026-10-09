@@ -66,19 +66,6 @@ describe("keyMagenta", () => {
   });
 });
 
-describe("keyMagenta у видео", () => {
-  it("снятый с края розовый лишек возвращается тёплым светом в доле 0,5 : 0,4 : 0,25", () => {
-    // Лишек розового над зелёным — 70: у картинки он просто снимается, у видео часть возвращается.
-    const pixel = Buffer.from([180, 100, 170]);
-    const plain = keyMagenta(pixel);
-    const warm = keyMagenta(pixel, true);
-    assert.equal(warm[0] - plain[0], 35);
-    assert.equal(warm[1] - plain[1], 28);
-    assert.ok(Math.abs(warm[2] - plain[2] - 17.5) <= 0.5, `синий ${warm[2] - plain[2]}`);
-    assert.equal(warm[3], plain[3]);
-  });
-});
-
 describe("keyVideoFrame", () => {
   // Десять точек розового фона яркостью 102 и десять точек травы яркостью 30 задают уровни ключа.
   const BACKGROUND = [226, 45, 225];
@@ -108,6 +95,37 @@ describe("keyVideoFrame", () => {
     const rgba = frame([[BACKGROUND, 37], [BACKGROUND, 95]]);
     assert.equal(alphaAt(rgba, 20), 255);
     assert.equal(alphaAt(rgba, 21), 0);
+  });
+
+  const colorAt = (rgba, index) => [...rgba.subarray(index * 4, index * 4 + 3)];
+  const lumaOf = ([red, green, blue]) => 0.299 * red + 0.587 * green + 0.114 * blue;
+
+  it("розовая примесь к оливковому колоску снимается, яркость точки та же", () => {
+    // Оливковый (100, 85, 50) с седьмой долей розового фона: (119, 79, 76). Ключ по цвету оставил бы его красноватым.
+    const mixed = [119, 79, 76];
+    const [red, green, blue] = colorAt(frame([[mixed, 30]]), 20);
+    assert.ok(Math.abs(lumaOf([red, green, blue]) - lumaOf(mixed)) <= 1, `яркость ${lumaOf([red, green, blue])}`);
+    assert.ok(red - green <= 25, `не красный: ${[red, green, blue]}`);
+    assert.ok(blue < green - 10, `не розовый: ${[red, green, blue]}`);
+  });
+
+  it("полупрозрачный край из травы и фона получает яркость травы, а не светлой смеси", () => {
+    // Поровну трава (40, 90, 30) и розовый фон: смесь (133, 68, 128) по яркости светлее травы на 26.
+    const mixed = [133, 68, 128];
+    const color = colorAt(frame([[mixed, 66]]), 20);
+    assert.ok(Math.abs(lumaOf(color) - lumaOf(GRASS)) < 15, `край ${color}, яркость ${lumaOf(color)}`);
+  });
+
+  it("самый внешний край, где травы пятая доля, не уходит в чёрное", () => {
+    // Ключ по яркости даёт такой точке прозрачность меньше её доли травы, и вычитание фона по ней ушло бы ниже травы.
+    const mixed = [189, 54, 186];
+    const color = colorAt(frame([[mixed, 88]]), 20);
+    assert.ok(Math.abs(lumaOf(color) - lumaOf(GRASS)) < 15, `край ${color}, яркость ${lumaOf(color)}`);
+  });
+
+  it("зелёная трава своего цвета не меняет", () => {
+    const color = colorAt(frame([]), 10);
+    color.forEach((channel, c) => assert.ok(Math.abs(channel - GRASS[c]) <= 1, `трава ${color}`));
   });
 });
 
