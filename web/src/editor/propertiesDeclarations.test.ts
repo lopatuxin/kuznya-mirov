@@ -60,9 +60,10 @@ describe("suggestPropertyNames", () => {
     expect(suggestPropertyNames(["sway"], {}, false)).not.toContain("sway");
   });
 
-  it("девять свойств частиц Фазы 32 — среди подсказок плоской сцены, в трёхмерной их нет", () => {
-    expect(suggestPropertyNames([], {}, false)).toEqual(expect.arrayContaining(["smoke", "smoke_height", "smoke_color", "sparks", "sparks_reach", "sparks_direction", "sparks_spread", "leaf_fall", "leaf_color"]));
+  it("свойства частиц Фазы 32 и огня Фазы 35 — среди подсказок плоской сцены, в трёхмерной их нет", () => {
+    expect(suggestPropertyNames([], {}, false)).toEqual(expect.arrayContaining(["smoke", "smoke_height", "smoke_color", "sparks", "sparks_reach", "sparks_direction", "sparks_spread", "leaf_fall", "leaf_color", "fire", "fire_color", "fire_glow"]));
     expect(suggestPropertyNames([], {}, true)).not.toContain("smoke");
+    expect(suggestPropertyNames([], {}, true)).not.toContain("fire");
     expect(suggestPropertyNames(["leaf_fall"], {}, false)).not.toContain("leaf_fall");
   });
 

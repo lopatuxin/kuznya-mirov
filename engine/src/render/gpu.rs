@@ -46,6 +46,12 @@ pub struct DrawRect {
     /// «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
     /// угол, градусов по часовой стрелке; 0 — не повёрнут.
     pub angle: f32,
+    /// «Огонь»: `1.0` — экземпляр рисует пламя, а не картинку: узор, форму языков и полосы цвета считает
+    /// фрагментный шейдер, цвет экземпляра — `fire_color`; у всего остального `0.0`.
+    pub flame: f32,
+    /// «Огонь»: `[сила, зерно узора, целая часть хода узора, дробная часть]`; нули у всего, кроме
+    /// пламени.
+    pub fire: [f32; 4],
 }
 
 /// One label or button caption to hand to `glyphon` this frame. `rect_px` is the element's
@@ -481,6 +487,16 @@ impl Renderer {
                     format: wgpu::VertexFormat::Float32,
                     offset: 72,
                     shader_location: 12,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32,
+                    offset: 76,
+                    shader_location: 13,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 80,
+                    shader_location: 14,
                 },
             ],
         };

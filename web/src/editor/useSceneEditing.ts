@@ -105,7 +105,7 @@ export type SceneEditingState = {
   deleteImprint: (index: number) => void;
   setPropertyValue: (objectIndex: number, key: string, value: unknown) => void;
   removeProperty: (objectIndex: number, key: string) => void;
-  /** Несколько свойств объекта одной правкой текста и одним шагом отмены — «Убрать» во вкладке «Частицы» («Редактор», требование 31). */
+  /** Несколько свойств объекта одной правкой текста и одним шагом отмены — «Убрать» во вкладке «Эффекты» («Редактор», требование 31). */
   removeProperties: (objectIndex: number, keys: readonly string[]) => void;
   addProperty: (objectIndex: number, key: string, value: unknown) => void;
   declareProperty: (objectIndex: number, key: string, kind: PropertyKind, value: unknown) => void;

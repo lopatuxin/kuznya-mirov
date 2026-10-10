@@ -754,7 +754,8 @@ fn check_height_write(properties: &PropertyTable, prop: PropertyId, z: f64) -> R
 /// сцене, `height` не больше нуля, `shape` вместе с `image`, `flip_x` или `opacity`. «Слои
 /// глубины», требование 24: `parallax` и `repeat_x` в трёхмерной сцене, `parallax` меньше нуля. «Ветер
 /// и частицы»: `sway` и свойства частиц в трёхмерной сцене; значение вне допустимого отрезка
-/// подтягивается к нему при рисовании, не ошибка.
+/// подтягивается к нему при рисовании, не ошибка. «Огонь», требование 23: свойства огня в трёхмерной
+/// сцене, `fire` и `fire_glow` вне отрезка от 0 до 1 — ошибка.
 fn check_shape_rules(
     world: &World,
     properties: &PropertyTable,
@@ -775,9 +776,13 @@ fn check_shape_rules(
                 prop,
                 property::PARALLAX | property::REPEAT_X | property::SWAY
             ) || property::PARTICLE_PROPERTIES.contains(&prop)
+                || property::FIRE_PROPERTIES.contains(&prop)
                 || property::CLOUD_PROPERTIES.contains(&prop)) =>
         {
             Err(format!("{name} есть только в плоской сцене"))
+        }
+        property::FIRE | property::FIRE_GLOW if matches!(value, AnyValue::Number(n) if !(0.0..=1.0).contains(n)) => {
+            Err(format!("{name} должен быть от 0 до 1"))
         }
         property::PARALLAX if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
             Err("parallax не может быть меньше нуля".to_string())

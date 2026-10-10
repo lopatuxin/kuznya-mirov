@@ -25,7 +25,7 @@ vi.mock("./SceneCanvas", async () => {
     }) => (
       <>
         <WindFields wind={wind} onWindChange={onWindChange} />
-        {["smoke", "sparks", "leaves"].map((effectId) => (
+        {["smoke", "sparks", "leaves", "fire"].map((effectId) => (
           <button key={effectId} type="button" onClick={() => onDropParticles(effectId, 10, 20)}>
             бросить {effectId}
           </button>
@@ -209,14 +209,14 @@ function createParticlesSceneEditing(engine: FakeBattleEngine, overrides: Partia
 }
 
 function openParticlesTab(): void {
-  fireEvent.click(screen.getByRole("tab", { name: "Частицы" }));
+  fireEvent.click(screen.getByRole("tab", { name: "Эффекты" }));
 }
 
 function densitySlider(): HTMLInputElement {
   return screen.getAllByRole("slider", { name: "плотность" })[0] as HTMLInputElement;
 }
 
-describe("вкладка «Частицы» в окне проекта", () => {
+describe("вкладка «Эффекты» в окне проекта", () => {
   let engine: FakeBattleEngine;
 
   beforeEach(() => {
@@ -234,12 +234,12 @@ describe("вкладка «Частицы» в окне проекта", () => {
   it("в плоской сцене вкладка есть, в трёхмерной — нет", () => {
     sceneEditingMock.current = createParticlesSceneEditing(engine);
     renderWindow();
-    expect(screen.getByRole("tab", { name: "Частицы" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Эффекты" })).toBeTruthy();
     cleanup();
 
     sceneEditingMock.current = createParticlesSceneEditing(engine, {}, PARTICLES_GAME_JSON_TEXT.replace('"scene": {', '"scene": { "camera": { "position": [0, 0, 5] },'));
     renderWindow();
-    expect(screen.queryByRole("tab", { name: "Частицы" })).toBeNull();
+    expect(screen.queryByRole("tab", { name: "Эффекты" })).toBeNull();
   });
 
   it("выбранный источник показывает группы «Дым» и «Искры», выбранная изба без частиц — подсказку", () => {
@@ -255,7 +255,7 @@ describe("вкладка «Частицы» в окне проекта", () => {
     openParticlesTab();
 
     expect(screen.queryAllByRole("heading", { level: 3 })).toHaveLength(0);
-    expect(screen.getByText(/Дым и искры перетащите туда, откуда они идут/)).toBeTruthy();
+    expect(screen.getByText(/Дым, искры и огонь перетащите туда, откуда они идут/)).toBeTruthy();
   });
 
   it("вне партии ползунок зовёт set_property на каждое движение, а scene.json пишется один раз — при отпускании", () => {
@@ -559,6 +559,49 @@ describe("вкладка «Частицы» в окне проекта", () => {
       expect(addObject).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], smoke: 0.5, layer: 2, parallax: 0.6 });
     });
 
+    it("огонь над источником без картинки и цвета дописывается ему со значением 0,5 и выбирает его", () => {
+      const addProperty = vi.fn();
+      const setSelectedIndex = vi.fn();
+      const addObject = vi.fn();
+      const sceneText = JSON.stringify({ objects: [IZBA, { position: [6, 1], size: [1, 1], smoke: 0.5 }] });
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, setSelectedIndex, addObject, sceneText });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      vi.mocked(engine.object_rect).mockImplementation((id) => (id === 1 ? SOURCE_RECT : undefined));
+      renderWindow();
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить fire" }));
+
+      expect(addProperty).toHaveBeenCalledWith(1, "fire", 0.5);
+      expect(setSelectedIndex).toHaveBeenCalledWith(1);
+      expect(addObject).not.toHaveBeenCalled();
+    });
+
+    it("огонь над избой создаёт новый объект 1×1 с fire 0,5 и слоем избы, серединой под указателем", () => {
+      const addObject = vi.fn();
+      const addProperty = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addObject, addProperty });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      renderWindow();
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить fire" }));
+
+      expect(addObject).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], fire: 0.5, layer: 2, parallax: 0.6 });
+      expect(addProperty).not.toHaveBeenCalled();
+    });
+
+    it("огонь мимо объектов создаёт объект 1×1 с fire 0,5 одной записью и берёт слой выбранного", () => {
+      const addObject = vi.fn();
+      const addProperty = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addObject, addProperty, selectedIndex: 0 });
+      renderWindow();
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить fire" }));
+
+      expect(addObject).toHaveBeenCalledTimes(1);
+      expect(addObject).toHaveBeenCalledWith({ position: [4.5, 2.5], size: [1, 1], fire: 0.5, layer: 2, parallax: 0.6 });
+      expect(addProperty).not.toHaveBeenCalled();
+    });
+
     it("листья над берёзой дописываются ей со значением 0,3 и выбирают её; мимо объектов ничего не происходит", () => {
       const addProperty = vi.fn();
       const setSelectedIndex = vi.fn();
@@ -714,13 +757,13 @@ describe("группа «Облака» в колонке «Свойства»",
     expect(screen.queryByRole("region", { name: "Облака" })).toBeNull();
   });
 
-  it("во вкладке «Частицы» облаков нет: три карточки и нет группы", () => {
+  it("во вкладке «Эффекты» облаков нет: четыре карточки и нет группы", () => {
     sceneEditingMock.current = createCloudsSceneEditing({ selectedIndex: 0 }, [{ ...SKY, clouds: 0.3 }]);
     renderWindow();
     openParticlesTab();
 
-    const particles = screen.getByRole("list", { name: "Эффекты частиц" });
-    expect(within(particles).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья"]);
+    const particles = screen.getByRole("list", { name: "Эффекты" });
+    expect(within(particles).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья", "огонь"]);
     expect(screen.getAllByRole("region", { name: "Облака" })).toHaveLength(1);
   });
 

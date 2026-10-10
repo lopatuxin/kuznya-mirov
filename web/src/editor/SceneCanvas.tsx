@@ -69,7 +69,7 @@ type SceneCanvasProps = {
   onCommitPlacement: (objectIndex: number, changes: PlacementChange[]) => void;
   /** Картинку из вкладки «Картинки» отпустили над сценой: имя картинки и точка холста («Редактор», требование 25). */
   onDropImage: (imageName: string, x: number, y: number) => void;
-  /** Карточку из вкладки «Частицы» отпустили над сценой: ключ эффекта и точка холста («Редактор», требования 34–35). */
+  /** Карточку из вкладки «Эффекты» отпустили над сценой: ключ эффекта и точка холста («Редактор», требования 34–35). */
   onDropParticles: (effectId: string, x: number, y: number) => void;
   /** Объект, которому достанется листопад, если карточку листьев отпустить в точке холста; `undefined` — такого объекта нет («Редактор», требование 35). */
   leavesTargetAt: (x: number, y: number) => number | undefined;

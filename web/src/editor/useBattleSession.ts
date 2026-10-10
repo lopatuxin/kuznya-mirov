@@ -68,7 +68,7 @@ export type BattleSessionState = {
    */
   setLiveProperty(id: number, key: string, value: unknown, original?: LivePropertyOriginal): string | undefined;
   removeLiveProperty(id: number, key: string): void;
-  /** Несколько свойств разом — «Убрать» во вкладке «Частицы»: одна запись отмены, которая возвращает все. */
+  /** Несколько свойств разом — «Убрать» во вкладке «Эффекты»: одна запись отмены, которая возвращает все. */
   removeLiveProperties(id: number, keys: readonly string[]): void;
   copyLiveObject(id: number): void;
   /** Новый объект в живой мир на паузе — как копия: запись отмены, выбор на нём, файл не пишется («Партия в редакторе», требование 25). */

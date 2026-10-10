@@ -5,9 +5,11 @@
 use crate::core::particles::ParticleShape;
 
 use super::atlas::AtlasImage;
+use super::fire::HALO_FALLOFF_POWER;
 
 pub(super) const SMOKE_SIZE: u32 = 64;
 pub(super) const SPARK_SIZE: u32 = 32;
+pub(super) const HALO_SIZE: u32 = 64;
 /// Сторона одного кадра листа; кадры лежат в ряд слева направо.
 pub(super) const LEAF_SIZE: u32 = 32;
 
@@ -47,6 +49,7 @@ pub(super) fn draw(shape: ParticleShape) -> AtlasImage {
     match shape {
         ParticleShape::Smoke => paint(SMOKE_SIZE, SMOKE_SIZE, smoke),
         ParticleShape::Spark => paint(SPARK_SIZE, SPARK_SIZE, spark),
+        ParticleShape::Halo => paint(HALO_SIZE, HALO_SIZE, halo),
         ParticleShape::Leaf | ParticleShape::WhiteLeaf => {
             let white = shape == ParticleShape::WhiteLeaf;
             paint(LEAF_SIZE * shape.frames(), LEAF_SIZE, |x, y| {
@@ -141,6 +144,14 @@ fn spark(x: u32, y: u32) -> [f32; 4] {
     [255.0, 255.0, 255.0, alpha]
 }
 
+/// Ореол огня: белое круглое пятно, плотное в середине и в ноль к краю; цвет ему даёт прямоугольник.
+fn halo(x: u32, y: u32) -> [f32; 4] {
+    let (u, v) = unit(x, y, HALO_SIZE);
+    let r = (u * 2.0 - 1.0).hypot(v * 2.0 - 1.0);
+    let falloff = 1.0 - smoothstep(0.0, 1.0, r);
+    [255.0, 255.0, 255.0, falloff.powi(HALO_FALLOFF_POWER)]
+}
+
 /// Лист кадра `frame`: вытянутый, с острыми концами, изогнутый, со светлой жилкой посередине; белый
 /// лист — того же рисунка, но без цветов.
 fn leaf(x: u32, y: u32, frame: usize, white: bool) -> [f32; 4] {
@@ -182,6 +193,7 @@ mod tests {
         for (shape, width, height) in [
             (ParticleShape::Smoke, SMOKE_SIZE, SMOKE_SIZE),
             (ParticleShape::Spark, SPARK_SIZE, SPARK_SIZE),
+            (ParticleShape::Halo, HALO_SIZE, HALO_SIZE),
             (ParticleShape::Leaf, LEAF_SIZE * 4, LEAF_SIZE),
             (ParticleShape::WhiteLeaf, LEAF_SIZE * 4, LEAF_SIZE),
         ] {
@@ -221,6 +233,7 @@ mod tests {
         for shape in [
             ParticleShape::Smoke,
             ParticleShape::Spark,
+            ParticleShape::Halo,
             ParticleShape::WhiteLeaf,
         ] {
             let image = draw(shape);
@@ -239,6 +252,25 @@ mod tests {
                 .any(|p| p[3] > 0 && p[0].abs_diff(p[2]) > 40),
             "осенний лист несёт цвета"
         );
+    }
+
+    #[test]
+    fn the_halo_is_brightest_in_the_middle_and_melts_to_nothing_at_the_edge() {
+        let image = draw(ParticleShape::Halo);
+        let half = HALO_SIZE / 2;
+        let middle = pixel(&image, half, half)[3];
+        let quarter = pixel(&image, half + half / 2, half)[3];
+        assert!(middle > 240, "{middle}");
+        assert!(quarter > 0 && quarter < middle, "{quarter}");
+        for edge in [
+            (0, half),
+            (HALO_SIZE - 1, half),
+            (half, 0),
+            (half, HALO_SIZE - 1),
+        ] {
+            assert_eq!(pixel(&image, edge.0, edge.1)[3], 0, "{edge:?}");
+        }
+        assert_eq!(pixel(&image, half, 3)[3], pixel(&image, 3, half)[3]);
     }
 
     #[test]

@@ -8,6 +8,7 @@ use std::f64::consts::TAU;
 use crate::core::value::Vec2;
 
 use super::clouds::{Camera, Clouds, Sky};
+use super::fire::{FireObject, Fires};
 use super::particles::{Emitter, OpaqueMask, Particles};
 
 /// «Часы движения», требование 18: пружины и кадры качающихся объектов идут шагами по 1/60 секунды,
@@ -186,6 +187,8 @@ pub struct Motion {
     particles: Particles,
     /// «Ветер и частицы» → «Облака»: облака неба идут по тем же часам.
     clouds: Clouds,
+    /// «Огонь»: огни идут по тем же часам.
+    fires: Fires,
     /// Часы, какими их видел последний [`Motion::clock_running`], и сколько секунд после их
     /// последнего сдвига они ещё считаются идущими.
     watched_steps: f64,
@@ -248,6 +251,7 @@ impl Motion {
     /// объект под прежним номером — с другой картинкой или высотой — узнают и начнут с цели.
     pub fn world_rebuilt(&mut self) {
         self.compare_look = true;
+        self.fires.world_rebuilt();
     }
 
     fn restart_at(&mut self, steps: f64) {
@@ -256,6 +260,7 @@ impl Motion {
         self.states.fill(None);
         self.particles.restart(steps);
         self.clouds.restart(steps);
+        self.fires.restart(steps);
     }
 
     /// Доводит частицы до часов — раз в кадр, после `tick`. `emitters` — объекты мира с эффектами
@@ -277,6 +282,22 @@ impl Motion {
 
     pub fn particles(&self) -> &Particles {
         &self.particles
+    }
+
+    /// Доводит огни до часов — раз в кадр, после `tick`. `objects` — объекты мира с записанным
+    /// прямоугольником, `world_exists` — есть ли мир.
+    pub fn update_fires(
+        &mut self,
+        world_exists: bool,
+        flat: [f64; 2],
+        objects: impl Iterator<Item = FireObject>,
+    ) {
+        self.fires
+            .update(self.clock_steps, world_exists, flat, objects);
+    }
+
+    pub fn fires(&self) -> &Fires {
+        &self.fires
     }
 
     /// Доводит облака до часов — раз в кадр, после `tick`. `skies` — объекты мира с облаками сейчас,

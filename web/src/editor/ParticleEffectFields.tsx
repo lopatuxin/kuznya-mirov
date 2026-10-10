@@ -43,15 +43,25 @@ function LeavesFields({ editing }: EffectBodyProps): React.JSX.Element {
   );
 }
 
+function FireFields({ editing }: EffectBodyProps): React.JSX.Element {
+  return (
+    <>
+      <ColorField label={PARTICLE_LABELS.fire_color} propertyKey="fire_color" fallback={PARTICLE_DEFAULTS.fire_color} editing={editing} />
+      <DensityField title={PARTICLE_LABELS.fire_glow} propertyKey="fire_glow" endLabels={["без ореола", "яркий"]} defaultValue={PARTICLE_DEFAULTS.fire_glow} editing={editing} />
+    </>
+  );
+}
+
 const EFFECT_BODIES: Record<ParticleEffectId, (props: EffectBodyProps) => React.JSX.Element> = {
   smoke: SmokeFields,
   sparks: SparksFields,
   leaves: LeavesFields,
+  fire: FireFields,
 };
 
 type ParticleEffectGroupProps = { effect: ParticleEffect; editing: ParticleEditing };
 
-/** Группа одного эффекта выбранного объекта — «Редактор», требование 29: плотность, настройки и «Убрать». */
+/** Группа одного эффекта выбранного объекта — «Редактор», требование 29: главный ползунок, настройки и «Убрать». */
 export function ParticleEffectGroup({ effect, editing }: ParticleEffectGroupProps): React.JSX.Element {
   const Body = EFFECT_BODIES[effect.id];
   return (
@@ -69,7 +79,7 @@ export function ParticleEffectGroup({ effect, editing }: ParticleEffectGroupProp
         </button>
       </div>
       <div className="particles-group__rows">
-        <DensityField title="плотность" propertyKey={effect.mainKey} endLabels={effect.densityLabels} editing={editing} />
+        <DensityField title={PARTICLE_LABELS[effect.mainKey]} propertyKey={effect.mainKey} endLabels={effect.densityLabels} editing={editing} />
         <Body editing={editing} />
       </div>
     </section>

@@ -8,6 +8,7 @@ import { ParticlesPanel } from "./ParticlesPanel";
 type PanelProps = Parameters<typeof ParticlesPanel>[0];
 
 const SMOKE_AND_LEAVES = { position: [1, 1], size: [2, 2], smoke: 0.5, leaf_fall: 0.3 };
+const FIRE = { position: [1, 1], size: [2, 1], fire: 0.6 };
 const SPARKS = { position: [1, 1], size: [1, 1], sparks: 0.5, sparks_reach: 2 };
 
 function renderPanel(properties: PanelProps["properties"], overrides: Partial<PanelProps> = {}): { props: PanelProps; rerender: (next: PanelProps["properties"]) => void } {
@@ -32,10 +33,10 @@ function type(input: HTMLElement, text: string): void {
 afterEach(cleanup);
 
 describe("ParticlesPanel: карточки", () => {
-  it("три карточки — дым, искры, листья, без «Копировать» и «Удалить»", () => {
+  it("четыре карточки — дым, искры, листья, огонь, без «Копировать» и «Удалить»", () => {
     renderPanel(null);
 
-    expect(within(screen.getByRole("list", { name: "Эффекты частиц" })).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья"]);
+    expect(within(screen.getByRole("list", { name: "Эффекты" })).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья", "огонь"]);
     expect(screen.queryByRole("button", { name: "Копировать" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Удалить" })).toBeNull();
   });
@@ -55,6 +56,16 @@ describe("ParticlesPanel: карточки", () => {
     expect(setData).toHaveBeenCalledWith(LEAVES_DRAG_TYPE, "leaves");
   });
 
+  it("карточка «огонь» отдаёт свой ключ и не отдаёт тип листьев", () => {
+    renderPanel(null);
+    const setData = vi.fn();
+
+    fireEvent.dragStart(screen.getAllByRole("listitem")[3] as HTMLElement, { dataTransfer: { setData, effectAllowed: "" } });
+
+    expect(setData).toHaveBeenCalledTimes(1);
+    expect(setData).toHaveBeenCalledWith(PARTICLES_DRAG_TYPE, "fire");
+  });
+
   it("правка недоступна (повтор, проект с ошибками) — карточки не тянутся", () => {
     renderPanel(null, { isEditable: false });
 
@@ -67,16 +78,16 @@ describe("ParticlesPanel: группы выбранного объекта", () 
     renderPanel(SMOKE_AND_LEAVES);
 
     expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Дым", "Листья"]);
-    expect(screen.queryByText(/Дым и искры перетащите/)).toBeNull();
+    expect(screen.queryByText(/Дым, искры и огонь перетащите/)).toBeNull();
   });
 
   it("объект без частиц и без выбора — подсказка", () => {
     renderPanel({ position: [1, 1], size: [1, 1] });
-    expect(screen.getByText("Дым и искры перетащите туда, откуда они идут, — на трубу или костёр. Листья — на дерево")).toBeTruthy();
+    expect(screen.getByText("Дым, искры и огонь перетащите туда, откуда они идут, — на трубу, костёр или горн. Листья — на дерево")).toBeTruthy();
     cleanup();
 
     renderPanel(null);
-    expect(screen.getByText(/Дым и искры перетащите туда, откуда они идут/)).toBeTruthy();
+    expect(screen.getByText(/Дым, искры и огонь перетащите туда, откуда они идут/)).toBeTruthy();
   });
 
   it("плотность 0 группу не прячет: эффект остаётся, пока его не уберут", () => {
@@ -383,6 +394,130 @@ describe("ParticlesPanel: цвет", () => {
     fireEvent.click(autumn);
 
     expect(props.onRemove).toHaveBeenCalledWith(["leaf_color"]);
+  });
+});
+
+describe("ParticlesPanel: огонь", () => {
+  function fireRegion(): HTMLElement {
+    return screen.getByRole("region", { name: "Огонь" });
+  }
+
+  it("объект с fire — группа «Огонь» после остальных, главный ползунок называется «сила огня»", () => {
+    renderPanel({ ...FIRE, smoke: 0.5, leaf_fall: 0.3 });
+
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Дым", "Листья", "Огонь"]);
+    const strength = within(fireRegion()).getByRole("slider", { name: "сила огня" }) as HTMLInputElement;
+    expect(strength.value).toBe("0.6");
+    expect(strength.step).toBe("0.05");
+    expect(within(fireRegion()).getByRole("slider", { name: "яркость ореола" })).toBeTruthy();
+  });
+
+  it("подписи полные русские слова: концы ползунков, цвет пламени, без английских ключей", () => {
+    renderPanel(FIRE);
+
+    for (const text of ["тлеет", "бушует", "без ореола", "яркий", "сила огня", "цвет пламени", "яркость ореола"]) {
+      expect(within(fireRegion()).getByText(text)).toBeTruthy();
+    }
+    expect(fireRegion().textContent).not.toMatch(/fire/);
+  });
+
+  it("сила огня: на каждое движение сцена меняется, запись один раз — при отпускании, с прежним значением для отмены", () => {
+    const { props } = renderPanel(FIRE);
+    const slider = within(fireRegion()).getByRole("slider", { name: "сила огня" });
+
+    fireEvent.input(slider, { target: { value: "0.2" } });
+    fireEvent.input(slider, { target: { value: "0" } });
+
+    expect(props.onPreview).toHaveBeenNthCalledWith(1, "fire", 0.2);
+    expect(props.onPreview).toHaveBeenNthCalledWith(2, "fire", 0);
+    expect(props.onCommit).not.toHaveBeenCalled();
+
+    fireEvent.change(slider);
+
+    expect(props.onCommit).toHaveBeenCalledTimes(1);
+    expect(props.onCommit).toHaveBeenCalledWith("fire", 0, 0.6);
+  });
+
+  it("сила 0 группу не прячет: огонь остаётся в списке, пока его не уберут", () => {
+    renderPanel({ ...FIRE, fire: 0 });
+    expect(fireRegion()).toBeTruthy();
+  });
+
+  it("цвет пламени: без fire_color показан оранжевый бледно; выбранный цвет принимается как свойство", () => {
+    const { props } = renderPanel(FIRE);
+    const picker = fireRegion().querySelector("input[type=color]") as HTMLInputElement;
+
+    expect(picker.value).toBe("#ff8c1a");
+    expect(picker.closest(".particles-color--default")).not.toBeNull();
+
+    picker.value = "#2255ff";
+    fireEvent.change(picker);
+
+    expect(props.onCommit).toHaveBeenCalledWith("fire_color", "#2255ff", undefined);
+  });
+
+  it("цвет пламени, который у объекта есть, показан обычно", () => {
+    renderPanel({ ...FIRE, fire_color: "#2255ff" });
+    const picker = fireRegion().querySelector("input[type=color]") as HTMLInputElement;
+
+    expect(picker.value).toBe("#2255ff");
+    expect(picker.closest(".particles-color--default")).toBeNull();
+  });
+
+  it("яркость ореола: без fire_glow стоит на 0,5 бледно; движение ставит значение сцене, отпускание пишет с «не было»", () => {
+    const { props } = renderPanel(FIRE);
+    const slider = within(fireRegion()).getByRole("slider", { name: "яркость ореола" }) as HTMLInputElement;
+
+    expect(slider.value).toBe("0.5");
+    expect(slider.closest(".particles-density--default")).not.toBeNull();
+
+    fireEvent.input(slider, { target: { value: "0.8" } });
+    expect(props.onPreview).toHaveBeenLastCalledWith("fire_glow", 0.8);
+    expect(slider.closest(".particles-density--default")).toBeNull();
+    expect(props.onCommit).not.toHaveBeenCalled();
+
+    fireEvent.change(slider);
+    expect(props.onCommit).toHaveBeenCalledTimes(1);
+    expect(props.onCommit).toHaveBeenCalledWith("fire_glow", 0.8, undefined);
+  });
+
+  it("яркость ореола, которая у объекта есть, показана обычно и пишется с прежним значением", () => {
+    const { props } = renderPanel({ ...FIRE, fire_glow: 0.3 });
+    const slider = within(fireRegion()).getByRole("slider", { name: "яркость ореола" }) as HTMLInputElement;
+
+    expect(slider.value).toBe("0.3");
+    expect(slider.closest(".particles-density--default")).toBeNull();
+
+    fireEvent.input(slider, { target: { value: "0" } });
+    fireEvent.change(slider);
+
+    expect(props.onCommit).toHaveBeenCalledWith("fire_glow", 0, 0.3);
+  });
+
+  it("ошибка движка про fire_glow стоит под ползунком с подписью «яркость ореола»", () => {
+    const onPreview = vi.fn((key: string) => (key === "fire_glow" ? "fire_glow: нужно от 0 до 1 включительно, получено 2" : undefined));
+    renderPanel(FIRE, { onPreview });
+
+    fireEvent.input(within(fireRegion()).getByRole("slider", { name: "яркость ореола" }), { target: { value: "1" } });
+
+    expect(screen.getByRole("alert").textContent).toBe("яркость ореола: нужно от 0 до 1 включительно, получено 2");
+  });
+
+  it("«Убрать» снимает fire, fire_color и fire_glow одной правкой и только их", () => {
+    const { props } = renderPanel({ ...FIRE, fire_color: "#2255ff", fire_glow: 0.3, smoke: 0.5 });
+
+    fireEvent.click(within(fireRegion()).getByRole("button", { name: "Убрать" }));
+
+    expect(props.onRemove).toHaveBeenCalledTimes(1);
+    expect(props.onRemove).toHaveBeenCalledWith(["fire", "fire_color", "fire_glow"]);
+  });
+
+  it("правка недоступна — ползунки и «Убрать» огня неактивны", () => {
+    renderPanel(FIRE, { isEditable: false });
+
+    expect((within(fireRegion()).getByRole("slider", { name: "сила огня" }) as HTMLInputElement).disabled).toBe(true);
+    expect((within(fireRegion()).getByRole("slider", { name: "яркость ореола" }) as HTMLInputElement).disabled).toBe(true);
+    expect((within(fireRegion()).getByRole("button", { name: "Убрать" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });
 

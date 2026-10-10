@@ -1829,7 +1829,7 @@ body.is-resizing-panel {
   white-space: nowrap;
 }
 
-/* ——— Вкладка «Частицы»: слева три карточки, справа группы эффектов выбранного объекта, без рамок ——— */
+/* ——— Вкладка «Эффекты»: слева четыре карточки, справа группы эффектов выбранного объекта, без рамок ——— */
 
 .particles-panel {
   display: flex;
@@ -1838,14 +1838,14 @@ body.is-resizing-panel {
 
 .particles-panel__cards-area {
   flex: none;
-  width: 210px;
+  width: 270px;
   padding: 10px 12px 12px 14px;
   border-right: 1px solid var(--editor-border);
 }
 
 .particles-panel__cards {
   display: grid;
-  grid-template-columns: repeat(3, 56px);
+  grid-template-columns: repeat(4, 56px);
   gap: 6px;
   margin: 0;
   padding: 0;
@@ -1981,6 +1981,10 @@ body.is-resizing-panel {
 .particles-density__range {
   width: 120px;
   accent-color: var(--editor-accent);
+}
+
+.particles-density--default .particles-density__range {
+  opacity: 0.5;
 }
 
 .particles-color--default {

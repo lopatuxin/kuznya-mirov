@@ -9,6 +9,7 @@
 //! built from its result (see `super::gpu`, wasm32-only).
 
 use crate::core::clouds::Settings as CloudSettings;
+use crate::core::fire::Settings as FireSettings;
 use crate::core::particles::{ParticleShape, Settings};
 use crate::core::property;
 use crate::core::scene::{self, CellRange, GroundLayer, LayerView, SceneConfig};
@@ -19,7 +20,8 @@ use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
 use super::clouds::{Sky, Sprite as CloudSprite};
-use super::particle_shapes::{self, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
+use super::fire::{Drawing as FireDrawing, FireObject};
+use super::particle_shapes::{self, HALO_SIZE, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
 use super::particles::{Emitter, OpaqueMask, Picture, Sprite};
 use super::wind::{Motion, SwayObject, swaying_frame};
 
@@ -118,11 +120,21 @@ pub const WHITE_LEAF_RECT: AtlasRect = AtlasRect {
     sheet: 0,
 };
 
-const BUILT_IN_SHAPES: [(ParticleShape, AtlasRect); 4] = [
+/// «Огонь»: ореол — белое круглое пятно, тающее к краю.
+pub const HALO_RECT: AtlasRect = AtlasRect {
+    x: WHITE_LEAF_RECT.x + WHITE_LEAF_RECT.w + PADDING,
+    y: 0,
+    w: HALO_SIZE,
+    h: HALO_SIZE,
+    sheet: 0,
+};
+
+const BUILT_IN_SHAPES: [(ParticleShape, AtlasRect); 5] = [
     (ParticleShape::Smoke, SMOKE_RECT),
     (ParticleShape::Spark, SPARK_RECT),
     (ParticleShape::Leaf, LEAF_RECT),
     (ParticleShape::WhiteLeaf, WHITE_LEAF_RECT),
+    (ParticleShape::Halo, HALO_RECT),
 ];
 
 /// Место кадра `frame` встроенного рисунка `shape`; кадр больше числа кадров берётся по кругу.
@@ -132,6 +144,7 @@ fn shape_frame_rect(shape: ParticleShape, frame: u32) -> AtlasRect {
         ParticleShape::Spark => SPARK_RECT,
         ParticleShape::Leaf => LEAF_RECT,
         ParticleShape::WhiteLeaf => WHITE_LEAF_RECT,
+        ParticleShape::Halo => HALO_RECT,
     };
     let frame_w = whole.w / shape.frames();
     AtlasRect {
@@ -237,7 +250,7 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
         images.len()
     ];
     let mut sheet = 0u32;
-    let mut cursor_x = WHITE_LEAF_RECT.x + WHITE_LEAF_RECT.w + PADDING;
+    let mut cursor_x = HALO_RECT.x + HALO_RECT.w + PADDING;
     let mut shelf_y = 0u32;
     let mut shelf_height = BUILT_IN_SHAPES
         .iter()
@@ -513,6 +526,9 @@ pub struct RectPaint {
     /// «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
     /// угол, градусов по часовой стрелке; 0 у всего, кроме частиц.
     pub angle: f32,
+    /// «Огонь»: прямоугольник — пламя; шейдер рисует узор по силе, зерну и ходу узора на целую и
+    /// дробную часть: `[сила, зерно, целая часть, дробная часть]`. `None` — обычный прямоугольник.
+    pub fire: Option<[f32; 4]>,
 }
 
 impl RectPaint {
@@ -538,6 +554,7 @@ impl RectPaint {
             glow,
             lean: 0.0,
             angle: 0.0,
+            fire: None,
         }
     }
 }
@@ -570,7 +587,9 @@ pub fn compose_world_paints(
                 && world.vec2(id, property::SIZE).is_some()
                 && (object_fill(world, id).is_some()
                     || (!three_d
-                        && (Settings::read(world, id).any_runs() || carries_clouds(world, id))))
+                        && (Settings::read(world, id).any_runs()
+                            || carries_clouds(world, id)
+                            || motion.fires().is_burning(id, world.generation(id)))))
                 && !(three_d && world.shape(id, property::SHAPE).is_some())
         })
         .collect();
@@ -583,6 +602,7 @@ pub fn compose_world_paints(
 
     let particles = motion.particles();
     let clouds = motion.clouds();
+    let fires = motion.fires();
     let to_paint = |sprite: &Sprite| particle_paint(sprite, layers);
     let to_cloud_paint =
         |sprite: &CloudSprite| cloud_paint(sprite, images, atlas_rects, layers, window);
@@ -663,8 +683,14 @@ pub fn compose_world_paints(
                 glow,
                 lean: motion.lean(id, generation) as f32,
                 angle: 0.0,
+                fire: None,
             };
             paints.extend(layered_paints(world, id, paint, s[0], layers, window));
+        }
+        // «Огонь», требование 20: ореол и пламя — сразу после объекта, до его дыма и искр.
+        if let Some(drawing) = fires.drawing(id, world.generation(id)) {
+            let shift = layers.displacement(scene::parallax(world, id));
+            paints.extend(fire_paints(&drawing, shift, window).into_iter().flatten());
         }
         // «Облака», требование 22: облака неба — сразу после него и всех его копий, от дальних к ближним.
         paints.extend(
@@ -788,6 +814,88 @@ fn object_fill(world: &World, id: u32) -> Option<Fill> {
         }
         None => world.color(id, property::COLOR).map(Fill::Color),
     }
+}
+
+/// «Огонь», требования 14, 20–21: ореол — квадрат вокруг середины пламени, тающее пятно цвета огня, —
+/// и пламя — прямоугольник на нижнем крае огня с наклоном верха. Оба светятся и сдвинуты на `shift`
+/// слоя глубины; каждый, что целиком вне окна `window` (его края в клетках сцены; пустое окно ничего
+/// не отсеивает) или не виден (ореол без яркости, пламя без размера), пропущен. Ореол идёт первым.
+fn fire_paints(drawing: &FireDrawing, shift: Vec2, window: [f64; 2]) -> [Option<RectPaint>; 2] {
+    let FireDrawing { flame, halo } = *drawing;
+    let in_window = |middle: f64, half: f64| {
+        window[1] <= window[0] || (middle + half > window[0] && middle - half < window[1])
+    };
+    let halo_half = halo.diameter / 2.0;
+    let halo_paint = (halo.brightness > 0.0 && in_window(halo.center[0] + shift[0], halo_half))
+        .then(|| {
+            RectPaint::flat(
+                [
+                    (halo.center[0] + shift[0] - halo_half) as f32,
+                    (halo.center[1] + shift[1] - halo_half) as f32,
+                ],
+                [halo.diameter as f32; 2],
+                [
+                    halo.color[0],
+                    halo.color[1],
+                    halo.color[2],
+                    halo.brightness as f32,
+                ],
+                HALO_RECT,
+                true,
+                true,
+            )
+        });
+    let [width, height] = flame.size;
+    let flame_reach = width / 2.0 + flame.lean.abs();
+    let flame_paint = (width > 0.0
+        && height > 0.0
+        && in_window(flame.position[0] + width / 2.0 + shift[0], flame_reach))
+    .then(|| RectPaint {
+        lean: flame.lean as f32,
+        fire: Some([
+            flame.strength as f32,
+            flame.seed,
+            flame.scroll_whole,
+            flame.scroll_fraction,
+        ]),
+        ..RectPaint::flat(
+            [
+                (flame.position[0] + shift[0]) as f32,
+                (flame.position[1] + shift[1]) as f32,
+            ],
+            [width as f32, height as f32],
+            [flame.color[0], flame.color[1], flame.color[2], 1.0],
+            WHITE_PIXEL,
+            false,
+            true,
+        )
+    });
+    [halo_paint, flame_paint]
+}
+
+/// «Огонь», требование 19: объекты плоской сцены с записанным прямоугольником — с тем, что у них записано
+/// про огонь. Объект без огня тоже отдаётся: огонь, у которого `fire` снят, гаснет сам, а у удалённого
+/// объекта или объекта без прямоугольника пропадает сразу. В трёхмерной сцене огня нет.
+pub fn fire_objects(world: &World) -> impl Iterator<Item = FireObject> + '_ {
+    let slots = if world.three_d() {
+        0
+    } else {
+        world.slot_count() as u32
+    };
+    (0..slots).filter_map(move |id| {
+        if !world.is_alive(id) {
+            return None;
+        }
+        let rect = world
+            .vec2(id, property::POSITION)
+            .zip(world.vec2(id, property::SIZE))?;
+        Some(FireObject {
+            id,
+            generation: world.generation(id),
+            rect,
+            settings: FireSettings::read(world, id),
+        })
+    })
 }
 
 /// «Ветер и частицы» → «Частица»: прямоугольник частицы — её середина со сдвигом слоя
@@ -1166,6 +1274,34 @@ mod tests {
             pixel_at(&sheet, WHITE_PIXEL.x, WHITE_PIXEL.y),
             &[255, 255, 255, 255]
         );
+    }
+
+    /// «Огонь»: ореол лежит на первом листе правее белой точки, листьев и дыма, не задевает их и
+    /// первую полку картинок игры.
+    #[test]
+    fn the_halo_has_its_own_place_among_the_built_in_pictures() {
+        let rects = [
+            WHITE_PIXEL,
+            SMOKE_RECT,
+            SPARK_RECT,
+            LEAF_RECT,
+            WHITE_LEAF_RECT,
+            HALO_RECT,
+        ];
+        for (i, a) in rects.iter().enumerate() {
+            for b in &rects[i + 1..] {
+                assert!(!overlap(*a, *b), "{a:?} задевает {b:?}");
+            }
+        }
+        let first = pack(&[img(4, 4)]).expect("умещается").rects[0];
+        assert!(!overlap(first, HALO_RECT), "{first:?}");
+        let sheet = sheet_pixels(&pack(&[]).unwrap(), &[], 0);
+        let middle = pixel_at(
+            &sheet,
+            HALO_RECT.x + HALO_RECT.w / 2,
+            HALO_RECT.y + HALO_RECT.h / 2,
+        );
+        assert!(middle[3] > 240, "{middle:?}");
     }
 
     /// Один буфер на все листы: лист, заполненный поверх прежнего, не хранит его картинок — только

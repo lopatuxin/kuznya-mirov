@@ -86,7 +86,8 @@
     { "position": [140, 23.4], "size": [13.333, 5.417], "image": "fg_panicles", "layer": 60, "parallax": 1.4 },
     { "position": [160, 24.1], "size": [13.333, 5.271], "image": "fg_grass", "layer": 60, "parallax": 1.4, "flip_x": true },
     { "position": [177.99, 22.479], "size": [10.958, 6.125], "image": "fg_fern", "layer": 60, "parallax": 1.4, "flip_x": true },
-    { "name": "дым кузни", "position": [44.3, 15.95], "size": [0.6, 0.15], "smoke": 0.5, "layer": 29 }, { "position": [46.31, 19.36], "size": [1, 1], "layer": 30 }
+    { "name": "дым кузни", "position": [44.3, 15.95], "size": [0.6, 0.15], "smoke": 0.5, "layer": 29 },
+    { "name": "огонь горна", "position": [46.45, 19.39], "size": [0.68, 0.6], "layer": 45, "fire": 0.8 }
   ],
   "wind": [1.5, 0]
 }
