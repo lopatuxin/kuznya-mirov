@@ -2,7 +2,7 @@ import { useEffect, useRef } from "react";
 import { CloudImagesField, type CloudImages } from "./CloudImagesField";
 import { DensityField, type ParticleEditing } from "./ParticleFieldControls";
 
-/** Обратные вызовы правки облаков: те же, что у вкладки «Частицы», без свойств и запрета — их знает колонка «Свойства». */
+/** Обратные вызовы правки облаков: те же, что у вкладки «Эффекты», без свойств и запрета — их знает колонка «Свойства». */
 export type CloudsHandlers = Omit<ParticleEditing, "properties" | "isDisabled">;
 
 type CloudsGroupProps = {

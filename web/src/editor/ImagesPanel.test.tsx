@@ -36,18 +36,18 @@ describe("вкладка «Картинки»", () => {
   });
 });
 
-describe("вкладка «Частицы» в нижней панели", () => {
+describe("вкладка «Эффекты» в нижней панели", () => {
   const render = (particlesPanel: React.ReactNode | null): string =>
     renderToStaticMarkup(<ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} particlesPanel={particlesPanel} onSelectObject={() => {}} />);
 
   it("в плоской сцене стоит после «Картинок»", () => {
     const html = render(<span />);
 
-    expect(html.indexOf(">Картинки")).toBeLessThan(html.indexOf(">Частицы"));
+    expect(html.indexOf(">Картинки")).toBeLessThan(html.indexOf(">Эффекты"));
   });
 
   it("в трёхмерной сцене вкладки нет", () => {
-    expect(render(null)).not.toContain(">Частицы");
+    expect(render(null)).not.toContain(">Эффекты");
   });
 });
 

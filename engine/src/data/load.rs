@@ -317,7 +317,9 @@ pub(crate) fn parse_scalar_value(
             if prop == property::SWAY && !validate_sway(n, properties, file, path, errors) {
                 return None;
             }
-            if (property::PARTICLE_PROPERTIES.contains(&prop) || prop == property::CLOUDS)
+            if (property::PARTICLE_PROPERTIES.contains(&prop)
+                || property::FIRE_PROPERTIES.contains(&prop)
+                || prop == property::CLOUDS)
                 && !validate_particle_number(prop, n, properties, file, path, errors)
             {
                 return None;
@@ -860,6 +862,7 @@ fn depth_layer_fits_the_scene(
         prop,
         property::PARALLAX | property::REPEAT_X | property::SWAY
     ) || property::PARTICLE_PROPERTIES.contains(&prop)
+        || property::FIRE_PROPERTIES.contains(&prop)
         || property::CLOUD_PROPERTIES.contains(&prop))
         && properties.three_d()
     {
@@ -920,8 +923,9 @@ fn validate_sway(
     false
 }
 
-/// «Ветер и частицы» → «Проверка перед запуском»: числовое свойство частиц и облаков — только в плоской
-/// сцене; `smoke`, `sparks`, `leaf_fall` и `clouds` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
+/// «Ветер и частицы» → «Проверка перед запуском», «Огонь» → «Проверка перед запуском»: числовое свойство
+/// частиц, облаков и огня — только в плоской сцене; `smoke`, `sparks`, `leaf_fall`, `clouds`, `fire` и
+/// `fire_glow` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
 /// `sparks_spread` — от 0 до 180, `sparks_direction` — любое число.
 fn validate_particle_number(
     prop: PropertyId,
@@ -936,9 +940,12 @@ fn validate_particle_number(
     }
     let name = properties.name(prop);
     let range = match prop {
-        property::SMOKE | property::SPARKS | property::LEAF_FALL | property::CLOUDS => {
-            Some((0.0, 1.0))
-        }
+        property::SMOKE
+        | property::SPARKS
+        | property::LEAF_FALL
+        | property::CLOUDS
+        | property::FIRE
+        | property::FIRE_GLOW => Some((0.0, 1.0)),
         property::SPARKS_SPREAD => Some((0.0, 180.0)),
         _ => None,
     };
@@ -1039,6 +1046,48 @@ pub(super) fn clouds_shape_errors(
     }
     if !shape.contains(&property::REPEAT_X) {
         messages.push(CLOUDS_NEED_REPEAT_X);
+    }
+    messages
+}
+
+/// «Огонь» → «Проверка перед запуском»: свойства огня — только у объекта с `position` и `size`, и не с
+/// `repeat_x`. `check_position` — как у `validate_follow_mouse_shape`.
+fn validate_fire_shape(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    for message in fire_shape_errors(shape, check_position) {
+        errors.push(file, path, message);
+    }
+}
+
+const FIRE_NEEDS_POSITION_AND_SIZE: &str =
+    "свойства огня разрешены только объекту с position и size";
+const FIRE_WITH_REPEAT_X: &str =
+    "свойства огня заданы вместе с repeat_x: пламя стоит в одном месте, повторить его нельзя";
+
+/// Тексты нарушений формы объекта со свойствами огня — общие для загрузки и правки на ходу.
+pub(super) fn fire_shape_errors(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+) -> Vec<&'static str> {
+    let mut messages = Vec::new();
+    if !property::FIRE_PROPERTIES
+        .iter()
+        .any(|prop| shape.contains(prop))
+    {
+        return messages;
+    }
+    let missing_size = !shape.contains(&property::SIZE);
+    let missing_position = check_position && !shape.contains(&property::POSITION);
+    if missing_size || missing_position {
+        messages.push(FIRE_NEEDS_POSITION_AND_SIZE);
+    }
+    if shape.contains(&property::REPEAT_X) {
+        messages.push(FIRE_WITH_REPEAT_X);
     }
     messages
 }
@@ -1336,6 +1385,7 @@ fn parse_scene_object(
     validate_shape_fill(&shape, true, file, &path, errors);
     validate_deck_shape(&shape, true, file, &path, errors);
     validate_particles_shape(&shape, true, file, &path, errors);
+    validate_fire_shape(&shape, true, file, &path, errors);
     validate_clouds_shape(&shape, true, file, &path, errors);
     let is_layer = matches!(
         find_value(&values, property::PARALLAX),
@@ -3497,7 +3547,10 @@ fn parse_set_value(
                 return None;
             }
         }
-        if property::PARTICLE_PROPERTIES.contains(&prop) || prop == property::CLOUDS {
+        if property::PARTICLE_PROPERTIES.contains(&prop)
+            || property::FIRE_PROPERTIES.contains(&prop)
+            || prop == property::CLOUDS
+        {
             let constants: &[f64] = match &expr {
                 NumberExpr::Const(n) => std::slice::from_ref(n),
                 NumberExpr::Table { table, .. } => table,
@@ -4121,6 +4174,7 @@ fn parse_template(
     validate_shape_fill(&shape, false, file, path, errors);
     validate_deck_shape(&shape, false, file, path, errors);
     validate_particles_shape(&shape, false, file, path, errors);
+    validate_fire_shape(&shape, false, file, path, errors);
     validate_clouds_shape(&shape, false, file, path, errors);
     let is_layer = template.iter().any(|(prop, value)| {
         *prop == property::PARALLAX

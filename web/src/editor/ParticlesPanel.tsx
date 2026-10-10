@@ -16,11 +16,11 @@ type ParticlesPanelProps = {
   onGestureActiveChange: ParticleEditing["onGestureActiveChange"];
 };
 
-const EMPTY_HINT = "Дым и искры перетащите туда, откуда они идут, — на трубу или костёр. Листья — на дерево";
+const EMPTY_HINT = "Дым, искры и огонь перетащите туда, откуда они идут, — на трубу, костёр или горн. Листья — на дерево";
 
 /**
- * Вкладка «Частицы» — «Редактор», «Окно редактора», требования 28–32: слева три карточки с рисунками движка — дым, искры и
- * листья, их тащат на сцену; справа группы эффектов выбранного объекта, а у объекта без частиц и без выбора — подсказка.
+ * Вкладка «Эффекты» — «Редактор», «Окно редактора», требования 28–32: слева четыре карточки с рисунками движка — дым, искры,
+ * листья и огонь, их тащат на сцену; справа группы эффектов выбранного объекта, а у объекта без эффектов и без выбора — подсказка.
  */
 export function ParticlesPanel({ properties, isEditable, onPreview, onCommit, onRemove, onGestureActiveChange }: ParticlesPanelProps): React.JSX.Element {
   const effects = effectsOfObject(properties);
@@ -43,7 +43,7 @@ export function ParticlesPanel({ properties, isEditable, onPreview, onCommit, on
   return (
     <div className="particles-panel">
       <div className="particles-panel__cards-area">
-        <ul className="particles-panel__cards" aria-label="Эффекты частиц">
+        <ul className="particles-panel__cards" aria-label="Эффекты">
           {PARTICLE_EFFECTS.map((effect) => (
             <li
               key={effect.id}

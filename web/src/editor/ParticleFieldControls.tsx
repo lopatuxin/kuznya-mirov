@@ -5,7 +5,7 @@ import { ColorPickerInput } from "./PropertiesPanel";
 import { parseNumberField } from "./terrainBrush";
 
 /**
- * Что поля вкладки «Частицы» и группы «Облака» колонки «Свойства» знают о правке выбранного объекта. Ползунок, число и круг ставят значение сцене на лету
+ * Что поля вкладки «Эффекты» и группы «Облака» колонки «Свойства» знают о правке выбранного объекта. Ползунок, число и круг ставят значение сцене на лету
  * (`onPreview`), а принятое значение отдают на запись (`onCommit`) — вне партии это `scene.json`, в партии живой мир.
  */
 export type ParticleEditing = {
@@ -95,10 +95,17 @@ export function FieldError({ message }: FieldErrorProps): React.JSX.Element | nu
   );
 }
 
-type DensityFieldProps = { title: string; propertyKey: string; endLabels: readonly [string, string]; editing: ParticleEditing };
+type DensityFieldProps = {
+  title: string;
+  propertyKey: string;
+  endLabels: readonly [string, string];
+  /** Что движок берёт без свойства: ползунок стоит на нём бледно. Без него ползунок без свойства стоит на нуле, как у главного свойства эффекта. */
+  defaultValue?: number;
+  editing: ParticleEditing;
+};
 
-/** Ползунок главного свойства от 0 до 1 («плотность», у облаков «сколько облаков»): на каждое движение сцена меняется сразу, запись — при отпускании. */
-export function DensityField({ title, propertyKey, endLabels, editing }: DensityFieldProps): React.JSX.Element {
+/** Ползунок от 0 до 1: главное свойство эффекта («плотность», «сила огня», у облаков «сколько облаков») или настройка («яркость ореола»): на каждое движение сцена меняется сразу, запись — при отпускании. */
+export function DensityField({ title, propertyKey, endLabels, defaultValue, editing }: DensityFieldProps): React.JSX.Element {
   const value = editing.properties[propertyKey];
   const held = useHeldValue<number>(typeof value === "number" ? value : undefined);
   const [error, setError] = useState<string | undefined>(undefined);
@@ -126,7 +133,7 @@ export function DensityField({ title, propertyKey, endLabels, editing }: Density
   return (
     <div className="particles-field">
       <span className="particles-field__label">{title}</span>
-      <div className="particles-density">
+      <div className={defaultValue !== undefined && held.shown === undefined ? "particles-density particles-density--default" : "particles-density"}>
         <span className="particles-density__end">{endLabels[0]}</span>
         <input
           ref={rangeRef}
@@ -136,7 +143,7 @@ export function DensityField({ title, propertyKey, endLabels, editing }: Density
           min={0}
           max={1}
           step={DENSITY_STEP}
-          value={held.shown ?? 0}
+          value={held.shown ?? defaultValue ?? 0}
           disabled={editing.isDisabled}
           onChange={(event) => {
             const next = Number(event.target.value);

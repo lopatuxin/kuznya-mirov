@@ -35,6 +35,7 @@ pub enum ParticleShape {
     Spark,
     Leaf,
     WhiteLeaf,
+    Halo,
 }
 
 impl ParticleShape {
@@ -42,7 +43,7 @@ impl ParticleShape {
     pub const fn frames(self) -> u32 {
         match self {
             ParticleShape::Leaf | ParticleShape::WhiteLeaf => 4,
-            ParticleShape::Smoke | ParticleShape::Spark => 1,
+            ParticleShape::Smoke | ParticleShape::Spark | ParticleShape::Halo => 1,
         }
     }
 }

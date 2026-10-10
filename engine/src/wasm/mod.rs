@@ -835,6 +835,8 @@ fn draw_rect(paint: &RectPaint) -> DrawRect {
         glow: f32::from(u8::from(paint.glow)),
         lean: paint.lean,
         angle: paint.angle,
+        flame: f32::from(u8::from(paint.fire.is_some())),
+        fire: paint.fire.unwrap_or([0.0; 4]),
     }
 }
 
@@ -937,7 +939,7 @@ fn seeded_motion() -> Motion {
 }
 
 /// «Ветер и частицы» → «Часы движения»: доводит наклоны и кадры качающихся объектов `game`, его
-/// частицы и облака до часов `motion` — раз в кадр, перед тем как их рисовать. `layers` — как камера
+/// частицы, огни и облака до часов `motion` — раз в кадр, перед тем как их рисовать. `layers` — как камера
 /// этого кадра видит сцену: от неё кольцо облаков.
 fn update_motion(motion: &mut Motion, game: &Game, images: &[ImageDecl], layers: &LayerView) {
     let wind = game.wind();
@@ -947,6 +949,7 @@ fn update_motion(motion: &mut Motion, game: &Game, images: &[ImageDecl], layers:
         wind,
         atlas::particle_emitters(&game.world, images),
     );
+    motion.update_fires(game.has_world(), wind, atlas::fire_objects(&game.world));
     let camera = Camera {
         scene_middle: f64::from(game.scene.width) / 2.0,
         view: layers,

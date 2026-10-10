@@ -180,7 +180,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const displayedPropertiesView = isLive ? battle.livePropertiesView : propertiesView;
   const displayedCanEdit = isLive ? battle.canLiveEdit : canEdit;
   const displayedOnSelect = isLive ? battle.setLiveSelectedId : setSelectedIndex;
-  // Свойства выбранного объекта для вкладки «Частицы»: из текста сцены вне партии, из живого мира в ней («Редактор», требование 33).
+  // Свойства выбранного объекта для вкладки «Эффекты»: из текста сцены вне партии, из живого мира в ней («Редактор», требование 33).
   const selectedProperties = useMemo(
     () => (displayedPropertiesView.status === "object" ? Object.fromEntries(displayedPropertiesView.properties.map(({ key, value }) => [key, value])) : null),
     [displayedPropertiesView],
@@ -218,7 +218,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     isStrokeActiveRef.current = isActive;
     if (battleRef.current.mode === "edit") sceneEditing.setReloadGateOpen(!isActive);
   };
-  // Жест ползунка, круга или числа вкладки «Частицы» держит перезагрузку так же — «Редактор», фаза 32, крайние случаи; сочетаний не блокирует.
+  // Жест ползунка, круга или числа вкладки «Эффекты» держит перезагрузку так же — «Редактор», фаза 32, крайние случаи; сочетаний не блокирует.
   const handleParticleGestureChange = (isActive: boolean): void => {
     if (battleRef.current.mode === "edit") sceneEditingRef.current.setReloadGateOpen(!isActive);
   };
