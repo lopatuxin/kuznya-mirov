@@ -924,8 +924,8 @@ fn validate_sway(
 }
 
 /// «Ветер и частицы» → «Проверка перед запуском», «Огонь» → «Проверка перед запуском»: числовое свойство
-/// частиц, облаков и огня — только в плоской сцене; `smoke`, `sparks`, `leaf_fall`, `clouds`, `fire` и
-/// `fire_glow` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
+/// частиц, облаков и огня — только в плоской сцене; `smoke`, `sparks`, `leaf_fall`, `clouds`, `fire`,
+/// `fire_glow`, `fire_coals` и `fire_smolder` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
 /// `sparks_spread` — от 0 до 180, `sparks_direction` — любое число.
 fn validate_particle_number(
     prop: PropertyId,
@@ -945,7 +945,9 @@ fn validate_particle_number(
         | property::LEAF_FALL
         | property::CLOUDS
         | property::FIRE
-        | property::FIRE_GLOW => Some((0.0, 1.0)),
+        | property::FIRE_GLOW
+        | property::FIRE_COALS
+        | property::FIRE_SMOLDER => Some((0.0, 1.0)),
         property::SPARKS_SPREAD => Some((0.0, 180.0)),
         _ => None,
     };

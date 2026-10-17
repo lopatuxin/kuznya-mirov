@@ -8,6 +8,8 @@ export type ParticleEffect = {
   title: string;
   /** Главное свойство: эффект идёт, пока оно больше нуля. Его русская подпись в `PARTICLE_LABELS` — заголовок главного ползунка. */
   mainKey: ParticleLabelKey;
+  /** Свойство, которое тоже открывает группу, хотя эффект по нему не главный: у огня — `fire_coals`, угли живут и без пламени. */
+  alsoOpenedBy?: string;
   /** Главное свойство и настройки эффекта — всё, что «Убрать» снимает. */
   keys: readonly string[];
   /** Какое значение главного свойства получает источник, на который карточку отпустили. */
@@ -21,17 +23,17 @@ export const PARTICLE_EFFECTS: readonly ParticleEffect[] = [
   { id: "smoke", cardLabel: "дым", title: "Дым", mainKey: "smoke", keys: ["smoke", "smoke_height", "smoke_color"], dropValue: 0.5, densityLabels: ["струйка", "густой столб"] },
   { id: "sparks", cardLabel: "искры", title: "Искры", mainKey: "sparks", keys: ["sparks", "sparks_reach", "sparks_direction", "sparks_spread"], dropValue: 0.5, densityLabels: ["редкие", "густые"] },
   { id: "leaves", cardLabel: "листья", title: "Листья", mainKey: "leaf_fall", keys: ["leaf_fall", "leaf_color"], dropValue: 0.3, densityLabels: ["изредка", "сильный"] },
-  { id: "fire", cardLabel: "огонь", title: "Огонь", mainKey: "fire", keys: ["fire", "fire_color", "fire_glow"], dropValue: 0.5, densityLabels: ["тлеет", "бушует"] },
+  { id: "fire", cardLabel: "огонь", title: "Огонь", mainKey: "fire", alsoOpenedBy: "fire_coals", keys: ["fire", "fire_color", "fire_glow", "fire_coals", "fire_smolder"], dropValue: 0.5, densityLabels: ["тлеет", "бушует"] },
 ];
 
-/** Двенадцать встроенных свойств частиц и огня плоской сцены. */
+/** Четырнадцать встроенных свойств частиц и огня плоской сцены. */
 export const PARTICLE_PROPERTY_NAMES: readonly string[] = PARTICLE_EFFECTS.flatMap((effect) => effect.keys);
 
 /** Свойства-цвета эффектов: правятся палитрой, как `color`. */
 export const PARTICLE_COLOR_NAMES: readonly string[] = ["smoke_color", "leaf_color", "fire_color"];
 
 /** Что движок берёт без свойства — «Ветер и частицы», «Дым и искры», «Огонь»; во вкладке это бледное значение поля. */
-export const PARTICLE_DEFAULTS = { smoke_height: 4, sparks_reach: 1.5, sparks_direction: 0, sparks_spread: 30, smoke_color: "#a6a6ac", fire_color: "#ff8c1a", fire_glow: 0.5 } as const;
+export const PARTICLE_DEFAULTS = { smoke_height: 4, sparks_reach: 1.5, sparks_direction: 0, sparks_spread: 30, smoke_color: "#a6a6ac", fire_color: "#ff8c1a", fire_glow: 0.5, fire_coals: 0, fire_smolder: 0 } as const;
 
 /** Русские подписи свойств частиц и огня: так ключи называются во вкладке «Эффекты» — у полей и в тексте ошибки под ними. */
 export const PARTICLE_LABELS = {
@@ -47,6 +49,8 @@ export const PARTICLE_LABELS = {
   fire: "сила огня",
   fire_color: "цвет пламени",
   fire_glow: "яркость ореола",
+  fire_coals: "угли",
+  fire_smolder: "тление углей",
 } as const;
 
 type ParticleLabelKey = keyof typeof PARTICLE_LABELS;
@@ -72,10 +76,12 @@ export function particleEffectById(id: string): ParticleEffect | undefined {
   return PARTICLE_EFFECTS.find((effect) => effect.id === id);
 }
 
-/** Эффекты объекта в порядке «Дым», «Искры», «Листья», «Огонь»: у кого есть главное свойство, даже если оно 0 — группа остаётся, пока ползунок тянут до нуля. */
+/** Эффекты объекта в порядке «Дым», «Искры», «Листья», «Огонь»: у кого есть главное свойство (или то, что тоже открывает группу), даже если оно 0 — группа остаётся, пока ползунок тянут до нуля. */
 export function effectsOfObject(properties: Readonly<Record<string, unknown>> | null): ParticleEffect[] {
   if (properties === null) return [];
-  return PARTICLE_EFFECTS.filter((effect) => typeof properties[effect.mainKey] === "number");
+  return PARTICLE_EFFECTS.filter(
+    (effect) => typeof properties[effect.mainKey] === "number" || (effect.alsoOpenedBy !== undefined && typeof properties[effect.alsoOpenedBy] === "number"),
+  );
 }
 
 /** Ключи эффекта, которые у объекта есть, — их снимает «Убрать». */
