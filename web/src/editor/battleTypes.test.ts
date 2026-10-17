@@ -21,6 +21,7 @@ describe("describeRuleKind", () => {
     expect(describeRuleKind("collide")).toBe("столкнуло");
     expect(describeRuleKind("spawn")).toBe("создало");
     expect(describeRuleKind("walk")).toBe("повело");
+    expect(describeRuleKind("run_jump")).toBe("провело бегом");
   });
 });
 

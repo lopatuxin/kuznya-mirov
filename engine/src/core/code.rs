@@ -572,6 +572,11 @@ fn write_property(
             properties.name(prop)
         ));
     }
+    if prop == property::ON_GROUND {
+        return Err(
+            "признак \"on_ground\" пишет только движок: коду он только для чтения".to_string(),
+        );
+    }
     let value = match value {
         AnyValue::Nil => {
             world.clear_property(id, prop);
@@ -755,7 +760,8 @@ fn check_height_write(properties: &PropertyTable, prop: PropertyId, z: f64) -> R
 /// глубины», требование 24: `parallax` и `repeat_x` в трёхмерной сцене, `parallax` меньше нуля. «Ветер
 /// и частицы»: `sway` и свойства частиц в трёхмерной сцене; значение вне допустимого отрезка
 /// подтягивается к нему при рисовании, не ошибка. «Огонь», требование 23: свойства огня в трёхмерной
-/// сцене, `fire`, `fire_glow`, `fire_coals` и `fire_smolder` вне отрезка от 0 до 1 — ошибка.
+/// сцене, `fire`, `fire_glow`, `fire_coals` и `fire_smolder` вне отрезка от 0 до 1 — ошибка. «Бег и
+/// прыжок», требование 21: `run_speed` меньше нуля, `jump_height` и `jump_time` не больше нуля — ошибка.
 fn check_shape_rules(
     world: &World,
     properties: &PropertyTable,
@@ -788,6 +794,12 @@ fn check_shape_rules(
         }
         property::PARALLAX if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
             Err("parallax не может быть меньше нуля".to_string())
+        }
+        property::RUN_SPEED if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
+            Err("свойство \"run_speed\" не может быть меньше нуля".to_string())
+        }
+        property::JUMP_HEIGHT | property::JUMP_TIME if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
+            Err(format!("свойство \"{name}\" должно быть больше нуля"))
         }
         property::SHAPE
             if world.has(id, property::IMAGE)

@@ -1,0 +1,5 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ]
+}

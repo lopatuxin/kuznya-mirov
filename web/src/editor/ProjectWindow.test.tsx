@@ -18,13 +18,16 @@ vi.mock("./SceneCanvas", async () => {
       wind,
       onWindChange,
       onDropParticles,
+      areOutlinesShown,
     }: {
+      areOutlinesShown: boolean;
       wind: readonly [number, number];
       onWindChange: (wind: readonly [number, number]) => string | undefined;
       onDropParticles: (effectId: string, x: number, y: number) => void;
     }) => (
       <>
         <WindFields wind={wind} onWindChange={onWindChange} />
+        <output aria-label="невидимые прямоугольники">{areOutlinesShown ? "показаны" : "скрыты"}</output>
         {["smoke", "sparks", "leaves", "fire"].map((effectId) => (
           <button key={effectId} type="button" onClick={() => onDropParticles(effectId, 10, 20)}>
             бросить {effectId}
@@ -423,6 +426,18 @@ describe("вкладка «Эффекты» в окне проекта", () => {
     expect(screen.getByText("scene.json: objects → 1")).toBeTruthy();
   });
 
+  it("ошибка движка про бег и прыжок во вкладке «Ошибки» — с русской подписью, а место в файле остаётся с ключом", () => {
+    const error = { file: "scene.json", path: "objects → 1 → run_speed", message: 'свойство "run_speed" не может быть меньше нуля, получено -2', line: null, column: null };
+    sceneEditingMock.current = {
+      ...createParticlesSceneEditing(engine),
+      result: { status: "rejected", errors: [error], warnings: [], gameJsonText: PARTICLES_GAME_JSON_TEXT, sceneText: PARTICLES_SCENE_TEXT },
+    };
+    renderWindow();
+
+    expect(screen.getByText('свойство "скорость бега" не может быть меньше нуля, получено -2')).toBeTruthy();
+    expect(screen.getByText("scene.json: objects → 1 → run_speed")).toBeTruthy();
+  });
+
   describe("в партии", () => {
     beforeEach(() => {
       vi.mocked(engine.world_objects).mockReturnValue([
@@ -436,6 +451,22 @@ describe("вкладка «Эффекты» в окне проекта", () => {
       pressPlayStopShortcut();
       await waitFor(() => expect(engine.play).toHaveBeenCalled());
     }
+
+    it("невидимые прямоугольники показаны вне партии и на паузе, в партии скрыты — Фаза 37, требование 22", async () => {
+      sceneEditingMock.current = createParticlesSceneEditing(engine);
+      renderWindow();
+      const outlines = screen.getByLabelText("невидимые прямоугольники");
+      expect(outlines.textContent).toBe("показаны");
+
+      await startBattle();
+      expect(outlines.textContent).toBe("скрыты");
+
+      fireEvent.keyDown(window, { code: "KeyP", key: "P", ctrlKey: true, shiftKey: true });
+      expect(outlines.textContent).toBe("показаны");
+
+      fireEvent.keyDown(window, { code: "KeyP", key: "P", ctrlKey: true, shiftKey: true });
+      expect(outlines.textContent).toBe("скрыты");
+    });
 
     it("ползунок правит живой мир без записи файла, а Ctrl+Z возвращает значение до жеста одним шагом", async () => {
       const setPropertyValue = vi.fn();

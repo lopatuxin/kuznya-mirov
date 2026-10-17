@@ -5,6 +5,9 @@ export type PropertyKind = "flag" | "number" | "time" | "timer" | "text";
 
 export const PROPERTY_KINDS: readonly PropertyKind[] = ["flag", "number", "time", "timer", "text"];
 
+/** Бег и прыжок («Формат игры», Фаза 37): `on_ground` пишет сам движок, в подсказках его нет. */
+const RUN_JUMP_PROPERTY_NAMES: readonly string[] = ["run_speed", "jump_height", "jump_time", "hold_left", "hold_right", "hold_jump"];
+
 /**
  * Свойства движка — закрытый список («Формат игры» → «Объекты и свойства»). `name` в список не
  * входит: у объекта оно есть почти всегда, но подсказка для «+ свойство» по нему не нужна отдельно —
@@ -36,11 +39,12 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "parallax",
   "repeat_x",
   "sway",
+  ...RUN_JUMP_PROPERTY_NAMES,
   ...PARTICLE_PROPERTY_NAMES,
 ];
 
 /** Свойства движка, которые есть только в плоской сцене: в трёхмерной «+ свойство» их не предлагает. */
-const FLAT_SCENE_ONLY_PROPERTY_NAMES: readonly string[] = ["sway", ...PARTICLE_PROPERTY_NAMES];
+const FLAT_SCENE_ONLY_PROPERTY_NAMES: readonly string[] = ["sway", ...RUN_JUMP_PROPERTY_NAMES, ...PARTICLE_PROPERTY_NAMES];
 
 /**
  * Свойства автора из `properties.json` — имя → вид. Не читается или не разбирается — пустой список:
@@ -65,7 +69,7 @@ export function parsePropertyDeclarations(propertiesText: string | null): Record
 
 /**
  * Подсказки для «+ свойство» — «Редактор», требование 15: свойства движка и объявленные свойства
- * автора, которых у объекта ещё нет, в исходном порядке списков; `sway` и свойства частиц — только в плоской сцене.
+ * автора, которых у объекта ещё нет, в исходном порядке списков; `sway`, свойства бега и прыжка и свойства частиц — только в плоской сцене.
  */
 export function suggestPropertyNames(
   existingKeys: readonly string[],

@@ -2,6 +2,7 @@
 .claude/agent-memory-local/
 web/.claude/
 art/rpg/rejected/
+art/village/rejected/
 art/platformer/rejected/
 tools/art/.build/
 tools/stamps/.cache/

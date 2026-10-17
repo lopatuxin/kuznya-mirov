@@ -26,6 +26,7 @@ function sceneCanvasProps(engine: Engine): SceneCanvasProps {
     objectsVersion: [],
     canEditScene: true,
     isSceneShown: true,
+    areOutlinesShown: false,
     isGameInputActive: false,
     isThreeDimensionalScene: false,
     isEditorCameraActive: true,

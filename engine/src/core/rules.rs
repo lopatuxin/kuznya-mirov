@@ -227,6 +227,13 @@ pub enum Rule {
         for_: Selector,
         avoid: Option<Selector>,
     },
+    /// «Бег и прыжок», требование 1: `solid` держит с любой стороны, `one_way` — только на пути вниз;
+    /// оба необязательны.
+    RunJump {
+        for_: Selector,
+        solid: Option<Selector>,
+        one_way: Option<Selector>,
+    },
 }
 
 #[derive(Debug, Clone, Default)]

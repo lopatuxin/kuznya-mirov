@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use super::keys::{KeyEdit, KeyTable};
 use super::property::{self, PropertyId, PropertyTable};
+use super::run_jump::JumpState;
 use super::surface;
 use super::terrain::Terrain;
 use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Shape, Value, Vec2};
@@ -131,6 +132,9 @@ pub struct World {
     base_z: Vec<f64>,
     /// «Рельеф»: третье число `walk_to`, если оно задано.
     walk_to_z: Vec<Option<f64>>,
+    /// «Бег и прыжок»: память нажатия, запас после края и признак подъёма каждого объекта — в мире, а не
+    /// в свойствах: повтор записи даёт ту же партию шаг в шаг.
+    jump: Vec<JumpState>,
 }
 
 impl World {
@@ -149,6 +153,7 @@ impl World {
             terrain: properties.terrain().cloned(),
             base_z: Vec::new(),
             walk_to_z: Vec::new(),
+            jump: Vec::new(),
         }
     }
 
@@ -182,6 +187,16 @@ impl World {
         }
     }
 
+    pub fn jump_state(&self, id: u32) -> JumpState {
+        self.jump.get(id as usize).copied().unwrap_or_default()
+    }
+
+    pub fn set_jump_state(&mut self, id: u32, state: JumpState) {
+        if let Some(slot) = self.jump.get_mut(id as usize) {
+            *slot = state;
+        }
+    }
+
     pub fn walk_to_z(&self, id: u32) -> Option<f64> {
         self.walk_to_z.get(id as usize).copied().flatten()
     }
@@ -202,6 +217,7 @@ impl World {
             self.generation[id as usize] += 1;
             self.base_z[id as usize] = 0.0;
             self.walk_to_z[id as usize] = None;
+            self.jump[id as usize] = JumpState::default();
             return id;
         }
         let id = self.alive.len() as u32;
@@ -210,6 +226,7 @@ impl World {
         self.generation.push(0);
         self.base_z.push(0.0);
         self.walk_to_z.push(None);
+        self.jump.push(JumpState::default());
         for column in &mut self.columns {
             column.push_empty();
         }
@@ -246,6 +263,7 @@ impl World {
         }
         self.base_z[idx] = 0.0;
         self.walk_to_z[idx] = None;
+        self.jump[idx] = JumpState::default();
         self.free_list.push(id);
     }
 

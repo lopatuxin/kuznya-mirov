@@ -31,6 +31,17 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("repeat_x", 1, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
   });
 
+  it("hold_left, hold_right и hold_jump — галочки (Фаза 37, требование 25); не булево — текстовое поле", () => {
+    for (const key of ["hold_left", "hold_right", "hold_jump"]) {
+      expect(propertyFieldKind(key, false, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "checkbox" });
+    }
+    expect(propertyFieldKind("hold_jump", "да", NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
+  });
+
+  it("run_speed — число в текстовом поле (Фаза 37)", () => {
+    expect(propertyFieldKind("run_speed", 7, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
+  });
+
   it("parallax — число в текстовом поле (Фаза 28, требование 22)", () => {
     expect(propertyFieldKind("parallax", 0.25, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
   });

@@ -59,6 +59,15 @@ pub const FIRE_COLOR: PropertyId = 37;
 pub const FIRE_GLOW: PropertyId = 38;
 pub const FIRE_COALS: PropertyId = 39;
 pub const FIRE_SMOLDER: PropertyId = 40;
+/// «Правила игры» → «Бег и прыжок»: числа героя плоской сцены, клавиши бега и прыжка и признак земли,
+/// который пишет только движок.
+pub const RUN_SPEED: PropertyId = 41;
+pub const JUMP_HEIGHT: PropertyId = 42;
+pub const JUMP_TIME: PropertyId = 43;
+pub const HOLD_LEFT: PropertyId = 44;
+pub const HOLD_RIGHT: PropertyId = 45;
+pub const HOLD_JUMP: PropertyId = 46;
+pub const ON_GROUND: PropertyId = 47;
 
 /// Свойства частиц: только плоская сцена, только объекту с `position` и `size`, без `repeat_x`.
 pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
@@ -122,6 +131,13 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("fire_glow", PropKind::Number),
     ("fire_coals", PropKind::Number),
     ("fire_smolder", PropKind::Number),
+    ("run_speed", PropKind::Number),
+    ("jump_height", PropKind::Number),
+    ("jump_time", PropKind::Number),
+    ("hold_left", PropKind::Flag),
+    ("hold_right", PropKind::Flag),
+    ("hold_jump", PropKind::Flag),
+    ("on_ground", PropKind::Flag),
 ];
 
 #[derive(Debug, Clone)]
@@ -315,6 +331,18 @@ mod tests {
             assert!(FIRE_PROPERTIES.contains(&id), "{name}");
             assert!(!PARTICLE_PROPERTIES.contains(&id), "{name}");
             assert!(!CLOUD_PROPERTIES.contains(&id), "{name}");
+        }
+        for (name, id, kind) in [
+            ("run_speed", RUN_SPEED, PropKind::Number),
+            ("jump_height", JUMP_HEIGHT, PropKind::Number),
+            ("jump_time", JUMP_TIME, PropKind::Number),
+            ("hold_left", HOLD_LEFT, PropKind::Flag),
+            ("hold_right", HOLD_RIGHT, PropKind::Flag),
+            ("hold_jump", HOLD_JUMP, PropKind::Flag),
+            ("on_ground", ON_GROUND, PropKind::Flag),
+        ] {
+            assert_eq!(table.resolve(name), Some(id), "{name}");
+            assert_eq!(table.kind(id), kind, "{name}");
         }
         assert_eq!(table.resolve("particles"), None);
     }

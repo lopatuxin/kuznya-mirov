@@ -291,7 +291,9 @@ pub(crate) fn parse_scalar_value(
                 errors.push(file, path, DECK_IN_FLAT_SCENE);
                 return None;
             }
-            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors)
+                || !engine_alone_writes_ok(prop, file, path, errors)
+            {
                 return None;
             }
             value.as_bool().map(Value::Flag).or_else(|| {
@@ -315,6 +317,11 @@ pub(crate) fn parse_scalar_value(
                 return None;
             }
             if prop == property::SWAY && !validate_sway(n, properties, file, path, errors) {
+                return None;
+            }
+            if RUN_JUMP_NUMBERS.contains(&prop)
+                && !validate_run_jump_number(prop, n, properties, file, path, errors)
+            {
                 return None;
             }
             if (property::PARTICLE_PROPERTIES.contains(&prop)
@@ -919,6 +926,64 @@ fn validate_sway(
         file,
         path,
         format!("sway не может быть меньше нуля, получено {n}"),
+    );
+    false
+}
+
+/// «Бег и прыжок» → «Проверка перед запуском»: числа героя — `run_speed` не меньше нуля, `jump_height` и
+/// `jump_time` больше нуля.
+const RUN_JUMP_NUMBERS: [PropertyId; 3] = [
+    property::RUN_SPEED,
+    property::JUMP_HEIGHT,
+    property::JUMP_TIME,
+];
+
+fn validate_run_jump_number(
+    prop: PropertyId,
+    n: f64,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    let name = properties.name(prop);
+    if prop == property::RUN_SPEED {
+        if n >= 0.0 {
+            return true;
+        }
+        errors.push(
+            file,
+            path,
+            format!("свойство \"{name}\" не может быть меньше нуля, получено {n}"),
+        );
+        return false;
+    }
+    if n > 0.0 {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!("свойство \"{name}\" должно быть больше нуля, получено {n}"),
+    );
+    false
+}
+
+/// «Бег и прыжок» → «Проверка перед запуском»: `on_ground` пишет только движок — ни файл, ни клавиша,
+/// ни правило, ни шаблон его не ставят и не снимают.
+fn engine_alone_writes_ok(
+    prop: PropertyId,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if prop != property::ON_GROUND {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        "признак \"on_ground\" пишет только движок: его нельзя задать ни в файле, ни клавишей, ни правилом",
     );
     false
 }
@@ -3513,6 +3578,15 @@ fn require_number_kind(
     }
 }
 
+/// Числа, которые `expr` называет прямо в файле: само число или элементы таблицы; множитель их не даёт.
+fn number_constants(expr: &NumberExpr) -> &[f64] {
+    match expr {
+        NumberExpr::Const(n) => std::slice::from_ref(n),
+        NumberExpr::Table { table, .. } => table,
+        NumberExpr::Multiplier { .. } => &[],
+    }
+}
+
 /// `set`'s value — a `NumberExpr` for a `number`/`time`/`timer` property, a literal `Value`
 /// otherwise («Правила игры», требование 11).
 fn parse_set_value(
@@ -3534,36 +3608,32 @@ fn parse_set_value(
         let expr = parse_number_expr(value, kind, properties, file, path, errors)?;
         // «Мир на экране» → «Проверка перед запуском»: `parallax` меньше 0 — ошибка и в постоянных
         // правила, как в объекте, клавише и щелчке.
-        if matches!(prop, property::PARALLAX | property::SWAY) {
-            let constants: &[f64] = match &expr {
-                NumberExpr::Const(n) => std::slice::from_ref(n),
-                NumberExpr::Table { table, .. } => table,
-                NumberExpr::Multiplier { .. } => &[],
-            };
-            if let Some(&n) = constants.iter().find(|&&n| n < 0.0) {
-                if prop == property::SWAY {
-                    validate_sway(n, properties, file, path, errors);
-                } else {
-                    validate_parallax(n, properties, file, path, errors);
-                }
-                return None;
-            }
-        }
-        if property::PARTICLE_PROPERTIES.contains(&prop)
-            || property::FIRE_PROPERTIES.contains(&prop)
-            || prop == property::CLOUDS
+        if matches!(prop, property::PARALLAX | property::SWAY)
+            && let Some(&n) = number_constants(&expr).iter().find(|&&n| n < 0.0)
         {
-            let constants: &[f64] = match &expr {
-                NumberExpr::Const(n) => std::slice::from_ref(n),
-                NumberExpr::Table { table, .. } => table,
-                NumberExpr::Multiplier { .. } => &[],
-            };
-            if !constants
+            if prop == property::SWAY {
+                validate_sway(n, properties, file, path, errors);
+            } else {
+                validate_parallax(n, properties, file, path, errors);
+            }
+            return None;
+        }
+        let particle_like = property::PARTICLE_PROPERTIES.contains(&prop)
+            || property::FIRE_PROPERTIES.contains(&prop)
+            || prop == property::CLOUDS;
+        if particle_like
+            && !number_constants(&expr)
                 .iter()
                 .all(|&n| validate_particle_number(prop, n, properties, file, path, errors))
-            {
-                return None;
-            }
+        {
+            return None;
+        }
+        if RUN_JUMP_NUMBERS.contains(&prop)
+            && !number_constants(&expr)
+                .iter()
+                .all(|&n| validate_run_jump_number(prop, n, properties, file, path, errors))
+        {
+            return None;
         }
         return Some(SetValue::Number(expr));
     }
@@ -3859,7 +3929,9 @@ fn parse_common_action(
                 );
                 return None;
             }
-            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors)
+                || !engine_alone_writes_ok(prop, file, path, errors)
+            {
                 return None;
             }
             let selector_json = require_index(arr, 2, file, path, errors)?;
@@ -3888,7 +3960,9 @@ fn parse_common_action(
                 );
                 return None;
             }
-            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors)
+                || !engine_alone_writes_ok(prop, file, path, errors)
+            {
                 return None;
             }
             Some(CommonAction::TakeAll { prop })
@@ -4056,7 +4130,9 @@ fn parse_collide_effect(
                 );
                 return None;
             }
-            if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
+            if !depth_layer_fits_the_scene(prop, properties, file, path, errors)
+                || !engine_alone_writes_ok(prop, file, path, errors)
+            {
                 return None;
             }
             if head == "give" {
@@ -4298,7 +4374,35 @@ fn parse_pick_one(
 /// missing or unrecognized, rather than let it hide behind the `kind` error until a later pass.
 const ALL_RULE_KEYS: &[&str] = &[
     "kind", "for", "a", "b", "effects", "do", "when", "where", "template", "pick_one", "avoid",
+    "solid", "one_way",
 ];
+
+const RUN_JUMP_IN_3D_SCENE: &str =
+    "run_jump есть только в плоской сцене: у scene в game.json есть camera";
+
+/// Необязательный отбор правила под ключом `key`: `Some(None)` — ключа нет, `None` — он есть, но
+/// не отбор.
+fn parse_optional_selector(
+    obj: &serde_json::Map<String, Json>,
+    key: &str,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<Selector>> {
+    let Some(value) = obj.get(key) else {
+        return Some(None);
+    };
+    let key_path = join(path, key);
+    let selector_obj = expect_object(value, file, &key_path, errors)?;
+    Some(Some(resolve_selector(
+        selector_obj,
+        properties,
+        file,
+        &key_path,
+        errors,
+    )))
+}
 
 #[allow(clippy::too_many_arguments)]
 fn parse_rule(
@@ -4351,6 +4455,33 @@ fn parse_rule(
                 None => None,
             };
             Some((Rule::Walk { for_, avoid }, std::collections::HashSet::new()))
+        }
+        // «Бег и прыжок», требование 1: `solid` и `one_way` необязательны, но если названы — это отбор.
+        Some("run_jump") => {
+            reject_unknown_keys(
+                obj,
+                &["kind", "for", "solid", "one_way"],
+                file,
+                &path,
+                errors,
+            );
+            if properties.three_d() {
+                errors.push(file, &path, RUN_JUMP_IN_3D_SCENE);
+                return None;
+            }
+            let for_json = require_field(obj, "for", file, &path, errors)?;
+            let for_obj = expect_object(for_json, file, &join(&path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
+            let solid = parse_optional_selector(obj, "solid", properties, file, &path, errors)?;
+            let one_way = parse_optional_selector(obj, "one_way", properties, file, &path, errors)?;
+            Some((
+                Rule::RunJump {
+                    for_,
+                    solid,
+                    one_way,
+                },
+                std::collections::HashSet::new(),
+            ))
         }
         Some("collide") => {
             reject_unknown_keys(
@@ -4919,13 +5050,26 @@ fn widen_shapes_by_rule_actions(shapes: &mut [PossibleShape], rules: &RuleSet) {
             }
         }
 
+        // «Бег и прыжок»: `on_ground` ставит сам движок объектам под `run_jump` — отбор по нему
+        // подходит им, хотя ни в файле, ни в правилах признака нет.
+        for rule in &rules.rules {
+            let Rule::RunJump { for_, .. } = rule else {
+                continue;
+            };
+            for ps in shapes.iter_mut() {
+                if matches_shape(for_, &ps.shape) {
+                    changed |= ps.shape.maybe.insert(property::ON_GROUND);
+                }
+            }
+        }
+
         for rule in &rules.rules {
             let do_ = match rule {
                 Rule::Check { do_, .. }
                 | Rule::Delete { do_, .. }
                 | Rule::Spawn { do_, .. }
                 | Rule::Collide { do_, .. } => do_,
-                Rule::Move { .. } | Rule::Walk { .. } => continue,
+                Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => continue,
             };
             let mut given = Vec::new();
             let mut taken = Vec::new();
@@ -5101,6 +5245,47 @@ fn validate_reachable_image(shapes: &[PossibleShape], code: Option<&str>, errors
     }
 }
 
+/// «Бег и прыжок», требование 21: объект из `scene.json` под `move` и под `run_jump` двигался бы дважды.
+/// Объект под `run_jump` получает `velocity` от правила, так что `move` по `velocity` берёт и того, у
+/// кого её в файле нет.
+fn validate_move_apart_from_run_jump(
+    scene: &[ParsedObject],
+    rules: &RuleSet,
+    rule_meta: &[RuleMeta],
+    scene_file: &str,
+    errors: &mut ErrorSink,
+) {
+    let labeled = rules.rules.iter().zip(rule_meta);
+    for obj in scene {
+        let selects = |selector: &Selector, owns_velocity: bool| {
+            let has = |prop: &PropertyId| {
+                obj.shape.contains(prop) || (owns_velocity && *prop == property::VELOCITY)
+            };
+            selector.has.iter().all(has) && !selector.without.iter().any(has)
+        };
+        let Some(run_jump) = labeled.clone().find_map(|(rule, meta)| match rule {
+            Rule::RunJump { for_, .. } if selects(for_, false) => Some(meta.file_index),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let Some(movement) = labeled.clone().find_map(|(rule, meta)| match rule {
+            Rule::Move { for_ } if selects(for_, true) => Some(meta.file_index),
+            _ => None,
+        }) else {
+            continue;
+        };
+        errors.push(
+            scene_file,
+            &obj.path,
+            format!(
+                "объект{} попал и под move (rules[{movement}]), и под run_jump (rules[{run_jump}]): его двигало бы дважды",
+                name_suffix(obj)
+            ),
+        );
+    }
+}
+
 /// «Камера», требование 37: `camera_follows` в игре без `view_height` ни на что не влияет —
 /// предупреждение, не ошибка.
 fn validate_camera_follows_needs_view_height(
@@ -5235,19 +5420,19 @@ fn validate_run_actions(
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => {
                 check_common_actions_run(do_, &join(&label, "do"), &check, errors);
             }
-            Rule::Move { .. } | Rule::Walk { .. } => {}
+            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => {}
         }
     }
 }
 
-/// `do_` from any rule kind that has one — `Move`/`Walk` have none.
+/// `do_` from any rule kind that has one — `Move`/`Walk`/`RunJump` have none.
 fn common_actions(rule: &Rule) -> &[CommonAction] {
     match rule {
         Rule::Collide { do_, .. }
         | Rule::Check { do_, .. }
         | Rule::Delete { do_, .. }
         | Rule::Spawn { do_, .. } => do_,
-        Rule::Move { .. } | Rule::Walk { .. } => &[],
+        Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => &[],
     }
 }
 
@@ -5493,6 +5678,28 @@ fn validate_property_sufficiency(
                     );
                 }
             }
+            // «Бег и прыжок», требование 21: объекту под `run_jump` не хватает `position`, `size`,
+            // `run_speed` или `jump_height` — `solid` и `one_way` ничего не требуют: объект без
+            // `position` и `size` просто не твёрдое.
+            Rule::RunJump { for_, .. } => {
+                for prop in [
+                    property::POSITION,
+                    property::SIZE,
+                    property::RUN_SPEED,
+                    property::JUMP_HEIGHT,
+                ] {
+                    require(
+                        &candidates,
+                        file,
+                        for_,
+                        prop,
+                        properties,
+                        &label,
+                        &mut seen,
+                        errors,
+                    );
+                }
+            }
         }
         // `do`'s add: declared, and present on at least one object anywhere.
         let do_actions = common_actions(rule);
@@ -5700,6 +5907,16 @@ fn collect_used_properties(
                 mark_selector_used(&mut used, for_);
                 if let Some(avoid) = avoid {
                     mark_selector_used(&mut used, avoid);
+                }
+            }
+            Rule::RunJump {
+                for_,
+                solid,
+                one_way,
+            } => {
+                mark_selector_used(&mut used, for_);
+                for selector in [solid, one_way].into_iter().flatten() {
+                    mark_selector_used(&mut used, selector);
                 }
             }
             Rule::Collide {
@@ -6016,6 +6233,19 @@ fn validate_selectors_not_empty(
                 check(for_, &label, "for");
                 if let Some(avoid) = avoid {
                     check(avoid, &label, "avoid");
+                }
+            }
+            Rule::RunJump {
+                for_,
+                solid,
+                one_way,
+            } => {
+                check(for_, &label, "for");
+                if let Some(solid) = solid {
+                    check(solid, &label, "solid");
+                }
+                if let Some(one_way) = one_way {
+                    check(one_way, &label, "one_way");
                 }
             }
         }
@@ -8353,7 +8583,7 @@ fn collect_used_images(
                 mark_do(&mut used, do_);
             }
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } => mark_do(&mut used, do_),
-            Rule::Move { .. } | Rule::Walk { .. } => {}
+            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => {}
         }
     }
     for screen in screens {
@@ -8952,6 +9182,13 @@ pub fn load_rest_with_stamps(
         &rule_meta,
         &config.files.rules,
         &properties,
+        &mut errors,
+    );
+    validate_move_apart_from_run_jump(
+        &scene_objects,
+        &rules,
+        &rule_meta,
+        &config.files.scene,
         &mut errors,
     );
     validate_reachable_image(&shapes, code_json, &mut errors);

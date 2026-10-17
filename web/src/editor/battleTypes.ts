@@ -18,7 +18,7 @@ export type EngineAddObjectResult = { ok: true; id: number } | { ok: false; erro
 export type EngineReplayResult = { ok: true } | { ok: false; error: string };
 
 export type StepReportRuleEntry =
-  | { rule: string; kind: "move" | "check" | "delete" | "spawn" | "walk"; objects: number[] }
+  | { rule: string; kind: "move" | "check" | "delete" | "spawn" | "walk" | "run_jump"; objects: number[] }
   | { rule: string; kind: "collide"; pairs: [number, number][] };
 
 export type StepReportCreated = { id: number; name: string | null; rule: string };
@@ -47,6 +47,7 @@ const RULE_KIND_LABELS: Record<StepReportRuleEntry["kind"], string> = {
   delete: "удалило",
   spawn: "создало",
   walk: "повело",
+  run_jump: "провело бегом",
 };
 
 /** Подпись вида правила во вкладке «Шаг» — «Редактор», требование 23. */
