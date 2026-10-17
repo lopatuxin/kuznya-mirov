@@ -1,6 +1,7 @@
-//! Фаза 28 — слои глубины (требования 1–25) и заготовка платформера (требования 26–32). Игры для
-//! тестов собираются в коде, как в `tests/phase14_smooth_flip_atlas_sheets.rs`; записанные партии
-//! платформера лежат в `tests/replays/platformer-*.json`.
+//! Фаза 28 — слои глубины (требования 1–25) и заготовка платформера (требования 26–32), которая
+//! теперь живёт демо-деревней в `games/village`. Игры для тестов собираются в коде, как в
+//! `tests/phase14_smooth_flip_atlas_sheets.rs`; записанные партии деревни лежат в
+//! `tests/replays/village-*.json`.
 
 use std::fs;
 use std::iter::once;
@@ -821,17 +822,17 @@ fn code_reads_and_writes_the_depth_layer_properties_in_a_flat_scene() {
 // Заготовка платформера, требования 26–32
 // -------------------------------------------------------------------------------------------
 
-fn platformer_dir() -> PathBuf {
+fn village_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("games")
-        .join("platformer")
+        .join("village")
 }
 
 /// Ширина и высота картинки уровня из заголовка `IHDR` PNG (байты 16..24) и пустые точки такого
 /// размера: проверке картинок и атласу нужен только размер, точки движок получает от страницы.
 fn blank_image(path: &str) -> (u32, u32, Vec<u8>) {
-    let path = platformer_dir().join(path);
+    let path = village_dir().join(path);
     let bytes = fs::read(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"));
     let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
     let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
@@ -871,7 +872,7 @@ fn mp4_child<'a>(bytes: &'a [u8], kind: &[u8; 4]) -> Option<&'a [u8]> {
 /// Размер файла видео `.mp4` из заголовка `tkhd` его видеодорожки (`moov` → `trak` → `tkhd`):
 /// ширина и высота — числа 16.16 в последних восьми байтах заголовка. У звуковой дорожки они нули.
 fn video_file_size(path: &str) -> (u32, u32) {
-    let path = platformer_dir().join(path);
+    let path = village_dir().join(path);
     let bytes = fs::read(&path).unwrap_or_else(|e| panic!("не смог прочитать {path:?}: {e}"));
     let moov = mp4_child(&bytes, b"moov").unwrap_or_else(|| panic!("в {path:?} нет moov"));
     for (_, trak) in mp4_boxes(moov).filter(|(kind, _)| kind == b"trak") {
@@ -903,9 +904,9 @@ fn file_verdict(decl: &ImageDecl) -> ImageVerdict {
 
 /// Уровень грузится целиком, с картинками: страница отдала бы движку их размер и точки, здесь
 /// точки пустые — проверке и атласу важен только размер.
-fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
+fn village() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
     let read = |name: &str| {
-        fs::read_to_string(platformer_dir().join(name))
+        fs::read_to_string(village_dir().join(name))
             .unwrap_or_else(|e| panic!("не смог прочитать {name}: {e}"))
     };
     let game_json = read("game.json");
@@ -936,14 +937,14 @@ fn platformer() -> (Game, Vec<GameError>, Vec<ImageDecl>) {
         &[],
         &[],
     )
-    .unwrap_or_else(|e| panic!("платформер не загрузился: {e:?}"));
+    .unwrap_or_else(|e| panic!("деревня не загрузилась: {e:?}"));
     warnings.extend(rest_warnings);
     (game, warnings, images)
 }
 
 #[test]
-fn the_platformer_loads_without_errors_or_warnings() {
-    let (game, warnings, _images) = platformer();
+fn the_village_loads_without_errors_or_warnings() {
+    let (game, warnings, _images) = village();
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
     assert_eq!(
         game.world.text(0, property::NAME),
@@ -954,21 +955,21 @@ fn the_platformer_loads_without_errors_or_warnings() {
 
 #[test]
 fn the_forge_smoke_is_a_built_in_effect_of_its_source_and_the_particle_file_is_gone() {
-    let (game, _warnings, _images) = platformer();
+    let (game, _warnings, _images) = village();
     let source = game
         .world
         .ids()
         .find(|&id| game.world.text(id, property::NAME) == Some("дым кузни"))
         .expect("источник дыма кузни есть в сцене");
     assert_eq!(game.world.number_like(source, property::SMOKE), Some(0.5));
-    assert!(!platformer_dir().join("particles.json").exists());
-    let game_json = fs::read_to_string(platformer_dir().join("game.json")).unwrap();
+    assert!(!village_dir().join("particles.json").exists());
+    let game_json = fs::read_to_string(village_dir().join("game.json")).unwrap();
     assert!(!game_json.contains("particles"));
 }
 
 #[test]
-fn the_platformer_starts_with_the_camera_at_the_bottom_of_the_scene() {
-    let (game, _warnings, _images) = platformer();
+fn the_village_starts_with_the_camera_at_the_bottom_of_the_scene() {
+    let (game, _warnings, _images) = village();
     let (scale, offset) = game.camera_frame(WINDOW);
     let layers = LayerView::of_frame(&game.scene, scale, offset, WINDOW);
     assert!(
@@ -983,7 +984,7 @@ fn the_platformer_starts_with_the_camera_at_the_bottom_of_the_scene() {
 
 #[test]
 fn repeated_layers_cover_a_window_of_any_width() {
-    let (game, _warnings, images) = platformer();
+    let (game, _warnings, images) = village();
     let atlas_images: Vec<AtlasImage> = images
         .iter()
         .map(|decl| match file_verdict(decl) {
@@ -1006,7 +1007,7 @@ fn repeated_layers_cover_a_window_of_any_width() {
         .ids()
         .filter(|&id| game.world.flag(id, property::REPEAT_X))
         .collect();
-    assert!(!repeated.is_empty(), "в платформере есть слои с повтором");
+    assert!(!repeated.is_empty(), "в деревне есть слои с повтором");
     for width in [400.0_f32, 1280.0, 3000.0] {
         let viewport = [width, 720.0];
         let layers = layers_of(&game, viewport);

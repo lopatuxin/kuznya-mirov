@@ -1,0 +1,8 @@
+{
+  "rules": [
+    { "kind": "move", "for": { "has": ["position", "velocity"] } },
+
+    { "kind": "check", "for": { "has": ["viewer"] },
+      "do": [["run", "keep_in_scene"]] }
+  ]
+}

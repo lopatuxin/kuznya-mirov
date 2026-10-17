@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createFlatCameraStore, type FlatCameraState } from "./editorCamera";
 import {
   createFlatSceneController,
@@ -37,7 +37,7 @@ function setup(overrides: Partial<FlatSceneContext> = {}, objects: Record<number
   const worldObjects: Record<number, SceneObject> = { 7: { position: [10, 15], size: [4, 2] }, ...objects };
   const moves: [number, number, number][] = [];
   const transforms: [number, Record<string, unknown>][] = [];
-  const state = { camera: { ...WHOLE_SCENE } as FlatCameraState, pickedId: undefined as number | undefined, fitted: undefined as FlatCameraState | undefined };
+  const state = { camera: { ...WHOLE_SCENE } as FlatCameraState, pickedId: undefined as number | undefined, outlines: [] as { id: number; kind: string }[], fitted: undefined as FlatCameraState | undefined };
 
   function frame(parallax: number): { scale: number; offset: [number, number]; shift: [number, number] } {
     const scale = CANVAS_HEIGHT / state.camera.view_height;
@@ -49,6 +49,7 @@ function setup(overrides: Partial<FlatSceneContext> = {}, objects: Record<number
 
   const engine = {
     object_at: () => state.pickedId,
+    outlines: () => state.outlines,
     object_rect: (id: number) => {
       const properties = worldObjects[id];
       if (properties === undefined) return undefined;
@@ -86,6 +87,7 @@ function setup(overrides: Partial<FlatSceneContext> = {}, objects: Record<number
     isInputLocked: false,
     isEditorCameraActive: true,
     areHandlesAvailable: true,
+    areOutlinesShown: false,
     selectedIndex: 7,
     selectedLabel: null,
     handleMode: "translate",
@@ -424,6 +426,51 @@ describe("выбор и перенос самого объекта", () => {
     expect(selections).toEqual([7]);
   });
 
+  describe("невидимые прямоугольники", () => {
+    /** Объект 9: `position [30, 15]`, `size [4, 2]` — прямоугольник от (225, 322,5) шириной 30 и высотой 15, под картинкой объекта 7. */
+    const HIDDEN = { 9: { position: [30, 15], size: [4, 2] } };
+
+    it("щелчок у линии выбирает прямоугольник раньше картинки под ним и берёт его в перенос", () => {
+      const { controller, selections, state } = setup({ selectedIndex: null, areOutlinesShown: true }, HIDDEN);
+      state.outlines = [{ id: 9, kind: "solid" }];
+      state.pickedId = 7;
+
+      expect(controller.pointerDown(pointer(225 - 4, 330))).toBe(true);
+
+      expect(selections).toEqual([9]);
+    });
+
+    it("щелчок внутри вдали от линии выбирает то, что нарисовано сверху", () => {
+      const { controller, selections, state } = setup({ selectedIndex: null, areOutlinesShown: true }, HIDDEN);
+      state.outlines = [{ id: 9, kind: "one_way" }];
+      state.pickedId = 7;
+
+      controller.pointerDown(pointer(240, 330));
+
+      expect(selections).toEqual([7]);
+    });
+
+    it("без показанных прямоугольников (партия, повтор) линия выбора не даёт", () => {
+      const { controller, selections, state } = setup({ selectedIndex: null, areOutlinesShown: false }, HIDDEN);
+      state.outlines = [{ id: 9, kind: "solid" }];
+      state.pickedId = 7;
+
+      controller.pointerDown(pointer(225 - 4, 330));
+
+      expect(selections).toEqual([7]);
+    });
+
+    it("ручки уже выбранного объекта важнее линии другого", () => {
+      const { controller, selections, state } = setup({ areOutlinesShown: true });
+      state.outlines = [{ id: 9, kind: "solid" }];
+      state.pickedId = 9;
+
+      expect(controller.pointerDown(pointer(...CENTER))).toBe(true);
+
+      expect(selections).toEqual([]);
+    });
+  });
+
   it("Esc во время переноса возвращает объект на место без действия, а потеря жеста его бросает", () => {
     const { controller, moves, commits, state } = setup({ selectedIndex: null });
     state.pickedId = 7;
@@ -484,6 +531,40 @@ describe("рисование", () => {
     controller.draw(fakeContext(calls), 1);
 
     expect(calls.filter(([name]) => name === "strokeRect")).toHaveLength(0);
+  });
+
+  it("невидимые прямоугольники рисуются тремя видами линий: сплошная с заливкой, сплошная сверху с пунктиром, тонкий пунктир", () => {
+    const { controller, state } = setup({ selectedIndex: null, areOutlinesShown: true, isEditorCameraActive: false }, { 8: { position: [30, 15], size: [4, 2] }, 9: { position: [20, 15], size: [4, 2] } });
+    state.outlines = [
+      { id: 7, kind: "solid" },
+      { id: 8, kind: "one_way" },
+      { id: 9, kind: "other" },
+    ];
+    const calls: Call[] = [];
+
+    controller.draw(fakeContext(calls), 1);
+
+    expect(calls.filter(([name]) => name === "fillRect")).toEqual([["fillRect", 75, 322.5, 30, 15]]);
+    const dashes = calls.filter(([name]) => name === "setLineDash").map(([, dash]) => dash);
+    expect(dashes).toEqual(expect.arrayContaining([[], [6, 4], [3, 3]]));
+    expect(calls.filter(([name]) => name === "rect")).toEqual([
+      ["rect", 75, 322.5, 30, 15],
+      ["rect", 75, 322.5, 30, 15],
+      ["rect", 150, 322.5, 30, 15],
+      ["rect", 150, 322.5, 30, 15],
+    ]);
+  });
+
+  it("в партии и в повторе невидимых прямоугольников нет, и список у движка не спрашивается", () => {
+    const { controller, state, engine } = setup({ selectedIndex: null, areOutlinesShown: false });
+    state.outlines = [{ id: 7, kind: "solid" }];
+    const spy = vi.spyOn(engine, "outlines");
+    const calls: Call[] = [];
+
+    controller.draw(fakeContext(calls), 1);
+
+    expect(calls.some(([name]) => name === "fillRect" || name === "rect")).toBe(false);
+    expect(spy).not.toHaveBeenCalled();
   });
 
   it("у выбранного объекта рисуются рамка и ручки; нет доступных ручек — только рамка", () => {

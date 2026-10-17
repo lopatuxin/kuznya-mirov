@@ -22,6 +22,7 @@ import { parseProjectCellPixels, parseProjectCloudImageNames, parseProjectImageD
 import { buildImageTiles, createImageObject, createParticlesObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
+import { withRunJumpLabels } from "./runJumpLabels";
 import { SceneCanvas, type BrushFields } from "./SceneCanvas";
 import { stampPreviewOf, type StampPreview } from "./stampPreview";
 import { toVec2 } from "./terrainReadings";
@@ -428,14 +429,14 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     />
   );
 
-  const errorLines = withCodeErrorLine(battle.codeError, [
+  const errorLines = withCodeErrorLine(battle.codeError === null ? null : withRunJumpLabels(battle.codeError), [
     ...(engineError !== null ? [engineError] : []),
     ...(result === null
       ? []
       : result.status === "entry-missing"
         ? [`Нет файла game.json в проекте «${fallbackDisplayName(source)}»`]
         : result.status === "rejected"
-          ? result.errors.map(formatError)
+          ? result.errors.map((error) => formatError(withRunJumpLabels(error)))
           : []),
   ]);
   const warningLines = result && result.status !== "entry-missing" ? result.warnings.map(formatError) : [];
@@ -497,6 +498,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           objectsVersion={isLive ? battle.liveObjectSummaries : objects}
           canEditScene={displayedCanEdit}
           isSceneShown={sceneAvailable || isLive}
+          areOutlinesShown={battle.mode === "edit" || (battle.mode === "battle" && !battle.isRunning)}
           isGameInputActive={battle.mode === "battle" && battle.isRunning}
           isThreeDimensionalScene={isThreeDimensionalScene}
           isEditorCameraActive={battle.mode === "edit"}

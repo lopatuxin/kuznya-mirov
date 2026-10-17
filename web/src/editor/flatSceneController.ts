@@ -5,6 +5,7 @@ import { computeFlatTranslateGeometry, hitTestFlatScaleHandles, type FlatScaleHa
 import { drawFlatScaleHandles, drawHandles } from "./handleDrawing";
 import { hitTestHandles, type HandleHit, type HandleMode } from "./handleGeometry";
 import { computeFlatScale, computeTranslate, type TranslateAxis } from "./handleMath";
+import { drawSceneOutlines, outlineIdAtPoint, readSceneOutlines } from "./sceneOutlines";
 import { diffPlacements, readObjectPlacement, type ObjectPlacement, type PlacementChange, type Vec2 } from "./objectPlacement";
 import type { SceneSize } from "./sceneObjects";
 import { drawSceneBoundary, drawSelection, type CanvasRect } from "./selectionDrawing";
@@ -14,7 +15,7 @@ import { toVec2 } from "./terrainReadings";
 /** Вызовы движка, которыми пользуется плоская сцена редактора. */
 export type FlatSceneEngine = Pick<
   Engine,
-  "object_at" | "object_rect" | "scene_point" | "screen_point" | "move_object" | "transform_object" | "editor_camera" | "fit_camera"
+  "object_at" | "object_rect" | "outlines" | "scene_point" | "screen_point" | "move_object" | "transform_object" | "editor_camera" | "fit_camera"
 >;
 
 /** Всё, что контроллер узнаёт у страницы при каждом событии, — свежее на этот миг. */
@@ -29,6 +30,8 @@ export type FlatSceneContext = {
   isEditorCameraActive: boolean;
   /** Вне партии и на паузе, правка доступна: ручки, перенос, `W`, `R`. */
   areHandlesAvailable: boolean;
+  /** Невидимые прямоугольники нарисованы и выбираются щелчком у линии: вне партии и на паузе, не в партии и не в повторе («Фаза 37», требования 22 и 24). */
+  areOutlinesShown: boolean;
   selectedIndex: number | null;
   selectedLabel: string | null;
   /** `translate` или `scale`: поворота в плоской сцене нет. */
@@ -82,7 +85,7 @@ export type FlatSceneController = {
   pointerLeave: () => void;
   wheel: (input: FlatWheelInput) => boolean;
   keyDown: (input: KeyInput) => boolean;
-  /** Граница сцены, рамка выбранного объекта и его ручки поверх холста. */
+  /** Граница сцены, невидимые прямоугольники, рамка выбранного объекта и его ручки поверх холста. */
   draw: (context: CanvasRenderingContext2D, pixelRatio: number) => void;
   /** Жест бросается без возврата объекта: мир уже собран заново (правка файла снаружи, партия пошла). */
   abandonGesture: () => void;
@@ -128,6 +131,12 @@ export function createFlatSceneController(getContext: () => FlatSceneContext): F
     return hitTestHandles(computeFlatTranslateGeometry(rect), "translate", point);
   }
 
+  /** Линия невидимого прямоугольника рядом с указателем важнее картинки под ним; иначе — то, что нарисовано сверху. */
+  function pickedObjectAt(context: FlatSceneContext, point: Vec2): number | undefined {
+    const outlineId = context.areOutlinesShown ? outlineIdAtPoint(readSceneOutlines(context.engine), point) : undefined;
+    return outlineId ?? (context.engine.object_at(point[0], point[1]) as number | undefined);
+  }
+
   function startPlacementGesture(context: FlatSceneContext, input: PointerInput, objectIndex: number, placement: ObjectPlacement, hit: FlatHit | null): boolean {
     const point: Vec2 = [input.x, input.y];
     const parallax = parallaxOf(context.getObjectProperties(objectIndex));
@@ -171,7 +180,7 @@ export function createFlatSceneController(getContext: () => FlatSceneContext): F
       if (placement !== null && hit !== null) return startPlacementGesture(context, input, context.selectedIndex, placement, hit);
     }
 
-    const picked = context.engine.object_at(input.x, input.y) as number | undefined;
+    const picked = pickedObjectAt(context, point);
     if (typeof picked !== "number") {
       context.onSelect(null);
       return false;
@@ -294,6 +303,7 @@ export function createFlatSceneController(getContext: () => FlatSceneContext): F
   function draw(context2d: CanvasRenderingContext2D, pixelRatio: number): void {
     const context = getContext();
     drawBoundary(context, context2d, pixelRatio);
+    if (context.areOutlinesShown) drawSceneOutlines(context2d, readSceneOutlines(context.engine), pixelRatio);
     const rect = selectedRect(context);
     if (rect === undefined) return;
     drawSelection(context2d, rect, context.selectedLabel, pixelRatio);

@@ -15,6 +15,7 @@ pub mod property;
 pub mod report;
 pub mod rng;
 pub mod rules;
+pub mod run_jump;
 pub mod runner;
 pub mod scene;
 pub mod screens;

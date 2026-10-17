@@ -321,11 +321,11 @@ fn screen_point_is_the_inverse_of_scene_point_for_parallax_one() {
 }
 
 #[test]
-fn the_platformer_blank_declares_ninety_six_pixels_per_cell() {
+fn the_village_declares_ninety_six_pixels_per_cell() {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("..")
         .join("games")
-        .join("platformer")
+        .join("village")
         .join("game.json");
     let text = fs::read_to_string(&path).unwrap_or_else(|e| panic!("не прочитан {path:?}: {e}"));
     let game: Value = serde_json::from_str(&text).expect("game.json разбирается");

@@ -9,6 +9,7 @@ use crate::core::math3::Vec3;
 use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::rules::Outcome;
+use crate::core::run_jump::{self, OutlineKind};
 use crate::core::runner::{Runner, UiClock};
 use crate::core::scene::{
     CellRange, GroundLayer, LayerView, ObjectTransform, pointer_hit, recorded_place, stamp_hit,
@@ -389,6 +390,11 @@ fn js_step_report(report: &StepReport) -> JsValue {
             RuleFired::Walk { rule, objects } => {
                 set(&item, "rule", &JsValue::from_str(rule));
                 set(&item, "kind", &JsValue::from_str("walk"));
+                set(&item, "objects", &js_id_array(objects));
+            }
+            RuleFired::RunJump { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("run_jump"));
                 set(&item, "objects", &js_id_array(objects));
             }
         }
@@ -1913,6 +1919,29 @@ impl Engine {
             }
             None => JsValue::UNDEFINED,
         }
+    }
+
+    /// «Редактор», «Вызовы движка», `outlines`: прямоугольники плоской сцены, которых не видно на холсте,
+    /// — объекты с `position` и `size`, но без картинки и цвета: `[{id, kind}]`, `kind` — `"solid"`,
+    /// `"one_way"` или `"other"` по отборам правил `run_jump` нынешнего мира. Пусто без игры и в
+    /// трёхмерной сцене. См. `core::run_jump::outlines`.
+    pub fn outlines(&self) -> Array {
+        let list = Array::new();
+        let Some(game) = self.game.as_ref() else {
+            return list;
+        };
+        for (id, kind) in run_jump::outlines(&game.world, &game.rules) {
+            let item = Object::new();
+            set(&item, "id", &JsValue::from_f64(id as f64));
+            let kind = match kind {
+                OutlineKind::Solid => "solid",
+                OutlineKind::OneWay => "one_way",
+                OutlineKind::Other => "other",
+            };
+            set(&item, "kind", &JsValue::from_str(kind));
+            list.push(&item);
+        }
+        list
     }
 
     /// «Редактор», требование 30: moves object `id` to `(x, y)` — scene cells — in the world

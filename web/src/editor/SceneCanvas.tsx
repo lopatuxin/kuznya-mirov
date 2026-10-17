@@ -49,6 +49,8 @@ type SceneCanvasProps = {
   canEditScene: boolean;
   /** Сцена показана: проект загружен без ошибок или идёт партия — иначе ни ручек, ни кнопок их вида («Фаза 16», крайние случаи). */
   isSceneShown: boolean;
+  /** Невидимые прямоугольники плоской сцены нарисованы поверх холста: вне партии и на паузе — «Фаза 37», требование 22. */
+  areOutlinesShown: boolean;
   /** Мышь и клавиатура принадлежат игре, а не выбору/переносу — «Редактор», требование 4: партия идёт. */
   isGameInputActive: boolean;
   /** Трёхмерная сцена: камера редактора, выбор лучом, четырёхугольная рамка и ручки («Фаза 16»). Плоская — камера редактора в клетках, рамка по прямоугольнику, ручки переноса и масштаба. */
@@ -145,6 +147,7 @@ export function SceneCanvas({
   objectsVersion,
   canEditScene,
   isSceneShown,
+  areOutlinesShown,
   isGameInputActive,
   isThreeDimensionalScene,
   isEditorCameraActive,
@@ -275,6 +278,7 @@ export function SceneCanvas({
           isInputLocked: isGameInputActive,
           isEditorCameraActive,
           areHandlesAvailable,
+          areOutlinesShown: areOutlinesShown && isSceneShown,
           selectedIndex,
           selectedLabel,
           handleMode,

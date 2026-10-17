@@ -34,6 +34,11 @@ pub enum RuleFired {
         rule: String,
         objects: Vec<u32>,
     },
+    /// «Бег и прыжок», требование 17: как `Move` — объекты, которых правило `run_jump` сдвинуло.
+    RunJump {
+        rule: String,
+        objects: Vec<u32>,
+    },
 }
 
 impl RuleFired {
@@ -44,7 +49,8 @@ impl RuleFired {
             | RuleFired::Collide { rule, .. }
             | RuleFired::Delete { rule, .. }
             | RuleFired::Spawn { rule, .. }
-            | RuleFired::Walk { rule, .. } => rule,
+            | RuleFired::Walk { rule, .. }
+            | RuleFired::RunJump { rule, .. } => rule,
         }
     }
 }

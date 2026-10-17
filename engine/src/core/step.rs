@@ -14,6 +14,7 @@ use super::rules::{
     CollideEffect, CommonAction, Condition, NumberExpr, Outcome, Rule, Selector, SetValue,
     ShiftSpec, SpawnPlace, SpawnVariant, TemplateValue, TurnDir, TurnSpec,
 };
+use super::run_jump;
 use super::scene::{self, SceneConfig};
 use super::sound::SoundMarks;
 use super::surface::{self, Pillar};
@@ -1004,7 +1005,37 @@ pub fn prepare_walkers(
     }
 }
 
-/// Stage 4: "move", "check" and "walk" rules, in file order — «Исполнение игры»: перемешаны, а не
+/// «Бег и прыжок», требование 17: one `run_jump` rule — marks `moved` and reports
+/// `RuleFired::RunJump`, same as `apply_move_rule`.
+fn apply_run_jump_rule(
+    world: &mut World,
+    for_: &Selector,
+    obstacles: (&Option<Selector>, &Option<Selector>),
+    moved: &mut [bool],
+    report: &mut Option<StepReportBuilder>,
+    rule_index: usize,
+) {
+    let (solid, one_way) = obstacles;
+    let mut moved_objects: Vec<u32> = Vec::new();
+    run_jump::apply(
+        world,
+        for_,
+        solid,
+        one_way,
+        moved,
+        report.is_some().then_some(&mut moved_objects),
+    );
+    if let Some(r) = report.as_mut()
+        && !moved_objects.is_empty()
+    {
+        r.fired.push(RuleFired::RunJump {
+            rule: format!("rules[{rule_index}]"),
+            objects: moved_objects,
+        });
+    }
+}
+
+/// Stage 4: "move", "check", "walk" and "run_jump" rules, in file order — «Исполнение игры»: перемешаны, а не
 /// «сначала все move, потом все check», так что `after_move_of` внутри `check` видит движения,
 /// сделанные более ранними правилами того же шага. `deleted` starts out seeded with stage 3's
 /// `expired` and grows with every object a `check` rule's code deletes, so a later `check`'s own
@@ -1052,6 +1083,11 @@ pub fn apply_stage4(
             Rule::Walk { for_, avoid } => {
                 apply_walk_rule(world, for_, avoid, scene, moved, report, index, walk_paths)
             }
+            Rule::RunJump {
+                for_,
+                solid,
+                one_way,
+            } => apply_run_jump_rule(world, for_, (solid, one_way), moved, report, index),
             _ => {}
         }
     }

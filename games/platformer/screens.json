@@ -1,5 +1,16 @@
 {
   "screens": [
-    { "name": "game", "world_runs": true, "elements": [] }
+    { "name": "game", "world_runs": true, "keys": { "Escape": ["show_screen", "pause"] }, "elements": [] },
+    { "name": "pause", "world_runs": false, "keys": { "Escape": ["resume"] }, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [320, 250], "color": "#16201ad9" },
+      { "kind": "label", "anchor": "center", "offset": [0, -80], "size": [300, 40], "text": "Пауза", "font": "title", "font_size": 28, "color": "#f3efe4", "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [0, -10], "size": [240, 50], "text": "Продолжить", "font": "ui", "font_size": 21, "text_color": "#1b2416", "color": "#e8d9a8", "color_hover": "#f4e7ba", "color_pressed": "#c9b884", "on_click": ["resume"] },
+      { "kind": "button", "anchor": "center", "offset": [0, 55], "size": [240, 50], "text": "Начать заново", "font": "ui", "font_size": 21, "text_color": "#f3efe4", "color": "#2f3a2c", "color_hover": "#3d4a39", "color_pressed": "#232c21", "on_click": ["new_game", "game"] }
+    ] },
+    { "name": "win", "world_runs": false, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [480, 220], "color": "#16201ad9" },
+      { "kind": "label", "anchor": "center", "offset": [0, -55], "size": [440, 44], "text": "Уровень пройден", "font": "title", "font_size": 30, "color": "#f3efe4", "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [0, 25], "size": [240, 50], "text": "Ещё раз", "font": "ui", "font_size": 21, "text_color": "#1b2416", "color": "#e8d9a8", "color_hover": "#f4e7ba", "color_pressed": "#c9b884", "on_click": ["new_game", "game"] }
+    ] }
   ]
 }

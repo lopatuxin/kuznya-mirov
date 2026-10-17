@@ -67,6 +67,15 @@ describe("suggestPropertyNames", () => {
     expect(suggestPropertyNames(["leaf_fall"], {}, false)).not.toContain("leaf_fall");
   });
 
+  it("бег и прыжок Фазы 37 — среди подсказок плоской сцены, `on_ground` нет нигде, в трёхмерной сцене их нет", () => {
+    const names = ["run_speed", "jump_height", "jump_time", "hold_left", "hold_right", "hold_jump"];
+    expect(suggestPropertyNames([], {}, false)).toEqual(expect.arrayContaining(names));
+    expect(suggestPropertyNames([], {}, false)).not.toContain("on_ground");
+    expect(suggestPropertyNames([], {}, true)).not.toContain("hold_left");
+    expect(suggestPropertyNames(["hold_left"], {}, false)).not.toContain("hold_left");
+    expect(suggestPropertyNames([], {}, false)).toContain("hold_jump");
+  });
+
   it("clouds и cloud_images не предлагаются: их ставит группа «Облака» колонки «Свойства»", () => {
     const suggestions = suggestPropertyNames([], {}, false);
     expect(suggestions).not.toContain("clouds");
