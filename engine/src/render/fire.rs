@@ -1,9 +1,10 @@
-//! «Огонь», «Включение и выключение», «Время и случайность»: огни — по паре «номер и поколение
-//! объекта», — их нынешняя сила, дыхание, наклон по ветру пружиной, ход узора, разгорание, угасание,
-//! прогрев при сборке мира и своя случайность. Ни видеокарты, ни браузера: `Motion` ведёт часы и зовёт
-//! [`Fires::update`] раз в кадр, `atlas` берёт отсюда рисунки пламени и ореола. Числа вида огня — в
-//! двух местах: высота, дыхание, ветер, разгорание и ореол — здесь, в начале файла; узор, форму языков
-//! и цвет полосами считает видеокарта, и их числа — блоком `FLAME_*` в `rect.wgsl`.
+//! «Огонь», «Угли», «Включение и выключение», «Время и случайность»: огни — по паре «номер и поколение
+//! объекта», — их нынешняя сила, накал углей, дыхание, наклон по ветру пружиной, ход узора, разгорание,
+//! угасание, прогрев при сборке мира и своя случайность. Ни видеокарты, ни браузера: `Motion` ведёт часы
+//! и зовёт [`Fires::update`] раз в кадр, `atlas` берёт отсюда рисунки пламени, ореола и углей. Числа вида
+//! огня — в двух местах: высота, дыхание, ветер, разгорание, ореол, куча углей, накал и порыв — здесь, в
+//! начале файла; узор, форму языков и куч, цвет полосами считает видеокарта, и их числа — блоками
+//! `FLAME_*` и `COALS_*` в `rect.wgsl`.
 
 use std::f64::consts::TAU;
 
@@ -51,6 +52,19 @@ const HALO_FULL_AT: f64 = 0.1;
 /// свет плотнее у пламени. Рисунок движок рисует при сборке атласа (`particle_shapes`).
 pub(super) const HALO_FALLOFF_POWER: i32 = 2;
 
+/// Куча углей: высота посередине — `COALS_HEIGHT` высоты прямоугольника огня при `fire_coals` 1.
+const COALS_HEIGHT: f64 = 0.5;
+/// Накал углей догоняет большее из нынешней силы пламени и тления `fire_smolder`: если цель выше — за
+/// `COALS_RISE_SECONDS` остаётся `EASE_REMAINS` разницы, если ниже — за `COALS_FALL_SECONDS`.
+const COALS_RISE_SECONDS: f64 = 0.4;
+const COALS_FALL_SECONDS: f64 = 2.5;
+/// Порыв ветра `g` прибавляет накалу `COALS_GUST · g` его долей, но накал не вырастает больше чем в
+/// `COALS_GUST_LIMIT` раз.
+const COALS_GUST: f64 = 0.5;
+const COALS_GUST_LIMIT: f64 = 1.4;
+/// Узлов времени в секунду у переливания углей: пятно разгорается и тускнеет за пару узлов.
+const COALS_FLICKER_RATE: f64 = 0.6;
+
 /// Ход узора в секунду — от `SCROLL_CALM` при силе нуль до `SCROLL_RAGE` при единице. За единицу хода
 /// узор языков поднимается на `FLAME_LICK_RISE` узлов, мелкий — на `FLAME_RAG_RISE`, а высота языка
 /// меняется `FLAME_TONGUE_RATE` раз (`rect.wgsl`).
@@ -96,10 +110,30 @@ pub struct Halo {
     pub brightness: f64,
 }
 
+/// Куча углей: прямоугольник без сдвига слоя глубины и то, что шейдер берёт у экземпляра, — накал с
+/// порывом, зерно узора и ход переливания на целую и дробную часть.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Drawing {
+pub struct Coals {
+    pub position: [f64; 2],
+    pub size: [f64; 2],
+    pub heat: f64,
+    pub color: Rgb,
+    pub seed: f32,
+    pub scroll_whole: f32,
+    pub scroll_fraction: f32,
+}
+
+/// Пламя с ореолом: рисуются, пока сила огня не меньше `GONE_BELOW`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Blaze {
     pub flame: Flame,
     pub halo: Halo,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Drawing {
+    pub blaze: Option<Blaze>,
+    pub coals: Option<Coals>,
 }
 
 /// Высота пламени при нынешней силе `strength` и дыхании `breath` у прямоугольника высотой `height`.
@@ -136,16 +170,45 @@ fn scroll_speed(strength: f64) -> f64 {
     SCROLL_CALM + (SCROLL_RAGE - SCROLL_CALM) * strength
 }
 
+/// Доля разницы, которую один шаг убирает, когда за `seconds` секунд остаётся `EASE_REMAINS` разницы.
+fn ease(seconds: f64) -> f64 {
+    1.0 - EASE_REMAINS.powf(STEP_SECONDS / seconds)
+}
+
+/// Ход узора `scroll` — целая часть, не больше `SCROLL_WRAP`, и дробная.
+fn split_scroll(scroll: f64) -> (f32, f32) {
+    let whole = scroll.floor();
+    (
+        whole.rem_euclid(SCROLL_WRAP) as f32,
+        (scroll - whole) as f32,
+    )
+}
+
+/// Порыв: на сколько ветер `wind` в месте огня сильнее ровного ветра сцены `flat_x`.
+fn gust_over(wind: f64, flat_x: f64) -> f64 {
+    (wind.abs() - flat_x.abs()).max(0.0)
+}
+
+/// Накал углей с порывом `gust`; холодные угли ветер не разжигает.
+fn blown_heat(heat: f64, gust: f64) -> f64 {
+    heat * (1.0 + COALS_GUST * gust).min(COALS_GUST_LIMIT)
+}
+
 #[derive(Debug)]
 struct Fire {
     generation: u32,
     rect: Rect,
     settings: Settings,
     strength: f64,
+    /// Накал углей: идёт всегда, есть угли или нет.
+    heat: f64,
+    /// Порыв ветра в месте огня на последнем шаге.
+    gust: f64,
     breath: f64,
     phases: [f64; 2],
     seed: u32,
     scroll: f64,
+    coal_scroll: f64,
     lean: f64,
     velocity: f64,
     touched: u32,
@@ -168,26 +231,57 @@ impl Fire {
 
     /// Один шаг `Δ` = 1/60 секунды в момент `t` при ровном ветре `flat_x`.
     fn step(&mut self, flat_x: f64, t: f64) {
-        let ease = 1.0 - EASE_REMAINS.powf(STEP_SECONDS / EASE_SECONDS);
-        self.strength += (self.settings.fire - self.strength) * ease;
+        self.strength += (self.settings.fire - self.strength) * ease(EASE_SECONDS);
+        let target = self.strength.max(self.settings.smolder);
+        let seconds = if target > self.heat {
+            COALS_RISE_SECONDS
+        } else {
+            COALS_FALL_SECONDS
+        };
+        self.heat += (target - self.heat) * ease(seconds);
         self.breath = breath(self.phases, t);
         self.scroll += scroll_speed(self.strength) * STEP_SECONDS;
-        let target = lean_target(self.height(), wind_at(flat_x, self.wind_x(), t));
+        self.coal_scroll += COALS_FLICKER_RATE * STEP_SECONDS;
+        let wind = wind_at(flat_x, self.wind_x(), t);
+        self.gust = gust_over(wind, flat_x);
+        let target = lean_target(self.height(), wind);
         (self.lean, self.velocity) = spring_step(self.lean, self.velocity, target, LEAN_PERIOD);
     }
 
-    /// Огонь погас: ему не гореть и сила ушла ниже порога.
+    /// Огонь погас: ему не гореть, куча углей снята и сила ушла ниже порога.
     fn is_out(&self) -> bool {
-        self.settings.fire <= 0.0 && self.strength < GONE_BELOW
+        !self.settings.has_fire() && self.strength < GONE_BELOW
     }
 
     fn drawing(&self) -> Drawing {
+        Drawing {
+            blaze: (self.strength >= GONE_BELOW).then(|| self.blaze()),
+            coals: (self.settings.coals > 0.0).then(|| self.coals()),
+        }
+    }
+
+    fn coals(&self) -> Coals {
+        let ([x, y], [width, height]) = self.rect;
+        let pile = height * COALS_HEIGHT * self.settings.coals;
+        let (scroll_whole, scroll_fraction) = split_scroll(self.coal_scroll);
+        Coals {
+            position: [x, y + height - pile],
+            size: [width, pile],
+            heat: blown_heat(self.heat, self.gust),
+            color: self.settings.color,
+            seed: self.seed as f32,
+            scroll_whole,
+            scroll_fraction,
+        }
+    }
+
+    fn blaze(&self) -> Blaze {
         let ([x, y], [width, height]) = self.rect;
         let flame = self.height();
         let limit = LEAN_LIMIT * flame;
         let lean = self.lean.clamp(-limit, limit);
-        let whole = self.scroll.floor();
-        Drawing {
+        let (scroll_whole, scroll_fraction) = split_scroll(self.scroll);
+        Blaze {
             flame: Flame {
                 position: [x, y + height - flame],
                 size: [width, flame],
@@ -195,8 +289,8 @@ impl Fire {
                 strength: self.strength,
                 color: self.settings.color,
                 seed: self.seed as f32,
-                scroll_whole: whole.rem_euclid(SCROLL_WRAP) as f32,
-                scroll_fraction: (self.scroll - whole) as f32,
+                scroll_whole,
+                scroll_fraction,
             },
             halo: Halo {
                 center: [x + width / 2.0 + lean / 2.0, y + height - flame / 2.0],
@@ -256,10 +350,10 @@ impl Fires {
 
     /// Доводит огни до часов `clock_steps` шагами по 1/60 секунды; остаток часов ждёт следующего
     /// вызова. `flat` — ровный ветер сцены, `objects` — объекты мира с записанным прямоугольником.
-    /// Огонь объекта, которого нет среди `objects`, пропадает сразу. Объект с `fire` больше нуля без
-    /// огня разгорается с нуля; если мир только что собран (`restart` и первая сборка), то горит с
-    /// первого кадра. Огонь, у которого `fire` стал нулём или снят, гаснет сам. `world_exists` — есть ли
-    /// мир: прогрев ждёт его.
+    /// Огонь объекта, которого нет среди `objects`, пропадает сразу. Объект с `fire` или `fire_coals`
+    /// больше нуля без огня разгорается с нуля; если мир только что собран (`restart` и первая сборка), то
+    /// горит с первого кадра. Огонь, у которого `fire` стал нулём или снят, а углей нет, гаснет сам.
+    /// `world_exists` — есть ли мир: прогрев ждёт его.
     pub fn update(
         &mut self,
         clock_steps: f64,
@@ -282,7 +376,7 @@ impl Fires {
                 Some(fire) if fire.generation == object.generation => fire.follow(&object, pass),
                 slot => {
                     *slot = None;
-                    if object.settings.fire > 0.0 {
+                    if object.settings.has_fire() {
                         self.fresh.push(object);
                     }
                 }
@@ -323,9 +417,9 @@ impl Fires {
 
     /// Мир собран из файлов заново: номера розданы по порядку, поколения у всех нуль. Огонь переходит к
     /// объекту с тем же прямоугольником — сначала под тем же номером, потом под любым, если у объекта
-    /// есть `fire`: удалили объект раньше огня в сцене, номера сдвинулись, а огонь горит дальше без
+    /// есть огонь: удалили объект раньше огня в сцене, номера сдвинулись, а огонь горит дальше без
     /// перезапуска (требование 17), и соседний объект под его прежним номером чужого пламени не получает.
-    /// Последним объект с `fire` и другим прямоугольником под тем же номером — его передвинули —
+    /// Последним объект с огнём и другим прямоугольником под тем же номером — его передвинули —
     /// сохраняет огонь; этот проход идёт после поиска по прямоугольнику, иначе новый огонь, вставленный
     /// раньше горящего, забрал бы его пламя.
     fn rematch(&mut self, objects: &[FireObject]) {
@@ -340,7 +434,7 @@ impl Fires {
         }
         for (object, slot) in objects.iter().zip(&mut found) {
             if slot.is_none()
-                && object.settings.fire > 0.0
+                && object.settings.has_fire()
                 && let Some(old) = previous
                     .iter_mut()
                     .find(|old| old.as_ref().is_some_and(|fire| fire.rect == object.rect))
@@ -350,7 +444,7 @@ impl Fires {
         }
         for (object, slot) in objects.iter().zip(&mut found) {
             if slot.is_none()
-                && object.settings.fire > 0.0
+                && object.settings.has_fire()
                 && let Some(old) = previous.get_mut(object.id as usize)
             {
                 *slot = old.take();
@@ -379,20 +473,30 @@ impl Fires {
         let phases = [self.rng.next_unit() * TAU, self.rng.next_unit() * TAU];
         let seed = (self.rng.next_u64() >> (64 - SEED_BITS)) as u32;
         let scroll = self.rng.next_unit() * SCROLL_START;
+        let strength = if warm { object.settings.fire } else { 0.0 };
         let mut fire = Fire {
             generation: object.generation,
             rect: object.rect,
             settings: object.settings,
-            strength: if warm { object.settings.fire } else { 0.0 },
+            strength,
+            heat: if warm {
+                strength.max(object.settings.smolder)
+            } else {
+                0.0
+            },
+            gust: 0.0,
             breath: breath(phases, now),
             phases,
             seed,
             scroll,
+            coal_scroll: 0.0,
             lean: 0.0,
             velocity: 0.0,
             touched: pass,
         };
-        fire.lean = lean_target(fire.height(), wind_at(flat_x, fire.wind_x(), now));
+        let wind = wind_at(flat_x, fire.wind_x(), now);
+        fire.lean = lean_target(fire.height(), wind);
+        fire.gust = gust_over(wind, flat_x);
         fire
     }
 
@@ -413,7 +517,7 @@ impl Fires {
         self.fire(id, generation).map(|fire| fire.strength)
     }
 
-    /// Что рисовать у объекта: ореол и пламя; `None` — огня нет.
+    /// Что рисовать у объекта: ореол, пламя и угли; `None` — огня нет.
     pub fn drawing(&self, id: u32, generation: u32) -> Option<Drawing> {
         self.fire(id, generation).map(Fire::drawing)
     }
@@ -432,6 +536,8 @@ mod tests {
             fire,
             color: [1.0, 0.5, 0.1],
             glow: 0.5,
+            coals: 0.0,
+            smolder: 0.0,
         }
     }
 
@@ -442,6 +548,30 @@ mod tests {
             rect: ([10.0 + f64::from(id) * 4.0, 5.0], [2.0, 1.0]),
             settings: settings(fire),
         }
+    }
+
+    fn coal_object(id: u32, fire: f64, coals: f64) -> FireObject {
+        let mut object = object(id, fire);
+        object.settings.coals = coals;
+        object
+    }
+
+    fn blaze(fires: &Fires, id: u32) -> Blaze {
+        fires
+            .drawing(id, 0)
+            .and_then(|drawing| drawing.blaze)
+            .expect("пламя рисуется")
+    }
+
+    fn coals(fires: &Fires, id: u32) -> Coals {
+        fires
+            .drawing(id, 0)
+            .and_then(|drawing| drawing.coals)
+            .expect("угли рисуются")
+    }
+
+    fn heat(fires: &Fires, id: u32) -> f64 {
+        fires.fire(id, 0).expect("огонь жив").heat
     }
 
     /// Мир с огнями `objects`, собранный на часах 0: горят с первого кадра.
@@ -521,9 +651,15 @@ mod tests {
         let objects = [object(0, 0.8)];
         fires.update(clock, true, [0.0; 2], objects.iter().copied());
         assert_eq!(fires.strength(0, 0), Some(0.0), "начинает с нуля");
-        let start = fires.drawing(0, 0).unwrap();
-        assert_eq!(start.flame.strength, 0.0);
-        assert_eq!(start.halo.brightness, 0.0, "ореол начинает тёмным");
+        assert_eq!(
+            fires.drawing(0, 0).unwrap().blaze,
+            None,
+            "до порога пламени нет"
+        );
+        run(&mut fires, &mut clock, [0.0; 2], 1.0 / 60.0, &objects);
+        let start = blaze(&fires, 0);
+        assert!(start.flame.strength < 0.1);
+        assert!(start.halo.brightness < 0.5, "ореол начинает тусклым");
         run(&mut fires, &mut clock, [0.0; 2], 0.5, &objects);
         let strength = fires.strength(0, 0).unwrap();
         assert!(strength > 0.95 * 0.8 && strength < 0.8, "{strength}");
@@ -672,12 +808,12 @@ mod tests {
         let objects = [object(0, 1.0)];
         let (mut fires, mut clock) = lit(&objects);
         run(&mut fires, &mut clock, [1.5, 0.0], 1.0, &objects);
-        let flame = fires.drawing(0, 0).unwrap().flame;
+        let flame = blaze(&fires, 0).flame;
         let share = flame.lean / flame.size[1];
         assert!((0.15..0.4).contains(&share), "{share}");
         for _ in 0..600 {
             run(&mut fires, &mut clock, [6.0, 0.0], 0.05, &objects);
-            let flame = fires.drawing(0, 0).unwrap().flame;
+            let flame = blaze(&fires, 0).flame;
             assert!(flame.lean.abs() <= 0.5 * flame.size[1] + 1e-9);
         }
     }
@@ -687,11 +823,11 @@ mod tests {
         let objects = [object(0, 1.0)];
         let (mut left, mut clock) = lit(&objects);
         run(&mut left, &mut clock, [-1.5, 0.0], 1.0, &objects);
-        assert!(left.drawing(0, 0).unwrap().flame.lean < -0.1);
+        assert!(blaze(&left, 0).flame.lean < -0.1);
 
         let (mut down, mut clock) = lit(&objects);
         run(&mut down, &mut clock, [0.0, 3.0], 1.0, &objects);
-        let flame = down.drawing(0, 0).unwrap().flame;
+        let flame = blaze(&down, 0).flame;
         assert!(flame.lean.abs() < 0.07 * flame.size[1], "{}", flame.lean);
     }
 
@@ -706,9 +842,9 @@ mod tests {
         run(&mut fires, &mut clock, [0.0; 2], 0.05, &[edited]);
         assert_eq!(fires.strength(0, 0), Some(0.6));
         assert_eq!(fires.fire(0, 0).unwrap().seed, seed);
-        let drawing = fires.drawing(0, 0).unwrap();
-        assert_eq!(drawing.flame.color, [0.0, 0.0, 1.0]);
-        assert_eq!(drawing.halo.color, [0.0, 0.0, 1.0]);
+        let Blaze { flame, halo } = blaze(&fires, 0);
+        assert_eq!(flame.color, [0.0, 0.0, 1.0]);
+        assert_eq!(halo.color, [0.0, 0.0, 1.0]);
     }
 
     #[test]
@@ -732,7 +868,7 @@ mod tests {
         let objects = [object(0, 1.0)];
         let (mut fires, mut clock) = lit(&objects);
         run(&mut fires, &mut clock, [0.0; 2], 0.5, &objects);
-        let Drawing { flame, halo } = fires.drawing(0, 0).unwrap();
+        let Blaze { flame, halo } = blaze(&fires, 0);
         let ([x, y], [width, height]) = objects[0].rect;
         assert_eq!(flame.size[0], width);
         assert!(near(flame.position[1] + flame.size[1], y + height, 1e-12));
@@ -751,7 +887,7 @@ mod tests {
         assert!(scroll_speed(1.0) > scroll_speed(0.2));
         let mut fire = lit(&[object(0, 1.0)]).0.slots[0].take().unwrap();
         fire.scroll = SCROLL_WRAP + 5.25;
-        let flame = fire.drawing().flame;
+        let flame = fire.blaze().flame;
         assert_eq!((flame.scroll_whole, flame.scroll_fraction), (5.0, 0.25));
         assert!(fire.seed < (1 << SEED_BITS));
     }
@@ -765,5 +901,357 @@ mod tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(seeds(), seeds());
+    }
+
+    #[test]
+    fn a_scene_fire_with_coals_has_a_heap_on_the_bottom_edge_heated_to_its_strength() {
+        let objects = [coal_object(0, 0.8, 0.5)];
+        let (fires, _) = lit(&objects);
+        let pile = coals(&fires, 0);
+        let ([x, y], [width, height]) = objects[0].rect;
+        assert_eq!(pile.size, [width, height * 0.25]);
+        assert_eq!(pile.position[0], x);
+        assert!(near(pile.position[1] + pile.size[1], y + height, 1e-12));
+        assert_eq!(heat(&fires, 0), 0.8);
+        assert!(
+            (0.8..=0.8 * 1.4 + 1e-12).contains(&pile.heat),
+            "{}",
+            pile.heat
+        );
+        assert_eq!(pile.color, [1.0, 0.5, 0.1]);
+    }
+
+    fn smouldering_object(id: u32, fire: f64, coals: f64, smolder: f64) -> FireObject {
+        let mut object = coal_object(id, fire, coals);
+        object.settings.smolder = smolder;
+        object
+    }
+
+    #[test]
+    fn smouldering_coals_without_a_flame_glow_from_the_first_frame_and_have_no_flame_or_halo() {
+        let (mut fires, mut clock) = lit(&[smouldering_object(0, 0.0, 0.8, 0.35)]);
+        assert_eq!(heat(&fires, 0), 0.35);
+        assert_eq!(fires.drawing(0, 0).unwrap().blaze, None);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            10.0,
+            &[smouldering_object(0, 0.0, 0.8, 0.35)],
+        );
+        assert!(near(heat(&fires, 0), 0.35, 1e-9), "{}", heat(&fires, 0));
+        assert_eq!(fires.drawing(0, 0).unwrap().blaze, None);
+    }
+
+    #[test]
+    fn a_put_out_fire_with_smouldering_cools_down_to_the_smoulder_not_to_dark() {
+        let (mut fires, mut clock) = lit(&[smouldering_object(0, 0.8, 0.5, 0.3)]);
+        assert_eq!(heat(&fires, 0), 0.8);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            10.0,
+            &[smouldering_object(0, 0.0, 0.5, 0.3)],
+        );
+        assert!(near(heat(&fires, 0), 0.3, 0.01), "{}", heat(&fires, 0));
+    }
+
+    #[test]
+    fn smouldering_added_in_the_editor_warms_the_coals_from_cold_within_a_second() {
+        let (mut fires, mut clock) = lit(&[coal_object(0, 0.0, 0.8)]);
+        assert_eq!(heat(&fires, 0), 0.0);
+        let smoulder = [smouldering_object(0, 0.0, 0.8, 0.4)];
+        run(&mut fires, &mut clock, [0.0; 2], 1.0, &smoulder);
+        assert!(heat(&fires, 0) > 0.37, "{}", heat(&fires, 0));
+    }
+
+    #[test]
+    fn the_heap_is_as_tall_as_half_the_rectangle_at_full_coals_and_a_fire_without_coals_has_none() {
+        let (fires, _) = lit(&[coal_object(0, 0.5, 1.0), object(1, 0.5)]);
+        assert_eq!(coals(&fires, 0).size[1], 0.5);
+        assert_eq!(fires.drawing(1, 0).unwrap().coals, None);
+    }
+
+    #[test]
+    fn a_fire_set_to_zero_drops_the_flame_in_a_moment_while_the_coals_smoulder_and_darken() {
+        let (mut fires, mut clock) = lit(&[coal_object(0, 0.8, 0.5)]);
+        let out = [coal_object(0, 0.0, 0.5)];
+        run(&mut fires, &mut clock, [0.0; 2], 0.5, &out);
+        assert!(fires.strength(0, 0).unwrap() < 0.05, "пламя почти опало");
+        assert!(heat(&fires, 0) > 0.3, "{}", heat(&fires, 0));
+        run(&mut fires, &mut clock, [0.0; 2], 0.2, &out);
+        let drawing = fires.drawing(0, 0).unwrap();
+        assert_eq!(drawing.blaze, None, "ниже порога пламени и ореола нет");
+        assert!(drawing.coals.is_some());
+        run(&mut fires, &mut clock, [0.0; 2], 4.3, &out);
+        let tenth = heat(&fires, 0);
+        assert!(
+            near(tenth, 0.8 / 9.0, 0.03),
+            "через 5 секунд около десятой: {tenth}"
+        );
+        run(&mut fires, &mut clock, [0.0; 2], 3.0, &out);
+        assert!(
+            heat(&fires, 0) < 0.8 / 20.0,
+            "через 8 секунд меньше двадцатой"
+        );
+        run(&mut fires, &mut clock, [0.0; 2], 2.0, &out);
+        assert!(heat(&fires, 0) < 0.02);
+        assert!(coals(&fires, 0).heat < 0.02, "тёмная куча остаётся");
+        assert!(fires.is_burning(0, 0));
+    }
+
+    #[test]
+    fn the_heat_catches_up_with_a_rising_fire_in_a_second_and_a_fall_starts_from_what_is_left() {
+        let (mut fires, mut clock) = lit(&[coal_object(0, 0.2, 0.5)]);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            1.0,
+            &[coal_object(0, 1.0, 0.5)],
+        );
+        assert!(heat(&fires, 0) > 0.9, "{}", heat(&fires, 0));
+
+        let (mut fires, mut clock) = lit(&[coal_object(0, 1.0, 0.5)]);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            1.0,
+            &[coal_object(0, 0.0, 0.5)],
+        );
+        let left = heat(&fires, 0);
+        assert!((0.1..0.9).contains(&left), "{left}");
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            0.3,
+            &[coal_object(0, 1.0, 0.5)],
+        );
+        assert!(heat(&fires, 0) > left, "снова растёт от того, что осталось");
+    }
+
+    #[test]
+    fn the_heat_rises_quicker_than_it_falls() {
+        let seconds = |from: f64, to: f64| {
+            let (mut fires, mut clock) = lit(&[coal_object(0, from, 0.5)]);
+            let target = [coal_object(0, to, 0.5)];
+            let mut passed = 0.0;
+            while (heat(&fires, 0) - to).abs() > 0.5 * (from - to).abs() {
+                run(&mut fires, &mut clock, [0.0; 2], 0.05, &target);
+                passed += 0.05;
+            }
+            passed
+        };
+        assert!(seconds(0.0, 1.0) < seconds(1.0, 0.0));
+    }
+
+    #[test]
+    fn coals_alone_are_a_cold_heap_from_the_first_frame_and_wake_up_with_the_flame() {
+        let cold = [coal_object(0, 0.0, 0.6)];
+        let (mut fires, mut clock) = lit(&cold);
+        assert!(fires.is_burning(0, 0));
+        assert_eq!(fires.strength(0, 0), Some(0.0));
+        let drawing = fires.drawing(0, 0).unwrap();
+        assert_eq!(drawing.blaze, None);
+        assert_eq!(drawing.coals.unwrap().heat, 0.0);
+        run(&mut fires, &mut clock, [0.0; 2], 2.0, &cold);
+        assert!(fires.is_burning(0, 0), "холодная куча не гаснет");
+        assert_eq!(coals(&fires, 0).heat, 0.0);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            1.0,
+            &[coal_object(0, 1.0, 0.6)],
+        );
+        assert!(coals(&fires, 0).heat > 0.9, "угли раскаляются за секунду");
+    }
+
+    #[test]
+    fn coals_added_to_a_burning_fire_are_heated_to_its_strength_at_once() {
+        let (mut fires, mut clock) = lit(&[object(0, 0.7)]);
+        run(&mut fires, &mut clock, [0.0; 2], 0.5, &[object(0, 0.7)]);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            1.0 / 60.0,
+            &[coal_object(0, 0.7, 0.5)],
+        );
+        assert!(near(heat(&fires, 0), 0.7, 1e-9), "{}", heat(&fires, 0));
+        assert!(coals(&fires, 0).heat > 0.69);
+    }
+
+    #[test]
+    fn coals_taken_off_vanish_at_once_and_the_edit_leaves_the_heat_and_the_pattern_alone() {
+        let (mut fires, mut clock) = lit(&[coal_object(0, 0.7, 0.5), coal_object(1, 0.7, 0.5)]);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            0.5,
+            &[coal_object(0, 0.7, 0.5)],
+        );
+        assert!(!fires.is_burning(1, 0), "удалённый объект гаснет сразу");
+        let (before, seed) = (heat(&fires, 0), fires.fire(0, 0).unwrap().seed);
+        let low = coal_object(0, 0.7, 0.2);
+        fires.update(clock, true, [0.0; 2], [low].into_iter());
+        assert_eq!(coals(&fires, 0).size[1], 0.1, "куча сразу другой высоты");
+        assert_eq!(heat(&fires, 0), before);
+        assert_eq!(fires.fire(0, 0).unwrap().seed, seed);
+        let mut recoloured = low;
+        recoloured.settings.color = [0.0, 0.0, 1.0];
+        fires.update(clock, true, [0.0; 2], [recoloured].into_iter());
+        assert_eq!(coals(&fires, 0).color, [0.0, 0.0, 1.0]);
+        fires.update(
+            clock,
+            true,
+            [0.0; 2],
+            [coal_object(0, 0.7, 0.0)].into_iter(),
+        );
+        assert_eq!(fires.drawing(0, 0).unwrap().coals, None);
+        assert!(
+            fires.drawing(0, 0).unwrap().blaze.is_some(),
+            "пламя горит дальше"
+        );
+    }
+
+    #[test]
+    fn a_fire_with_coals_lives_until_both_are_taken_off() {
+        let (mut fires, mut clock) = lit(&[coal_object(0, 1.0, 0.5)]);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            10.0,
+            &[coal_object(0, 0.0, 0.5)],
+        );
+        assert!(fires.is_burning(0, 0));
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            0.1,
+            &[coal_object(0, 0.0, 0.0)],
+        );
+        assert!(
+            !fires.is_burning(0, 0),
+            "ни пламени, ни углей — огонь погас"
+        );
+    }
+
+    #[test]
+    fn a_gust_stronger_than_the_flat_wind_blows_the_coals_but_never_past_four_tenths_more() {
+        assert_eq!(gust_over(1.5, 1.5), 0.0);
+        assert_eq!(gust_over(1.0, 1.5), 0.0);
+        assert_eq!(gust_over(-2.0, 1.5), 0.5);
+        assert_eq!(blown_heat(0.5, 0.0), 0.5);
+        assert!(near(blown_heat(0.5, 0.4), 0.5 * 1.2, 1e-12));
+        assert!(near(blown_heat(0.5, 9.0), 0.5 * 1.4, 1e-12));
+        assert_eq!(
+            blown_heat(0.0, 9.0),
+            0.0,
+            "холодные угли ветер не разжигает"
+        );
+    }
+
+    #[test]
+    fn in_a_strong_wind_the_drawn_heat_is_at_least_the_heat_and_at_most_one_and_four_tenths_of_it()
+    {
+        let objects = [coal_object(0, 1.0, 0.5)];
+        let (mut fires, mut clock) = lit(&objects);
+        let mut blown = 0;
+        for _ in 0..600 {
+            run(&mut fires, &mut clock, [3.0, 0.0], 0.05, &objects);
+            let (base, drawn) = (heat(&fires, 0), coals(&fires, 0).heat);
+            assert!(
+                drawn >= base && drawn <= 1.4 * base + 1e-12,
+                "{base} {drawn}"
+            );
+            blown += usize::from(drawn > base + 1e-6);
+        }
+        assert!(blown > 50, "порывы раздувают угли: {blown}");
+    }
+
+    #[test]
+    fn with_the_clock_standing_the_heat_and_the_pattern_do_not_move() {
+        let (mut fires, mut clock) = lit(&[coal_object(0, 1.0, 0.5)]);
+        run(
+            &mut fires,
+            &mut clock,
+            [2.0, 0.0],
+            1.0,
+            &[coal_object(0, 1.0, 0.5)],
+        );
+        let before = coals(&fires, 0);
+        for _ in 0..30 {
+            fires.update(
+                clock,
+                true,
+                [2.0, 0.0],
+                [coal_object(0, 0.0, 0.5)].into_iter(),
+            );
+        }
+        assert_eq!(coals(&fires, 0), before);
+    }
+
+    #[test]
+    fn the_coals_pattern_runs_with_the_clock_and_its_whole_part_wraps() {
+        let (mut fires, mut clock) = lit(&[coal_object(0, 1.0, 0.5)]);
+        let start = coals(&fires, 0);
+        run(
+            &mut fires,
+            &mut clock,
+            [0.0; 2],
+            5.0,
+            &[coal_object(0, 1.0, 0.5)],
+        );
+        let later = coals(&fires, 0);
+        assert_eq!(later.seed, start.seed);
+        let travelled = f64::from(later.scroll_whole + later.scroll_fraction)
+            - f64::from(start.scroll_whole + start.scroll_fraction);
+        assert!(
+            near(travelled, 5.0 * COALS_FLICKER_RATE, 1e-4),
+            "{travelled}"
+        );
+        let mut fire = lit(&[coal_object(0, 1.0, 0.5)]).0.slots[0].take().unwrap();
+        fire.coal_scroll = SCROLL_WRAP + 3.5;
+        let pile = fire.coals();
+        assert_eq!((pile.scroll_whole, pile.scroll_fraction), (3.0, 0.5));
+    }
+
+    #[test]
+    fn two_fires_with_coals_next_to_each_other_have_different_patterns() {
+        let (fires, _) = lit(&[coal_object(0, 1.0, 0.5), coal_object(1, 1.0, 0.5)]);
+        assert_ne!(coals(&fires, 0).seed, coals(&fires, 1).seed);
+    }
+
+    #[test]
+    fn after_a_reread_a_fire_with_only_coals_stays_with_its_object() {
+        let mut forge = coal_object(1, 0.0, 0.5);
+        let wall = object(0, 0.0);
+        let (mut fires, mut clock) = lit(&[wall, forge]);
+        run(&mut fires, &mut clock, [0.0; 2], 0.5, &[wall, forge]);
+        let seed = fires.fire(1, 0).unwrap().seed;
+        forge.id = 0;
+        fires.world_rebuilt();
+        fires.update(clock, true, [0.0; 2], [forge].into_iter());
+        assert_eq!(fires.fire(0, 0).unwrap().seed, seed);
+        assert!(!fires.is_burning(1, 0));
+    }
+
+    #[test]
+    fn coals_lit_later_start_cold_and_after_a_restart_they_are_hot_at_once() {
+        let (mut fires, mut clock) = lit(&[]);
+        let objects = [coal_object(0, 0.8, 0.5)];
+        fires.update(clock, true, [0.0; 2], objects.iter().copied());
+        assert_eq!(heat(&fires, 0), 0.0);
+        run(&mut fires, &mut clock, [0.0; 2], 0.1, &objects);
+        fires.restart(clock);
+        fires.update(clock, true, [0.0; 2], objects.iter().copied());
+        assert_eq!(heat(&fires, 0), 0.8);
     }
 }

@@ -17,8 +17,23 @@ import {
 } from "./particleEffects";
 
 describe("свойства и эффекты", () => {
-  it("двенадцать встроенных свойств частиц и огня, у каждого эффекта своё главное", () => {
-    expect(PARTICLE_PROPERTY_NAMES).toEqual(["smoke", "smoke_height", "smoke_color", "sparks", "sparks_reach", "sparks_direction", "sparks_spread", "leaf_fall", "leaf_color", "fire", "fire_color", "fire_glow"]);
+  it("четырнадцать встроенных свойств частиц и огня, у каждого эффекта своё главное", () => {
+    expect(PARTICLE_PROPERTY_NAMES).toEqual([
+      "smoke",
+      "smoke_height",
+      "smoke_color",
+      "sparks",
+      "sparks_reach",
+      "sparks_direction",
+      "sparks_spread",
+      "leaf_fall",
+      "leaf_color",
+      "fire",
+      "fire_color",
+      "fire_glow",
+      "fire_coals",
+      "fire_smolder",
+    ]);
     expect(["smoke", "sparks", "leaves", "fire"].map((id) => particleEffectById(id)?.mainKey)).toEqual(["smoke", "sparks", "leaf_fall", "fire"]);
     expect(particleEffectById("snow")).toBeUndefined();
   });
@@ -28,6 +43,12 @@ describe("свойства и эффекты", () => {
     expect(effectsOfObject({ fire: 0 }).map((effect) => effect.id)).toEqual(["fire"]);
     expect(effectsOfObject({ position: [1, 1] })).toEqual([]);
     expect(effectsOfObject(null)).toEqual([]);
+  });
+
+  it("группу «Огонь» открывает и один fire_coals: угли живут без пламени", () => {
+    expect(effectsOfObject({ fire_coals: 0.5 }).map((effect) => effect.id)).toEqual(["fire"]);
+    expect(effectsOfObject({ fire_coals: 0 }).map((effect) => effect.id)).toEqual(["fire"]);
+    expect(effectsOfObject({ fire_coals: "много" })).toEqual([]);
   });
 
   it("настройка без главного свойства группу не открывает", () => {
@@ -41,16 +62,21 @@ describe("свойства и эффекты", () => {
 });
 
 describe("огонь", () => {
-  it("карточка «огонь»: подписи, значение при отпускании, «Убрать» берёт три свойства", () => {
+  it("карточка «огонь»: подписи, значение при отпускании, «Убрать» берёт пять свойств", () => {
     const fire = particleEffectById("fire");
 
     expect(fire).toMatchObject({ cardLabel: "огонь", title: "Огонь", mainKey: "fire", dropValue: 0.5, densityLabels: ["тлеет", "бушует"] });
-    expect(fire && presentEffectKeys(fire, { fire: 1, fire_color: "#2255ff", fire_glow: 0.2, smoke: 0.5 })).toEqual(["fire", "fire_color", "fire_glow"]);
+    expect(fire && presentEffectKeys(fire, { fire: 1, fire_color: "#2255ff", fire_glow: 0.2, fire_coals: 0.4, fire_smolder: 0.3, smoke: 0.5 })).toEqual(["fire", "fire_color", "fire_glow", "fire_coals", "fire_smolder"]);
   });
 
-  it("fire_color правится палитрой, как остальные цвета эффектов; умолчания — оранжевый и 0,5", () => {
+  it("fire_color правится палитрой, как остальные цвета эффектов; умолчания — оранжевый, 0,5 и углей нет", () => {
     expect(PARTICLE_COLOR_NAMES).toContain("fire_color");
-    expect(PARTICLE_DEFAULTS).toMatchObject({ fire_color: "#ff8c1a", fire_glow: 0.5 });
+    expect(PARTICLE_DEFAULTS).toMatchObject({ fire_color: "#ff8c1a", fire_glow: 0.5, fire_coals: 0, fire_smolder: 0 });
+  });
+
+  it("в тексте ошибки fire_coals назван «угли»", () => {
+    expect(translateParticleKeys("fire_coals: нужно от 0 до 1 включительно, получено 2")).toBe("угли: нужно от 0 до 1 включительно, получено 2");
+    expect(translateParticleKeys("fire_smolder: нужно от 0 до 1 включительно, получено 2")).toBe("тление углей: нужно от 0 до 1 включительно, получено 2");
   });
 
   it("в тексте ошибки fire, fire_color и fire_glow названы русскими подписями, чужие слова не задеваются", () => {

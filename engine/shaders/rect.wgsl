@@ -56,9 +56,10 @@ struct InstanceInput {
     // «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
     // угол, градусов по часовой стрелке; 0 — прямоугольник стоит, как стоял.
     @location(12) angle: f32,
-    // «Огонь»: 0.0/1.0 — экземпляр рисует пламя по формуле, а не картинку из атласа.
+    // «Огонь»: 0.0/1.0/2.0 — экземпляр рисует пламя (1.0) или угли (2.0) по формуле, а не картинку из атласа.
     @location(13) flame_flag: f32,
-    // «Огонь»: сила, зерно узора, целая и дробная части хода узора; нули у всего, кроме пламени.
+    // «Огонь»: сила (у углей — накал), зерно узора, целая и дробная части хода узора; нули у всего, кроме
+    // пламени и углей.
     @location(14) fire: vec4<f32>,
 };
 
@@ -72,7 +73,7 @@ struct VertexOutput {
     @location(5) @interpolate(flat) smooth_sample: f32,
     @location(6) @interpolate(flat) glow: f32,
     // «Огонь»: точка прямоугольника в долях ширины и высоты; параметры огня; ширина и высота в клетках и
-    // признак пламени.
+    // признак пламени или углей.
     @location(7) unit: vec2<f32>,
     @location(8) @interpolate(flat) fire: vec4<f32>,
     @location(9) @interpolate(flat) flame: vec3<f32>,
@@ -284,6 +285,180 @@ fn flame_color(in: VertexOutput) -> vec4<f32> {
     return vec4<f32>(hue * coverage * in.color.a, 0.0);
 }
 
+// «Угли»: числа вида кучи — блоком здесь; высота кучи, накал, остывание, порыв и ход переливания — в
+// `render/fire.rs`. Куча стоит на нижнем крае прямоугольника, во всю его высоту посередине; к краям она
+// ниже. Куски — круглые и чуть приплюснутые, разной величины, вразброс; узор слегка кривит их; внизу к
+// крупным кускам добавляются мелкие — там куски мельче и лежат плотнее. Кусок есть, если его середина
+// под линией кучи, и верх кучи — макушки таких кусков: линия опущена так, что макушка самого большого
+// куска посередине, даже сдвинутая узором, не выходит за верх прямоугольника. Щели между кусками внутри кучи получают весь жар,
+// края кусков — меньше, середины и макушки — ещё меньше; жар растёт к низу кучи и к середине по ширине,
+// а по куче медленно переливается. Цвет жара — полосами, как у пламени; ниже порога — холодный кусок,
+// почти чёрный с тёплым отливом.
+// Линия кучи у боковых краёв — доля линии посередине; шаг кусков — доля высоты кучи; куски по высоте
+// ниже, чем по ширине; насколько середина куска сдвинута в своей ячейке, доля ячейки; радиус куска —
+// доля шага; шаг мелких кусков — доля шага; мелкие лежат ниже этой доли линии кучи; насколько узор
+// кривит куски (доля шага) и его мелкость (пятен на шаг); щели светятся ниже линии кучи на эту долю
+// шага; перо краёв (клетки).
+const COALS_SIDE: f32 = 0.15;
+const COALS_STEP: f32 = 0.3;
+const COALS_FLAT: f32 = 0.85;
+const COALS_JITTER: f32 = 1.0;
+const COALS_RADIUS_MIN: f32 = 0.5;
+const COALS_RADIUS_MAX: f32 = 0.85;
+const COALS_FINE: f32 = 0.85;
+const COALS_FINE_BELOW: f32 = 0.45;
+const COALS_WARP: f32 = 0.5;
+const COALS_WARP_SCALE: f32 = 1.3;
+const COALS_GAP_BELOW: f32 = 0.35;
+const COALS_EDGE_SOFT: f32 = 0.008;
+// Насколько макушка самого большого куска, сдвинутая узором, выше его середины, доля высоты кучи: на
+// столько опущена линия.
+const COALS_CROWN: f32 = COALS_STEP * (COALS_RADIUS_MAX * COALS_FLAT + COALS_WARP * 0.5);
+// Жар: накал в этой степени — слабый накал тлеет тёмным; доля у верха кучи (у низа — вся); насколько
+// меньше у боковых краёв; ширина светлого края куска у щели (доля радиуса куска); край у макушки — эта доля
+// края у низа; середина куска — доля жара щели; макушка куска — доля его низа; размер пятна переливания —
+// доля высоты кучи; размах переливания.
+const COALS_HEAT_POWER: f32 = 1.2;
+const COALS_TOP_HEAT: f32 = 0.55;
+const COALS_SIDE_FALL: f32 = 0.45;
+const COALS_RIM: f32 = 0.6;
+const COALS_RIM_TOP: f32 = 0.5;
+const COALS_INNER: f32 = 0.35;
+const COALS_UPPER: f32 = 0.4;
+const COALS_SPOT: f32 = 1.0;
+const COALS_FLICKER_LOW: f32 = 0.7;
+const COALS_FLICKER_HIGH: f32 = 1.3;
+// Холодный кусок; разброс тона между кусками; щель темнее куска; светлее у макушки куска — куски
+// читаются и на холодной куче.
+const COALS_COLD: vec3<f32> = vec3<f32>(0.085, 0.07, 0.062);
+const COALS_TONE: f32 = 0.3;
+const COALS_GAP_DARK: f32 = 0.35;
+const COALS_TOP_LIGHT: f32 = 0.06;
+// Цветовые полосы по жару: слабый — цвет огня, умноженный на `COALS_WEAK_DARK`; средний — сам цвет;
+// сильный — светлее его на `COALS_CORE_WHITE` в сторону белого. `COALS_BAND_SOFT` — узкая мягкая граница.
+const COALS_WEAK_AT: f32 = 0.12;
+const COALS_MID_AT: f32 = 0.36;
+const COALS_CORE_AT: f32 = 0.66;
+const COALS_BAND_SOFT: f32 = 0.04;
+const COALS_WEAK_DARK: f32 = 0.5;
+const COALS_CORE_WHITE: f32 = 0.55;
+
+// Линия кучи над нижним краем в точке `x` у кучи шириной `width` и высотой посередине `height`: под ней
+// лежат середины кусков.
+fn coals_surface(x: f32, width: f32, height: f32) -> f32 {
+    let across = clamp(x / max(width, 0.0001), 0.0, 1.0) * 2.0 - 1.0;
+    return height * (1.0 - COALS_CROWN) * mix(COALS_SIDE, 1.0, 1.0 - across * across);
+}
+
+// Сглаженный шум решётки в точке `p` на узле времени `node`: пятна переливания.
+fn coals_spot_node(p: vec2<f32>, node: i32, seed: u32) -> f32 {
+    let base = floor(p);
+    let t = p - base;
+    let smooth_t = t * t * (3.0 - 2.0 * t);
+    let cell = vec2<i32>(base);
+    let moment = seed + 41u + bitcast<u32>(node) * 0x7f4a7c15u;
+    let a = flame_cell(cell, moment);
+    let b = flame_cell(cell + vec2<i32>(1, 0), moment);
+    let c = flame_cell(cell + vec2<i32>(0, 1), moment);
+    let d = flame_cell(cell + vec2<i32>(1, 1), moment);
+    return mix(mix(a, b, smooth_t.x), mix(c, d, smooth_t.x), smooth_t.y);
+}
+
+// Переливание в точке `p`: пятна меняются от узла времени к узлу, целая часть хода отдельно от дробной.
+fn coals_spot(p: vec2<f32>, whole: i32, fraction: f32, seed: u32) -> f32 {
+    let eased = fraction * fraction * (3.0 - 2.0 * fraction);
+    return mix(coals_spot_node(p, whole, seed), coals_spot_node(p, whole + 1, seed), eased);
+}
+
+// Кусок, в который точка заходит глубже всего: насколько глубоко (меньше нуля — точка в щели; −8 — рядом
+// куска нет), его середина, радиус и зерно его тона.
+struct CoalsPiece {
+    inside: f32,
+    center: vec2<f32>,
+    radius: f32,
+    tone_seed: f32,
+};
+
+// Ищет кусок по двум решёткам: крупные куски лежат серединой где угодно под линией кучи, мелкие — только
+// ниже `COALS_FINE_BELOW` линии. Кусок, чья середина не там, отбрасывается до сравнения глубины: точку
+// забирает соседний кусок, а не щель.
+fn coals_piece(p: vec2<f32>, step: f32, width: f32, height: f32, seed: u32) -> CoalsPiece {
+    var out = CoalsPiece(-8.0, vec2<f32>(0.0, 0.0), 0.0, 0.0);
+    for (var layer = 0u; layer < 2u; layer++) {
+        let fine = layer == 1u;
+        let layer_step = select(step, step * COALS_FINE, fine);
+        let layer_seed = seed + layer * 30u;
+        let grid = vec2<f32>(layer_step, layer_step * COALS_FLAT);
+        let base = vec2<i32>(floor(p / grid));
+        for (var j = -1; j <= 1; j++) {
+            for (var i = -1; i <= 1; i++) {
+                let cell = base + vec2<i32>(i, j);
+                let jitter = vec2<f32>(flame_cell(cell, layer_seed + 21u), flame_cell(cell, layer_seed + 22u)) - vec2<f32>(0.5, 0.5);
+                let center = (vec2<f32>(cell) + vec2<f32>(0.5, 0.5) + jitter * COALS_JITTER) * grid;
+                let line = coals_surface(center.x, width, height);
+                let low = center.y <= COALS_FINE_BELOW * line;
+                if (center.y > line || (fine && !low)) {
+                    continue;
+                }
+                let radius = layer_step * mix(COALS_RADIUS_MIN, COALS_RADIUS_MAX, flame_cell(cell, layer_seed + 24u));
+                let d = length(vec2<f32>(p.x - center.x, (p.y - center.y) / COALS_FLAT));
+                if (radius - d > out.inside) {
+                    out = CoalsPiece(radius - d, center, radius, flame_cell(cell, layer_seed + 23u));
+                }
+            }
+        }
+    }
+    return out;
+}
+
+// Цвет кучи углей в точке: силуэт и куски, жар по ним, цвет жара полосами. Результат непрозрачен внутри
+// кучи и прозрачен вне её.
+fn coals_color(in: VertexOutput) -> vec4<f32> {
+    let heat = in.fire.x;
+    let seed = u32(in.fire.y);
+    let whole = i32(in.fire.z);
+    let fraction = in.fire.w;
+    let size = in.flame.xy;
+    let spot_at = vec2<f32>(in.unit.x * size.x, (1.0 - in.unit.y) * size.y);
+    let step = max(COALS_STEP * size.y, 0.0001);
+
+    let warp_scale = vec2<f32>(COALS_WARP_SCALE / step, COALS_WARP_SCALE / step);
+    let warp = vec2<f32>(
+        flame_layer(spot_at, warp_scale, 0, 0, 0.0, seed + 31u),
+        flame_layer(spot_at, warp_scale, 0, 0, 0.0, seed + 32u),
+    ) - vec2<f32>(0.5, 0.5);
+    let p = spot_at + warp * COALS_WARP * step;
+    let piece = coals_piece(p, step, size.x, size.y, seed);
+    let line = coals_surface(spot_at.x, size.x, size.y);
+    let gap = line - COALS_GAP_BELOW * step - spot_at.y;
+    let cover = smoothstep(-COALS_EDGE_SOFT, COALS_EDGE_SOFT, max(piece.inside, gap))
+        * smoothstep(0.0, COALS_EDGE_SOFT, min(spot_at.x, size.x - spot_at.x));
+    // 1 в куске, 0 в щели, мягко на границе
+    let on_piece = smoothstep(-COALS_EDGE_SOFT, COALS_EDGE_SOFT, piece.inside);
+
+    let top = line + COALS_CROWN * size.y;
+    let deep = clamp(1.0 - spot_at.y / max(top, 0.0001), 0.0, 1.0);
+    let across = in.unit.x * 2.0 - 1.0;
+    let middle = 1.0 - COALS_SIDE_FALL * across * across;
+    let spot = coals_spot(spot_at / max(size.y * COALS_SPOT, 0.0001), whole, fraction, seed);
+    let hot = pow(max(heat, 0.0), COALS_HEAT_POWER) * mix(COALS_TOP_HEAT, 1.0, deep) * middle
+        * mix(COALS_FLICKER_LOW, COALS_FLICKER_HIGH, spot);
+    let rim = 1.0 - smoothstep(0.0, max(COALS_RIM * piece.radius, 0.0001), piece.inside);
+    let below = clamp(0.5 + (piece.center.y - p.y) / max(piece.radius * 2.0 * COALS_FLAT, 0.0001), 0.0, 1.0);
+    let exposure = mix(COALS_INNER * mix(COALS_UPPER, 1.0, below), 1.0, rim * mix(COALS_RIM_TOP, 1.0, below));
+    let glow = hot * mix(1.0, exposure, on_piece);
+
+    let tone = mix(1.0 - COALS_TONE, 1.0 + COALS_TONE, piece.tone_seed);
+    let lit = COALS_TOP_LIGHT * (1.0 - below) * (1.0 - rim);
+    var hue = mix(COALS_COLD * COALS_GAP_DARK, COALS_COLD * tone + vec3<f32>(lit, lit, lit), on_piece);
+    let tint = in.color.rgb / max(in.color.a, 0.000001);
+    let core = mix(tint, vec3<f32>(1.0, 1.0, 1.0), COALS_CORE_WHITE);
+    hue = mix(hue, tint * COALS_WEAK_DARK, smoothstep(COALS_WEAK_AT - COALS_BAND_SOFT, COALS_WEAK_AT + COALS_BAND_SOFT, glow));
+    hue = mix(hue, tint, smoothstep(COALS_MID_AT - COALS_BAND_SOFT, COALS_MID_AT + COALS_BAND_SOFT, glow));
+    hue = mix(hue, core, smoothstep(COALS_CORE_AT - COALS_BAND_SOFT, COALS_CORE_AT + COALS_BAND_SOFT, glow));
+    return vec4<f32>(hue * cover, cover);
+}
+
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let clamped = clamp(in.uv_px, in.uv_min, in.uv_max);
@@ -296,6 +471,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let linear = textureSample(atlas_texture, atlas_sampler_linear, uv, in.atlas_layer);
     let sampled = select(nearest, linear, in.smooth_sample > 0.5);
     let painted = in.color * sampled;
+    if (in.flame.z > 1.5) {
+        return coals_color(in);
+    }
     if (in.flame.z > 0.5) {
         return flame_color(in);
     }

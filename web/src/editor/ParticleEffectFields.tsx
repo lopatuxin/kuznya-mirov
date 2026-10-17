@@ -48,6 +48,8 @@ function FireFields({ editing }: EffectBodyProps): React.JSX.Element {
     <>
       <ColorField label={PARTICLE_LABELS.fire_color} propertyKey="fire_color" fallback={PARTICLE_DEFAULTS.fire_color} editing={editing} />
       <DensityField title={PARTICLE_LABELS.fire_glow} propertyKey="fire_glow" endLabels={["без ореола", "яркий"]} defaultValue={PARTICLE_DEFAULTS.fire_glow} editing={editing} />
+      <DensityField title={PARTICLE_LABELS.fire_coals} propertyKey="fire_coals" endLabels={["нет", "высокая куча"]} defaultValue={PARTICLE_DEFAULTS.fire_coals} editing={editing} />
+      <DensityField title={PARTICLE_LABELS.fire_smolder} propertyKey="fire_smolder" endLabels={["нет", "сильное"]} defaultValue={PARTICLE_DEFAULTS.fire_smolder} editing={editing} />
     </>
   );
 }

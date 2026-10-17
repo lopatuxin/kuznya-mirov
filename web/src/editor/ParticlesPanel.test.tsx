@@ -415,9 +415,10 @@ describe("ParticlesPanel: огонь", () => {
   it("подписи полные русские слова: концы ползунков, цвет пламени, без английских ключей", () => {
     renderPanel(FIRE);
 
-    for (const text of ["тлеет", "бушует", "без ореола", "яркий", "сила огня", "цвет пламени", "яркость ореола"]) {
+    for (const text of ["тлеет", "бушует", "без ореола", "яркий", "сила огня", "цвет пламени", "яркость ореола", "угли", "высокая куча", "тление углей", "сильное"]) {
       expect(within(fireRegion()).getByText(text)).toBeTruthy();
     }
+    expect(within(fireRegion()).getAllByText("нет")).toHaveLength(2);
     expect(fireRegion().textContent).not.toMatch(/fire/);
   });
 
@@ -503,13 +504,100 @@ describe("ParticlesPanel: огонь", () => {
     expect(screen.getByRole("alert").textContent).toBe("яркость ореола: нужно от 0 до 1 включительно, получено 2");
   });
 
-  it("«Убрать» снимает fire, fire_color и fire_glow одной правкой и только их", () => {
-    const { props } = renderPanel({ ...FIRE, fire_color: "#2255ff", fire_glow: 0.3, smoke: 0.5 });
+  it("в группе пять полей, за ползунком «угли» — «тление углей»: без свойств оба стоят на 0 бледно", () => {
+    renderPanel(FIRE);
+    const labels = Array.from(fireRegion().querySelectorAll(".particles-field__label")).map((label) => label.textContent);
+    const coals = within(fireRegion()).getByRole("slider", { name: "угли" }) as HTMLInputElement;
+
+    const smolder = within(fireRegion()).getByRole("slider", { name: "тление углей" }) as HTMLInputElement;
+
+    expect(labels).toEqual(["сила огня", "цвет пламени", "яркость ореола", "угли", "тление углей"]);
+    expect(coals.value).toBe("0");
+    expect(coals.step).toBe("0.05");
+    expect(coals.closest(".particles-density--default")).not.toBeNull();
+    expect(smolder.value).toBe("0");
+    expect(smolder.step).toBe("0.05");
+    expect(smolder.closest(".particles-density--default")).not.toBeNull();
+  });
+
+  it("угли: движение ставит значение сцене на каждый шаг, отпускание пишет один раз с «не было»", () => {
+    const { props } = renderPanel(FIRE);
+    const slider = within(fireRegion()).getByRole("slider", { name: "угли" }) as HTMLInputElement;
+
+    fireEvent.input(slider, { target: { value: "0.3" } });
+    fireEvent.input(slider, { target: { value: "0.5" } });
+
+    expect(props.onPreview).toHaveBeenNthCalledWith(1, "fire_coals", 0.3);
+    expect(props.onPreview).toHaveBeenNthCalledWith(2, "fire_coals", 0.5);
+    expect(slider.closest(".particles-density--default")).toBeNull();
+    expect(props.onCommit).not.toHaveBeenCalled();
+
+    fireEvent.change(slider);
+
+    expect(props.onCommit).toHaveBeenCalledTimes(1);
+    expect(props.onCommit).toHaveBeenCalledWith("fire_coals", 0.5, undefined);
+  });
+
+  it("тление углей: движение ставит значение сцене, отпускание пишет один раз с прежним значением", () => {
+    const { props } = renderPanel({ ...FIRE, fire_coals: 0.5, fire_smolder: 0.2 });
+    const slider = within(fireRegion()).getByRole("slider", { name: "тление углей" }) as HTMLInputElement;
+
+    expect(slider.value).toBe("0.2");
+    fireEvent.input(slider, { target: { value: "0.35" } });
+
+    expect(props.onPreview).toHaveBeenCalledWith("fire_smolder", 0.35);
+    expect(props.onCommit).not.toHaveBeenCalled();
+
+    fireEvent.change(slider);
+
+    expect(props.onCommit).toHaveBeenCalledTimes(1);
+    expect(props.onCommit).toHaveBeenCalledWith("fire_smolder", 0.35, 0.2);
+  });
+
+  it("угли, которые у объекта есть, показаны обычно и пишутся с прежним значением", () => {
+    const { props } = renderPanel({ ...FIRE, fire_coals: 0.4 });
+    const slider = within(fireRegion()).getByRole("slider", { name: "угли" }) as HTMLInputElement;
+
+    expect(slider.value).toBe("0.4");
+    expect(slider.closest(".particles-density--default")).toBeNull();
+
+    fireEvent.input(slider, { target: { value: "0" } });
+    fireEvent.change(slider);
+
+    expect(props.onCommit).toHaveBeenCalledWith("fire_coals", 0, 0.4);
+  });
+
+  it("объект с одним fire_coals: группа «Огонь» есть, угли показаны, сила огня стоит на нуле", () => {
+    renderPanel({ position: [1, 1], size: [2, 1], fire_coals: 0.5 });
+
+    expect((within(fireRegion()).getByRole("slider", { name: "угли" }) as HTMLInputElement).value).toBe("0.5");
+    expect((within(fireRegion()).getByRole("slider", { name: "сила огня" }) as HTMLInputElement).value).toBe("0");
+  });
+
+  it("ошибка движка про fire_coals стоит под ползунком с подписью «угли»", () => {
+    const onPreview = vi.fn((key: string) => (key === "fire_coals" ? "fire_coals: нужно от 0 до 1 включительно, получено 2" : undefined));
+    renderPanel(FIRE, { onPreview });
+
+    fireEvent.input(within(fireRegion()).getByRole("slider", { name: "угли" }), { target: { value: "1" } });
+
+    expect(screen.getByRole("alert").textContent).toBe("угли: нужно от 0 до 1 включительно, получено 2");
+  });
+
+  it("«Убрать» снимает fire, fire_color, fire_glow, fire_coals и fire_smolder одной правкой и только их", () => {
+    const { props } = renderPanel({ ...FIRE, fire_color: "#2255ff", fire_glow: 0.3, fire_coals: 0.4, fire_smolder: 0.3, smoke: 0.5 });
 
     fireEvent.click(within(fireRegion()).getByRole("button", { name: "Убрать" }));
 
     expect(props.onRemove).toHaveBeenCalledTimes(1);
-    expect(props.onRemove).toHaveBeenCalledWith(["fire", "fire_color", "fire_glow"]);
+    expect(props.onRemove).toHaveBeenCalledWith(["fire", "fire_color", "fire_glow", "fire_coals", "fire_smolder"]);
+  });
+
+  it("«Убрать» у объекта с одним fire_coals снимает его одним ключом", () => {
+    const { props } = renderPanel({ position: [1, 1], size: [2, 1], fire_coals: 0.5 });
+
+    fireEvent.click(within(fireRegion()).getByRole("button", { name: "Убрать" }));
+
+    expect(props.onRemove).toHaveBeenCalledWith(["fire_coals"]);
   });
 
   it("правка недоступна — ползунки и «Убрать» огня неактивны", () => {
@@ -517,6 +605,7 @@ describe("ParticlesPanel: огонь", () => {
 
     expect((within(fireRegion()).getByRole("slider", { name: "сила огня" }) as HTMLInputElement).disabled).toBe(true);
     expect((within(fireRegion()).getByRole("slider", { name: "яркость ореола" }) as HTMLInputElement).disabled).toBe(true);
+    expect((within(fireRegion()).getByRole("slider", { name: "угли" }) as HTMLInputElement).disabled).toBe(true);
     expect((within(fireRegion()).getByRole("button", { name: "Убрать" }) as HTMLButtonElement).disabled).toBe(true);
   });
 });

@@ -53,10 +53,12 @@ pub const LEAF_COLOR: PropertyId = 33;
 /// «Ветер и частицы» → «Облака»: сколько облаков на небе и из каких картинок они.
 pub const CLOUDS: PropertyId = 34;
 pub const CLOUD_IMAGES: PropertyId = 35;
-/// «Огонь»: сила пламени, его цвет и яркость ореола.
+/// «Огонь»: сила пламени, его цвет, яркость ореола, высота кучи углей и их тление.
 pub const FIRE: PropertyId = 36;
 pub const FIRE_COLOR: PropertyId = 37;
 pub const FIRE_GLOW: PropertyId = 38;
+pub const FIRE_COALS: PropertyId = 39;
+pub const FIRE_SMOLDER: PropertyId = 40;
 
 /// Свойства частиц: только плоская сцена, только объекту с `position` и `size`, без `repeat_x`.
 pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
@@ -75,7 +77,8 @@ pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
 pub const CLOUD_PROPERTIES: [PropertyId; 2] = [CLOUDS, CLOUD_IMAGES];
 
 /// Свойства огня: только плоская сцена, только объекту с `position` и `size`, без `repeat_x`.
-pub const FIRE_PROPERTIES: [PropertyId; 3] = [FIRE, FIRE_COLOR, FIRE_GLOW];
+pub const FIRE_PROPERTIES: [PropertyId; 5] =
+    [FIRE, FIRE_COLOR, FIRE_GLOW, FIRE_COALS, FIRE_SMOLDER];
 
 const BUILTINS: &[(&str, PropKind)] = &[
     ("position", PropKind::Vec2),
@@ -117,6 +120,8 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("fire", PropKind::Number),
     ("fire_color", PropKind::Color),
     ("fire_glow", PropKind::Number),
+    ("fire_coals", PropKind::Number),
+    ("fire_smolder", PropKind::Number),
 ];
 
 #[derive(Debug, Clone)]
@@ -302,6 +307,8 @@ mod tests {
             ("fire", FIRE, PropKind::Number),
             ("fire_color", FIRE_COLOR, PropKind::Color),
             ("fire_glow", FIRE_GLOW, PropKind::Number),
+            ("fire_coals", FIRE_COALS, PropKind::Number),
+            ("fire_smolder", FIRE_SMOLDER, PropKind::Number),
         ] {
             assert_eq!(table.resolve(name), Some(id), "{name}");
             assert_eq!(table.kind(id), kind, "{name}");

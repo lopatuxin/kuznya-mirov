@@ -835,8 +835,8 @@ fn draw_rect(paint: &RectPaint) -> DrawRect {
         glow: f32::from(u8::from(paint.glow)),
         lean: paint.lean,
         angle: paint.angle,
-        flame: f32::from(u8::from(paint.fire.is_some())),
-        fire: paint.fire.unwrap_or([0.0; 4]),
+        flame: paint.fire.map_or(0.0, |(kind, _)| kind.flag()),
+        fire: paint.fire.map_or([0.0; 4], |(_, values)| values),
     }
 }
 

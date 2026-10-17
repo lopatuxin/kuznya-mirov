@@ -11,8 +11,8 @@ use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{ImageDecl, ImageVerdict, load_rest_with_stamps, read_entry};
 use engine::data::session;
 use engine::render::atlas::{
-    AtlasImage, AtlasRect, HALO_RECT, RectPaint, WHITE_PIXEL, compose_world_paints, fire_objects,
-    pack, particle_emitters, sway_objects,
+    AtlasImage, AtlasRect, FireKind, HALO_RECT, RectPaint, WHITE_PIXEL, compose_world_paints,
+    fire_objects, pack, particle_emitters, sway_objects,
 };
 use engine::render::wind::Motion;
 use serde_json::json;
@@ -504,7 +504,7 @@ fn is_halo(paint: &RectPaint) -> bool {
 }
 
 fn is_flame(paint: &RectPaint) -> bool {
-    paint.fire.is_some()
+    matches!(paint.fire, Some((FireKind::Flame, _)))
 }
 
 #[test]

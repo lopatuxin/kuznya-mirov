@@ -20,7 +20,7 @@ use crate::core::world::World;
 use crate::data::load::ImageDecl;
 
 use super::clouds::{Sky, Sprite as CloudSprite};
-use super::fire::{Drawing as FireDrawing, FireObject};
+use super::fire::{Coals, Drawing as FireDrawing, FireObject, Flame, Halo};
 use super::particle_shapes::{self, HALO_SIZE, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
 use super::particles::{Emitter, OpaqueMask, Picture, Sprite};
 use super::wind::{Motion, SwayObject, swaying_frame};
@@ -526,9 +526,27 @@ pub struct RectPaint {
     /// «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
     /// угол, градусов по часовой стрелке; 0 у всего, кроме частиц.
     pub angle: f32,
-    /// «Огонь»: прямоугольник — пламя; шейдер рисует узор по силе, зерну и ходу узора на целую и
-    /// дробную часть: `[сила, зерно, целая часть, дробная часть]`. `None` — обычный прямоугольник.
-    pub fire: Option<[f32; 4]>,
+    /// «Огонь»: прямоугольник — пламя или угли; шейдер рисует узор по силе (у углей — накалу), зерну и
+    /// ходу узора на целую и дробную часть: `[сила, зерно, целая часть, дробная часть]`. `None` —
+    /// обычный прямоугольник.
+    pub fire: Option<(FireKind, [f32; 4])>,
+}
+
+/// «Огонь»: что шейдер считает формулой вместо картинки из атласа.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FireKind {
+    Flame,
+    Coals,
+}
+
+impl FireKind {
+    /// Признак экземпляра для шейдера: 1 — пламя, 2 — угли.
+    pub fn flag(self) -> f32 {
+        match self {
+            FireKind::Flame => 1.0,
+            FireKind::Coals => 2.0,
+        }
+    }
 }
 
 impl RectPaint {
@@ -687,7 +705,7 @@ pub fn compose_world_paints(
             };
             paints.extend(layered_paints(world, id, paint, s[0], layers, window));
         }
-        // «Огонь», требование 20: ореол и пламя — сразу после объекта, до его дыма и искр.
+        // «Огонь», требования 17, 20: ореол, пламя и угли — сразу после объекта, до его дыма и искр.
         if let Some(drawing) = fires.drawing(id, world.generation(id)) {
             let shift = layers.displacement(scene::parallax(world, id));
             paints.extend(fire_paints(&drawing, shift, window).into_iter().flatten());
@@ -816,48 +834,68 @@ fn object_fill(world: &World, id: u32) -> Option<Fill> {
     }
 }
 
-/// «Огонь», требования 14, 20–21: ореол — квадрат вокруг середины пламени, тающее пятно цвета огня, —
-/// и пламя — прямоугольник на нижнем крае огня с наклоном верха. Оба светятся и сдвинуты на `shift`
-/// слоя глубины; каждый, что целиком вне окна `window` (его края в клетках сцены; пустое окно ничего
-/// не отсеивает) или не виден (ореол без яркости, пламя без размера), пропущен. Ореол идёт первым.
-fn fire_paints(drawing: &FireDrawing, shift: Vec2, window: [f64; 2]) -> [Option<RectPaint>; 2] {
-    let FireDrawing { flame, halo } = *drawing;
-    let in_window = |middle: f64, half: f64| {
-        window[1] <= window[0] || (middle + half > window[0] && middle - half < window[1])
-    };
-    let halo_half = halo.diameter / 2.0;
-    let halo_paint = (halo.brightness > 0.0 && in_window(halo.center[0] + shift[0], halo_half))
-        .then(|| {
-            RectPaint::flat(
-                [
-                    (halo.center[0] + shift[0] - halo_half) as f32,
-                    (halo.center[1] + shift[1] - halo_half) as f32,
-                ],
-                [halo.diameter as f32; 2],
-                [
-                    halo.color[0],
-                    halo.color[1],
-                    halo.color[2],
-                    halo.brightness as f32,
-                ],
-                HALO_RECT,
-                true,
-                true,
-            )
-        });
+/// «Огонь», требования 14, 17, 20–21: ореол — квадрат вокруг середины пламени, тающее пятно цвета огня, —
+/// пламя — прямоугольник на нижнем крае огня с наклоном верха — и угли — прямоугольник кучи на том же
+/// крае. Ореол и пламя светятся, угли закрывают. Все сдвинуты на `shift` слоя глубины; каждый, что
+/// целиком вне окна `window` (его края в клетках сцены; пустое окно ничего не отсеивает) или не виден
+/// (ореол без яркости, пламя и угли без размера), пропущен. Ореол идёт первым, угли последними.
+fn fire_paints(drawing: &FireDrawing, shift: Vec2, window: [f64; 2]) -> [Option<RectPaint>; 3] {
+    [
+        drawing
+            .blaze
+            .and_then(|blaze| halo_paint(&blaze.halo, shift, window)),
+        drawing
+            .blaze
+            .and_then(|blaze| flame_paint(&blaze.flame, shift, window)),
+        drawing
+            .coals
+            .and_then(|coals| coals_paint(&coals, shift, window)),
+    ]
+}
+
+fn fire_in_window(window: [f64; 2], middle: f64, half: f64) -> bool {
+    window[1] <= window[0] || (middle + half > window[0] && middle - half < window[1])
+}
+
+fn halo_paint(halo: &Halo, shift: Vec2, window: [f64; 2]) -> Option<RectPaint> {
+    let half = halo.diameter / 2.0;
+    (halo.brightness > 0.0 && fire_in_window(window, halo.center[0] + shift[0], half)).then(|| {
+        RectPaint::flat(
+            [
+                (halo.center[0] + shift[0] - half) as f32,
+                (halo.center[1] + shift[1] - half) as f32,
+            ],
+            [halo.diameter as f32; 2],
+            [
+                halo.color[0],
+                halo.color[1],
+                halo.color[2],
+                halo.brightness as f32,
+            ],
+            HALO_RECT,
+            true,
+            true,
+        )
+    })
+}
+
+fn flame_paint(flame: &Flame, shift: Vec2, window: [f64; 2]) -> Option<RectPaint> {
     let [width, height] = flame.size;
-    let flame_reach = width / 2.0 + flame.lean.abs();
-    let flame_paint = (width > 0.0
+    let reach = width / 2.0 + flame.lean.abs();
+    (width > 0.0
         && height > 0.0
-        && in_window(flame.position[0] + width / 2.0 + shift[0], flame_reach))
+        && fire_in_window(window, flame.position[0] + width / 2.0 + shift[0], reach))
     .then(|| RectPaint {
         lean: flame.lean as f32,
-        fire: Some([
-            flame.strength as f32,
-            flame.seed,
-            flame.scroll_whole,
-            flame.scroll_fraction,
-        ]),
+        fire: Some((
+            FireKind::Flame,
+            [
+                flame.strength as f32,
+                flame.seed,
+                flame.scroll_whole,
+                flame.scroll_fraction,
+            ],
+        )),
         ..RectPaint::flat(
             [
                 (flame.position[0] + shift[0]) as f32,
@@ -869,8 +907,40 @@ fn fire_paints(drawing: &FireDrawing, shift: Vec2, window: [f64; 2]) -> [Option<
             false,
             true,
         )
-    });
-    [halo_paint, flame_paint]
+    })
+}
+
+fn coals_paint(coals: &Coals, shift: Vec2, window: [f64; 2]) -> Option<RectPaint> {
+    let [width, height] = coals.size;
+    (width > 0.0
+        && height > 0.0
+        && fire_in_window(
+            window,
+            coals.position[0] + width / 2.0 + shift[0],
+            width / 2.0,
+        ))
+    .then(|| RectPaint {
+        fire: Some((
+            FireKind::Coals,
+            [
+                coals.heat as f32,
+                coals.seed,
+                coals.scroll_whole,
+                coals.scroll_fraction,
+            ],
+        )),
+        ..RectPaint::flat(
+            [
+                (coals.position[0] + shift[0]) as f32,
+                (coals.position[1] + shift[1]) as f32,
+            ],
+            [width as f32, height as f32],
+            [coals.color[0], coals.color[1], coals.color[2], 1.0],
+            WHITE_PIXEL,
+            false,
+            false,
+        )
+    })
 }
 
 /// «Огонь», требование 19: объекты плоской сцены с записанным прямоугольником — с тем, что у них записано
