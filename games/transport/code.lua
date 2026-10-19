@@ -19,7 +19,9 @@ local BANKRUPT_AT = -30000
 local BREAKDOWN_CHANCE = 0.03
 local REPAIR_COST = 3000
 local REPAIR_MINUTES = 40
-local MESSAGES_KEPT = 5
+local MESSAGES_KEPT = 30         -- записей в окне уведомлений
+local TOAST_SECONDS = 5          -- настоящих секунд, пока висит всплывающее уведомление
+local TOASTS_SHOWN = 3           -- всплывающих уведомлений на экране разом
 local WEEKDAYS = { "пн", "вт", "ср", "чт", "пт", "сб", "вс" }
 
 local state = {
@@ -31,6 +33,7 @@ local state = {
   next_order = 1,
   next_message = 1,
   next_car = 2,
+  free_orders = 0,
   closed = {},
   jam = {},
   jam_until = nil,
@@ -154,16 +157,62 @@ local function selected_car()
   return find({ has = { "car", "selected" } })[1]
 end
 
--- Лента сообщений: последние несколько, новые сверху.
-local function say(text)
+local function refresh_notes()
   local g = game()
-  create({ message = true, msg_time = state.next_message, msg_text = fmt_time(g.minute) .. "  " .. text })
-  state.next_message = state.next_message + 1
+  if g.unread > 0 then
+    g.notes_text = "Уведомления · новых: " .. math.floor(g.unread)
+  else
+    g.notes_text = "Уведомления"
+  end
+end
+
+-- Свободные заказы считает сам код: `find` не видит заказов, созданных в том же шаге, а первый шаг
+-- партии создаёт их и сразу останавливает время.
+local function change_free_orders(delta)
+  state.free_orders = state.free_orders + delta
+  game().orders_text = "Свободные заказы: " .. state.free_orders
+end
+
+-- Уведомление: запись в окно уведомлений, всплывающее окошко и звук — `cash`, когда пришли деньги,
+-- иначе `notify`.
+local function say(text, sound)
+  local g = game()
+  local seq = state.next_message
+  state.next_message = seq + 1
+  create({ message = true, msg_time = seq, msg_text = fmt_time(g.minute) .. "  " .. text, listed = g.notes_open })
+  -- Место новому: старые сверх TOASTS_SHOWN уходят и на паузе, когда шагов нет.
+  local shown = find({ has = { "toast" } })
+  table.sort(shown, function(a, b) return a.toast_seq > b.toast_seq end)
+  for i = TOASTS_SHOWN, #shown do
+    delete(shown[i])
+  end
+  create({ toast = true, toast_seq = seq, toast_text = text, toast_left = TOAST_SECONDS })
+  play_sound(sound or "notify")
+  if not g.notes_open then
+    g.unread = g.unread + 1
+    refresh_notes()
+  end
   local all = find({ has = { "message" } })
   if #all >= MESSAGES_KEPT then
     table.sort(all, function(a, b) return a.msg_time < b.msg_time end)
     for i = 1, #all - MESSAGES_KEPT + 1 do
       delete(all[i])
+    end
+  end
+end
+
+-- Всплывающие уведомления живут TOAST_SECONDS настоящих секунд при любой скорости: шаг мира при
+-- скорости k длится 1/(60·k) секунды. На паузе шагов нет — уведомление ждёт, пока время пойдёт или
+-- его закроют щелчком. Сверх TOASTS_SHOWN старые уходят сразу.
+local function age_toasts(g)
+  if g.time_scale <= 0 then return end
+  local list = find({ has = { "toast" } })
+  table.sort(list, function(a, b) return a.toast_seq > b.toast_seq end)
+  local dt = 1 / (60 * g.time_scale)
+  for i, t in ipairs(list) do
+    t.toast_left = t.toast_left - dt
+    if i > TOASTS_SHOWN or t.toast_left <= 0 then
+      delete(t)
     end
   end
 end
@@ -243,7 +292,9 @@ end
 
 local TAG_TEXT = { urgent = "срочно", careful = "бережно", opening = "к открытию" }
 
-local function new_order(client, job)
+-- Создаёт заказ клиента. `announce` — показать уведомление: заказы начала дня
+-- уже названы уведомлением о новом дне.
+local function new_order(client, job, announce)
   if trust(client) < 20 then
     return
   end
@@ -275,8 +326,13 @@ local function new_order(client, job)
   local extra = #tags > 0 and (" · " .. table.concat(tags, ", ")) or ""
   fields.terms_text = "до " .. fmt_time(deadline) .. " · " .. fmt_money(price) .. " · " ..
     fmt_tons(job.weight) .. extra
+  fields.listed = game().orders_open
   state.next_order = state.next_order + 1
   create(fields)
+  change_free_orders(1)
+  if announce then
+    say("Новый заказ: " .. fields.title .. ", до " .. fmt_time(deadline))
+  end
 end
 
 -- Расписание клиентов на день: что и когда они закажут.
@@ -302,10 +358,10 @@ local function plan_day()
   table.sort(state.pending, function(a, b) return a.at < b.at end)
 end
 
-local function release_pending(t)
+local function release_pending(t, announce)
   while #state.pending > 0 and state.pending[1].at <= t do
     local p = table.remove(state.pending, 1)
-    new_order(p.client, p.job)
+    new_order(p.client, p.job, announce)
   end
 end
 
@@ -316,6 +372,7 @@ local function expire_offers(t)
       say("Сидоров забрал заказ: " .. o.title)
       o.done = true
       delete(o)
+      change_free_orders(-1)
     end
   end
 end
@@ -332,10 +389,22 @@ local function car_center(car)
   return { x = car.position.x + car.size.x / 2, y = car.position.y + car.size.y / 2 }
 end
 
+-- План выбранной машины виден, пока окно машин развёрнуто.
 local function mark_selected_stops()
   local sel = selected_car()
+  local open = game().cars_open
   for _, s in ipairs(find({ has = { "stop" } })) do
-    s.of_selected = sel ~= nil and s.stop_car == sel.car_id
+    s.of_selected = open and sel ~= nil and s.stop_car == sel.car_id
+  end
+end
+
+-- Камера следит за выбранной машиной, пока слежение включено. Запись `camera_follows` возвращает
+-- слежение и после того, как игрок сдвинул карту и камера отпустила машину.
+local function follow_selected()
+  local on = game().follow_on
+  local sel = selected_car()
+  for _, c in ipairs(cars()) do
+    c.camera_follows = on and sel ~= nil and c.car_id == sel.car_id
   end
 end
 
@@ -400,14 +469,14 @@ local function deliver(car, order)
   local client = order.client
   if late <= 0 then
     change_trust(client, 6)
-    say(tables.clients[client].short .. ": вовремя, +" .. fmt_money(paid))
+    say(tables.clients[client].short .. ": вовремя, +" .. fmt_money(paid), "cash")
   else
     local cut = clamp(late / 60 * 0.5, 0, 0.6)
     paid = math.floor(order.price * (1 - cut) / 10 + 0.5) * 10
     local penalty = (order.opening or late > 30) and -14 or -5
     change_trust(client, penalty)
     state.late = state.late + 1
-    say(tables.clients[client].short .. ": опоздали на " .. math.floor(late) .. " мин, заплатили " .. fmt_money(paid))
+    say(tables.clients[client].short .. ": опоздали на " .. math.floor(late) .. " мин, заплатили " .. fmt_money(paid), "cash")
   end
   state.delivered = state.delivered + 1
   state.earned = state.earned + paid
@@ -645,6 +714,7 @@ local function clear_day()
     s.done = true
     delete(s)
   end
+  change_free_orders(-state.free_orders)
   local office = place_point("office")
   for i, c in ipairs(cars()) do
     c.drive_to = nil
@@ -665,7 +735,7 @@ local function start_day()
   state.earned, state.spent_fuel, state.delivered, state.late = 0, 0, 0, 0
   plan_day()
   start_events()
-  release_pending(g.minute)
+  release_pending(g.minute, false)
   refresh_clock()
   refresh_money()
 end
@@ -689,17 +759,23 @@ local function first_step(g)
     end
   end
   g.started = true
+  for _, c in ipairs(cars()) do
+    c.listed = g.cars_open
+  end
+  refresh_notes()
   start_day()
   mark_selected_stops()
+  follow_selected()
   g.time_scale = 0
   g.speed_text = "стоп"
-  say("Первый день. Возьмите заказы слева и нажмите ×1, чтобы пошло время")
+  say("Первый день. Откройте свободные заказы слева вверху, возьмите их и нажмите ×1")
 end
 
 function tick(g)
   if not g.started then
     first_step(g)
   end
+  age_toasts(g)
   if g.day_over then
     return
   end
@@ -708,7 +784,7 @@ function tick(g)
   local whole = math.floor(g.minute)
   if whole ~= state.last_minute then
     state.last_minute = whole
-    release_pending(g.minute)
+    release_pending(g.minute, true)
     expire_offers(g.minute)
     end_jam(g.minute)
     refresh_clock()
@@ -742,6 +818,7 @@ function select_car(car)
   end
   car.selected = true
   mark_selected_stops()
+  follow_selected()
   refresh_eta()
 end
 
@@ -767,8 +844,9 @@ function take_order(order)
   if sel == nil then
     car.selected = true
     sel = car
+    follow_selected()
   end
-  local shown = sel.car_id == car.car_id
+  local shown = game().cars_open and sel.car_id == car.car_id
   local load = { stop = true, stop_order = order.order_id, stop_car = car.car_id, stop_seq = seq, stop_kind = "load",
                  stop_x = order.from_x, stop_y = order.from_y, place_name = order.from_name,
                  stop_text = "Загрузка · " .. order.cargo .. " · " .. order.from_name, of_selected = shown }
@@ -782,6 +860,7 @@ function take_order(order)
   create(load)
   create(unload)
   order.taken = true
+  change_free_orders(-1)
 end
 
 -- Груз в машине по порядку остановок не больше грузоподъёмности, выгрузка — после загрузки.
@@ -856,6 +935,7 @@ function cancel_stop(stop)
     end
   end
   order.taken = false
+  change_free_orders(1)
   refresh_eta()
   change_trust(order.client, -2)
   say("Отказались от заказа: " .. order.title)
@@ -904,7 +984,7 @@ function buy_car()
   create(tables.templates.gazel, {
     name = "ГАЗель 2", model = "gazel_green", car_id = state.next_car, has_driver = false, driver = "нет водителя",
     position = { office.x + 1.2 - size[1] / 2, office.y - size[2] / 2 },
-    state = "idle", state_text = "стоит у конторы — нужен водитель",
+    state = "idle", state_text = "стоит у конторы — нужен водитель", listed = g.cars_open,
   })
   state.next_car = state.next_car + 1
   -- Новая машина появится только после этой функции, поэтому кнопку найма включаем сразу.
@@ -935,12 +1015,62 @@ function next_day()
   g.day_over = false
   g.time_scale = 0
   g.speed_text = "стоп"
+  for _, t in ipairs(find({ has = { "toast" } })) do
+    delete(t)
+  end
   start_day()
   say("Новый день. Возьмите заказы и нажмите ×1")
 end
 
 function hide_help()
   game().show_help = false
+end
+
+-- Окна: щелчок по заголовку разворачивает и сворачивает окно. Список движка нельзя спрятать целиком,
+-- поэтому строки окна видны по признаку `listed`, который код ставит всем строкам окна.
+
+function toggle_orders()
+  local g = game()
+  g.orders_open = not g.orders_open
+  for _, o in ipairs(find({ has = { "order" } })) do
+    o.listed = g.orders_open
+  end
+end
+
+function toggle_cars()
+  local g = game()
+  g.cars_open = not g.cars_open
+  for _, c in ipairs(cars()) do
+    c.listed = g.cars_open
+  end
+  mark_selected_stops()
+end
+
+function toggle_notes()
+  local g = game()
+  g.notes_open = not g.notes_open
+  for _, m in ipairs(find({ has = { "message" } })) do
+    m.listed = g.notes_open
+  end
+  if g.notes_open then
+    g.unread = 0
+    refresh_notes()
+  end
+end
+
+function close_toast(toast)
+  delete(toast)
+end
+
+-- Слежение камеры за выбранной машиной; включили без выбранной машины — выбирается первая.
+function toggle_follow()
+  local g = game()
+  g.follow_on = not g.follow_on
+  if g.follow_on and selected_car() == nil then
+    select_car(cars()[1])
+    return
+  end
+  follow_selected()
 end
 
 function close_place()

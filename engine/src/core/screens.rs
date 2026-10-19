@@ -787,8 +787,8 @@ fn topmost_interface_hit(parts: &[Part<'_>], point: [f32; 2]) -> Option<Interfac
     })
 }
 
-/// «Интерфейс игры» → «Мышь»: стоит ли точка окна над кнопкой, панелью или списком активного экрана.
-/// Колесо и правая и средняя кнопки над ними камеру игрока не трогают.
+/// «Интерфейс игры» → «Мышь»: стоит ли точка окна над кнопкой, панелью или списком со строками
+/// активного экрана. Колесо и правая и средняя кнопки над ними камеру игрока не трогают.
 pub fn over_interface(
     config: &ScreensConfig,
     state: &ScreenState,
@@ -797,7 +797,7 @@ pub fn over_interface(
     point: [f32; 2],
 ) -> bool {
     let screen = &config.screens[state.active()];
-    interface::list_under(screen, viewport, point).is_some()
+    interface::list_under(screen, world, viewport, point).is_some()
         || topmost_interface_hit(
             &interface::layout(screen, state.active(), world, state, viewport),
             point,
@@ -806,8 +806,8 @@ pub fn over_interface(
 }
 
 /// «Интерфейс игры» → «Список»: колесо на `delta_y` точек над списком сдвигает его строки — на одну за
-/// каждые сто точек. `true`, если под точкой список: камера колесо тогда не получает, даже когда все
-/// строки видны.
+/// каждые сто точек. `true`, если под точкой список со строками: камера колесо тогда не получает, даже
+/// когда все строки видны.
 pub fn scroll_wheel(
     config: &ScreensConfig,
     state: &mut ScreenState,
@@ -818,7 +818,7 @@ pub fn scroll_wheel(
 ) -> bool {
     let screen_id = state.active();
     let screen = &config.screens[screen_id];
-    let Some(index) = interface::list_under(screen, viewport, point) else {
+    let Some(index) = interface::list_under(screen, world, viewport, point) else {
         return false;
     };
     if let Element::List {

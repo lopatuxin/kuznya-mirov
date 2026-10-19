@@ -9070,7 +9070,7 @@
     {"position":[211.993,94.379],"size":[0.212,0.212],"map":true,"model":"pine","height":0.531,"rotation":279},
     {"position":[157.821,104.61],"size":[0.271,0.271],"map":true,"model":"linden","height":0.365,"rotation":261.1},
     {"position":[203.668,93.772],"size":[0.268,0.268],"map":true,"model":"birch","height":0.602,"rotation":164.9},
-    {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":80000,"clock_text":"","money_text":"","debt_text":"","speed_text":"стоп","goal_text":"Цель: вторая ГАЗель (90 000 ₽) и водитель","summary_text":"","show_help":true},
+    {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":80000,"clock_text":"","money_text":"","debt_text":"","speed_text":"стоп","goal_text":"Цель: вторая ГАЗель (90 000 ₽) и водитель","summary_text":"","show_help":true,"follow_on":true,"unread":0,"orders_text":"Свободные заказы: 0","notes_text":"Уведомления"},
     {"name":"ГАЗель","car":true,"size":[0.21,0.55],"model":"gazel","height":0.26,"drive_speed":8.33,"capacity":1.5,"load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"position":[174.815,99.91499999999999],"selected":true}
   ]
 }

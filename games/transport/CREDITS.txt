@@ -10,3 +10,13 @@
 
 Шрифт надписей — Rubik
   Лицензия: SIL Open Font License 1.1 (fonts/OFL-Rubik.txt)
+
+Звуки — касса и сигнал уведомления — синтезированы программой проекта art/transport/sounds.mjs,
+  чужого авторства в них нет
+
+Музыка — music/game.mp3, меню и партия
+  Название: Shop Theme (Buy Something!)
+  Автор: Cleyton Kauffman (Cleyton R. Xavier), https://soundcloud.com/cleytonkauffman
+  Источник: https://opengameart.org/content/shop-theme
+  Лицензия: CC0
+  Срезана тишина в начале (0,1 с) и громкость уменьшена на 6 дБ под звуки игры

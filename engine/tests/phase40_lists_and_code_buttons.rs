@@ -393,6 +393,26 @@ fn a_list_takes_the_wheel_away_from_the_camera_even_when_all_rows_fit() {
 }
 
 #[test]
+fn a_list_without_rows_gives_the_wheel_and_the_camera_buttons_back_to_the_world() {
+    let mut ui = load();
+    for id in all_rows(&ui, false, false) {
+        ui.game.world.delete(id);
+    }
+    assert!(visible_rows(&ui, 0).is_empty());
+    assert!(!ui.wheel(20.0, 20.0, 100.0), "прокручивать нечего — колесо у камеры");
+    assert!(
+        !engine::core::screens::over_interface(
+            &ui.config,
+            &ui.state,
+            &ui.game.world,
+            VIEWPORT,
+            [20.0, 20.0]
+        ),
+        "пустой список места не держит"
+    );
+}
+
+#[test]
 fn the_scroll_follows_the_rows_stays_between_calls_and_a_new_game_resets_it() {
     let mut ui = load();
     ui.wheel(20.0, 20.0, 300.0);

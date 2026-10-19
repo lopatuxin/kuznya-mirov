@@ -93,15 +93,22 @@ pub fn first_row(offset: f64, rows: usize, visible: usize) -> usize {
     (offset.trunc().max(0.0) as usize).min(rows.saturating_sub(visible))
 }
 
-/// Список под точкой окна: самый верхний по порядку элементов экрана.
-pub fn list_under(screen: &Screen, viewport: [f32; 2], point: [f32; 2]) -> Option<usize> {
+/// Список под точкой окна: самый верхний по порядку элементов экрана из тех, у кого есть строки. Список
+/// без строк ничего не рисует и мышь не ловит, как элемент с `for` без своего объекта.
+pub fn list_under(
+    screen: &Screen,
+    world: &World,
+    viewport: [f32; 2],
+    point: [f32; 2],
+) -> Option<usize> {
     screen
         .elements
         .iter()
         .enumerate()
         .rev()
         .find(|(_, element)| {
-            matches!(element, Element::List { placement, .. } if placement.contains(viewport, point))
+            matches!(element, Element::List { placement, for_, .. }
+                if placement.contains(viewport, point) && lowest_match(for_, world).is_some())
         })
         .map(|(index, _)| index)
 }

@@ -40,6 +40,13 @@
     "fonts": {
       "ui": "fonts/Rubik.ttf"
     },
+    "sounds": {
+      "cash": "sounds/cash.wav",
+      "notify": "sounds/notify.wav"
+    },
+    "music": {
+      "game": "music/game.mp3"
+    },
     "tables": {
       "clients": "tables/clients.json",
       "templates": "tables/templates.json",
