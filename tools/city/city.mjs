@@ -48,7 +48,9 @@ export function buildCity(osm, config) {
     const width = meters(style.width);
     const unpaved = UNPAVED.has(t.surface);
     const bridge = t.bridge && t.bridge !== "no";
-    const speed = unpaved ? Math.min(style.speed ?? config.unpaved_speed, config.unpaved_speed) : style.speed;
+    // Предел — по знаку из OpenStreetMap, где он есть, иначе по виду улицы (ПДД); грунтовка — не быстрее своего.
+    const limit = signSpeed(t.maxspeed) ?? style.speed;
+    const speed = unpaved ? Math.min(limit ?? config.unpaved_speed, config.unpaved_speed) : limit;
     for (const [a, b] of straightPieces(ringOf(w.geometry), meters(1))) {
       const clipped = clipSegment(a, b, proj.width, proj.height);
       if (!clipped) continue;
@@ -63,6 +65,7 @@ export function buildCity(osm, config) {
         color: unpaved ? config.unpaved_color : style.color,
         layer: style.layer,
         road: true,
+        ...(style.main ? { main_road: true } : {}),
         ...(speed != null ? { road_speed: round(meters(speed * 1000) / 60 / config.minute_seconds, 3) } : {}),
         ...(bridge ? { bridge: true } : {}),
         map: true,
@@ -604,13 +607,28 @@ export function buildingKind(t, m2, box, zone) {
   return m2 > 220 ? "public" : "house";
 }
 
-/** Здание места игры: по элементу OpenStreetMap (`w…` или `n…`) или по точке; не здание — самое большое здание внутри. */
+/** Предел скорости по тегу `maxspeed` OpenStreetMap в км/ч: число или российские обозначения; нет знака — `undefined`. */
+export function signSpeed(tag) {
+  if (tag == null) return undefined;
+  const zones = { "RU:urban": 60, "RU:rural": 90, "RU:living_street": 20, "RU:motorway": 110 };
+  if (Object.hasOwn(zones, tag)) return zones[tag];
+  const n = Number(tag);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+/** Здание места игры: по элементу OpenStreetMap (`w…` или `n…`) или по точке; не здание — самое большое здание внутри.
+ *  Точка с `pad` — площадка такого размера в метрах на месте точки, без здания: заправка, автосервис. */
 function findPlace(place, els, buildings, proj, zones, ringOf) {
   if (place.osm) {
     const type = place.osm[0] === "w" ? "way" : place.osm[0] === "n" ? "node" : "relation";
     const id = Number(place.osm.slice(1));
     const el = els.find((e) => e.type === type && e.id === id);
     if (!el) return null;
+    if (type === "node" && place.pad) {
+      const [cx, cy] = proj.toCell(el.lat, el.lon);
+      const box = { cx, cy, length: place.pad[0] / proj.cell, width: place.pad[1] / proj.cell, angle: 0 };
+      return { box, center: [cx, cy] };
+    }
     if (type === "way" && el.tags && el.tags.building) {
       const b = buildings.find((x) => x.osm === place.osm);
       return b ? { building: b, center: [b.box.cx, b.box.cy] } : null;
