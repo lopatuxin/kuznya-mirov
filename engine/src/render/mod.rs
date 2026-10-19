@@ -2,10 +2,12 @@ pub mod atlas;
 pub mod clouds;
 pub mod fire;
 pub mod materials;
+pub mod models;
 mod particle_shapes;
 pub mod particles;
 pub mod relief;
 pub mod scene3d;
+pub mod text_area;
 pub mod video_play;
 pub mod wind;
 
@@ -13,6 +15,8 @@ pub mod wind;
 mod gpu;
 #[cfg(target_arch = "wasm32")]
 mod gpu3d;
+#[cfg(target_arch = "wasm32")]
+mod gpu_models;
 #[cfg(target_arch = "wasm32")]
 mod video;
 #[cfg(target_arch = "wasm32")]

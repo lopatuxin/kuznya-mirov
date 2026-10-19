@@ -1,21 +1,28 @@
+use std::rc::Rc;
+
 use serde_json::Value as Json;
 
+use crate::core::camera;
 use crate::core::clouds::CloudMisfit;
+use crate::core::code::ObjectParser;
 use crate::core::footprint::Footprint;
 use crate::core::game::{self, Game};
 use crate::core::imprints::StampTable;
 use crate::core::keys::{EditValue, KeyBinding, KeyEdit, KeyTable};
 use crate::core::property::{self, PropertyId, PropertyTable};
+use crate::core::roads::Side;
 use crate::core::rules::{
     CollideEffect, CommonAction, CompareOp, Condition, NumberExpr, Outcome, Rule, RuleSet,
     Selector, SetValue, ShiftSpec, SoundId, SpawnCell, SpawnCondition, SpawnPlace, SpawnVariant,
     TemplateValue, TurnDir, TurnSpec,
 };
-use crate::core::scene::{CameraConfig, GroundLayer, LightConfig, ObjectSpec, SceneConfig};
+use crate::core::scene::{
+    CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, SceneConfig,
+};
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, Element, Fill, FontId, MaxSpec, MusicId, Placement, Screen,
-    ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement, WorldElementKind,
-    WorldTextPart,
+    Align, Anchor, ButtonCommand, Element, Fill, FontId, MaxSpec, MusicId, Placement, RunCall,
+    RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement,
+    WorldElementKind, WorldTextPart,
 };
 use crate::core::terrain::{DENSITIES, Terrain, Water};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
@@ -28,6 +35,7 @@ use super::error::ErrorSink;
 use super::wav;
 
 mod materials;
+mod models;
 mod stamps;
 
 pub use super::error::{GameError, LoadFailure};
@@ -38,6 +46,8 @@ use materials::{
     declaration_order, parse_covers, parse_materials_table, validate_material_files,
     warn_unused_materials,
 };
+pub use models::{ModelDecl, ModelFile};
+use models::{load_models, named_in_scene, parse_models_table, warn_unused_models};
 pub use stamps::parse_edit_imprints;
 use stamps::{parse_imprints, parse_stamp_table, warn_unused_stamps};
 
@@ -291,6 +301,10 @@ pub(crate) fn parse_scalar_value(
                 errors.push(file, path, DECK_IN_FLAT_SCENE);
                 return None;
             }
+            if prop == property::ROAD && !properties.three_d() {
+                errors.push(file, path, ROAD_IN_FLAT_SCENE);
+                return None;
+            }
             if !depth_layer_fits_the_scene(prop, properties, file, path, errors)
                 || !engine_alone_writes_ok(prop, file, path, errors)
             {
@@ -319,8 +333,16 @@ pub(crate) fn parse_scalar_value(
             if prop == property::SWAY && !validate_sway(n, properties, file, path, errors) {
                 return None;
             }
+            if prop == property::TIME_SCALE && !validate_time_scale(n, file, path, errors) {
+                return None;
+            }
             if RUN_JUMP_NUMBERS.contains(&prop)
                 && !validate_run_jump_number(prop, n, properties, file, path, errors)
+            {
+                return None;
+            }
+            if DRIVE_NUMBERS.contains(&prop)
+                && !validate_drive_number(prop, n, properties, file, path, errors)
             {
                 return None;
             }
@@ -456,6 +478,14 @@ pub(crate) fn parse_scalar_value(
                 return None;
             }
             Some(Value::Layer(n as i32))
+        }
+        PropKind::Text if prop == property::MODEL => {
+            if !properties.three_d() {
+                errors.push(file, path, MODEL_IN_FLAT_SCENE);
+                return None;
+            }
+            let name = expect_string(value, file, path, errors)?;
+            resolve_model(&name, properties, file, path, errors).map(Value::Text)
         }
         PropKind::Text => expect_string(value, file, path, errors).map(Value::Text),
         PropKind::Image => {
@@ -697,6 +727,14 @@ fn resolve_property(
 ) -> Option<PropertyId> {
     match properties.resolve(name) {
         Some(id) => Some(id),
+        None if name == "animation" => {
+            errors.push(
+                file,
+                path,
+                "animation: движения моделей появятся в фазе 27".to_string(),
+            );
+            None
+        }
         None => {
             errors.push(
                 file,
@@ -831,6 +869,22 @@ pub struct ParsedObject {
     pub broken_properties: std::collections::HashSet<PropertyId>,
 }
 
+/// «Исполнение игры» → «Шаг и кадр»: `time_scale` — число от 0 до `MAX_TIME_SCALE`.
+fn validate_time_scale(n: f64, file: &str, path: &str, errors: &mut ErrorSink) -> bool {
+    if (0.0..=property::MAX_TIME_SCALE).contains(&n) {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!(
+            "свойство \"time_scale\" должно быть от 0 до {}, получено {n}",
+            property::MAX_TIME_SCALE
+        ),
+    );
+    false
+}
+
 /// «Картинки»: `opacity` границы и текст ошибки написаны один раз здесь — как для числового
 /// значения свойства объекта (`parse_scalar_value`), так и для поля `opacity` панели/кнопки
 /// (`parse_opacity`).
@@ -847,6 +901,38 @@ fn validate_opacity_range(n: f64, file: &str, path: &str, errors: &mut ErrorSink
     }
 }
 
+const MODEL_IN_FLAT_SCENE: &str =
+    "свойство \"model\" есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+/// Модель по имени: `model` называет только объявленную в `files.models`.
+fn resolve_model(
+    name: &str,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<String> {
+    let models = properties.models();
+    if models.index_of(name).is_some() {
+        return Some(name.to_string());
+    }
+    let declared = models
+        .names()
+        .map(|known| format!("\"{known}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    errors.push(
+        file,
+        path,
+        if models.is_empty() {
+            format!("модели \"{name}\" нет; модели не объявлены")
+        } else {
+            format!("модели \"{name}\" нет; объявлены {declared}")
+        },
+    );
+    None
+}
+
 const SHAPE_IN_FLAT_SCENE: &str =
     "shape есть только в трёхмерной сцене: у scene в game.json нет camera";
 
@@ -854,6 +940,9 @@ const WIND_IN_3D_SCENE: &str = "wind есть только в плоской с�
 
 const DECK_IN_FLAT_SCENE: &str =
     "deck есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+const ROAD_IN_FLAT_SCENE: &str =
+    "road есть только в трёхмерной сцене: у scene в game.json нет camera";
 
 /// «Мир на экране» → «Проверка перед запуском»: `parallax` и `repeat_x` есть только в плоской
 /// сцене — везде, где их можно записать: объект, шаблон, клавиша, `on_click`, правила. «Ветер и
@@ -965,6 +1054,31 @@ fn validate_run_jump_number(
         file,
         path,
         format!("свойство \"{name}\" должно быть больше нуля, получено {n}"),
+    );
+    false
+}
+
+/// «Езда по дорогам» → «Проверка перед запуском»: `drive_speed` и `road_speed` не меньше нуля.
+const DRIVE_NUMBERS: [PropertyId; 2] = [property::DRIVE_SPEED, property::ROAD_SPEED];
+
+fn validate_drive_number(
+    prop: PropertyId,
+    n: f64,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if n >= 0.0 {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!(
+            "свойство \"{}\" не может быть меньше нуля, получено {n}",
+            properties.name(prop)
+        ),
     );
     false
 }
@@ -1209,6 +1323,25 @@ fn validate_deck_shape(
     }
 }
 
+/// «Езда по дорогам», требование 30: дорога — только объект с `position` и `size`. `check_position` —
+/// как у `validate_follow_mouse_shape`.
+fn validate_road_shape(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if !shape.contains(&property::ROAD) {
+        return;
+    }
+    let missing_size = !shape.contains(&property::SIZE);
+    let missing_position = check_position && !shape.contains(&property::POSITION);
+    if missing_size || missing_position {
+        errors.push(file, path, "road разрешён только объекту с position и size");
+    }
+}
+
 /// «Трёхмерная сцена», требование 30: `height` есть только в трёхмерной сцене — везде, где его можно
 /// записать: объект, шаблон, клавиша, `on_click`, `add`/`set` правил.
 fn height_fits_the_scene(
@@ -1222,7 +1355,7 @@ fn height_fits_the_scene(
         errors.push(
             file,
             path,
-            "height есть только в трёхмерной сцене: у scene в game.json нет camera",
+            "свойство \"height\" есть только в трёхмерной сцене: у scene в game.json нет camera",
         );
         return false;
     }
@@ -1247,7 +1380,7 @@ fn validate_height(
     errors.push(
         file,
         path,
-        format!("height должен быть больше нуля, получено {n}"),
+        format!("свойство \"height\" должно быть больше нуля, получено {n}"),
     );
     false
 }
@@ -1330,6 +1463,46 @@ fn validate_shape_fill(
             file,
             path,
             "shape разрешён только объекту с position и size",
+        );
+    }
+}
+
+/// «Трёхмерная сцена» → «Модели и движения»: модели нужно место на земле, а заливки, картинки, `flip_x` и
+/// `opacity` ей не полагаются. `check_position` — как у `validate_follow_mouse_shape`.
+fn validate_model_fill(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if !shape.contains(&property::MODEL) {
+        return;
+    }
+    for (prop, name) in [
+        (property::SHAPE, "shape"),
+        (property::IMAGE, "image"),
+        (property::COLOR, "color"),
+        (property::FLIP_X, "flip_x"),
+        (property::OPACITY, "opacity"),
+    ] {
+        if shape.contains(&prop) {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "свойство \"{name}\" задано объекту со свойством \"model\": модель рисуется своими материалами"
+                ),
+            );
+        }
+    }
+    let missing_size = !shape.contains(&property::SIZE);
+    let missing_position = check_position && !shape.contains(&property::POSITION);
+    if missing_size || missing_position {
+        errors.push(
+            file,
+            path,
+            "свойство \"model\" разрешено только объекту с position и size",
         );
     }
 }
@@ -1450,7 +1623,9 @@ fn parse_scene_object(
     validate_image_fill(&shape, file, &path, errors);
     validate_follow_mouse_shape(&shape, true, file, &path, errors);
     validate_shape_fill(&shape, true, file, &path, errors);
+    validate_model_fill(&shape, true, file, &path, errors);
     validate_deck_shape(&shape, true, file, &path, errors);
+    validate_road_shape(&shape, true, file, &path, errors);
     validate_particles_shape(&shape, true, file, &path, errors);
     validate_fire_shape(&shape, true, file, &path, errors);
     validate_clouds_shape(&shape, true, file, &path, errors);
@@ -1470,6 +1645,39 @@ fn parse_scene_object(
         shape,
         broken_properties,
     })
+}
+
+/// «Создание объектов кодом», требования 3, 5: запись, что код передал в `create`, разбирается и
+/// проверяется как объект `scene.json`; ошибка называет свойство.
+fn parse_created_object(
+    record: &Json,
+    properties: &PropertyTable,
+    images: &[ImageDecl],
+) -> Result<ObjectSpec, String> {
+    let mut errors = ErrorSink::new();
+    let parsed = parse_scene_object(record, 0, "create", properties, images, &mut errors);
+    let (errs, _) = errors.into_parts();
+    if let Some(first) = errs.first() {
+        let place = first.path.strip_prefix("objects[0]").unwrap_or(&first.path);
+        let place = place.trim_start_matches(" → ");
+        return Err(if place.is_empty() {
+            first.message.clone()
+        } else {
+            format!("{place}: {}", first.message)
+        });
+    }
+    let parsed = parsed.ok_or("запись не разобрана")?;
+    Ok(ObjectSpec {
+        values: parsed.values,
+        grid: parsed.grid,
+        keys: parsed.keys,
+        on_click: parsed.on_click,
+    })
+}
+
+/// Разбор записей `create` игры: те же картинки, что видит `scene.json`.
+fn object_parser(images: Vec<ImageDecl>) -> ObjectParser {
+    ObjectParser::new(move |properties, record| parse_created_object(record, properties, &images))
 }
 
 /// «Мир на экране» → «Земля», требования 13–14: `scene.json`'s root — `objects` (required) and
@@ -1938,6 +2146,91 @@ struct SceneJsonConfig {
     camera: Option<CameraConfig>,
     light: LightConfig,
     cell_pixels: Option<f64>,
+    player_camera: Option<PlayerCameraConfig>,
+}
+
+/// «Мир на экране» → «Камера игрока», требования 1–3, 23: `player_camera` — `zoom` из двух чисел,
+/// `0 < min ≤ view_height ≤ max`, и необязательная точка `start` внутри сцены.
+fn parse_player_camera(
+    value: &Json,
+    scene: (Option<u32>, Option<u32>),
+    view_height: Option<f64>,
+    errors: &mut ErrorSink,
+) -> Option<PlayerCameraConfig> {
+    const PATH: &str = "scene → player_camera";
+    let obj = expect_object(value, "game.json", PATH, errors)?;
+    reject_unknown_keys(obj, &["zoom", "start"], "game.json", PATH, errors);
+    let zoom = parse_player_zoom(obj, view_height, errors);
+    let start = match obj.get("start") {
+        None => Some(None),
+        Some(point) => parse_player_start(point, scene, errors).map(Some),
+    };
+    Some(PlayerCameraConfig {
+        zoom: zoom?,
+        start: start?,
+    })
+}
+
+fn parse_player_zoom(
+    obj: &serde_json::Map<String, Json>,
+    view_height: Option<f64>,
+    errors: &mut ErrorSink,
+) -> Option<[f64; 2]> {
+    const PATH: &str = "scene → player_camera → zoom";
+    let value = require_field(obj, "zoom", "game.json", "scene → player_camera", errors)?;
+    let [min, max] = parse_vec2(value, "game.json", PATH, errors)?;
+    if min <= 0.0 {
+        errors.push(
+            "game.json",
+            PATH,
+            format!("zoom: самый близкий вид должен быть больше нуля, получено {min}"),
+        );
+        return None;
+    }
+    if min > max {
+        errors.push(
+            "game.json",
+            PATH,
+            format!("zoom: самый близкий вид {min} больше самого дальнего {max}"),
+        );
+        return None;
+    }
+    if let Some(view_height) = view_height
+        && !(min..=max).contains(&view_height)
+    {
+        errors.push(
+            "game.json",
+            PATH,
+            format!("zoom [{min}, {max}] не вмещает view_height {view_height}"),
+        );
+        return None;
+    }
+    Some([min, max])
+}
+
+fn parse_player_start(
+    value: &Json,
+    scene: (Option<u32>, Option<u32>),
+    errors: &mut ErrorSink,
+) -> Option<Vec2> {
+    const PATH: &str = "scene → player_camera → start";
+    let point = parse_vec2(value, "game.json", PATH, errors)?;
+    let (Some(width), Some(height)) = scene else {
+        return Some(point);
+    };
+    if (0.0..=f64::from(width)).contains(&point[0]) && (0.0..=f64::from(height)).contains(&point[1])
+    {
+        return Some(point);
+    }
+    errors.push(
+        "game.json",
+        PATH,
+        format!(
+            "start [{}, {}] вне сцены {width} × {height}",
+            point[0], point[1]
+        ),
+    );
+    None
 }
 
 /// «Трёхмерная сцена» → «Камера», требование 30: `camera` — объект с одним числом `pitch` от 30 до
@@ -2033,6 +2326,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
             "camera",
             "light",
             "cell_pixels",
+            "player_camera",
         ],
         "game.json",
         "scene",
@@ -2116,6 +2410,18 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         );
     }
     let cell_pixels = parse_cell_pixels(obj, errors);
+    let player_camera = match obj.get("player_camera") {
+        None => Some(None),
+        Some(_) if !obj.contains_key("view_height") => {
+            errors.push(
+                "game.json",
+                "scene → player_camera",
+                "player_camera без view_height: вид при сборке мира берётся из view_height",
+            );
+            None
+        }
+        Some(v) => parse_player_camera(v, (width, height), view_height.flatten(), errors).map(Some),
+    };
     Some(SceneJsonConfig {
         width: width?,
         height: height?,
@@ -2125,6 +2431,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         camera: camera?,
         light: light?,
         cell_pixels: cell_pixels?,
+        player_camera: player_camera?,
     })
 }
 
@@ -2188,6 +2495,9 @@ pub struct FilePaths {
     /// `files.materials` — «Свет и материалы»: материалы рельефа в порядке объявления; этот порядок —
     /// номер материала, на который ссылаются слои `covers` файла рельефа. Пусто, если не объявлена.
     pub materials: Vec<MaterialDecl>,
+    /// `files.models` — «Трёхмерная сцена» → «Модели и движения»: модели в порядке объявления. Пусто, если не
+    /// объявлена.
+    pub models: Vec<ModelDecl>,
 }
 
 /// One `files.images` entry — «Картинки» → «Таблица картинок»: `frames`/`frame_time` default to
@@ -2297,6 +2607,8 @@ pub struct NeededMedia {
     pub materials: Vec<String>,
     /// Пути масок `covers` по порядку слоёв.
     pub masks: Vec<String>,
+    /// `(имя, путь)` каждой модели `files.models`.
+    pub models: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone)]
@@ -2418,6 +2730,12 @@ pub fn read_texts(
             .flat_map(|material| material.maps().map(|(_, path)| path.to_string()))
             .collect(),
         masks: terrain_json.map(terrain_image_paths).unwrap_or_default(),
+        models: config
+            .files
+            .models
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.path.clone()))
+            .collect(),
     }
 }
 
@@ -2505,6 +2823,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "terrain",
                 "materials",
                 "stamps",
+                "models",
             ],
             "game.json",
             "files",
@@ -2568,6 +2887,12 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             parse_materials_table(v, &order, "game.json", "files → materials", errors)
                 .unwrap_or_default()
         });
+        // «Трёхмерная сцена»: необязательна — нет ключа, нет и моделей; номер модели — порядок объявления.
+        let models = f.get("models").map(|v| {
+            let order = declaration_order(text).models;
+            parse_models_table(v, &order, "game.json", "files → models", errors)
+                .unwrap_or_default()
+        });
         // «Лепка рельефа»: необязательна — нет ключа, нет и отпечатков штампов; номер штампа — порядок
         // объявления, а не алфавит.
         let stamps = f.get("stamps").map(|v| {
@@ -2585,7 +2910,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         });
         (
             properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables,
-            terrain, materials, stamps,
+            terrain, materials, stamps, models,
         )
     });
 
@@ -2615,6 +2940,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         terrain,
         materials,
         stamps,
+        models,
     ) = files?;
     if terrain.is_some() && scene.camera.is_none() {
         errors.push(
@@ -2628,6 +2954,13 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             "game.json",
             "files → materials",
             "files.materials есть только в трёхмерной сцене: у scene в game.json нет camera",
+        );
+    }
+    if models.is_some() && scene.camera.is_none() {
+        errors.push(
+            "game.json",
+            "files → models",
+            "files.models есть только в трёхмерной сцене: у scene в game.json нет camera",
         );
     }
     if stamps.is_some() && scene.camera.is_none() {
@@ -2651,6 +2984,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             camera: scene.camera,
             light: scene.light,
             cell_pixels: scene.cell_pixels,
+            player_camera: scene.player_camera,
         },
         random_seed,
         max_objects: max_objects as usize,
@@ -2668,6 +3002,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             terrain,
             stamps: stamps.unwrap_or_default(),
             materials: materials.unwrap_or_default(),
+            models: models.unwrap_or_default(),
         },
         start_screen,
         win_screen,
@@ -3635,6 +3970,13 @@ fn parse_set_value(
         {
             return None;
         }
+        if DRIVE_NUMBERS.contains(&prop)
+            && !number_constants(&expr)
+                .iter()
+                .all(|&n| validate_drive_number(prop, n, properties, file, path, errors))
+        {
+            return None;
+        }
         return Some(SetValue::Number(expr));
     }
     parse_scalar_value(value, prop, properties, images, file, path, errors).map(SetValue::Const)
@@ -4250,7 +4592,9 @@ fn parse_template(
     validate_image_fill(&shape, file, path, errors);
     validate_follow_mouse_shape(&shape, false, file, path, errors);
     validate_shape_fill(&shape, false, file, path, errors);
+    validate_model_fill(&shape, false, file, path, errors);
     validate_deck_shape(&shape, false, file, path, errors);
+    validate_road_shape(&shape, false, file, path, errors);
     validate_particles_shape(&shape, false, file, path, errors);
     validate_fire_shape(&shape, false, file, path, errors);
     validate_clouds_shape(&shape, false, file, path, errors);
@@ -4374,8 +4718,41 @@ fn parse_pick_one(
 /// missing or unrecognized, rather than let it hide behind the `kind` error until a later pass.
 const ALL_RULE_KEYS: &[&str] = &[
     "kind", "for", "a", "b", "effects", "do", "when", "where", "template", "pick_one", "avoid",
-    "solid", "one_way",
+    "solid", "one_way", "side",
 ];
+
+const DRIVE_IN_FLAT_SCENE: &str =
+    "drive есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+/// «Езда по дорогам», требование 9: `side` необязателен — `right`, `left` или `middle`, по умолчанию
+/// `right`. `None` — значение не годится, ошибка уже записана.
+fn parse_drive_side(
+    obj: &serde_json::Map<String, Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Side> {
+    let Some(value) = obj.get("side") else {
+        return Some(Side::Right);
+    };
+    let side_path = join(path, "side");
+    let name = expect_string(value, file, &side_path, errors)?;
+    match name.as_str() {
+        "right" => Some(Side::Right),
+        "left" => Some(Side::Left),
+        "middle" => Some(Side::Middle),
+        other => {
+            errors.push(
+                file,
+                &side_path,
+                format!(
+                    "side должен быть \"right\", \"left\" или \"middle\", получено \"{other}\""
+                ),
+            );
+            None
+        }
+    }
+}
 
 const RUN_JUMP_IN_3D_SCENE: &str =
     "run_jump есть только в плоской сцене: у scene в game.json есть camera";
@@ -4482,6 +4859,19 @@ fn parse_rule(
                 },
                 std::collections::HashSet::new(),
             ))
+        }
+        // «Езда по дорогам», требование 9.
+        Some("drive") => {
+            reject_unknown_keys(obj, &["kind", "for", "side"], file, &path, errors);
+            if !properties.three_d() {
+                errors.push(file, &path, DRIVE_IN_FLAT_SCENE);
+                return None;
+            }
+            let for_json = require_field(obj, "for", file, &path, errors)?;
+            let for_obj = expect_object(for_json, file, &join(&path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
+            let side = parse_drive_side(obj, file, &path, errors)?;
+            Some((Rule::Drive { for_, side }, std::collections::HashSet::new()))
         }
         Some("collide") => {
             reject_unknown_keys(
@@ -5063,13 +5453,30 @@ fn widen_shapes_by_rule_actions(shapes: &mut [PossibleShape], rules: &RuleSet) {
             }
         }
 
+        // «Езда по дорогам»: `drive_to` убирает сам движок, когда машина доехала, — отбор по его
+        // отсутствию находит стоящих, хотя ни одно правило файла признака не снимает.
+        for rule in &rules.rules {
+            let Rule::Drive { for_, .. } = rule else {
+                continue;
+            };
+            for ps in shapes.iter_mut() {
+                if matches_shape(for_, &ps.shape) {
+                    changed |= ps.shape.maybe.insert(property::DRIVE_TO);
+                    changed |= ps.shape.removable.insert(property::DRIVE_TO);
+                }
+            }
+        }
+
         for rule in &rules.rules {
             let do_ = match rule {
                 Rule::Check { do_, .. }
                 | Rule::Delete { do_, .. }
                 | Rule::Spawn { do_, .. }
                 | Rule::Collide { do_, .. } => do_,
-                Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => continue,
+                Rule::Move { .. }
+                | Rule::Walk { .. }
+                | Rule::RunJump { .. }
+                | Rule::Drive { .. } => continue,
             };
             let mut given = Vec::new();
             let mut taken = Vec::new();
@@ -5234,7 +5641,11 @@ fn validate_reachable_image(shapes: &[PossibleShape], code: Option<&str>, errors
         {
             errors.push(&ps.file, &ps.path, REPEAT_X_WITHOUT_FILL);
         }
-        if code_gives_image || has_image || ps.shape.certain.contains(&property::SHAPE) {
+        if code_gives_image
+            || has_image
+            || ps.shape.certain.contains(&property::SHAPE)
+            || ps.shape.certain.contains(&property::MODEL)
+        {
             continue;
         }
         for (prop, message) in NEEDS_IMAGE {
@@ -5282,6 +5693,109 @@ fn validate_move_apart_from_run_jump(
                 "объект{} попал и под move (rules[{movement}]), и под run_jump (rules[{run_jump}]): его двигало бы дважды",
                 name_suffix(obj)
             ),
+        );
+    }
+}
+
+/// «Езда по дорогам», требование 30: объект из `scene.json` под `drive` и под `move`, `walk` или
+/// `run_jump` двигался бы дважды.
+fn validate_drive_apart_from_other_movers(
+    scene: &[ParsedObject],
+    rules: &RuleSet,
+    rule_meta: &[RuleMeta],
+    scene_file: &str,
+    errors: &mut ErrorSink,
+) {
+    let labeled = rules.rules.iter().zip(rule_meta);
+    for obj in scene {
+        let selects = |selector: &Selector| {
+            selector.has.iter().all(|prop| obj.shape.contains(prop))
+                && !selector.without.iter().any(|prop| obj.shape.contains(prop))
+        };
+        let Some(drive) = labeled.clone().find_map(|(rule, meta)| match rule {
+            Rule::Drive { for_, .. } if selects(for_) => Some(meta.file_index),
+            _ => None,
+        }) else {
+            continue;
+        };
+        let other = labeled.clone().find_map(|(rule, meta)| match rule {
+            Rule::Move { for_ } if selects(for_) => Some(("move", meta.file_index)),
+            Rule::Walk { for_, .. } if selects(for_) => Some(("walk", meta.file_index)),
+            Rule::RunJump { for_, .. } if selects(for_) => Some(("run_jump", meta.file_index)),
+            _ => None,
+        });
+        if let Some((kind, index)) = other {
+            errors.push(
+                scene_file,
+                &obj.path,
+                format!(
+                    "объект{} попал и под {kind} (rules[{index}]), и под drive (rules[{drive}]): его двигало бы дважды",
+                    name_suffix(obj)
+                ),
+            );
+        }
+    }
+}
+
+/// «Камера игрока», требование 24: клавиша камеры, названная в `keys` объекта сцены или экрана,
+/// достаётся привязке — камера её не берёт. Предупреждение, не ошибка.
+fn warn_taken_camera_keys(
+    scene: &[ParsedObject],
+    scene_file: &str,
+    screens: &[Screen],
+    screens_file: &str,
+    errors: &mut ErrorSink,
+) {
+    for obj in scene {
+        let Some(keys) = &obj.keys else {
+            continue;
+        };
+        let owner = obj.name.as_deref().map_or_else(
+            || format!("объекта {}", obj.path),
+            |name| format!("объекта „{name}“"),
+        );
+        for code in camera::pan_key_codes().filter(|code| keys.contains_key(*code)) {
+            errors.push_warning(
+                scene_file,
+                &join(&join(&obj.path, "keys"), code),
+                format!("клавиша {code} у {owner}: камера её не берёт"),
+            );
+        }
+    }
+    for (index, screen) in screens.iter().enumerate() {
+        for code in camera::pan_key_codes().filter(|code| screen.keys.contains_key(*code)) {
+            errors.push_warning(
+                screens_file,
+                &join(&format!("screens[{index}]"), &join("keys", code)),
+                format!(
+                    "клавиша {code} у экрана „{}“: камера её не берёт",
+                    screen.name
+                ),
+            );
+        }
+    }
+}
+
+/// «Езда по дорогам», требование 31: игра называет `road`, но дорог в ней не будет — в `scene.json`
+/// их нет, ни шаблон, ни клавиша их не дают и в коде нет слова `road`.
+fn warn_road_without_roads(
+    used: &std::collections::HashSet<PropertyId>,
+    shapes: &[PossibleShape],
+    code: Option<&str>,
+    rules_file: &str,
+    errors: &mut ErrorSink,
+) {
+    let has_road = shapes.iter().any(|ps| {
+        ps.shape.certain.contains(&property::ROAD) || ps.shape.maybe.contains(&property::ROAD)
+    });
+    if used.contains(&property::ROAD)
+        && !has_road
+        && !code.is_some_and(|c| code_mentions_word(c, "road"))
+    {
+        errors.push_warning(
+            rules_file,
+            "",
+            "игра называет road, но ни одной дороги в scene.json нет и в коде нет слова road: машины поедут по прямой",
         );
     }
 }
@@ -5420,19 +5934,19 @@ fn validate_run_actions(
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => {
                 check_common_actions_run(do_, &join(&label, "do"), &check, errors);
             }
-            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => {}
+            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } | Rule::Drive { .. } => {}
         }
     }
 }
 
-/// `do_` from any rule kind that has one — `Move`/`Walk`/`RunJump` have none.
+/// `do_` from any rule kind that has one — `Move`/`Walk`/`RunJump`/`Drive` have none.
 fn common_actions(rule: &Rule) -> &[CommonAction] {
     match rule {
         Rule::Collide { do_, .. }
         | Rule::Check { do_, .. }
         | Rule::Delete { do_, .. }
         | Rule::Spawn { do_, .. } => do_,
-        Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => &[],
+        Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } | Rule::Drive { .. } => &[],
     }
 }
 
@@ -5678,6 +6192,22 @@ fn validate_property_sufficiency(
                     );
                 }
             }
+            // «Езда по дорогам», требование 30: объекту под `drive` не хватает `position`, `size` или
+            // `drive_speed` — `drive_to` не обязателен: машина без него стоит.
+            Rule::Drive { for_, .. } => {
+                for prop in [property::POSITION, property::SIZE, property::DRIVE_SPEED] {
+                    require(
+                        &candidates,
+                        file,
+                        for_,
+                        prop,
+                        properties,
+                        &label,
+                        &mut seen,
+                        errors,
+                    );
+                }
+            }
             // «Бег и прыжок», требование 21: объекту под `run_jump` не хватает `position`, `size`,
             // `run_speed` или `jump_height` — `solid` и `one_way` ничего не требуют: объект без
             // `position` и `size` просто не твёрдое.
@@ -5837,13 +6367,22 @@ fn spawn_from_parent_fields<'a>(
 fn mark_screen_elements_used(used: &mut std::collections::HashSet<PropertyId>, screens: &[Screen]) {
     for screen in screens {
         for element in &screen.elements {
-            let text = match element {
-                Element::Label { text, .. } | Element::Button { text, .. } => text,
-                Element::Panel { .. } => continue,
-            };
-            for part in text {
-                if let TextPart::Value { prop, .. } = part {
-                    used.insert(*prop);
+            if let Element::List { for_, sort_by, .. } = element {
+                mark_selector_used(used, for_);
+                used.extend(sort_by);
+            }
+            if let Some(selector) = element.selector() {
+                mark_selector_used(used, selector);
+            }
+            for leaf in element.leaves() {
+                let text = match leaf {
+                    Element::Label { text, .. } | Element::Button { text, .. } => text,
+                    Element::Panel { .. } | Element::List { .. } => continue,
+                };
+                for part in text {
+                    if let TextPart::Value { prop, .. } | TextPart::Own(prop) = part {
+                        used.insert(*prop);
+                    }
                 }
             }
         }
@@ -5902,7 +6441,7 @@ fn collect_used_properties(
     }
     for rule in &rules.rules {
         match rule {
-            Rule::Move { for_ } => mark_selector_used(&mut used, for_),
+            Rule::Move { for_ } | Rule::Drive { for_, .. } => mark_selector_used(&mut used, for_),
             Rule::Walk { for_, avoid } => {
                 mark_selector_used(&mut used, for_);
                 if let Some(avoid) = avoid {
@@ -6207,7 +6746,7 @@ fn validate_selectors_not_empty(
     for (rule, meta) in rules.rules.iter().zip(rule_meta) {
         let label = format!("rules[{}]", meta.file_index);
         match rule {
-            Rule::Move { for_ } => check(for_, &label, "for"),
+            Rule::Move { for_ } | Rule::Drive { for_, .. } => check(for_, &label, "for"),
             Rule::Collide { a, b, do_, .. } => {
                 check(a, &label, "a");
                 check(b, &label, "b");
@@ -6275,6 +6814,75 @@ fn validate_world_element_selectors_not_empty(
                 describe_selector(&element.for_, properties)
             ),
         );
+    }
+}
+
+/// «Интерфейс игры» → «Проверка данных перед запуском»: `for` элемента экрана или списка заведомо не
+/// подходит ни одному объекту — предупреждение, как у правил.
+fn validate_screen_selectors_not_empty(
+    screens: &[Screen],
+    shapes: &[PossibleShape],
+    screens_file: &str,
+    properties: &PropertyTable,
+    code: Option<&str>,
+    errors: &mut ErrorSink,
+) {
+    for (screen_index, screen) in screens.iter().enumerate() {
+        for (index, element) in screen.elements.iter().enumerate() {
+            let selector = match element {
+                Element::List { for_, .. } => Some(for_),
+                other => other.selector(),
+            };
+            let Some(selector) = selector else {
+                continue;
+            };
+            if selector_is_satisfiable(selector, shapes, properties, code) {
+                continue;
+            }
+            errors.push_warning(
+                screens_file,
+                &format!("screens[{screen_index}] → elements[{index}] → for"),
+                format!(
+                    "отбор {} заведомо не подходит ни одному объекту, какой может существовать в игре; ожидалось, что отбору будет соответствовать хотя бы один объект",
+                    describe_selector(selector, properties)
+                ),
+            );
+        }
+    }
+}
+
+/// «Список», требование 22: элемент строки выходит за строку — левее или выше её угла, правее списка или
+/// ниже `row_height`.
+fn warn_row_elements_outside_row(screens: &[Screen], screens_file: &str, errors: &mut ErrorSink) {
+    for (screen_index, screen) in screens.iter().enumerate() {
+        for (index, element) in screen.elements.iter().enumerate() {
+            let Element::List {
+                placement,
+                row_height,
+                row,
+                ..
+            } = element
+            else {
+                continue;
+            };
+            for (inner, part) in row.iter().enumerate() {
+                let own = part.placement();
+                let outside = own.offset[0] < 0.0
+                    || own.offset[1] < 0.0
+                    || own.offset[0] + own.size[0] > placement.size[0]
+                    || own.offset[1] + own.size[1] > *row_height;
+                if outside {
+                    errors.push_warning(
+                        screens_file,
+                        &format!("screens[{screen_index}] → elements[{index}] → row[{inner}]"),
+                        format!(
+                            "элемент строки выходит за строку {} × {}; ожидалось, что элемент строки лежит внутри неё",
+                            placement.size[0], row_height
+                        ),
+                    );
+                }
+            }
+        }
     }
 }
 
@@ -6346,10 +6954,12 @@ fn expect_ui_color(
 }
 
 /// One `text` field after parsing: `{имя объекта.свойство}` becomes a resolved `TextPart::Value`,
-/// everything else stays literal. «Интерфейс игры» → «Текст».
+/// everything else stays literal. «Интерфейс игры» → «Текст». `own` — элемент при объекте или в строке
+/// списка: тогда `{свойство}` без имени объекта — `TextPart::Own`, свойство объекта элемента.
 fn parse_rich_text(
     s: &str,
     properties: &PropertyTable,
+    own: bool,
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -6383,31 +6993,39 @@ fn parse_rich_text(
             );
             return None;
         }
-        let Some(dot) = inner.find('.') else {
-            errors.push(
-                file,
-                path,
-                format!("подстановка \"{{{inner}}}\" должна быть вида {{имя объекта.свойство}}"),
-            );
-            return None;
+        let part = match inner.find('.') {
+            None if !inner.is_empty() && own => {
+                TextPart::Own(resolve_property(&inner, properties, file, path, errors)?)
+            }
+            None if !inner.is_empty() => {
+                errors.push(
+                    file,
+                    path,
+                    format!(
+                        "подстановка \"{{{inner}}}\" без имени объекта допустима только у элемента с for и в строке списка; у этого элемента нужна подстановка вида {{имя объекта.свойство}}"
+                    ),
+                );
+                return None;
+            }
+            Some(dot) if dot > 0 && dot + 1 < inner.len() => TextPart::Value {
+                object_name: inner[..dot].to_string(),
+                prop: resolve_property(&inner[dot + 1..], properties, file, path, errors)?,
+            },
+            _ => {
+                errors.push(
+                    file,
+                    path,
+                    format!(
+                        "подстановка \"{{{inner}}}\" должна быть вида {{имя объекта.свойство}}"
+                    ),
+                );
+                return None;
+            }
         };
-        let (obj_name, prop_name) = (&inner[..dot], &inner[dot + 1..]);
-        if obj_name.is_empty() || prop_name.is_empty() {
-            errors.push(
-                file,
-                path,
-                format!("подстановка \"{{{inner}}}\" должна быть вида {{имя объекта.свойство}}"),
-            );
-            return None;
-        }
-        let prop = resolve_property(prop_name, properties, file, path, errors)?;
         if !literal.is_empty() {
             parts.push(TextPart::Literal(std::mem::take(&mut literal)));
         }
-        parts.push(TextPart::Value {
-            object_name: obj_name.to_string(),
-            prop,
-        });
+        parts.push(part);
     }
     if !literal.is_empty() {
         parts.push(TextPart::Literal(literal));
@@ -6465,6 +7083,8 @@ enum ParsedCommand {
     Resume,
     Quit,
     ToggleSound,
+    /// Имя функции кода, ещё не сверенное с файлом кода — `resolve_on_click` сверяет.
+    Run(String),
 }
 
 fn parse_button_command(
@@ -6542,6 +7162,15 @@ fn parse_button_command(
             };
             Some(ParsedCommand::NewGame(name, values))
         }
+        "run" => {
+            let name = expect_string(
+                require_index(arr, 1, file, path, errors)?,
+                file,
+                &join(path, "[1]"),
+                errors,
+            )?;
+            want_args(2, errors).then_some(ParsedCommand::Run(name))
+        }
         "resume" => want_args(1, errors).then_some(ParsedCommand::Resume),
         "quit" => want_args(1, errors).then_some(ParsedCommand::Quit),
         "toggle_sound" => {
@@ -6574,6 +7203,7 @@ enum ParsedElementData {
         color: Option<[f32; 4]>,
         image_name: Option<String>,
         opacity: Option<f32>,
+        for_: Option<Selector>,
     },
     Label {
         placement: Placement,
@@ -6582,10 +7212,14 @@ enum ParsedElementData {
         font_size: f32,
         color: [f32; 4],
         align: Align,
+        wrap: bool,
+        for_: Option<Selector>,
     },
     Button {
         placement: Placement,
         text: Vec<TextPart>,
+        /// Текст кнопки, как он записан в файле, — им ошибка называет кнопку.
+        caption: String,
         font_name: String,
         font_size: f32,
         text_color: [f32; 4],
@@ -6597,11 +7231,34 @@ enum ParsedElementData {
         image_pressed_name: Option<String>,
         opacity: Option<f32>,
         on_click: ParsedCommand,
+        /// В коробке: кнопка — самый большой вид элемента.
+        for_: Option<Box<Selector>>,
+    },
+    List {
+        placement: Placement,
+        for_: Selector,
+        row_height: f32,
+        gap: f32,
+        sort_by: Option<PropertyId>,
+        descending: bool,
+        row: Vec<ParsedElementData>,
+        scroll_color: [f32; 4],
     },
 }
 
+/// Где стоит элемент: прямо на экране (якорь и, может быть, отбор `for`) или в строке списка (сдвиг от
+/// угла строки, без якоря и отбора).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Scope {
+    Screen,
+    Row,
+}
+
+/// Цвет полосы прокрутки списка по умолчанию, `#ffffff66`.
+const DEFAULT_SCROLL_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.4];
+
 const PANEL_KEYS: &[&str] = &[
-    "kind", "anchor", "offset", "size", "color", "image", "opacity",
+    "kind", "anchor", "offset", "size", "color", "image", "opacity", "for",
 ];
 const LABEL_KEYS: &[&str] = &[
     "kind",
@@ -6613,6 +7270,8 @@ const LABEL_KEYS: &[&str] = &[
     "font_size",
     "color",
     "align",
+    "wrap",
+    "for",
 ];
 const BUTTON_KEYS: &[&str] = &[
     "kind",
@@ -6631,6 +7290,20 @@ const BUTTON_KEYS: &[&str] = &[
     "image_pressed",
     "opacity",
     "on_click",
+    "for",
+];
+const LIST_KEYS: &[&str] = &[
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "for",
+    "row_height",
+    "gap",
+    "sort_by",
+    "descending",
+    "row",
+    "scroll_color",
 ];
 
 /// «Картинки» → «Где появляется картинка»: a panel or button must show exactly one of `color`/
@@ -6672,11 +7345,235 @@ fn parse_opacity(
     }
 }
 
+/// «Список», требование 6: элемент строки — панель, надпись или кнопка с `offset` от левого верхнего угла
+/// строки и `size`, без `anchor` и `for`.
+fn parse_row_placement(
+    obj: &serde_json::Map<String, Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Placement> {
+    let offset = match obj.get("offset") {
+        Some(v) => parse_vec2(v, file, &join(path, "offset"), errors)?,
+        None => [0.0, 0.0],
+    };
+    let size_json = require_field(obj, "size", file, path, errors)?;
+    let size = parse_vec2(size_json, file, &join(path, "size"), errors)?;
+    if size[0] <= 0.0 || size[1] <= 0.0 {
+        errors.push(
+            file,
+            &join(path, "size"),
+            format!(
+                "размер должен быть больше нуля, получено [{}, {}]",
+                size[0], size[1]
+            ),
+        );
+        return None;
+    }
+    Some(Placement {
+        anchor: Anchor::TopLeft,
+        offset: [offset[0] as f32, offset[1] as f32],
+        size: [size[0] as f32, size[1] as f32],
+    })
+}
+
+/// Место элемента и его отбор `for`: для элемента экрана — якорь и необязательный отбор, для элемента
+/// строки — сдвиг от угла строки, а `anchor` и `for` — ошибка. Внешний `None` — ошибка уже названа.
+fn parse_element_place(
+    obj: &serde_json::Map<String, Json>,
+    scope: Scope,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<(Placement, Option<Selector>)> {
+    if scope == Scope::Row {
+        let mut allowed = true;
+        for (key, reason) in [
+            (
+                "anchor",
+                "его место — offset от левого верхнего угла строки",
+            ),
+            (
+                "for",
+                "подстановка {свойство} в нём берёт свойство объекта строки",
+            ),
+        ] {
+            if obj.contains_key(key) {
+                errors.push(
+                    file,
+                    &join(path, key),
+                    format!("у элемента строки списка нет \"{key}\": {reason}"),
+                );
+                allowed = false;
+            }
+        }
+        return allowed
+            .then(|| parse_row_placement(obj, file, path, errors))
+            .flatten()
+            .map(|placement| (placement, None));
+    }
+    let for_ = match obj.get("for") {
+        None => None,
+        Some(v) => {
+            let for_path = join(path, "for");
+            let for_obj = expect_object(v, file, &for_path, errors)?;
+            Some(resolve_selector(
+                for_obj, properties, file, &for_path, errors,
+            ))
+        }
+    };
+    let placement = parse_placement(obj, file, path, errors)?;
+    Some((placement, for_))
+}
+
+/// `wrap` надписи: `true` или `false`, по умолчанию `false`.
+fn parse_wrap(
+    obj: &serde_json::Map<String, Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<bool> {
+    match obj.get("wrap") {
+        None => Some(false),
+        Some(v) => v.as_bool().or_else(|| {
+            errors.push(
+                file,
+                &join(path, "wrap"),
+                format!(
+                    "свойство \"wrap\" должно быть true или false, получено {}",
+                    kind_name(v)
+                ),
+            );
+            None
+        }),
+    }
+}
+
+/// Свойство, по которому список упорядочен: число, время или таймер.
+fn parse_sort_by(
+    obj: &serde_json::Map<String, Json>,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<PropertyId>> {
+    let Some(v) = obj.get("sort_by") else {
+        return Some(None);
+    };
+    let sort_path = join(path, "sort_by");
+    let name = expect_string(v, file, &sort_path, errors)?;
+    let prop = resolve_property(&name, properties, file, &sort_path, errors)?;
+    if !matches!(
+        properties.kind(prop),
+        PropKind::Number | PropKind::Time | PropKind::Timer
+    ) {
+        errors.push(
+            file,
+            &sort_path,
+            format!(
+                "свойство \"sort_by\" должно называть свойство вида number, time или timer, у \"{name}\" вид {}",
+                properties.kind(prop).label()
+            ),
+        );
+        return None;
+    }
+    Some(Some(prop))
+}
+
+fn parse_list(
+    obj: &serde_json::Map<String, Json>,
+    path: &str,
+    file: &str,
+    properties: &PropertyTable,
+    errors: &mut ErrorSink,
+) -> Option<ParsedElementData> {
+    reject_unknown_keys(obj, LIST_KEYS, file, path, errors);
+    let placement = parse_placement(obj, file, path, errors)?;
+    let for_json = require_field(obj, "for", file, path, errors)?;
+    let for_path = join(path, "for");
+    let for_obj = expect_object(for_json, file, &for_path, errors)?;
+    let for_ = resolve_selector(for_obj, properties, file, &for_path, errors);
+    let row_height_json = require_field(obj, "row_height", file, path, errors)?;
+    let row_height_path = join(path, "row_height");
+    let row_height = expect_number(row_height_json, file, &row_height_path, errors)?;
+    if row_height <= 0.0 {
+        errors.push(
+            file,
+            &row_height_path,
+            format!("свойство \"row_height\" должно быть больше нуля, получено {row_height}"),
+        );
+        return None;
+    }
+    let gap = match obj.get("gap") {
+        None => 0.0,
+        Some(v) => {
+            let gap = expect_number(v, file, &join(path, "gap"), errors)?;
+            if gap < 0.0 {
+                errors.push(
+                    file,
+                    &join(path, "gap"),
+                    format!("свойство \"gap\" не может быть меньше нуля, получено {gap}"),
+                );
+                return None;
+            }
+            gap
+        }
+    };
+    let sort_by = parse_sort_by(obj, properties, file, path, errors)?;
+    let descending = match obj.get("descending") {
+        None => false,
+        Some(v) => v.as_bool().or_else(|| {
+            errors.push(
+                file,
+                &join(path, "descending"),
+                format!(
+                    "свойство \"descending\" должно быть true или false, получено {}",
+                    kind_name(v)
+                ),
+            );
+            None
+        })?,
+    };
+    let scroll_color = match obj.get("scroll_color") {
+        Some(v) => expect_ui_color(v, file, &join(path, "scroll_color"), errors)?,
+        None => DEFAULT_SCROLL_COLOR,
+    };
+    let row_json = require_field(obj, "row", file, path, errors)?;
+    let row_path = join(path, "row");
+    let row_items = expect_array(row_json, file, &row_path, errors)?;
+    let row = row_items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| {
+            parse_element(
+                item,
+                &join(&row_path, &format!("[{i}]")),
+                file,
+                properties,
+                Scope::Row,
+                errors,
+            )
+        })
+        .collect();
+    Some(ParsedElementData::List {
+        placement,
+        for_,
+        row_height: row_height as f32,
+        gap: gap as f32,
+        sort_by,
+        descending,
+        row,
+        scroll_color,
+    })
+}
+
 fn parse_element(
     value: &Json,
     path: &str,
     file: &str,
     properties: &PropertyTable,
+    scope: Scope,
     errors: &mut ErrorSink,
 ) -> Option<ParsedElementData> {
     let obj = expect_object(value, file, path, errors)?;
@@ -6685,7 +7582,8 @@ fn parse_element(
     match kind.as_str() {
         "panel" => {
             reject_unknown_keys(obj, PANEL_KEYS, file, path, errors);
-            let placement = parse_placement(obj, file, path, errors)?;
+            let (placement, for_) =
+                parse_element_place(obj, scope, properties, file, path, errors)?;
             let color = match obj.get("color") {
                 Some(v) => Some(expect_ui_color(v, file, &join(path, "color"), errors)?),
                 None => None,
@@ -6702,14 +7600,24 @@ fn parse_element(
                 color,
                 image_name,
                 opacity,
+                for_,
             })
         }
         "label" => {
             reject_unknown_keys(obj, LABEL_KEYS, file, path, errors);
-            let placement = parse_placement(obj, file, path, errors)?;
+            let (placement, for_) =
+                parse_element_place(obj, scope, properties, file, path, errors)?;
             let text_json = require_field(obj, "text", file, path, errors)?;
             let text_str = expect_string(text_json, file, &join(path, "text"), errors)?;
-            let text = parse_rich_text(&text_str, properties, file, &join(path, "text"), errors)?;
+            let own = scope == Scope::Row || for_.is_some();
+            let text = parse_rich_text(
+                &text_str,
+                properties,
+                own,
+                file,
+                &join(path, "text"),
+                errors,
+            )?;
             let font_json = require_field(obj, "font", file, path, errors)?;
             let font_name = expect_string(font_json, file, &join(path, "font"), errors)?;
             let font_size = match obj.get("font_size") {
@@ -6734,6 +7642,7 @@ fn parse_element(
                 }
                 None => Align::Left,
             };
+            let wrap = parse_wrap(obj, file, path, errors)?;
             Some(ParsedElementData::Label {
                 placement,
                 text,
@@ -6741,14 +7650,25 @@ fn parse_element(
                 font_size: font_size as f32,
                 color,
                 align,
+                wrap,
+                for_,
             })
         }
         "button" => {
             reject_unknown_keys(obj, BUTTON_KEYS, file, path, errors);
-            let placement = parse_placement(obj, file, path, errors)?;
+            let (placement, for_) =
+                parse_element_place(obj, scope, properties, file, path, errors)?;
             let text_json = require_field(obj, "text", file, path, errors)?;
             let text_str = expect_string(text_json, file, &join(path, "text"), errors)?;
-            let text = parse_rich_text(&text_str, properties, file, &join(path, "text"), errors)?;
+            let own = scope == Scope::Row || for_.is_some();
+            let text = parse_rich_text(
+                &text_str,
+                properties,
+                own,
+                file,
+                &join(path, "text"),
+                errors,
+            )?;
             let font_json = require_field(obj, "font", file, path, errors)?;
             let font_name = expect_string(font_json, file, &join(path, "font"), errors)?;
             let font_size = match obj.get("font_size") {
@@ -6834,6 +7754,7 @@ fn parse_element(
             Some(ParsedElementData::Button {
                 placement,
                 text,
+                caption: text_str,
                 font_name,
                 font_size: font_size as f32,
                 text_color,
@@ -6845,13 +7766,27 @@ fn parse_element(
                 image_pressed_name,
                 opacity,
                 on_click,
+                for_: for_.map(Box::new),
             })
         }
-        other => {
+        "list" if scope == Scope::Screen => parse_list(obj, path, file, properties, errors),
+        "list" => {
             errors.push(
                 file,
                 &join(path, "kind"),
-                format!("неизвестный вид элемента \"{other}\": ожидался panel, label или button"),
+                "в строке списка нет вложенных списков: ожидался panel, label или button",
+            );
+            None
+        }
+        other => {
+            let expected = match scope {
+                Scope::Screen => "panel, label, button или list",
+                Scope::Row => "panel, label или button",
+            };
+            errors.push(
+                file,
+                &join(path, "kind"),
+                format!("неизвестный вид элемента \"{other}\": ожидался {expected}"),
             );
             None
         }
@@ -6939,6 +7874,7 @@ fn parse_screen(
                         &join(&elements_path, &format!("[{i}]")),
                         file,
                         properties,
+                        Scope::Screen,
                         errors,
                     )
                 })
@@ -7158,6 +8094,8 @@ fn resolve_on_click(
     images: &[ImageDecl],
     scene_names: &std::collections::HashSet<&str>,
     initial_values_table: &mut Vec<Vec<(String, PropertyId, Value)>>,
+    runs: &mut RunTable<'_>,
+    origin: String,
     file: &str,
     path: &str,
     subject: &str,
@@ -7211,6 +8149,52 @@ fn resolve_on_click(
         ParsedCommand::Resume => Some(ButtonCommand::Resume),
         ParsedCommand::Quit => Some(ButtonCommand::Quit),
         ParsedCommand::ToggleSound => Some(ButtonCommand::ToggleSound),
+        ParsedCommand::Run(function) => runs
+            .add(function, origin, file, path, errors)
+            .map(ButtonCommand::Run),
+    }
+}
+
+/// `["run", "<функция>"]` кнопок и клавиш экранов, сверенные с файлом кода по ходу разбора:
+/// «Экраны и состояние» → «Проверка данных перед запуском». `declared` — функции файла кода; `None`,
+/// когда файла нет или он не загрузился (его ошибка уже названа).
+struct RunTable<'a> {
+    calls: Vec<RunCall>,
+    has_code: bool,
+    declared: Option<&'a [String]>,
+}
+
+impl RunTable<'_> {
+    fn add(
+        &mut self,
+        function: &str,
+        origin: String,
+        file: &str,
+        path: &str,
+        errors: &mut ErrorSink,
+    ) -> Option<RunId> {
+        if !self.has_code {
+            errors.push(file, path, "run в игре без files.code".to_string());
+            return None;
+        }
+        if let Some(declared) = self.declared
+            && !declared.iter().any(|d| d == function)
+        {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "функции \"{function}\" в коде нет; {}",
+                    describe_declared_functions(declared)
+                ),
+            );
+            return None;
+        }
+        self.calls.push(RunCall {
+            function: function.to_string(),
+            origin,
+        });
+        Some(self.calls.len() - 1)
     }
 }
 
@@ -7280,6 +8264,7 @@ fn resolve_element(
     path: &str,
     file: &str,
     scene_file: &str,
+    screen_name: &str,
     fonts: &[(String, String)],
     images: &[ImageDecl],
     properties: &PropertyTable,
@@ -7287,6 +8272,7 @@ fn resolve_element(
     name_to_id: &std::collections::HashMap<String, ScreenId>,
     parsed_screens: &[ParsedScreen],
     initial_values_table: &mut Vec<Vec<(String, PropertyId, Value)>>,
+    runs: &mut RunTable<'_>,
     errors: &mut ErrorSink,
 ) -> Option<Element> {
     match data {
@@ -7295,6 +8281,7 @@ fn resolve_element(
             color,
             image_name,
             opacity,
+            for_,
         } => {
             let fill = resolve_fill(
                 *color,
@@ -7309,6 +8296,7 @@ fn resolve_element(
             Some(Element::Panel {
                 placement: *placement,
                 fill,
+                for_: for_.clone(),
             })
         }
         ParsedElementData::Label {
@@ -7318,6 +8306,8 @@ fn resolve_element(
             font_size,
             color,
             align,
+            wrap,
+            for_,
         } => {
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
             let text_ok = validate_text_refs(
@@ -7339,11 +8329,14 @@ fn resolve_element(
                 font_size: *font_size,
                 color: *color,
                 align: *align,
+                wrap: *wrap,
+                for_: for_.clone(),
             })
         }
         ParsedElementData::Button {
             placement,
             text,
+            caption,
             font_name,
             font_size,
             text_color,
@@ -7355,6 +8348,7 @@ fn resolve_element(
             image_pressed_name,
             opacity,
             on_click,
+            for_,
         } => {
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
             let text_ok = validate_text_refs(
@@ -7373,6 +8367,8 @@ fn resolve_element(
                 images,
                 scene_names,
                 initial_values_table,
+                runs,
+                format!("экран \"{screen_name}\", кнопка \"{caption}\""),
                 file,
                 &join(path, "on_click"),
                 "кнопка",
@@ -7423,6 +8419,52 @@ fn resolve_element(
                 fill_hover,
                 fill_pressed,
                 on_click,
+                for_: for_.as_deref().cloned(),
+            })
+        }
+        ParsedElementData::List {
+            placement,
+            for_,
+            row_height,
+            gap,
+            sort_by,
+            descending,
+            row,
+            scroll_color,
+        } => {
+            let row_path = join(path, "row");
+            let resolved: Vec<Option<Element>> = row
+                .iter()
+                .enumerate()
+                .map(|(i, item)| {
+                    resolve_element(
+                        item,
+                        &join(&row_path, &format!("[{i}]")),
+                        file,
+                        scene_file,
+                        screen_name,
+                        fonts,
+                        images,
+                        properties,
+                        scene_names,
+                        name_to_id,
+                        parsed_screens,
+                        initial_values_table,
+                        runs,
+                        errors,
+                    )
+                })
+                .collect();
+            let row = resolved.into_iter().collect::<Option<Vec<_>>>()?;
+            Some(Element::List {
+                placement: *placement,
+                for_: for_.clone(),
+                row_height: *row_height,
+                gap: *gap,
+                sort_by: *sort_by,
+                descending: *descending,
+                row,
+                scroll_color: *scroll_color,
             })
         }
     }
@@ -7924,6 +8966,8 @@ fn resolve_screens(
     scene_objects: &[ParsedObject],
     rules: &RuleSet,
     properties: &PropertyTable,
+    has_code: bool,
+    declared_functions: Option<&[String]>,
     errors: &mut ErrorSink,
 ) -> Option<ScreensConfig> {
     let mut name_to_id: std::collections::HashMap<String, ScreenId> =
@@ -7952,6 +8996,11 @@ fn resolve_screens(
         .collect();
 
     let mut initial_values: Vec<Vec<(String, PropertyId, Value)>> = Vec::new();
+    let mut runs = RunTable {
+        calls: Vec::new(),
+        has_code,
+        declared: declared_functions,
+    };
     let screens: Vec<Screen> = parsed
         .iter()
         .map(|screen| {
@@ -7966,6 +9015,7 @@ fn resolve_screens(
                         &join(&elements_path, &format!("[{i}]")),
                         file,
                         scene_file,
+                        &screen.name,
                         fonts,
                         images,
                         properties,
@@ -7973,6 +9023,7 @@ fn resolve_screens(
                         &name_to_id,
                         parsed,
                         &mut initial_values,
+                        &mut runs,
                         errors,
                     )
                 })
@@ -7990,6 +9041,8 @@ fn resolve_screens(
                         images,
                         &scene_names,
                         &mut initial_values,
+                        &mut runs,
+                        format!("экран \"{}\", клавиша \"{code}\"", screen.name),
                         file,
                         &join(&keys_path, code),
                         "клавиша",
@@ -8086,22 +9139,23 @@ fn resolve_screens(
     reachable.extend(win_screen);
     reachable.extend(loss_screen);
     for screen in &screens {
-        for element in &screen.elements {
-            if let Element::Button { on_click, .. } = element {
-                match on_click {
-                    ButtonCommand::ShowScreen(target) | ButtonCommand::NewGame(target, _) => {
-                        reachable.insert(*target);
-                    }
-                    ButtonCommand::Resume | ButtonCommand::Quit | ButtonCommand::ToggleSound => {}
-                }
-            }
-        }
-        for cmd in screen.keys.values() {
+        let buttons = screen
+            .elements
+            .iter()
+            .flat_map(Element::leaves)
+            .filter_map(|element| match element {
+                Element::Button { on_click, .. } => Some(on_click),
+                _ => None,
+            });
+        for cmd in buttons.chain(screen.keys.values()) {
             match cmd {
                 ButtonCommand::ShowScreen(target) | ButtonCommand::NewGame(target, _) => {
                     reachable.insert(*target);
                 }
-                ButtonCommand::Resume | ButtonCommand::Quit | ButtonCommand::ToggleSound => {}
+                ButtonCommand::Resume
+                | ButtonCommand::Quit
+                | ButtonCommand::ToggleSound
+                | ButtonCommand::Run(_) => {}
             }
         }
     }
@@ -8129,6 +9183,7 @@ fn resolve_screens(
         // resolve separately (`resolve_world_elements`), since they need no scene/screen-name
         // cross-checks `resolve_screens` itself runs.
         world_elements: Vec::new(),
+        runs: runs.calls,
     })
 }
 
@@ -8583,11 +9638,11 @@ fn collect_used_images(
                 mark_do(&mut used, do_);
             }
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } => mark_do(&mut used, do_),
-            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } => {}
+            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } | Rule::Drive { .. } => {}
         }
     }
     for screen in screens {
-        for element in &screen.elements {
+        for element in screen.elements.iter().flat_map(Element::leaves) {
             match element {
                 Element::Panel { fill, .. } => mark_fill_used(&mut used, fill),
                 Element::Button {
@@ -8600,7 +9655,7 @@ fn collect_used_images(
                     mark_fill_used(&mut used, fill_hover);
                     mark_fill_used(&mut used, fill_pressed);
                 }
-                Element::Label { .. } => {}
+                Element::Label { .. } | Element::List { .. } => {}
             }
         }
     }
@@ -8686,15 +9741,19 @@ fn validate_unreferenced_tracks(
 
 fn any_toggle_sound_bound(screens: &[Screen]) -> bool {
     screens.iter().any(|screen| {
-        let button_bound = screen.elements.iter().any(|element| {
-            matches!(
-                element,
-                Element::Button {
-                    on_click: ButtonCommand::ToggleSound,
-                    ..
-                }
-            )
-        });
+        let button_bound = screen
+            .elements
+            .iter()
+            .flat_map(Element::leaves)
+            .any(|element| {
+                matches!(
+                    element,
+                    Element::Button {
+                        on_click: ButtonCommand::ToggleSound,
+                        ..
+                    }
+                )
+            });
         button_bound
             || screen
                 .keys
@@ -8937,6 +9996,51 @@ pub fn load_rest_with_materials(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest_with_stamps(
     game_json: &str,
+    config: GameConfig,
+    properties_json: Option<&str>,
+    scene_json: Option<&str>,
+    rules_json: Option<&str>,
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
+    skip_media_validation: bool,
+    table_texts: &[(String, Option<String>)],
+    terrain_text: Option<&str>,
+    material_data: &[(String, ImageVerdict)],
+    mask_data: &[(String, ImageVerdict)],
+    stamp_texts: &[(String, Option<String>)],
+) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
+    load_rest_with_models(
+        game_json,
+        config,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        font_bytes,
+        sound_bytes,
+        music_verdicts,
+        image_data,
+        code_json,
+        skip_media_validation,
+        table_texts,
+        terrain_text,
+        material_data,
+        mask_data,
+        stamp_texts,
+        &[],
+    )
+}
+
+/// Same as `load_rest_with_stamps`, additionally accepting what the page answered for each model of
+/// `files.models`, by name — «Трёхмерная сцена» → «Модели и движения»: байты файла `.glb` и разжатые картинки
+/// из него (`ModelFile`).
+#[allow(clippy::too_many_arguments)]
+pub fn load_rest_with_models(
+    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -8953,6 +10057,7 @@ pub fn load_rest_with_stamps(
     material_data: &[(String, ImageVerdict)],
     mask_data: &[(String, ImageVerdict)],
     stamp_texts: &[(String, Option<String>)],
+    model_files: &[(String, ModelFile)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -9005,6 +10110,12 @@ pub fn load_rest_with_stamps(
         _ => {}
     }
     properties.set_stamps(stamp_table);
+    properties.set_models(load_models(
+        &config.files.models,
+        model_files,
+        skip_media_validation,
+        &mut errors,
+    ));
 
     let ParsedSceneFile {
         objects: scene_objects,
@@ -9063,6 +10174,7 @@ pub fn load_rest_with_stamps(
     // объявленных функций — сам исполнитель отбрасывается; настоящий, на партию, строит `Game::
     // new`/`new_game` заново («каждая партия создаёт свежий исполнитель»).
     let image_names: Vec<String> = config.files.images.iter().map(|d| d.name.clone()).collect();
+    let parser = object_parser(config.files.images.clone());
     let sound_names: Vec<String> = config.files.sounds.iter().map(|(n, _)| n.clone()).collect();
     let declared_functions: Option<Vec<String>> = match (&config.files.code, code_json) {
         (Some(path), None) => {
@@ -9089,6 +10201,8 @@ pub fn load_rest_with_stamps(
                 &mut check_rng,
                 &mut check_messages,
                 &tables_json,
+                Rc::default(),
+                parser.clone(),
             ) {
                 Ok(runner) => Some(runner.declared_functions().to_vec()),
                 Err(err) => {
@@ -9165,6 +10279,8 @@ pub fn load_rest_with_stamps(
         &scene_objects,
         &rules,
         &properties,
+        config.files.code.is_some(),
+        declared_functions.as_deref(),
         &mut errors,
     );
 
@@ -9185,6 +10301,13 @@ pub fn load_rest_with_stamps(
         &mut errors,
     );
     validate_move_apart_from_run_jump(
+        &scene_objects,
+        &rules,
+        &rule_meta,
+        &config.files.scene,
+        &mut errors,
+    );
+    validate_drive_apart_from_other_movers(
         &scene_objects,
         &rules,
         &rule_meta,
@@ -9225,6 +10348,22 @@ pub fn load_rest_with_stamps(
             code_json,
             &mut errors,
         );
+        if config.scene.player_camera.is_some() {
+            warn_taken_camera_keys(
+                &scene_objects,
+                &config.files.scene,
+                screens_for_usage,
+                &config.files.screens,
+                &mut errors,
+            );
+        }
+        warn_road_without_roads(
+            &collect_used_properties(&scene_objects, &rules, screens_for_usage, &world_elements),
+            &shapes,
+            code_json,
+            &config.files.rules,
+            &mut errors,
+        );
         validate_objects_within_scene(
             &scene_objects,
             &config.files.scene,
@@ -9249,6 +10388,15 @@ pub fn load_rest_with_stamps(
             code_json,
             &mut errors,
         );
+        validate_screen_selectors_not_empty(
+            screens_for_usage,
+            &shapes,
+            &config.files.screens,
+            &properties,
+            code_json,
+            &mut errors,
+        );
+        warn_row_elements_outside_row(screens_for_usage, &config.files.screens, &mut errors);
         validate_unused_sounds(&config.files.sounds, &rules, code_json, &mut errors);
         validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
         validate_unused_tables(&config.files.tables, code_json, &mut errors);
@@ -9260,6 +10408,13 @@ pub fn load_rest_with_stamps(
             .terrain()
             .map_or(&[][..], |terrain| terrain.imprints());
         warn_unused_stamps(&config.files.stamps, imprints, &mut errors);
+        warn_unused_models(
+            &config.files.models,
+            &named_in_scene(&scene_objects),
+            rules_json,
+            code_json,
+            &mut errors,
+        );
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {
@@ -9346,6 +10501,7 @@ pub fn load_rest_with_stamps(
         sound_names,
         start_is_live,
         tables_json,
+        parser,
     );
     // «Картинки», требование 23: already resolved at the top of this function (`resolve_image_
     // frame_by`, against `config.files.images` in place) — handed back rather than making a

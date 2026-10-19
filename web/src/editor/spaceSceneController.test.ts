@@ -64,6 +64,10 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     effective: undefined as Float64Array | undefined,
     /** Номер отпечатка под указателем. */
     pickedStamp: undefined as number | undefined,
+    /** Что отвечает `road_links` для любого объекта: `null` — не дорога. */
+    roadLinks: null as unknown,
+    /** Модели игры, как их отдаёт `model_sizes`. */
+    modelSizes: [] as unknown,
   };
   const engine = {
     object_at: () => state.pickedId,
@@ -97,6 +101,8 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
       return undefined;
     },
     stamp_at: () => state.pickedStamp,
+    road_links: () => state.roadLinks,
+    model_sizes: () => state.modelSizes,
     fit_camera: (id?: number | null) => {
       fitCalls.push(id);
       return state.fitted;
@@ -434,6 +440,47 @@ describe("масштаб ручкой", () => {
     scene.controller.pointerMove(pointer(90, -35));
     scene.controller.pointerUp(release(90, -35));
     expect(scene.commits[0]?.[1]).toEqual([{ key: "height", value: 1.5, previous: undefined }]);
+  });
+
+  describe("модель", () => {
+    const HOUSE = { 7: { position: [3, 4], size: [2, 2], model: "house" } };
+
+    it("любая ручка, и высоты тоже, меняет size и height в одной доле: высота модели без height — из model_sizes", () => {
+      const scene = setup({ handleMode: "scale" }, HOUSE);
+      scene.state.modelSizes = [{ name: "house", size: [8, 6, 4] }];
+      expect(scene.controller.pointerDown(pointer(90, 10))).toBe(true);
+      scene.controller.pointerMove(pointer(90, -35));
+      expect(scene.transforms.at(-1)).toEqual([7, { position: [2.5, 3.5], size: [3, 3], height: 6 }]);
+      scene.controller.pointerUp(release(90, -35));
+      expect(scene.commits[0]?.[1]).toEqual([
+        { key: "position", value: [2.5, 3.5], previous: [3, 4] },
+        { key: "size", value: [3, 3], previous: [2, 2] },
+        { key: "height", value: 6, previous: undefined },
+      ]);
+    });
+
+    it("общая ручка у модели с height растит height от записанного", () => {
+      const scene = setup({ handleMode: "scale" }, { 7: { position: [3, 4], size: [2, 2], model: "house", height: 2 } });
+      scene.state.modelSizes = [{ name: "house", size: [8, 6, 4] }];
+      scene.controller.pointerDown(pointer(90, 100));
+      scene.controller.pointerMove(pointer(135, 55));
+      scene.controller.pointerUp(release(135, 55));
+      const changes = scene.commits[0]?.[1] ?? [];
+      const size = changes.find((change) => change.key === "size")?.value as number[];
+      const height = changes.find((change) => change.key === "height");
+      expect(size[0]).toBeGreaterThan(2);
+      expect(size[0]).toBe(size[1]);
+      expect(height?.previous).toBe(2);
+      expect(height?.value as number / 2).toBeCloseTo(size[0] / 2, 1);
+    });
+
+    it("имени модели нет в model_sizes — высота как у фигуры, единица", () => {
+      const scene = setup({ handleMode: "scale" }, HOUSE);
+      scene.controller.pointerDown(pointer(90, 10));
+      scene.controller.pointerMove(pointer(90, -35));
+      scene.controller.pointerUp(release(90, -35));
+      expect(scene.commits[0]?.[1].find((change) => change.key === "height")?.value).toBe(1.5);
+    });
   });
 
   it("у плоского объекта на земле ручки высоты нет", () => {
@@ -1124,5 +1171,49 @@ describe("Ctrl+колесо", () => {
     const scene = setup({ brush: RAISE, isEditorCameraActive: false });
     expect(scene.controller.wheel({ deltaY: -100, deltaMode: 0, ctrlKey: true })).toBe(false);
     expect(scene.brushWheelClicks).toEqual([]);
+  });
+});
+
+describe("связи выбранной дороги", () => {
+  const ROAD_LINKS = {
+    axis: [[0, 10, 0], [20, 10, 0]],
+    links: [{ point: [10, 10, 0], road: 3 }],
+    ends: [[0, 10, 0]],
+    neighbours: [{ road: 3, axis: [[10, 0, 0], [10, 20, 0]] }],
+  };
+
+  it("у выбранной дороги спрашивает связи по её номеру и рисует ось, соседа, связь и тупик", () => {
+    const scene = setup({ areHandlesAvailable: false });
+    scene.state.roadLinks = ROAD_LINKS;
+    const roadLinks = vi.spyOn(scene.engine, "road_links");
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(roadLinks).toHaveBeenCalledWith(7);
+    // Ось (2 точки), ось соседа (2), тупик (1) и связь (1).
+    expect(screenPoint).toHaveBeenCalledTimes(6);
+  });
+
+  it("выбран не дорога — ничего не рисуется", () => {
+    const scene = setup({ areHandlesAvailable: false });
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(screenPoint).not.toHaveBeenCalled();
+  });
+
+  it("в идущей партии связей нет и движок о них не спрашивается", () => {
+    const scene = setup({ isInputLocked: true, areHandlesAvailable: false });
+    scene.state.roadLinks = ROAD_LINKS;
+    const roadLinks = vi.spyOn(scene.engine, "road_links");
+    const screenPoint = vi.spyOn(scene.engine, "screen_point");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(roadLinks).not.toHaveBeenCalled();
+    expect(screenPoint).not.toHaveBeenCalled();
+  });
+
+  it("ничего не выбрано — движок не спрашивается", () => {
+    const scene = setup({ selectedIndex: null });
+    const roadLinks = vi.spyOn(scene.engine, "road_links");
+    scene.controller.draw(recordingCanvasContext(), 1);
+    expect(roadLinks).not.toHaveBeenCalled();
   });
 });

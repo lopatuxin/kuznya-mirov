@@ -9,6 +9,8 @@ import { withCodeErrorLine, type EngineEditResult } from "./battleTypes";
 import { EditorIcon } from "./EditorIcon";
 import { ImprintPropertiesPanel } from "./ImprintPropertiesPanel";
 import { parseStampShape } from "./imprintGeometry";
+import { createModelObject, readModelSizes } from "./projectModels";
+import { withErrorLabels } from "./errorLabels";
 import { ObjectList } from "./ObjectList";
 import { canCarryParticles, particleCarrierAt } from "./particleCarrierAt";
 import { particleEffectById } from "./particleEffects";
@@ -22,10 +24,9 @@ import { parseProjectCellPixels, parseProjectCloudImageNames, parseProjectImageD
 import { buildImageTiles, createImageObject, createParticlesObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
-import { withRunJumpLabels } from "./runJumpLabels";
 import { SceneCanvas, type BrushFields } from "./SceneCanvas";
 import { stampPreviewOf, type StampPreview } from "./stampPreview";
-import { toVec2 } from "./terrainReadings";
+import { toVec2, toVec3 } from "./terrainReadings";
 import { fallbackDisplayName, type ProjectSource } from "./projectSource";
 import {
   buildObjectPropertiesView,
@@ -139,6 +140,9 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   const cellPixels = useMemo(() => parseProjectCellPixels(gameJsonText), [gameJsonText]);
   const cloudImageNames = useMemo(() => parseProjectCloudImageNames(gameJsonText), [gameJsonText]);
   const imageTiles = useMemo(() => buildImageTiles(imageDescriptions, result?.status === "ok" ? result.images : []), [imageDescriptions, result]);
+  // Модели знает движок после загрузки: каждая загрузка даёт новый `result`, и список читается заново.
+  const projectModels = useMemo(() => readModelSizes(engine?.model_sizes()), [engine, result]);
+  const modelNames = useMemo(() => projectModels.map(({ name }) => name), [projectModels]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
   const imprints = useMemo(() => readTerrainImprints(terrainText), [terrainText]);
@@ -350,6 +354,18 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     else sceneEditing.addObject(object);
   }
 
+  // Имя модели отпустили на трёхмерную сцену — «Редактор», «Правка сцены», требование 23 фазы 25: новый объект встаёт серединой
+  // на землю под указателем; вне партии он дописывается в `scene.json`, на паузе — в живой мир.
+  function handleDropModel(modelName: string, x: number, y: number): void {
+    const model = projectModels.find(({ name }) => name === modelName);
+    if (engine === null || model === undefined) return;
+    const ground = toVec3(engine.ground_at(x, y));
+    if (ground === undefined) return;
+    const object = createModelObject(model, [ground[0], ground[1]]);
+    if (isLive) battle.addLiveObject(object);
+    else sceneEditing.addObject(object);
+  }
+
   // Цель листьев — самый верхний объект под указателем, которому можно дописать свойства частиц («Проверка перед запуском»,
   // требование 27): небо и дальние холмы с `repeat_x` пропускаются, будто их нет. Верхний по порядку движка берётся как есть,
   // а если он не годится, ниже ищем сами — `object_at` движка отдаёт только один объект.
@@ -429,14 +445,14 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
     />
   );
 
-  const errorLines = withCodeErrorLine(battle.codeError === null ? null : withRunJumpLabels(battle.codeError), [
+  const errorLines = withCodeErrorLine(battle.codeError === null ? null : withErrorLabels(battle.codeError), [
     ...(engineError !== null ? [engineError] : []),
     ...(result === null
       ? []
       : result.status === "entry-missing"
         ? [`Нет файла game.json в проекте «${fallbackDisplayName(source)}»`]
         : result.status === "rejected"
-          ? result.errors.map((error) => formatError(withRunJumpLabels(error)))
+          ? result.errors.map((error) => formatError(withErrorLabels(error)))
           : []),
   ]);
   const warningLines = result && result.status !== "entry-missing" ? result.warnings.map(formatError) : [];
@@ -510,6 +526,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           onSelect={displayedOnSelect}
           onCommitPlacement={isLive ? battle.commitLiveTransform : sceneEditing.transformObject}
           onDropImage={handleDropImage}
+          onDropModel={handleDropModel}
           onDropParticles={handleDropParticles}
           leavesTargetAt={leavesTargetAt}
           terrainWater={terrainWater}
@@ -559,6 +576,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
             selectedObject={displayedSelectedObject}
             canEdit={displayedCanEdit}
             imageNames={imageNames}
+            modelNames={modelNames}
             declaredProperties={declaredProperties}
             isThreeDimensionalScene={isThreeDimensionalScene}
             cloudImages={{ tiles: imageTiles, cloudNames: cloudImageNames }}
@@ -597,6 +615,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           messages={battle.messages}
           imageTiles={imageTiles}
           particlesPanel={particlesPanel}
+          models={isThreeDimensionalScene ? projectModels : null}
           onSelectObject={battle.setLiveSelectedId}
         />
       </footer>

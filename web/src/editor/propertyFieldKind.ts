@@ -12,17 +12,17 @@ export type PropertyFieldKind =
 const ROTATION_OPTIONS = [0, 90, 180, 270] as const;
 const SHAPE_OPTIONS = ["box", "cylinder", "capsule", "sphere"] as const;
 const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
-const CHECKBOX_PROPERTY_NAMES: readonly string[] = ["collides", "deck", "camera_follows", "flip_x", "repeat_x", "hold_left", "hold_right", "hold_jump"];
+const CHECKBOX_PROPERTY_NAMES: readonly string[] = ["collides", "deck", "camera_follows", "flip_x", "repeat_x", "hold_left", "hold_right", "hold_jump", "road"];
 
 /**
  * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `deck` («Рельеф», требование 46), `camera_follows`,
- * `flip_x` (Фаза 14, требование 20), `repeat_x` (Фаза 28, требование 22), `hold_left`, `hold_right` и `hold_jump` (Фаза 37, требование 25) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
+ * `flip_x` (Фаза 14, требование 20), `repeat_x` (Фаза 28, требование 22), `hold_left`, `hold_right` и `hold_jump` (Фаза 37, требование 25), `road` (Фаза 38, требование 34) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
  * `rotation` (0/90/180/270 в плоской сцене; в трёхмерной — любое число, текстовое поле, «Фаза 15», требование 29),
  * `shape` (`box`/`cylinder`/`capsule`/`sphere`), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; объявленное свойство
  * автора вида `text` — строковое поле без разбора JSON («Таблицы данных», требование 40); остальное —
  * текст. Значение, которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), —
  * текстовое поле. `walk_to` и `walk_speed` (Фаза 11, требование 45) — как другие пары и числа,
- * `on_click` — как `keys`, а `height` и `parallax` (Фаза 28, требование 22) — как другие числа: всё это уже текст по умолчанию, отдельного вида не заводится.
+ * `model` (Фаза 25, требование 24) — выбор из имён моделей игры, как `image` из картинок. `on_click` — как `keys`, а `height` и `parallax` (Фаза 28, требование 22) — как другие числа: всё это уже текст по умолчанию, отдельного вида не заводится. `road_speed`, `drive_speed` (числа) и `drive_to` (пара, как `walk_to`) — тоже текст.
  */
 export function propertyFieldKind(
   key: string,
@@ -30,6 +30,7 @@ export function propertyFieldKind(
   authorPropertyKinds: Readonly<Record<string, string>>,
   imageNames: readonly string[],
   isThreeDimensionalScene: boolean,
+  modelNames: readonly string[] = [],
 ): PropertyFieldKind {
   if (authorPropertyKinds[key] === "text") return { kind: "raw-text" };
   if (CHECKBOX_PROPERTY_NAMES.includes(key) || authorPropertyKinds[key] === "flag") {
@@ -37,6 +38,9 @@ export function propertyFieldKind(
   }
   if (key === "image") {
     return typeof value === "string" && imageNames.includes(value) ? { kind: "select", options: imageNames } : { kind: "text" };
+  }
+  if (key === "model") {
+    return typeof value === "string" && modelNames.includes(value) ? { kind: "select", options: modelNames } : { kind: "text" };
   }
   if (key === "shape") {
     return typeof value === "string" && (SHAPE_OPTIONS as readonly string[]).includes(value)

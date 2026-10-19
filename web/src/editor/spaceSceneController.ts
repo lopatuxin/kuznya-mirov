@@ -26,6 +26,8 @@ import {
 } from "./objectPlacement";
 import { createImprintSceneController, type ImprintContext } from "./imprintSceneController";
 import { createPaintSceneController, type PaintContext } from "./paintSceneController";
+import { readModelSizes } from "./projectModels";
+import { drawRoadLinks, readRoadLinks } from "./roadLinks";
 import { drawSelectionQuad } from "./selectionDrawing";
 import { applyBrushFrame, brushPathPoints, syncFileHeights, type BrushGrid, type BrushSettings } from "./terrainBrush";
 import { differsInHundredths, type ImprintEntry, type TerrainGrid } from "./terrainFile";
@@ -39,8 +41,10 @@ export type SpaceSceneEngine = Pick<
   | "object_rect"
   | "object_properties"
   | "ground_at"
+  | "model_sizes"
   | "rest_height"
   | "screen_point"
+  | "road_links"
   | "move_object"
   | "transform_object"
   | "editor_camera"
@@ -175,6 +179,11 @@ function restHeight(engine: SpaceSceneEngine, objectId: number, x: number, y: nu
   return typeof height === "number" ? height : undefined;
 }
 
+/** Место объекта, как его читают ручки; высоту модели без `height` берёт из `model_sizes()` движка. */
+function readPlacement(engine: SpaceSceneEngine, properties: Record<string, unknown> | null): ObjectPlacement | null {
+  return readObjectPlacement(properties, (modelName) => readModelSizes(engine.model_sizes()).find(({ name }) => name === modelName)?.size[2]);
+}
+
 /** Высота основания, на которой объект стоит в собранном мире, — третье число его `position`. */
 function worldHeight(engine: SpaceSceneEngine, objectId: number): number | undefined {
   const properties = engine.object_properties(objectId) as { position?: unknown } | undefined;
@@ -257,7 +266,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   function selectedHandleSubject(context: SpaceSceneContext): { placement: ObjectPlacement; baseHeight: number } | null {
     if (context.selectedIndex === null) return null;
     if (isObjectGesture(gesture) && gesture.objectIndex === context.selectedIndex) return { placement: gesture.last, baseHeight: gesture.lastHeight };
-    const placement = readObjectPlacement(context.getObjectProperties(context.selectedIndex));
+    const placement = readPlacement(context.engine, context.getObjectProperties(context.selectedIndex));
     return placement === null ? null : { placement, baseHeight: restingHeight(context.engine, context.selectedIndex, placement) };
   }
 
@@ -278,7 +287,9 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (mode === "rotate") channel = "rotation";
     if (mode === "scale") {
       const axis = scaleAxisOfHit(hit ?? "center");
-      channel = (axis === "height" || axis === "uniform") && placement.hasShape ? "size-and-height" : "size";
+      // Модель не растягивается: любая ручка меняет размер и высоту, и высота ставится всегда — без неё модель стоит в масштабе 1.
+      const isHeightScaled = placement.modelHeight !== undefined || ((axis === "height" || axis === "uniform") && placement.hasShape);
+      channel = isHeightScaled ? "size-and-height" : "size";
     }
     if (mode !== "scale" && !isVertical && startGround === null) return false;
     const verticalGrab = isVertical ? (createVerticalGrab(projectionOf(context.engine), placementCenter(placement), startHeight) ?? null) : null;
@@ -411,7 +422,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
     const point: Vec2 = [input.x, input.y];
     if (context.areHandlesAvailable && context.selectedIndex !== null) {
-      const placement = readObjectPlacement(context.getObjectProperties(context.selectedIndex));
+      const placement = readPlacement(context.engine, context.getObjectProperties(context.selectedIndex));
       const baseHeight = placement === null ? 0 : restingHeight(context.engine, context.selectedIndex, placement);
       const geometry = placement === null ? undefined : computeHandleGeometry(projectionOf(context.engine), placement, context.handleMode, baseHeight);
       const hit = geometry === undefined ? null : hitTestHandles(geometry, context.handleMode, point);
@@ -431,7 +442,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     }
     context.onSelect(picked);
     if (!context.areHandlesAvailable) return false;
-    const placement = readObjectPlacement(context.getObjectProperties(picked));
+    const placement = readPlacement(context.engine, context.getObjectProperties(picked));
     if (placement === null) return false;
     return startObjectGesture(context, input, picked, placement, null, null);
   }
@@ -656,6 +667,15 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     drawBrushCircle(context2d, ring, projection.screenPoint(place[0], place[1], place[2]), pixelRatio);
   }
 
+  /** Связи выбранной дороги — «Редактор», Фаза 38, требования 32–33: вне партии и на паузе, по нынешнему миру, каждый кадр. */
+  function drawSelectedRoadLinks(context: SpaceSceneContext, context2d: CanvasRenderingContext2D, pixelRatio: number): void {
+    if (context.isInputLocked || context.selectedIndex === null) return;
+    const links = readRoadLinks(context.engine.road_links(context.selectedIndex));
+    if (links === null) return;
+    const projection = projectionOf(context.engine);
+    drawRoadLinks(context2d, links, (point) => projection.screenPoint(point[0], point[1], point[2]), pixelRatio);
+  }
+
   function draw(context2d: CanvasRenderingContext2D, pixelRatio: number): void {
     const context = getContext();
     drawBrush(context, context2d, pixelRatio);
@@ -663,6 +683,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (context.selectedIndex === null) return;
     const rect = context.engine.object_rect(context.selectedIndex) as { corners?: Vec2[] } | undefined;
     if (rect?.corners !== undefined) drawSelectionQuad(context2d, rect.corners, context.selectedLabel, pixelRatio);
+    drawSelectedRoadLinks(context, context2d, pixelRatio);
     if (!context.areHandlesAvailable || context.brush !== null || context.paint !== null) return;
     const subject = selectedHandleSubject(context);
     if (subject === null) return;

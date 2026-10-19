@@ -18,16 +18,21 @@ vi.mock("./SceneCanvas", async () => {
       wind,
       onWindChange,
       onDropParticles,
+      onDropModel,
       areOutlinesShown,
     }: {
       areOutlinesShown: boolean;
       wind: readonly [number, number];
       onWindChange: (wind: readonly [number, number]) => string | undefined;
       onDropParticles: (effectId: string, x: number, y: number) => void;
+      onDropModel: (modelName: string, x: number, y: number) => void;
     }) => (
       <>
         <WindFields wind={wind} onWindChange={onWindChange} />
         <output aria-label="невидимые прямоугольники">{areOutlinesShown ? "показаны" : "скрыты"}</output>
+        <button type="button" onClick={() => onDropModel("house", 10, 20)}>
+          бросить модель
+        </button>
         {["smoke", "sparks", "leaves", "fire"].map((effectId) => (
           <button key={effectId} type="button" onClick={() => onDropParticles(effectId, 10, 20)}>
             бросить {effectId}
@@ -436,6 +441,18 @@ describe("вкладка «Эффекты» в окне проекта", () => {
 
     expect(screen.getByText('свойство "скорость бега" не может быть меньше нуля, получено -2')).toBeTruthy();
     expect(screen.getByText("scene.json: objects → 1 → run_speed")).toBeTruthy();
+  });
+
+  it("ошибка движка про езду по дорогам во вкладке «Ошибки» — с русской подписью, а место в файле остаётся с ключом", () => {
+    const error = { file: "scene.json", path: "objects → 1 → drive_speed", message: 'свойство "drive_speed" не может быть меньше нуля, получено -3', line: null, column: null };
+    sceneEditingMock.current = {
+      ...createParticlesSceneEditing(engine),
+      result: { status: "rejected", errors: [error], warnings: [], gameJsonText: PARTICLES_GAME_JSON_TEXT, sceneText: PARTICLES_SCENE_TEXT },
+    };
+    renderWindow();
+
+    expect(screen.getByText('свойство "скорость езды" не может быть меньше нуля, получено -3')).toBeTruthy();
+    expect(screen.getByText("scene.json: objects → 1 → drive_speed")).toBeTruthy();
   });
 
   describe("в партии", () => {
@@ -893,5 +910,111 @@ describe("группа «Облака» в колонке «Свойства»",
       expect(engine.set_property).toHaveBeenLastCalledWith(0, "cloud_images", ["cloud_a", "cloud_b"]);
       expect(setPropertyValue).not.toHaveBeenCalled();
     });
+  });
+});
+
+const MODELS_GAME_JSON_TEXT = '{ "name": "Тест", "scene": { "width": 100, "height": 50, "camera": { "position": [0, 0, 5] } }, "files": { "models": { "house": { "path": "models/house.glb" }, "birch": { "path": "models/birch.glb" } } } }';
+const MODELS_SCENE_TEXT = JSON.stringify({ objects: [{ position: [1, 1], size: [4, 3], model: "house" }] });
+
+function createModelsSceneEditing(engine: FakeBattleEngine, overrides: Partial<SceneEditingState> = {}, gameJsonText = MODELS_GAME_JSON_TEXT): SceneEditingState {
+  const base = createSceneEditing(engine, vi.fn());
+  return createSceneEditing(engine, vi.fn(), {
+    result: { ...(base.result as Extract<SceneEditingState["result"], { status: "ok" }>), gameJsonText, sceneText: MODELS_SCENE_TEXT },
+    sceneText: MODELS_SCENE_TEXT,
+    selectedIndex: 0,
+    ...overrides,
+  });
+}
+
+describe("вкладка «Модели» в окне проекта", () => {
+  let engine: FakeBattleEngine;
+
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    engine = createFakeBattleEngine();
+    vi.mocked(engine.model_sizes).mockReturnValue([
+      { name: "house", size: [8, 6, 7] },
+      { name: "birch", size: [2.5, 2.5, 9] },
+    ]);
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("в трёхмерной сцене вкладка есть, в плоской — нет", () => {
+    sceneEditingMock.current = createModelsSceneEditing(engine);
+    renderWindow();
+    expect(screen.getByRole("tab", { name: "Модели" })).toBeTruthy();
+    cleanup();
+
+    sceneEditingMock.current = createModelsSceneEditing(engine, {}, MODELS_GAME_JSON_TEXT.replace(', "camera": { "position": [0, 0, 5] }', ""));
+    renderWindow();
+    expect(screen.queryByRole("tab", { name: "Модели" })).toBeNull();
+  });
+
+  it("имена моделей по порядку объявления с размером в клетках, и каждое можно перетащить", () => {
+    sceneEditingMock.current = createModelsSceneEditing(engine);
+    renderWindow();
+    fireEvent.click(screen.getByRole("tab", { name: "Модели" }));
+
+    const items = screen.getAllByRole("listitem").filter((item) => item.classList.contains("models-panel__item"));
+    expect(items.map((item) => item.textContent)).toEqual(["house8 × 6 × 7", "birch2.5 × 2.5 × 9"]);
+    expect(items.every((item) => item.getAttribute("draggable") === "true")).toBe(true);
+  });
+
+  it("игра без моделей — «В игре нет моделей»", () => {
+    vi.mocked(engine.model_sizes).mockReturnValue([]);
+    sceneEditingMock.current = createModelsSceneEditing(engine);
+    renderWindow();
+    fireEvent.click(screen.getByRole("tab", { name: "Модели" }));
+
+    expect(screen.getByText("В игре нет моделей")).toBeTruthy();
+  });
+
+  it("имя, отпущенное на сцену, дописывает объект: size модели, середина — на земле под указателем", () => {
+    vi.mocked(engine.ground_at).mockReturnValue([10, 20, 1.5]);
+    const addObject = vi.fn();
+    sceneEditingMock.current = createModelsSceneEditing(engine, { addObject });
+    renderWindow();
+
+    fireEvent.click(screen.getByRole("button", { name: "бросить модель" }));
+
+    expect(engine.ground_at).toHaveBeenCalledWith(10, 20);
+    expect(addObject).toHaveBeenCalledWith({ position: [6, 17], size: [8, 6], model: "house" });
+  });
+
+  it("указатель мимо земли — объекта нет", () => {
+    vi.mocked(engine.ground_at).mockReturnValue(undefined);
+    const addObject = vi.fn();
+    sceneEditingMock.current = createModelsSceneEditing(engine, { addObject });
+    renderWindow();
+
+    fireEvent.click(screen.getByRole("button", { name: "бросить модель" }));
+
+    expect(addObject).not.toHaveBeenCalled();
+  });
+
+  it("свойство model выбранной модели — выпадающий список имён из model_sizes", () => {
+    sceneEditingMock.current = createModelsSceneEditing(engine);
+    renderWindow();
+
+    const select = screen.getByDisplayValue("house") as HTMLSelectElement;
+    expect(Array.from(select.options).map((option) => option.value)).toEqual(["house", "birch"]);
+  });
+
+  it("ошибка движка про модель во вкладке «Ошибки» — с русской подписью, а место в файле остаётся с ключом", () => {
+    const error = { file: "scene.json", path: "objects[0] → model", message: "свойство \"model\" разрешено только объекту с position и size", line: null, column: null };
+    sceneEditingMock.current = {
+      ...createModelsSceneEditing(engine),
+      result: { status: "rejected", errors: [error], warnings: [], gameJsonText: MODELS_GAME_JSON_TEXT, sceneText: MODELS_SCENE_TEXT },
+    };
+    renderWindow();
+
+    expect(screen.getByText("свойство \"модель\" разрешено только объекту с position и size")).toBeTruthy();
+    expect(screen.getByText("scene.json: objects[0] → model")).toBeTruthy();
   });
 });

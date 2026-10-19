@@ -1,4 +1,5 @@
 use super::property::PropertyId;
+use super::roads::Side;
 use super::value::{Value, Vec2};
 
 /// Index into `files.sounds`, in declaration order — «Звук»: a `play_sound` action
@@ -233,6 +234,11 @@ pub enum Rule {
         for_: Selector,
         solid: Option<Selector>,
         one_way: Option<Selector>,
+    },
+    /// «Езда по дорогам», требование 9: ведёт машину к `drive_to` по сети дорог своей стороной.
+    Drive {
+        for_: Selector,
+        side: Side,
     },
 }
 

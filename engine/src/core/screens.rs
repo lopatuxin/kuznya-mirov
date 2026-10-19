@@ -5,7 +5,8 @@
 use std::collections::HashMap;
 
 use super::game::Game;
-use super::input::{MouseEvent, MouseState, UiEvent, UiQueue};
+use super::input::{ButtonKey, MouseEvent, MouseState, UiEvent, UiQueue};
+use super::interface::{self, Part, SCROLL_POINTS_PER_ROW};
 use super::property::{self, PropertyId, PropertyTable};
 use super::rules::{Outcome, Selector};
 use super::value::{ImageId, PropKind, Value};
@@ -163,6 +164,9 @@ pub enum TextPart {
         object_name: String,
         prop: PropertyId,
     },
+    /// «Интерфейс игры» → «Элемент при объекте»: `{свойство}` без имени объекта — свойство объекта
+    /// элемента с `for` или строки списка.
+    Own(PropertyId),
 }
 
 /// «Интерфейс игры» → «Текст»: resolves every `{object.prop}` substitution against `world`,
@@ -170,12 +174,27 @@ pub enum TextPart {
 /// a name) — literal text passes through unchanged. A named object that doesn't currently exist
 /// substitutes empty, not an error: it can legitimately have been deleted mid-partie.
 pub fn format_text(parts: &[TextPart], world: &World, properties: &PropertyTable) -> String {
+    format_text_for(parts, world, properties, None)
+}
+
+/// То же для элемента при объекте `own`: `{свойство}` без имени берёт свойство этого объекта.
+pub fn format_text_for(
+    parts: &[TextPart],
+    world: &World,
+    properties: &PropertyTable,
+    own: Option<u32>,
+) -> String {
     let mut out = String::new();
     for part in parts {
         match part {
             TextPart::Literal(s) => out.push_str(s),
             TextPart::Value { object_name, prop } => {
                 if let Some(id) = find_named_object(world, object_name) {
+                    out.push_str(&format_property(world, id, *prop, properties));
+                }
+            }
+            TextPart::Own(prop) => {
+                if let Some(id) = own {
                     out.push_str(&format_property(world, id, *prop, properties));
                 }
             }
@@ -248,6 +267,17 @@ pub(crate) fn format_property(
 /// button or a screen key declares.
 pub type InitialValuesId = usize;
 
+/// Номер вызова функции кода в `ScreensConfig::runs`.
+pub type RunId = usize;
+
+/// `["run", "<функция>"]` кнопки или клавиши экрана: какую функцию кода вызвать и как назвать место в
+/// ошибке — «экран "main", кнопка "Взять"».
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RunCall {
+    pub function: String,
+    pub origin: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ButtonCommand {
     ShowScreen(ScreenId),
@@ -258,13 +288,19 @@ pub enum ButtonCommand {
     /// none of `apply_command`'s screen-switching machinery — just flips `ScreenState`'s own
     /// `sound_enabled`.
     ToggleSound,
+    /// «Экраны и состояние» → «Команды»: вызывает функцию кода игры с объектом кнопки.
+    Run(RunId),
 }
 
+/// Элемент экрана. Панель, надпись и кнопка вне строки списка могут иметь отбор `for_` — «Элемент при
+/// объекте»: пока объекта отбора нет, элемента нет. Внутри `row` списка `for_` пуст, а `placement` —
+/// сдвиг и размер от левого верхнего угла строки.
 #[derive(Debug, Clone)]
 pub enum Element {
     Panel {
         placement: Placement,
         fill: Fill,
+        for_: Option<Selector>,
     },
     Label {
         placement: Placement,
@@ -273,6 +309,9 @@ pub enum Element {
         font_size: f32,
         color: [f32; 4],
         align: Align,
+        /// «Текст»: перенос по словам по ширине элемента, строки сверху.
+        wrap: bool,
+        for_: Option<Selector>,
     },
     Button {
         placement: Placement,
@@ -284,7 +323,49 @@ pub enum Element {
         fill_hover: Fill,
         fill_pressed: Fill,
         on_click: ButtonCommand,
+        for_: Option<Selector>,
     },
+    /// «Список»: строка `row` на каждый живой объект отбора `for_`.
+    List {
+        placement: Placement,
+        for_: Selector,
+        row_height: f32,
+        gap: f32,
+        sort_by: Option<PropertyId>,
+        descending: bool,
+        row: Vec<Element>,
+        scroll_color: [f32; 4],
+    },
+}
+
+impl Element {
+    pub fn placement(&self) -> &Placement {
+        match self {
+            Element::Panel { placement, .. }
+            | Element::Label { placement, .. }
+            | Element::Button { placement, .. }
+            | Element::List { placement, .. } => placement,
+        }
+    }
+
+    /// Панели, надписи и кнопки элемента: он сам или элементы строки списка.
+    pub fn leaves(&self) -> impl Iterator<Item = &Element> {
+        let (single, row) = match self {
+            Element::List { row, .. } => (None, row.as_slice()),
+            other => (Some(other), &[][..]),
+        };
+        single.into_iter().chain(row)
+    }
+
+    /// Отбор `for` элемента при объекте; у списка свой отбор строк, он не в счёт.
+    pub fn selector(&self) -> Option<&Selector> {
+        match self {
+            Element::Panel { for_, .. }
+            | Element::Label { for_, .. }
+            | Element::Button { for_, .. } => for_.as_ref(),
+            Element::List { .. } => None,
+        }
+    }
 }
 
 /// «Экраны и состояние» → «Клавиши экрана»: name-to-command, the same five commands as
@@ -313,6 +394,8 @@ pub struct ScreensConfig {
     /// «Надписи и полоски в мире», требование 1: the optional `world_elements` list, in file
     /// order — empty when `screens.json` names none.
     pub world_elements: Vec<WorldElement>,
+    /// `["run", ...]` кнопок и клавиш экранов: `ButtonCommand::Run` называет вызов по номеру.
+    pub runs: Vec<RunCall>,
 }
 
 /// «Надписи и полоски в мире», требование 6: one `{property}` substitution over a world element's
@@ -373,7 +456,7 @@ pub struct WorldElement {
 }
 
 /// The active screen and the one remembered screen `resume` returns to — «Экраны и состояние» → «Команды»: at most one level deep, no further history.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub struct ScreenState {
     active: ScreenId,
     previous: Option<ScreenId>,
@@ -381,6 +464,17 @@ pub struct ScreenState {
     /// to the active screen, not to the world — `new_game`/`quit` don't touch it, and it starts
     /// `true` on every load, since the engine keeps no storage for it at all.
     sound_enabled: bool,
+    /// «Список»: на сколько строк прокручен каждый список — по экрану и номеру его элемента. Новая
+    /// партия сбрасывает прокрутку.
+    scrolls: HashMap<(ScreenId, usize), ListScroll>,
+}
+
+/// Прокрутка одного списка: первая видимая строка и накопленная доля следующей строки. Строка
+/// сменяется, только когда колесо набрало целую строку в одну сторону — и вниз, и вверх.
+#[derive(Debug, Clone, Copy, Default)]
+struct ListScroll {
+    row: f64,
+    pending: f64,
 }
 
 impl ScreenState {
@@ -389,7 +483,38 @@ impl ScreenState {
             active: start_screen,
             previous: None,
             sound_enabled: true,
+            scrolls: HashMap::new(),
         }
+    }
+
+    /// На сколько строк прокручен список `element` экрана `screen`; не больше, чем позволяют его строки,
+    /// ограничивает раскладка.
+    pub fn list_offset(&self, screen: ScreenId, element: usize) -> f64 {
+        self.scrolls
+            .get(&(screen, element))
+            .map_or(0.0, |scroll| scroll.row)
+    }
+
+    /// Сдвигает список на `rows` строк, но не дальше `max` — последних видимых строк.
+    /// Доля строки копится, пока не наберётся целая; у края списка прокрутка за край не копится.
+    fn scroll_list(&mut self, screen: ScreenId, element: usize, rows: f64, max: f64) {
+        let scroll = self.scrolls.entry((screen, element)).or_default();
+        scroll.row = scroll.row.min(max);
+        scroll.pending += rows;
+        let whole = scroll.pending.trunc();
+        if whole != 0.0 {
+            scroll.row = (scroll.row + whole).clamp(0.0, max);
+            scroll.pending -= whole;
+        }
+        if (scroll.row <= 0.0 && scroll.pending < 0.0)
+            || (scroll.row >= max && scroll.pending > 0.0)
+        {
+            scroll.pending = 0.0;
+        }
+    }
+
+    fn reset_scrolls(&mut self) {
+        self.scrolls.clear();
     }
 
     pub fn active(&self) -> ScreenId {
@@ -434,6 +559,18 @@ pub fn apply_command(
     config: &ScreensConfig,
     state: &mut ScreenState,
 ) {
+    apply_command_on(cmd, None, game, config, state);
+}
+
+/// То же для кнопки, у которой есть объект — строки списка или элемента с `for`: `run` передаёт его
+/// функции кода.
+pub fn apply_command_on(
+    cmd: ButtonCommand,
+    object: Option<u32>,
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+) {
     match cmd {
         ButtonCommand::ShowScreen(target) => switch_to(state, config, game, target, true),
         ButtonCommand::NewGame(target, values_id) => {
@@ -441,6 +578,7 @@ pub fn apply_command(
                 Some(values) => game.new_game_with_values(values),
                 None => game.new_game(),
             }
+            state.reset_scrolls();
             switch_to(state, config, game, target, false);
         }
         ButtonCommand::Resume => {
@@ -450,7 +588,13 @@ pub fn apply_command(
         }
         ButtonCommand::Quit => {
             game.quit();
+            state.reset_scrolls();
             switch_to(state, config, game, config.start_screen, false);
+        }
+        ButtonCommand::Run(run) => {
+            if let Some(call) = config.runs.get(run) {
+                game.run_screen_function(&call.function, object, &call.origin);
+            }
         }
         // «Звук» → «Два вида звука»: touches no world property, no
         // screen, no queued anything — the whole command is this one flip.
@@ -470,6 +614,7 @@ pub fn apply_replay_new_game(
     state: &mut ScreenState,
 ) {
     game.new_game_with_values(values);
+    state.reset_scrolls();
     switch_to(state, config, game, target, false);
 }
 
@@ -517,6 +662,29 @@ pub fn write_sound_frame(game: &mut Game, config: &ScreensConfig, state: &Screen
         .write_header(music, state.sound_enabled());
 }
 
+/// Принимает ли мир ввод: экран с `world_runs` и скорость времени не 0 — «Исполнение игры» → «Шаг и
+/// кадр». Клавиши и щелчки мира при остановленном времени отбрасываются.
+fn world_accepts_input(game: &Game, config: &ScreensConfig, state: &ScreenState) -> bool {
+    state.is_live(config) && !game.time_is_stopped()
+}
+
+/// Мир живого экрана остановлен скоростью времени 0: зажатые клавиши отпускаются, и отпускания идут в
+/// запись, как при паузе.
+fn release_keys_if_time_stopped(
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &ScreenState,
+    events: Option<&mut Vec<RecordedEvent>>,
+) {
+    if !state.is_live(config) || !game.time_is_stopped() {
+        return;
+    }
+    let released = game.release_held_keys();
+    if let Some(events) = events {
+        events.extend(released.into_iter().map(RecordedEvent::WorldKeyUp));
+    }
+}
+
 /// «Экраны и состояние» → «Клавиши экрана»: a key named in the active screen's own `keys` table
 /// never reaches the world, on press or release — judged here against whichever screen is
 /// active *right now*, at drain time, not when the raw event first arrived, so a key queued
@@ -538,7 +706,7 @@ pub fn handle_screen_key_down(
     if config.screens[state.active()].keys.contains_key(code) {
         return;
     }
-    if state.is_live(config) {
+    if world_accepts_input(game, config, state) {
         if apply_now {
             game.press_key(code);
         } else {
@@ -580,11 +748,11 @@ pub fn handle_screen_key_up(
         }
         apply_command(cmd, game, config, state);
         if let Some(events) = events {
-            events.push(RecordedEvent::Command(cmd));
+            events.push(RecordedEvent::Command(cmd, None));
         }
         return;
     }
-    if state.is_live(config) {
+    if world_accepts_input(game, config, state) {
         if apply_now {
             game.release_key(code);
         } else {
@@ -596,34 +764,80 @@ pub fn handle_screen_key_up(
     }
 }
 
-/// «Мышь в мире», требование 13: what the topmost element under the point is — a button (its
-/// index, for capture/hover) or a plain panel (absorbs the press, никому его не отдаёт) — checked
-/// in reverse drawing order so the topmost one wins; a label is transparent to the mouse and never
-/// appears here.
+/// «Мышь в мире», требование 13: что лежит самым верхним под точкой — кнопка (её ключ) или панель без кнопки (она забирает нажатие у мира и никому его не отдаёт). Надпись прозрачна
+/// для мыши и сюда не попадает.
 enum InterfaceHit {
-    Button(usize),
+    Button(ButtonKey),
     Panel,
 }
 
-fn topmost_interface_hit(
-    screen: &Screen,
+fn topmost_interface_hit(parts: &[Part<'_>], point: [f32; 2]) -> Option<InterfaceHit> {
+    parts.iter().rev().find_map(|part| {
+        let Part::Element(placed) = part else {
+            return None;
+        };
+        if !placed.contains(point) {
+            return None;
+        }
+        match placed.element {
+            Element::Button { .. } => Some(InterfaceHit::Button(placed.key)),
+            Element::Panel { .. } => Some(InterfaceHit::Panel),
+            _ => None,
+        }
+    })
+}
+
+/// «Интерфейс игры» → «Мышь»: стоит ли точка окна над кнопкой, панелью или списком активного экрана.
+/// Колесо и правая и средняя кнопки над ними камеру игрока не трогают.
+pub fn over_interface(
+    config: &ScreensConfig,
+    state: &ScreenState,
+    world: &World,
     viewport: [f32; 2],
     point: [f32; 2],
-) -> Option<InterfaceHit> {
-    screen
-        .elements
-        .iter()
-        .enumerate()
-        .rev()
-        .find_map(|(i, el)| match el {
-            Element::Button { placement, .. } if placement.contains(viewport, point) => {
-                Some(InterfaceHit::Button(i))
-            }
-            Element::Panel { placement, .. } if placement.contains(viewport, point) => {
-                Some(InterfaceHit::Panel)
-            }
-            _ => None,
-        })
+) -> bool {
+    let screen = &config.screens[state.active()];
+    interface::list_under(screen, viewport, point).is_some()
+        || topmost_interface_hit(
+            &interface::layout(screen, state.active(), world, state, viewport),
+            point,
+        )
+        .is_some()
+}
+
+/// «Интерфейс игры» → «Список»: колесо на `delta_y` точек над списком сдвигает его строки — на одну за
+/// каждые сто точек. `true`, если под точкой список: камера колесо тогда не получает, даже когда все
+/// строки видны.
+pub fn scroll_wheel(
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+    world: &World,
+    viewport: [f32; 2],
+    point: [f32; 2],
+    delta_y: f64,
+) -> bool {
+    let screen_id = state.active();
+    let screen = &config.screens[screen_id];
+    let Some(index) = interface::list_under(screen, viewport, point) else {
+        return false;
+    };
+    if let Element::List {
+        placement,
+        for_,
+        row_height,
+        gap,
+        sort_by,
+        descending,
+        ..
+    } = &screen.elements[index]
+        && delta_y.is_finite()
+    {
+        let rows = interface::list_rows(for_, *sort_by, *descending, world).len();
+        let visible = interface::visible_rows(placement.size[1], *row_height, *gap);
+        let max = rows.saturating_sub(visible) as f64;
+        state.scroll_list(screen_id, index, delta_y / SCROLL_POINTS_PER_ROW, max);
+    }
+    true
 }
 
 /// What handling one queued mouse event resolved to — «Интерфейс игры» → «Мышь», «Мышь в мире»,
@@ -632,7 +846,7 @@ fn topmost_interface_hit(
 /// layer only decides whether the event reaches the world at all).
 enum MouseOutcome {
     None,
-    Command(ButtonCommand),
+    Command(ButtonCommand, Option<u32>),
     WorldPress,
     WorldRelease,
 }
@@ -643,29 +857,29 @@ enum MouseOutcome {
 /// matching release goes wherever that press went, regardless of where the cursor sits by then.
 fn handle_mouse_event(
     mouse: &mut MouseState,
-    screen: &Screen,
-    viewport: [f32; 2],
+    parts: &[Part<'_>],
+    world_accepts: bool,
     event: MouseEvent,
 ) -> MouseOutcome {
     match event {
         MouseEvent::Move(pos) => {
             mouse.position = pos;
             if mouse.captured.is_none() {
-                mouse.hover = match topmost_interface_hit(screen, viewport, pos) {
-                    Some(InterfaceHit::Button(i)) => Some(i),
+                mouse.hover = match topmost_interface_hit(parts, pos) {
+                    Some(InterfaceHit::Button(key)) => Some(key),
                     _ => None,
                 };
             }
             MouseOutcome::None
         }
-        MouseEvent::Down => match topmost_interface_hit(screen, viewport, mouse.position) {
-            Some(InterfaceHit::Button(i)) => {
-                mouse.captured = Some(i);
+        MouseEvent::Down => match topmost_interface_hit(parts, mouse.position) {
+            Some(InterfaceHit::Button(key)) => {
+                mouse.captured = Some(key);
                 MouseOutcome::None
             }
             Some(InterfaceHit::Panel) => MouseOutcome::None,
             None => {
-                if screen.world_runs {
+                if world_accepts {
                     mouse.world_captured = true;
                     MouseOutcome::WorldPress
                 } else {
@@ -681,18 +895,22 @@ fn handle_mouse_event(
             let Some(captured) = mouse.captured.take() else {
                 return MouseOutcome::None;
             };
-            let Some(Element::Button {
-                placement,
-                on_click,
-                ..
-            }) = screen.elements.get(captured)
-            else {
-                return MouseOutcome::None;
-            };
-            if placement.contains(viewport, mouse.position) {
-                MouseOutcome::Command(*on_click)
-            } else {
-                MouseOutcome::None
+            // Команда срабатывает, только если под указателем кнопка, на которой нажали, — тот же
+            // элемент и тот же объект: строки списка могли сдвинуться.
+            let released_on = parts.iter().find_map(|part| match part {
+                Part::Element(placed)
+                    if placed.key == captured && placed.contains(mouse.position) =>
+                {
+                    match placed.element {
+                        Element::Button { on_click, .. } => Some((*on_click, placed.object)),
+                        _ => None,
+                    }
+                }
+                _ => None,
+            });
+            match released_on {
+                Some((command, object)) => MouseOutcome::Command(command, object),
+                None => MouseOutcome::None,
             }
         }
     }
@@ -708,7 +926,8 @@ fn handle_mouse_event(
 pub enum RecordedEvent {
     WorldKeyDown(String),
     WorldKeyUp(String),
-    Command(ButtonCommand),
+    /// Команда и объект кнопки — строки списка или элемента с `for`, если он был.
+    Command(ButtonCommand, Option<u32>),
 }
 
 /// Drains the shared mouse/screen-key queue, judging every event — mouse or keyboard — against
@@ -745,12 +964,20 @@ pub fn process_ui_queue_recording(
     for event in queue.drain() {
         match event {
             UiEvent::Mouse(mouse_event) => {
-                let screen = &config.screens[state.active()];
-                match handle_mouse_event(mouse, screen, viewport, mouse_event) {
-                    MouseOutcome::Command(cmd) => {
-                        apply_command(cmd, game, config, state);
+                let screen_id = state.active();
+                let parts = interface::layout(
+                    &config.screens[screen_id],
+                    screen_id,
+                    &game.world,
+                    state,
+                    viewport,
+                );
+                let accepts = world_accepts_input(game, config, state);
+                match handle_mouse_event(mouse, &parts, accepts, mouse_event) {
+                    MouseOutcome::Command(cmd, object) => {
+                        apply_command_on(cmd, object, game, config, state);
                         if let Some(events) = events.as_deref_mut() {
-                            events.push(RecordedEvent::Command(cmd));
+                            events.push(RecordedEvent::Command(cmd, object));
                         }
                     }
                     // «Мышь в мире», требование 21: тем же путём, что клавиша экрана без
@@ -826,12 +1053,20 @@ pub fn engine_call_recording(
     state: &mut ScreenState,
     viewport: [f32; 2],
     dt_seconds: f64,
-    events: Option<&mut Vec<RecordedEvent>>,
+    mut events: Option<&mut Vec<RecordedEvent>>,
     apply_now: bool,
 ) {
     process_ui_queue_recording(
-        queue, mouse, game, config, state, viewport, events, apply_now,
+        queue,
+        mouse,
+        game,
+        config,
+        state,
+        viewport,
+        events.as_deref_mut(),
+        apply_now,
     );
+    release_keys_if_time_stopped(game, config, state, events);
     tick(runner, game, config, state, dt_seconds);
     write_sound_frame(game, config, state);
 }
@@ -861,7 +1096,7 @@ pub fn advance_one_step(
     process_ui_queue_recording(
         queue, mouse, game, config, state, viewport, events, apply_now,
     );
-    let stepped = state.is_live(config) && game.is_running();
+    let stepped = world_accepts_input(game, config, state) && game.is_running();
     if stepped {
         let input = game.take_input_snapshot();
         game.step(input);
@@ -878,15 +1113,60 @@ pub fn button_fill<'a>(
     fill: &'a Fill,
     fill_hover: &'a Fill,
     fill_pressed: &'a Fill,
-    index: usize,
+    key: ButtonKey,
     mouse: &MouseState,
 ) -> &'a Fill {
-    if mouse.captured == Some(index) {
+    if mouse.captured == Some(key) {
         fill_pressed
-    } else if mouse.captured.is_none() && mouse.hover == Some(index) {
+    } else if mouse.captured.is_none() && mouse.hover == Some(key) {
         fill_hover
     } else {
         fill
+    }
+}
+
+#[cfg(test)]
+mod list_scroll_tests {
+    use super::*;
+
+    #[test]
+    fn a_row_changes_after_a_whole_row_of_the_wheel_in_both_directions() {
+        let mut state = ScreenState::new(0);
+        state.scroll_list(0, 3, 1.0, 5.0);
+        assert_eq!(state.list_offset(0, 3), 1.0);
+        state.scroll_list(0, 3, -0.01, 5.0);
+        assert_eq!(
+            state.list_offset(0, 3),
+            1.0,
+            "вверх на одну точку — строка та же"
+        );
+        state.scroll_list(0, 3, -0.99, 5.0);
+        assert_eq!(
+            state.list_offset(0, 3),
+            0.0,
+            "вверх на целую строку — на строку выше"
+        );
+        state.scroll_list(0, 3, 0.6, 5.0);
+        assert_eq!(state.list_offset(0, 3), 0.0);
+        state.scroll_list(0, 3, 0.4, 5.0);
+        assert_eq!(state.list_offset(0, 3), 1.0);
+    }
+
+    #[test]
+    fn scrolling_past_an_edge_is_not_banked() {
+        let mut state = ScreenState::new(0);
+        state.scroll_list(0, 0, -3.5, 4.0);
+        assert_eq!(state.list_offset(0, 0), 0.0);
+        state.scroll_list(0, 0, 0.6, 4.0);
+        assert_eq!(
+            state.list_offset(0, 0),
+            0.0,
+            "прокрутка за верх не ушла в долг"
+        );
+        state.scroll_list(0, 0, 9.0, 4.0);
+        assert_eq!(state.list_offset(0, 0), 4.0);
+        state.scroll_list(0, 0, -0.5, 4.0);
+        assert_eq!(state.list_offset(0, 0), 4.0);
     }
 }
 
@@ -903,11 +1183,11 @@ mod tests {
             opacity: 0.8,
         };
         let mouse = MouseState {
-            hover: Some(0),
+            hover: Some(ButtonKey::plain(0)),
             captured: None,
             ..Default::default()
         };
-        let shown = button_fill(&base, &base, &base, 0, &mouse);
+        let shown = button_fill(&base, &base, &base, ButtonKey::plain(0), &mouse);
         match shown {
             Fill::Image { image, opacity } => {
                 assert_eq!(*image, 3);
@@ -929,11 +1209,11 @@ mod tests {
         };
         let pressed = base;
         let mouse = MouseState {
-            hover: Some(0),
+            hover: Some(ButtonKey::plain(0)),
             captured: None,
             ..Default::default()
         };
-        let shown = button_fill(&base, &hover, &pressed, 0, &mouse);
+        let shown = button_fill(&base, &hover, &pressed, ButtonKey::plain(0), &mouse);
         assert!(matches!(shown, Fill::Image { image: 2, .. }));
     }
 
@@ -943,11 +1223,11 @@ mod tests {
         let hover = Fill::Color([0.5, 0.5, 0.5, 1.0]);
         let pressed = Fill::Color([1.0, 1.0, 1.0, 1.0]);
         let mouse = MouseState {
-            hover: Some(0),
-            captured: Some(0),
+            hover: Some(ButtonKey::plain(0)),
+            captured: Some(ButtonKey::plain(0)),
             ..Default::default()
         };
-        let shown = button_fill(&base, &hover, &pressed, 0, &mouse);
+        let shown = button_fill(&base, &hover, &pressed, ButtonKey::plain(0), &mouse);
         assert!(matches!(shown, Fill::Color([1.0, 1.0, 1.0, 1.0])));
     }
 
@@ -958,11 +1238,11 @@ mod tests {
         let pressed = Fill::Color([1.0, 1.0, 1.0, 1.0]);
         // Another button (index 1) holds the capture — button 0 shows neither hover nor pressed.
         let mouse = MouseState {
-            hover: Some(0),
-            captured: Some(1),
+            hover: Some(ButtonKey::plain(0)),
+            captured: Some(ButtonKey::plain(1)),
             ..Default::default()
         };
-        let shown = button_fill(&base, &hover, &pressed, 0, &mouse);
+        let shown = button_fill(&base, &hover, &pressed, ButtonKey::plain(0), &mouse);
         assert!(matches!(shown, Fill::Color([0.0, 0.0, 0.0, 1.0])));
     }
 

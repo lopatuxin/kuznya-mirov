@@ -94,10 +94,19 @@ impl CameraHeight {
 /// сцена не меньше видимой части — центр прижат так, чтобы видимая часть не вышла за край сцены;
 /// сцена меньше — по центру, с полями по краям.
 pub fn frame(scene: &SceneConfig, center: Vec2, viewport: [f32; 2]) -> (f32, [f32; 2]) {
-    let scene_cells = [scene.width as f32, scene.height as f32];
-    let Some(view_height) = scene.view_height else {
-        return letterbox(viewport, scene_cells);
-    };
+    match scene.view_height {
+        Some(view_height) => frame_at(scene, view_height, center, viewport),
+        None => letterbox(viewport, [scene.width as f32, scene.height as f32]),
+    }
+}
+
+/// То же при заданном виде `view_height`: камера игрока меняет его, не трогая `scene.view_height`.
+pub fn frame_at(
+    scene: &SceneConfig,
+    view_height: f64,
+    center: Vec2,
+    viewport: [f32; 2],
+) -> (f32, [f32; 2]) {
     if viewport[1] <= 0.0 {
         return (1.0, [0.0, 0.0]);
     }
@@ -171,6 +180,9 @@ pub struct Camera3d {
     pub view_height: f64,
     /// Окно в точках (CSS-пикселях), как у мыши и `screens.json`.
     pub viewport: [f64; 2],
+    /// Вид, по которому считается клетка надписей: с камерой игрока — `view_height` из `game.json`,
+    /// а не нынешний вид «Камера игрока».
+    pub label_view_height: f64,
 }
 
 impl Camera3d {
@@ -218,6 +230,15 @@ impl Camera3d {
             pitch,
             view_height,
             viewport,
+            label_view_height: view_height,
+        }
+    }
+
+    /// Та же камера, у которой клетка надписей считается по виду `view_height`.
+    pub fn with_label_view_height(self, view_height: f64) -> Camera3d {
+        Camera3d {
+            label_view_height: view_height,
+            ..self
         }
     }
 
@@ -253,7 +274,7 @@ impl Camera3d {
     /// «Надписи и полоски», требование 25: клетка размеров и сдвига — высота окна, делённая на
     /// `view_height`, одна у всех объектов, ближних и дальних.
     pub fn cell_points(&self) -> f64 {
-        self.viewport[1] / self.view_height
+        self.viewport[1] / self.label_view_height
     }
 
     /// Точка в окне (в точках) для точки мира; `None`, если она за камерой.
@@ -406,6 +427,197 @@ fn clamp_axis(center: f64, scene_len: f64, low: f64, high: f64) -> f64 {
     } else {
         center.clamp(-low, scene_len - high)
     }
+}
+
+/// «Мир на экране» → «Камера игрока», требование 5: щелчок колеса — это столько точек прокрутки.
+pub const WHEEL_NOTCH: f64 = 100.0;
+/// Во сколько раз вид меняется за щелчок колеса.
+pub const WHEEL_ZOOM_FACTOR: f64 = 1.15;
+/// Требование 10: на сколько видимых высот в секунду клавиши сдвигают камеру.
+pub const PAN_VIEW_SHARE_PER_SECOND: f64 = 0.6;
+
+/// Клавиши камеры игрока и куда каждая сдвигает: вправо и вниз по окну — плюс.
+const PAN_KEYS: [(&str, Vec2); 8] = [
+    ("ArrowLeft", [-1.0, 0.0]),
+    ("ArrowRight", [1.0, 0.0]),
+    ("ArrowUp", [0.0, -1.0]),
+    ("ArrowDown", [0.0, 1.0]),
+    ("KeyA", [-1.0, 0.0]),
+    ("KeyD", [1.0, 0.0]),
+    ("KeyW", [0.0, -1.0]),
+    ("KeyS", [0.0, 1.0]),
+];
+
+/// Клавиша, которую камера игрока берёт, если ей не нашлось привязки.
+pub fn is_pan_key(code: &str) -> bool {
+    PAN_KEYS.iter().any(|(key, _)| *key == code)
+}
+
+/// Все клавиши камеры игрока.
+pub fn pan_key_codes() -> impl Iterator<Item = &'static str> {
+    PAN_KEYS.iter().map(|(code, _)| *code)
+}
+
+/// Куда смотрит камера, когда игрок её сдвинул: середина окна на земле и высота этой точки.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct FreeView {
+    pub center: Vec2,
+    pub z: f64,
+}
+
+/// «Мир на экране» → «Камера игрока»: вид камеры, которой водит игрок, — сколько клеток видно по
+/// высоте окна, где она стоит, если её сдвинули (`None` — следит за объектом), что схвачено мышью и
+/// какие клавиши зажаты.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlayerCamera {
+    view_height: f64,
+    free: Option<FreeView>,
+    grab: Option<Vec3>,
+    held: u8,
+}
+
+impl PlayerCamera {
+    pub fn new(view_height: f64, free: Option<FreeView>) -> Self {
+        PlayerCamera {
+            view_height,
+            free,
+            grab: None,
+            held: 0,
+        }
+    }
+
+    pub fn view_height(&self) -> f64 {
+        self.view_height
+    }
+
+    pub fn set_view_height(&mut self, view_height: f64) {
+        self.view_height = view_height;
+    }
+
+    pub fn free(&self) -> Option<FreeView> {
+        self.free
+    }
+
+    pub fn set_free(&mut self, free: Option<FreeView>) {
+        self.free = free;
+    }
+
+    pub fn grab(&self) -> Option<Vec3> {
+        self.grab
+    }
+
+    pub fn set_grab(&mut self, grab: Option<Vec3>) {
+        self.grab = grab;
+    }
+
+    /// Берёт клавишу, если она клавиша камеры; `true` — взяла.
+    pub fn key_down(&mut self, code: &str) -> bool {
+        match PAN_KEYS.iter().position(|(key, _)| *key == code) {
+            Some(index) => {
+                self.held |= 1 << index;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Отпускает клавишу, если камера её держала; `true` — держала.
+    pub fn key_up(&mut self, code: &str) -> bool {
+        let Some(index) = PAN_KEYS.iter().position(|(key, _)| *key == code) else {
+            return false;
+        };
+        let was_held = self.held & (1 << index) != 0;
+        self.held &= !(1 << index);
+        was_held
+    }
+
+    pub fn release_keys(&mut self) {
+        self.held = 0;
+    }
+
+    /// Куда сдвигают зажатые клавиши: сумма направлений, но две клавиши в одну сторону не удваивают.
+    pub fn pan_direction(&self) -> Vec2 {
+        let mut sum = [0.0, 0.0];
+        for (index, (_, direction)) in PAN_KEYS.iter().enumerate() {
+            if self.held & (1 << index) != 0 {
+                sum[0] += direction[0];
+                sum[1] += direction[1];
+            }
+        }
+        [sum[0].clamp(-1.0, 1.0), sum[1].clamp(-1.0, 1.0)]
+    }
+}
+
+/// Требование 5: вид после прокрутки на `delta_y` точек — от себя (минус) ближе, к себе (плюс) дальше, —
+/// не выходящий из `zoom`.
+pub fn zoomed_height(view_height: f64, delta_y: f64, zoom: [f64; 2]) -> f64 {
+    let factor = libm::pow(WHEEL_ZOOM_FACTOR, delta_y / WHEEL_NOTCH);
+    (view_height * factor).clamp(zoom[0], zoom[1])
+}
+
+/// Одна ось плоской камеры: сцена не меньше видимой части — середина прижата к краям; меньше — по
+/// середине сцены.
+fn clamp_axis_flat(center: f64, scene_len: f64, visible_len: f64) -> f64 {
+    if visible_len >= scene_len {
+        scene_len / 2.0
+    } else {
+        center.clamp(visible_len / 2.0, scene_len - visible_len / 2.0)
+    }
+}
+
+/// Требование 14: середина плоской камеры при виде `view_height`, не заглядывающей за край сцены —
+/// тем же расчётом, что `axis_offset`.
+pub fn clamp_center_flat(
+    scene: &SceneConfig,
+    view_height: f64,
+    viewport: [f64; 2],
+    center: Vec2,
+) -> Vec2 {
+    let visible_width = viewport[0] * view_height / viewport[1].max(1.0);
+    [
+        clamp_axis_flat(center[0], scene.width as f64, visible_width),
+        clamp_axis_flat(center[1], scene.height as f64, view_height),
+    ]
+}
+
+/// Середина плоской камеры с видом `view_height`, при которой точка сцены `anchor` стоит под точкой окна
+/// `pointer`.
+pub fn flat_center_under(
+    anchor: Vec2,
+    pointer: [f64; 2],
+    view_height: f64,
+    viewport: [f64; 2],
+) -> Vec2 {
+    let scale = viewport[1].max(1.0) / view_height;
+    [
+        anchor[0] - (pointer[0] - viewport[0] / 2.0) / scale,
+        anchor[1] - (pointer[1] - viewport[1] / 2.0) / scale,
+    ]
+}
+
+/// Требование 6: камера приближается к точке `anchor` вдоль луча, что идёт к ней от глаза, так что она
+/// остаётся под тем же местом окна, — точка взгляда сжимается к `anchor` во столько раз, во сколько
+/// вид стал ближе.
+pub fn dolly_target(target: Vec3, anchor: Vec3, scale: f64) -> Vec3 {
+    [
+        anchor[0] + (target[0] - anchor[0]) * scale,
+        anchor[1] + (target[1] - anchor[1]) * scale,
+        anchor[2] + (target[2] - anchor[2]) * scale,
+    ]
+}
+
+/// Требование 9: куда перенести точку взгляда `camera`, чтобы место `anchor` встало под точку окна
+/// `pointer`, не меняя высоты камеры; `None` — луч через точку окна не идёт вниз.
+pub fn dragged_target(camera: &Camera3d, anchor: Vec3, pointer: [f64; 2]) -> Option<Vec2> {
+    let direction = camera.ray_direction(pointer);
+    if direction[2] >= -1e-9 {
+        return None;
+    }
+    let reach = (anchor[2] - camera.eye[2]) / direction[2];
+    Some([
+        camera.target[0] + anchor[0] - reach * direction[0] - camera.eye[0],
+        camera.target[1] + anchor[1] - reach * direction[1] - camera.eye[1],
+    ])
 }
 
 /// «Редактор», «Вызовы движка»: камера редактора — точка вращения в середине окна (место `target` и
@@ -664,6 +876,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         }
     }
 

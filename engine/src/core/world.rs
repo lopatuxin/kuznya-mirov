@@ -1,11 +1,25 @@
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::keys::{KeyEdit, KeyTable};
+use super::model::{Model, ModelTable};
 use super::property::{self, PropertyId, PropertyTable};
+use super::roads::RoadShape;
 use super::run_jump::JumpState;
 use super::surface;
 use super::terrain::Terrain;
 use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Shape, Value, Vec2};
+
+static NEXT_SURFACE_REVISION: AtomicU64 = AtomicU64::new(1);
+
+/// Свойства, от которых зависят место и верх настила.
+const DECK_GEOMETRY: [PropertyId; 5] = [
+    property::POSITION,
+    property::SIZE,
+    property::ROTATION,
+    property::HEIGHT,
+    property::SHAPE,
+];
 
 #[derive(Debug, Clone)]
 enum Column {
@@ -128,6 +142,9 @@ pub struct World {
     three_d: bool,
     /// «Рельеф»: земля трёхмерной сцены; `None` — ровная на высоте 0. Берётся из таблицы свойств.
     terrain: Option<Arc<Terrain>>,
+    /// «Трёхмерная сцена» → «Модели и движения»: модели игры; объект называет свою свойством `model`.
+    /// Берутся из таблицы свойств.
+    models: Arc<ModelTable>,
     /// «Рельеф»: высота основания `z` каждого объекта — третье число `position` живого мира.
     base_z: Vec<f64>,
     /// «Рельеф»: третье число `walk_to`, если оно задано.
@@ -135,6 +152,20 @@ pub struct World {
     /// «Бег и прыжок»: память нажатия, запас после края и признак подъёма каждого объекта — в мире, а не
     /// в свойствах: повтор записи даёт ту же партию шаг в шаг.
     jump: Vec<JumpState>,
+    /// «Мир на экране» → «Камера игрока»: сколько раз объектам записали `camera_follows` — признак
+    /// «записали», а не «есть»: запись тому же объекту заново тоже возвращает слежение.
+    camera_follow_writes: u64,
+    /// «Рельеф» → «Высота объектов»: номера объектов с `deck` по возрастанию — настил ищется среди них, а не
+    /// по всему миру.
+    decks: Vec<u32>,
+    /// «Рельеф» → «Вид»: номер состояния земли и настилов. Новый — у каждого нового мира, при смене рельефа и
+    /// при каждой правке настила; счётчик общий на все миры, так что форма, посчитанная в другом мире, не
+    /// подойдёт.
+    surface_revision: u64,
+}
+
+fn next_surface_revision() -> u64 {
+    NEXT_SURFACE_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl World {
@@ -151,9 +182,51 @@ impl World {
             generation: Vec::new(),
             three_d: properties.three_d(),
             terrain: properties.terrain().cloned(),
+            models: Arc::clone(properties.models()),
             base_z: Vec::new(),
             walk_to_z: Vec::new(),
             jump: Vec::new(),
+            camera_follow_writes: 0,
+            decks: Vec::new(),
+            surface_revision: next_surface_revision(),
+        }
+    }
+
+    /// Номера настилов (объектов с `deck`) по возрастанию.
+    pub fn deck_ids(&self) -> &[u32] {
+        &self.decks
+    }
+
+    /// Номер состояния земли и настилов: меняется вместе с рельефом и с любой правкой настила — наличием
+    /// `deck`, местом, верхом.
+    pub fn surface_revision(&self) -> u64 {
+        self.surface_revision
+    }
+
+    fn surface_changed(&mut self) {
+        self.surface_revision = next_surface_revision();
+    }
+
+    /// Запись свойства `prop` объекта `id` дошла до колонки: список настилов и номер состояния идут за ней.
+    fn note_write(&mut self, id: u32, prop: PropertyId) {
+        if prop == property::DECK {
+            let member = self.flag(id, property::DECK);
+            match self.decks.binary_search(&id) {
+                Ok(at) if !member => {
+                    self.decks.remove(at);
+                }
+                Err(at) if member => self.decks.insert(at, id),
+                _ => return,
+            }
+            self.surface_changed();
+        } else if DECK_GEOMETRY.contains(&prop) {
+            self.note_deck_moved(id);
+        }
+    }
+
+    fn note_deck_moved(&mut self, id: u32) {
+        if self.decks.binary_search(&id).is_ok() {
+            self.surface_changed();
         }
     }
 
@@ -169,10 +242,23 @@ impl World {
         }
     }
 
+    /// Модели игры.
+    pub fn models(&self) -> &ModelTable {
+        &self.models
+    }
+
+    /// Модель, которую рисует объект `id`: названная в его `model`; `None` без `model` и если такой модели
+    /// нет.
+    pub fn model_of(&self, id: u32) -> Option<&Model> {
+        let name = self.text(id, property::MODEL)?;
+        self.models.get(self.models.index_of(name)?)
+    }
+
     /// Меняет землю мира на `terrain` из таблицы свойств, ничего не пересаживая: годится, когда высоты
     /// и отпечатки те же, а другое — например, покрытия.
     pub fn replace_terrain(&mut self, terrain: Option<Arc<Terrain>>) {
         self.terrain = terrain;
+        self.surface_changed();
     }
 
     /// Высота основания объекта; 0, пока ничего не ставило её.
@@ -184,6 +270,35 @@ impl World {
     pub fn set_base_z(&mut self, id: u32, z: f64) {
         if let Some(slot) = self.base_z.get_mut(id as usize) {
             *slot = z;
+        }
+        self.note_deck_moved(id);
+    }
+
+    /// «Езда по дорогам»: дороги мира — живые объекты с признаком `road`, `position` и `size`, по
+    /// возрастанию номера, — и предельная скорость каждой; `NaN` в `road_speed` считается закрытой.
+    pub fn collect_roads(&self, shapes: &mut Vec<RoadShape>, speeds: &mut Vec<Option<f64>>) {
+        shapes.clear();
+        speeds.clear();
+        for id in self.ids().filter(|&id| self.flag(id, property::ROAD)) {
+            let (Some(position), Some(size)) = (
+                self.vec2(id, property::POSITION),
+                self.vec2(id, property::SIZE),
+            ) else {
+                continue;
+            };
+            shapes.push(RoadShape {
+                id,
+                position,
+                size,
+                sin_cos: self
+                    .rotation(id, property::ROTATION)
+                    .map_or((0.0, 1.0), Rotation::sin_cos),
+                z: self.base_z(id),
+            });
+            speeds.push(
+                self.number_like(id, property::ROAD_SPEED)
+                    .map(|speed| if speed.is_nan() { 0.0 } else { speed }),
+            );
         }
     }
 
@@ -248,6 +363,7 @@ impl World {
         if prop == property::WALK_TO {
             self.walk_to_z[id as usize] = None;
         }
+        self.note_write(id, prop);
     }
 
     /// «Редактор», требование 32: a number past `slot_count` — a stale replay `delete`, or one
@@ -258,6 +374,10 @@ impl World {
             return;
         }
         self.alive[idx] = false;
+        if let Ok(at) = self.decks.binary_search(&id) {
+            self.decks.remove(at);
+            self.surface_changed();
+        }
         for column in &mut self.columns {
             column.clear(idx);
         }
@@ -315,6 +435,7 @@ impl World {
         if let Column::Vec2(v) = &mut self.columns[prop as usize] {
             v[id as usize] = Some(value);
         }
+        self.note_write(id, prop);
         if !self.three_d {
             return;
         }
@@ -331,6 +452,7 @@ impl World {
             v[id as usize] = Some(position);
         }
         self.base_z[id as usize] = z;
+        self.note_write(id, property::POSITION);
     }
 
     /// Ставит `walk_to` вместе с высотой; без `z` — точка на верхней поверхности.
@@ -369,6 +491,7 @@ impl World {
         if let Column::Number(v) = &mut self.columns[prop as usize] {
             v[id as usize] = Some(value);
         }
+        self.note_write(id, prop);
     }
 
     pub fn set_time(&mut self, id: u32, prop: PropertyId, value: i64) {
@@ -415,6 +538,7 @@ impl World {
             }
             _ => {}
         }
+        self.note_write(id, prop);
     }
 
     /// «Правила игры», требование 11: writes a resolved `add`/`set` number to a `number`/`time`/
@@ -428,6 +552,7 @@ impl World {
             Column::Timer(v) => v[id as usize] = Some((value.round() as i64).max(0)),
             _ => {}
         }
+        self.note_write(id, prop);
     }
 
     pub fn flag(&self, id: u32, prop: PropertyId) -> bool {
@@ -438,6 +563,14 @@ impl World {
         if let Column::Flag(v) = &mut self.columns[prop as usize] {
             v[id as usize] = value;
         }
+        if prop == property::CAMERA_FOLLOWS && value {
+            self.camera_follow_writes += 1;
+        }
+        self.note_write(id, prop);
+    }
+
+    pub fn camera_follow_writes(&self) -> u64 {
+        self.camera_follow_writes
     }
 
     pub fn color(&self, id: u32, prop: PropertyId) -> Option<[f32; 4]> {
@@ -547,6 +680,7 @@ impl World {
             turned = old != value;
             v[id as usize] = Some(value);
         }
+        self.note_write(id, prop);
         if turned && self.three_d && prop == property::ROTATION {
             surface::seat_after_shift(self, id);
         }
@@ -576,6 +710,7 @@ impl World {
         if let Column::Shape(v) = &mut self.columns[prop as usize] {
             v[id as usize] = Some(value);
         }
+        self.note_write(id, prop);
     }
 
     pub fn on_click(&self, id: u32, prop: PropertyId) -> Option<&[KeyEdit]> {

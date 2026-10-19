@@ -42,6 +42,17 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("run_speed", 7, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
   });
 
+  it("road — галочка (Фаза 38, требование 34); не булево — текстовое поле", () => {
+    expect(propertyFieldKind("road", true, NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "checkbox" });
+    expect(propertyFieldKind("road", 1, NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
+  });
+
+  it("road_speed, drive_speed и drive_to — текстовое поле: числа и пара (Фаза 38, требование 34)", () => {
+    expect(propertyFieldKind("road_speed", 2, NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
+    expect(propertyFieldKind("drive_speed", 5, NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
+    expect(propertyFieldKind("drive_to", [10, 2], NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
+  });
+
   it("parallax — число в текстовом поле (Фаза 28, требование 22)", () => {
     expect(propertyFieldKind("parallax", 0.25, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
   });
@@ -62,6 +73,15 @@ describe("propertyFieldKind", () => {
 
   it("картинки нет в files.images — текстовое поле", () => {
     expect(propertyFieldKind("image", "missing", NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "text" });
+  });
+
+  it("model из объявленных моделей — выпадающий список имён (Фаза 25, требование 24)", () => {
+    expect(propertyFieldKind("model", "house", NO_AUTHOR_PROPERTIES, IMAGES, true, ["house", "birch"])).toEqual({ kind: "select", options: ["house", "birch"] });
+  });
+
+  it("model, которого нет среди моделей игры, или без моделей — текстовое поле", () => {
+    expect(propertyFieldKind("model", "gone", NO_AUTHOR_PROPERTIES, IMAGES, true, ["house"])).toEqual({ kind: "text" });
+    expect(propertyFieldKind("model", "house", NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
   });
 
   it("rotation из четырёх значений — выпадающий список", () => {

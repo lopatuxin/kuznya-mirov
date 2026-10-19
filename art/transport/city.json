@@ -1,0 +1,610 @@
+{
+  "osm": "tools/city/.cache/kineshma.json",
+  "bbox": [
+    57.4303,
+    42.0906,
+    57.4609,
+    42.184
+  ],
+  "cell": 20,
+  "minute_seconds": 3,
+  "out": "games/transport",
+  "seed": 1802,
+  "background": "#8a8b7f",
+  "roads": {
+    "primary": {
+      "width": 14,
+      "color": "#66696d",
+      "layer": 5
+    },
+    "secondary": {
+      "width": 12,
+      "color": "#6a6d71",
+      "layer": 5
+    },
+    "tertiary": {
+      "width": 10,
+      "color": "#6e7175",
+      "layer": 4
+    },
+    "unclassified": {
+      "width": 8,
+      "color": "#76787b",
+      "layer": 3,
+      "speed": 25
+    },
+    "residential": {
+      "width": 7,
+      "color": "#76787b",
+      "layer": 3,
+      "speed": 25
+    },
+    "living_street": {
+      "width": 6,
+      "color": "#7a7c7f",
+      "layer": 3,
+      "speed": 15
+    },
+    "service": {
+      "width": 4.5,
+      "color": "#7c7e80",
+      "layer": 2,
+      "speed": 12
+    }
+  },
+  "unpaved_color": "#93846b",
+  "unpaved_speed": 15,
+  "deck_thickness": 1.5,
+  "deck_color": "#9b9a95",
+  "rail": {
+    "width": 4,
+    "color": "#5d5650"
+  },
+  "water": {
+    "per": 4,
+    "seeds": [
+      [
+        57.4537,
+        42.154
+      ],
+      [
+        57.44716,
+        42.1448
+      ],
+      [
+        57.44743,
+        42.15148
+      ],
+      [
+        57.43934,
+        42.16565
+      ],
+      [
+        57.43395,
+        42.14981
+      ]
+    ],
+    "depth": -0.3,
+    "level": -0.08,
+    "color": "#5b8399",
+    "join_gap": 3,
+    "max_seed_share": 0.45
+  },
+  "ground": {
+    "default": "#a2ad76",
+    "noise": 0.12,
+    "colors": {
+      "farmland": "#b3ae7e",
+      "farmyard": "#a39a7c",
+      "residential": "#abad8c",
+      "commercial": "#aaa38f",
+      "retail": "#aaa38f",
+      "construction": "#b3a07c",
+      "industrial": "#a9a49a",
+      "railway": "#a19b91",
+      "garages": "#a59f95",
+      "allotments": "#96ad69",
+      "cemetery": "#879b6e",
+      "grass": "#93b264",
+      "pitch": "#7fa95a",
+      "park": "#8aad5e",
+      "scrub": "#7b9452",
+      "wood": "#6a8549",
+      "sand": "#cfc09a"
+    },
+    "order": [
+      "farmland",
+      "farmyard",
+      "residential",
+      "commercial",
+      "retail",
+      "construction",
+      "industrial",
+      "railway",
+      "garages",
+      "allotments",
+      "cemetery",
+      "grass",
+      "pitch",
+      "park",
+      "scrub",
+      "wood",
+      "sand"
+    ],
+    "shaded": [
+      "wood",
+      "scrub"
+    ]
+  },
+  "buildings": {
+    "house": {
+      "height": 6,
+      "colors": [
+        "#c9b48a",
+        "#a7b9a0",
+        "#9fb2c4",
+        "#c8a090",
+        "#d6cfbe",
+        "#8c6f56",
+        "#b9c48f"
+      ]
+    },
+    "apartments": {
+      "per_level": 3,
+      "height": 15,
+      "colors": [
+        "#d8d4cc",
+        "#cfc8bb",
+        "#c5c9cc",
+        "#d9cfc0"
+      ]
+    },
+    "industrial": {
+      "height": 9,
+      "colors": [
+        "#9a9893",
+        "#a8a39a",
+        "#8f8b84",
+        "#a0968a"
+      ]
+    },
+    "garage": {
+      "height": 3,
+      "colors": [
+        "#7f7a74",
+        "#8a857e"
+      ]
+    },
+    "shop": {
+      "per_level": 3.5,
+      "height": 5,
+      "colors": [
+        "#d9c7a7",
+        "#c97e5f",
+        "#cdb99a"
+      ]
+    },
+    "church": {
+      "height": 14,
+      "colors": [
+        "#f2efe8"
+      ]
+    },
+    "public": {
+      "per_level": 3.5,
+      "height": 8,
+      "colors": [
+        "#e0d6c2",
+        "#d7b7a0",
+        "#d2c8b4"
+      ]
+    },
+    "shed": {
+      "height": 2.5,
+      "colors": [
+        "#8a7860",
+        "#7d7468"
+      ]
+    }
+  },
+  "trees": {
+    "crown": 7,
+    "height": 9,
+    "colors": [
+      "#4f6e33",
+      "#5a7a3a",
+      "#466330",
+      "#62813f"
+    ],
+    "spacing": {
+      "wood": 14,
+      "scrub": 16,
+      "park": 16,
+      "cemetery": 12
+    },
+    "yard_chance": 0.55
+  },
+  "places": [
+    {
+      "id": "office",
+      "name": "Контора на {street}",
+      "lat": 57.4428,
+      "lon": 42.1486,
+      "color": "#e3c27a"
+    },
+    {
+      "id": "bakery",
+      "name": "Хлебозавод на {street}",
+      "lat": 57.4426,
+      "lon": 42.139
+    },
+    {
+      "id": "wholesale",
+      "name": "Оптовая база на {street}",
+      "lat": 57.4405,
+      "lon": 42.1425
+    },
+    {
+      "id": "market",
+      "name": "Рынок",
+      "osm": "w119166095"
+    },
+    {
+      "id": "pier",
+      "name": "Пристань",
+      "osm": "w119166101"
+    },
+    {
+      "id": "sewing",
+      "name": "Швейная фабрика",
+      "osm": "w119170705"
+    },
+    {
+      "id": "plant",
+      "name": "Завод «Электроконтакт»",
+      "osm": "w374818724"
+    },
+    {
+      "id": "jewelry",
+      "name": "Ювелирная фабрика",
+      "osm": "w152176355"
+    },
+    {
+      "id": "station",
+      "name": "Товарный двор станции",
+      "osm": "n661394949"
+    },
+    {
+      "id": "site",
+      "name": "Стройка на {street}",
+      "osm": "w375428210",
+      "site": true,
+      "color": "#b79e74"
+    },
+    {
+      "id": "materials",
+      "name": "Стройматериалы на {street}",
+      "osm": "n8116936307"
+    },
+    {
+      "id": "furniture",
+      "name": "Мебельный на {street}",
+      "osm": "n9892494797"
+    },
+    {
+      "id": "shop_sechenov",
+      "name": "Продукты на {street}",
+      "osm": "n1201729640"
+    },
+    {
+      "id": "shop_north",
+      "name": "Универсам на {street}",
+      "osm": "n4697748294"
+    },
+    {
+      "id": "shop_center",
+      "name": "Магазин на {street}",
+      "osm": "n11118473111"
+    },
+    {
+      "id": "shop_gorky",
+      "name": "Продукты на {street}",
+      "osm": "n1339696810"
+    },
+    {
+      "id": "shop_metal",
+      "name": "Продукты на {street}",
+      "osm": "n4675114902"
+    }
+  ],
+  "use_models": true,
+  "models": {
+    "house_max_length": 22,
+    "house_scale": [
+      0.75,
+      1.35
+    ],
+    "section_scale": [
+      0.8,
+      1.25
+    ],
+    "old_scale": [
+      0.7,
+      1.5
+    ],
+    "house": [
+      {
+        "name": "izba_brown_green",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "izba_green_red",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "izba_blue_grey",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "izba_ochre_green",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "brick_house",
+        "size": [
+          9,
+          8
+        ],
+        "long": "x",
+        "height": 5.7
+      },
+      {
+        "name": "white_house",
+        "size": [
+          9,
+          8
+        ],
+        "long": "x",
+        "height": 5.7
+      },
+      {
+        "name": "two_storey_blue",
+        "size": [
+          7,
+          7
+        ],
+        "long": "x",
+        "height": 8.4,
+        "square": true
+      },
+      {
+        "name": "two_storey_cream",
+        "size": [
+          7,
+          7
+        ],
+        "long": "x",
+        "height": 8.4,
+        "square": true
+      },
+      {
+        "name": "brick_house",
+        "size": [
+          9,
+          8
+        ],
+        "long": "x",
+        "height": 5.7,
+        "square": true
+      }
+    ],
+    "section": [
+      {
+        "name": "khrush_grey",
+        "size": [
+          15,
+          12
+        ],
+        "long": "x",
+        "height": 14.95
+      },
+      {
+        "name": "khrush_sand",
+        "size": [
+          15,
+          12
+        ],
+        "long": "x",
+        "height": 14.95
+      }
+    ],
+    "old": [
+      {
+        "name": "old_yellow",
+        "size": [
+          14,
+          10
+        ],
+        "long": "x",
+        "height": 10.6
+      },
+      {
+        "name": "old_pink",
+        "size": [
+          14,
+          10
+        ],
+        "long": "x",
+        "height": 10.6
+      }
+    ],
+    "trees": [
+      {
+        "name": "birch",
+        "size": [
+          4.4,
+          4.4
+        ],
+        "height": 9.9
+      },
+      {
+        "name": "linden",
+        "size": [
+          6.4,
+          6.4
+        ],
+        "height": 8.6
+      },
+      {
+        "name": "pine",
+        "size": [
+          4.6,
+          4.6
+        ],
+        "height": 11.5
+      }
+    ],
+    "places": {
+      "office": {
+        "name": "office",
+        "size": [
+          12,
+          8
+        ],
+        "long": "x",
+        "height": 4.2
+      },
+      "bakery": {
+        "name": "bakery",
+        "size": [
+          24,
+          14
+        ],
+        "long": "x",
+        "height": 22.5
+      },
+      "market": {
+        "name": "market",
+        "size": [
+          28,
+          24
+        ],
+        "long": "x",
+        "height": 3.7
+      },
+      "site": {
+        "name": "site",
+        "size": [
+          32,
+          24
+        ],
+        "long": "x",
+        "height": 26.2
+      },
+      "pier": {
+        "name": "pier",
+        "size": [
+          30.4,
+          10.4
+        ],
+        "long": "x",
+        "height": 8.6
+      },
+      "wholesale": {
+        "name": "wholesale",
+        "size": [
+          30,
+          18
+        ],
+        "long": "x",
+        "height": 9.5
+      },
+      "materials": {
+        "name": "materials",
+        "size": [
+          30,
+          18
+        ],
+        "long": "x",
+        "height": 9.5
+      },
+      "shop_sechenov": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "shop_north": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "shop_center": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "shop_gorky": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "shop_metal": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      }
+    }
+  },
+  "addresses": {
+    "bin": 12,
+    "max_gap": 2.5
+  },
+  "place_fields": {
+    "on_click": [
+      [
+        "clicked",
+        true
+      ]
+    ]
+  }
+}

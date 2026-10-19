@@ -208,18 +208,58 @@ impl Body {
         let position = world.vec2(id, property::POSITION)?;
         let size = world.vec2(id, property::SIZE)?;
         let height = world.number_like(id, property::HEIGHT).unwrap_or(1.0);
+        Some(Body::standing(
+            world,
+            id,
+            shape,
+            position,
+            size,
+            [size[0], size[1]],
+            height,
+        ))
+    }
+
+    /// Коробка вокруг модели объекта `id` после масштаба и поворота: середина основания — в середине его
+    /// прямоугольника; `None`, если у объекта нет модели, `position` или `size`.
+    pub fn of_model(world: &World, id: u32) -> Option<Body> {
+        let model = world.model_of(id)?;
+        let position = world.vec2(id, property::POSITION)?;
+        let size = world.vec2(id, property::SIZE)?;
+        let [width, depth, height] =
+            model.dims(model.scale(world.number_like(id, property::HEIGHT)));
+        Some(Body::standing(
+            world,
+            id,
+            Shape::Box,
+            position,
+            size,
+            [width, depth],
+            height,
+        ))
+    }
+
+    /// Тело объекта `id`, середина которого — середина прямоугольника `position`/`size`.
+    fn standing(
+        world: &World,
+        id: u32,
+        shape: Shape,
+        position: Vec2,
+        rect: Vec2,
+        size: Vec2,
+        height: f64,
+    ) -> Body {
         let (sin, cos) = world
             .rotation(id, property::ROTATION)
             .map_or((0.0, 1.0), Rotation::sin_cos);
-        Some(Body {
+        Body {
             shape,
-            center: [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0],
+            center: [position[0] + rect[0] / 2.0, position[1] + rect[1] / 2.0],
             size,
             height,
             base: world.base_z(id),
             sin,
             cos,
-        })
+        }
     }
 
     /// Высота полушария капсулы: половина меньшей стороны прямоугольника, но не больше половины

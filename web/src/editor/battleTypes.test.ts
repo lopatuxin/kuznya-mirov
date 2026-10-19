@@ -22,6 +22,7 @@ describe("describeRuleKind", () => {
     expect(describeRuleKind("spawn")).toBe("создало");
     expect(describeRuleKind("walk")).toBe("повело");
     expect(describeRuleKind("run_jump")).toBe("провело бегом");
+    expect(describeRuleKind("drive")).toBe("повело по дорогам");
   });
 });
 

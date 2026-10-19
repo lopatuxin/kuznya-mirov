@@ -127,6 +127,21 @@ describe("computeScale", () => {
     expect(computeScale(withoutHeight, "width", 1.5, false).height).toBe(null);
   });
 
+  it("модель не растягивается: любая ручка меняет оба размера и высоту в одной доле, середина на месте", () => {
+    const model: ObjectPlacement = { position: [1, 1], z: null, size: [4, 2], height: null, rotation: null, hasShape: false, modelHeight: 3 };
+    for (const axis of ["width", "depth", "height", "uniform"] as const) {
+      const scaled = computeScale(model, axis, 2, false);
+      expect(scaled.size).toEqual([8, 4]);
+      expect(scaled.height).toBe(6);
+      expect(placementCenter(scaled)).toEqual(placementCenter(model));
+    }
+  });
+
+  it("у модели с записанным height доля берётся от него", () => {
+    const model: ObjectPlacement = { position: [1, 1], z: null, size: [4, 2], height: 5, rotation: null, hasShape: false, modelHeight: 3 };
+    expect(computeScale(model, "width", 0.5, false).height).toBe(2.5);
+  });
+
   it("у плоского объекта на земле высоты нет: общая ручка меняет только размер", () => {
     const flat: ObjectPlacement = { position: [1, 1], z: null, size: [4, 1], height: null, rotation: null, hasShape: false };
     const scaled = computeScale(flat, "uniform", 2, false);

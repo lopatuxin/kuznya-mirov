@@ -2,7 +2,17 @@ use super::game::Game;
 use super::input::StepInput;
 
 pub const STEP_SECONDS: f64 = 1.0 / 60.0;
-pub const MAX_CATCHUP_STEPS: u32 = 5;
+/// Шагов за вызов движка на каждую целую единицу скорости времени (вверх): при скорости 1 — пять.
+pub const CATCHUP_STEPS_PER_SCALE: u32 = 5;
+/// Время меньше этого не считается нехваткой на шаг: накопитель складывается из долей секунды, и шаг,
+/// которого не хватает на миллиардную, всё равно сделан.
+const STEP_TOLERANCE: f64 = 1e-9;
+
+/// «Исполнение игры» → «Шаг и кадр»: сколько шагов мир делает за один вызов движка при скорости
+/// времени `scale`; остаток времени сверх этого выбрасывается.
+pub fn catchup_limit(scale: f64) -> u32 {
+    CATCHUP_STEPS_PER_SCALE * scale.ceil().clamp(1.0, super::property::MAX_TIME_SCALE) as u32
+}
 
 /// The real-time "копилка" from Исполнение игры: measures wall-clock time between calls and
 /// turns it into a bounded burst of fixed steps. Lives outside `Game::step`, on purpose.
@@ -41,22 +51,31 @@ impl Runner {
         self.last_tick_ms = None;
     }
 
-    /// Advances `game` by `dt_seconds` of real time. Runs at most `MAX_CATCHUP_STEPS` fixed
-    /// steps; a real ArrowUp/ArrowDown queued beforehand is delivered only to the first of them.
+    /// Advances `game` by `dt_seconds` of real time. The world makes `60 × k` steps a second at
+    /// the game's time scale `k`, at most `catchup_limit(k)` of them per call, and none at scale 0;
+    /// a real ArrowUp/ArrowDown queued beforehand is delivered only to the first of them.
     pub fn advance(&mut self, game: &mut Game, dt_seconds: f64) {
-        self.accumulator += dt_seconds.max(0.0);
+        let scale = game.time_scale();
+        if scale <= 0.0 {
+            self.accumulator = 0.0;
+            return;
+        }
+        self.accumulate(dt_seconds, scale);
+        let limit = catchup_limit(scale);
         let mut ran = 0;
-        while self.accumulator >= STEP_SECONDS && ran < MAX_CATCHUP_STEPS && game.is_running() {
+        while ran < limit && game.is_running() && self.take_step() {
             let input = if ran == 0 {
                 game.take_input_snapshot()
             } else {
                 StepInput::empty()
             };
             game.step(input);
-            self.accumulator -= STEP_SECONDS;
             ran += 1;
+            if game.time_scale() <= 0.0 {
+                break;
+            }
         }
-        if ran == MAX_CATCHUP_STEPS || !game.is_running() {
+        if ran == limit || !game.is_running() || game.time_scale() <= 0.0 {
             self.accumulator = 0.0;
         }
     }
@@ -66,20 +85,20 @@ impl Runner {
         self.accumulator = 0.0;
     }
 
-    /// Adds real time to the bucket without stepping — «Редактор», требование 6:
-    /// `PlaySession::tick_replay` drives its own stepping function (`step_once`, not `Game::step`
-    /// directly) between the accumulator and the world, so it runs its own bounded loop instead of
-    /// calling `advance`.
-    pub fn accumulate(&mut self, dt_seconds: f64) {
-        self.accumulator += dt_seconds.max(0.0);
+    /// Adds real time to the bucket without stepping, in world time: `dt_seconds` at the time scale
+    /// `scale` — «Редактор», требование 6: `PlaySession::tick_replay` drives its own stepping function
+    /// (`step_once`, not `Game::step` directly) between the accumulator and the world, so it runs its
+    /// own bounded loop instead of calling `advance`.
+    pub fn accumulate(&mut self, dt_seconds: f64, scale: f64) {
+        self.accumulator += dt_seconds.max(0.0) * scale.max(0.0);
     }
 
     /// Takes one fixed step's worth of time from the bucket if there is enough — the same "is a
     /// step owed" condition `advance`'s own loop uses, exposed for a caller that has to run its own
     /// stepping function in between.
     pub fn take_step(&mut self) -> bool {
-        if self.accumulator >= STEP_SECONDS {
-            self.accumulator -= STEP_SECONDS;
+        if self.accumulator + STEP_TOLERANCE >= STEP_SECONDS {
+            self.accumulator = (self.accumulator - STEP_SECONDS).max(0.0);
             true
         } else {
             false
@@ -155,6 +174,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         Game::new(
             properties,
@@ -173,6 +193,7 @@ mod tests {
             Vec::new(),
             true,
             Vec::new(),
+            Default::default(),
         )
     }
 

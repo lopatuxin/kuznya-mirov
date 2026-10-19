@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use super::clouds::CloudMisfit;
 use super::imprints::StampTable;
+use super::model::ModelTable;
 use super::terrain::Terrain;
 use super::value::{ImageId, PropKind};
 
@@ -68,6 +69,19 @@ pub const HOLD_LEFT: PropertyId = 44;
 pub const HOLD_RIGHT: PropertyId = 45;
 pub const HOLD_JUMP: PropertyId = 46;
 pub const ON_GROUND: PropertyId = 47;
+/// «Правила игры» → «Езда по дорогам»: признак дороги, её предельная скорость, точка назначения машины
+/// и скорость машины.
+pub const ROAD: PropertyId = 48;
+pub const ROAD_SPEED: PropertyId = 49;
+pub const DRIVE_TO: PropertyId = 50;
+pub const DRIVE_SPEED: PropertyId = 51;
+/// «Трёхмерная сцена» → «Модели и движения»: имя модели из `files.models`, которую рисует объект.
+pub const MODEL: PropertyId = 52;
+/// «Исполнение игры» → «Шаг и кадр»: скорость времени мира, число от 0 до `MAX_TIME_SCALE`.
+pub const TIME_SCALE: PropertyId = 53;
+
+/// Наибольшая скорость времени.
+pub const MAX_TIME_SCALE: f64 = 16.0;
 
 /// Свойства частиц: только плоская сцена, только объекту с `position` и `size`, без `repeat_x`.
 pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
@@ -138,6 +152,12 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("hold_right", PropKind::Flag),
     ("hold_jump", PropKind::Flag),
     ("on_ground", PropKind::Flag),
+    ("road", PropKind::Flag),
+    ("road_speed", PropKind::Number),
+    ("drive_to", PropKind::Vec2),
+    ("drive_speed", PropKind::Number),
+    ("model", PropKind::Text),
+    ("time_scale", PropKind::Number),
 ];
 
 #[derive(Debug, Clone)]
@@ -163,6 +183,9 @@ pub struct PropertyTable {
     /// «Ветер и частицы» → «Облака»: по номеру картинки — чем она не годится облакам; пусто, пока игра не
     /// загружена, и тогда годится любая. Таблицу свойств видят все места, что пишут `cloud_images`.
     cloud_misfits: Vec<Option<CloudMisfit>>,
+    /// «Трёхмерная сцена» → «Модели и движения»: модели `files.models` — по ним проверяется `model` и рисуется
+    /// объект; таблицу видят все миры, что строятся по этим свойствам.
+    models: Arc<ModelTable>,
 }
 
 impl PropertyTable {
@@ -174,6 +197,7 @@ impl PropertyTable {
             terrain: None,
             stamps: StampTable::default(),
             cloud_misfits: Vec::new(),
+            models: Arc::default(),
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -217,6 +241,14 @@ impl PropertyTable {
 
     pub fn terrain(&self) -> Option<&Arc<Terrain>> {
         self.terrain.as_ref()
+    }
+
+    pub fn set_models(&mut self, models: ModelTable) {
+        self.models = Arc::new(models);
+    }
+
+    pub fn models(&self) -> &Arc<ModelTable> {
+        &self.models
     }
 
     pub fn set_stamps(&mut self, stamps: StampTable) {
@@ -340,10 +372,16 @@ mod tests {
             ("hold_right", HOLD_RIGHT, PropKind::Flag),
             ("hold_jump", HOLD_JUMP, PropKind::Flag),
             ("on_ground", ON_GROUND, PropKind::Flag),
+            ("road", ROAD, PropKind::Flag),
+            ("road_speed", ROAD_SPEED, PropKind::Number),
+            ("drive_to", DRIVE_TO, PropKind::Vec2),
+            ("drive_speed", DRIVE_SPEED, PropKind::Number),
         ] {
             assert_eq!(table.resolve(name), Some(id), "{name}");
             assert_eq!(table.kind(id), kind, "{name}");
         }
+        assert_eq!(table.resolve("time_scale"), Some(TIME_SCALE));
+        assert_eq!(table.kind(TIME_SCALE), PropKind::Number);
         assert_eq!(table.resolve("particles"), None);
     }
 

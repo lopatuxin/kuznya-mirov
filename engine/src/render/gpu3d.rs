@@ -12,7 +12,9 @@ use crate::core::value::Shape;
 use crate::data::load::{CoverMask, MaterialDecl};
 
 use super::atlas::webgl2_safe_layer_count;
+use super::gpu_models::{self, ModelsGpu};
 use super::materials::{self, COVER_TABLE_LEN, Relief};
+use super::models::ModelInstance;
 use super::relief::TerrainMesh;
 
 /// Карта теней — предел `downlevel_webgl2_defaults`.
@@ -72,6 +74,8 @@ pub struct Scene3dFrame<'a> {
     pub terrain: Option<&'a TerrainMesh>,
     pub ground: &'a [GroundVertex],
     pub shapes: [&'a [ShapeInstance]; 4],
+    /// Объекты каждой модели игры по номеру модели.
+    pub models: &'a [Vec<ModelInstance>],
 }
 
 struct MeshBuffers {
@@ -92,6 +96,8 @@ pub struct Scene3d {
     terrain_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
     shape_pipeline: wgpu::RenderPipeline,
+    model_shadow_pipeline: wgpu::RenderPipeline,
+    model_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
     meshes: [MeshBuffers; 4],
     shape_buffer: wgpu::Buffer,
@@ -548,6 +554,7 @@ impl Scene3d {
         atlas_view: &wgpu::TextureView,
         atlas_sampler: &wgpu::Sampler,
         materials: &MaterialGpu,
+        models: &ModelsGpu,
         surface_size: [u32; 2],
     ) -> Scene3d {
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
@@ -722,6 +729,24 @@ impl Scene3d {
                 attributes: &SHAPE_INSTANCE_ATTRIBUTES,
             },
         ];
+        let model_buffers = [
+            wgpu::VertexBufferLayout {
+                array_stride: gpu_models::VERTEX_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &gpu_models::VERTEX_ATTRIBUTES,
+            },
+            wgpu::VertexBufferLayout {
+                array_stride: gpu_models::INSTANCE_STRIDE,
+                step_mode: wgpu::VertexStepMode::Instance,
+                attributes: &gpu_models::INSTANCE_ATTRIBUTES,
+            },
+        ];
+        let model_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("model_pipeline_layout"),
+                bind_group_layouts: &[Some(&main_layout), Some(models.material_layout())],
+                immediate_size: 0,
+            });
         let terrain_buffers = [wgpu::VertexBufferLayout {
             array_stride: TERRAIN_STRIDE,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -763,6 +788,23 @@ impl Scene3d {
             multiview_mask: None,
             cache: None,
         });
+        let model_shadow_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("model_shadow_pipeline"),
+                layout: Some(&shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_shadow_model"),
+                    buffers: &model_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: None,
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
         let shape_targets = color_target(wgpu::BlendState::REPLACE);
         let terrain_shadow_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -827,6 +869,27 @@ impl Scene3d {
             multiview_mask: None,
             cache: None,
         });
+        let model_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("model_pipeline"),
+            layout: Some(&model_pipeline_layout),
+            vertex: wgpu::VertexState {
+                module: &shader,
+                entry_point: Some("vs_model"),
+                buffers: &model_buffers,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            },
+            fragment: Some(wgpu::FragmentState {
+                module: &shader,
+                entry_point: Some("fs_model"),
+                targets: &shape_targets,
+                compilation_options: wgpu::PipelineCompilationOptions::default(),
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+            multisample: wgpu::MultisampleState::default(),
+            multiview_mask: None,
+            cache: None,
+        });
         // Плитки и плоские объекты лежат на поверхности рельефа или настила: без сдвига к камере
         // их глубина спорила бы с глубиной поверхности под ними.
         let ground_depth = wgpu::DepthStencilState {
@@ -874,6 +937,8 @@ impl Scene3d {
             terrain_pipeline,
             water_pipeline,
             shape_pipeline,
+            model_shadow_pipeline,
+            model_pipeline,
             ground_pipeline,
             meshes: Shape::ALL.map(|shape| make_mesh_buffers(device, shape)),
             shape_buffer: make_instance_buffer::<ShapeInstance>(
@@ -1009,6 +1074,7 @@ impl Scene3d {
         encoder: &mut wgpu::CommandEncoder,
         color_view: &wgpu::TextureView,
         background: [f32; 4],
+        models: &ModelsGpu,
     ) {
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1029,6 +1095,8 @@ impl Scene3d {
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
             self.draw_shapes(&mut pass);
+            pass.set_pipeline(&self.model_shadow_pipeline);
+            models.draw(&mut pass, false);
             if let Some(terrain) = &self.terrain {
                 pass.set_pipeline(&self.terrain_shadow_pipeline);
                 pass.set_vertex_buffer(0, terrain.buffer.slice(..));
@@ -1076,6 +1144,8 @@ impl Scene3d {
         }
         pass.set_pipeline(&self.shape_pipeline);
         self.draw_shapes(&mut pass);
+        pass.set_pipeline(&self.model_pipeline);
+        models.draw(&mut pass, true);
         if self.ground_count > 0 {
             pass.set_pipeline(&self.ground_pipeline);
             pass.set_vertex_buffer(0, self.ground_buffer.slice(..));

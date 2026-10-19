@@ -1,9 +1,9 @@
 // «Трёхмерная сцена», «Свет и материалы»: рельеф с водой и покрытиями, фигуры, плитки и плоские
 // объекты на земле и карта теней от солнца. Проходы: тени (`vs_shadow` — фигуры, `vs_shadow_terrain`
 // — рельеф; только глубина от солнца), затем рельеф (`vs_terrain`, `fs_terrain`), вода (`fs_water`),
-// фигуры (`vs_shape`, `fs_shape`) и плитки с плоскими объектами (`vs_ground`, `fs_ground`), которые
-// лежат на рельефе и верху настилов. Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным
-// проходом без глубины.
+// фигуры (`vs_shape`, `fs_shape`), модели (`vs_model`, `fs_model`; в тенях — `vs_shadow_model`) и плитки с
+// плоскими объектами (`vs_ground`, `fs_ground`), которые лежат на рельефе и верху настилов.
+// Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным проходом без глубины.
 //
 // Свет считается в линейной яркости, кадр сводится к экрану кривой Khronos PBR Neutral и кодируется в
 // sRGB в конце каждого фрагментного шейдера.
@@ -624,4 +624,161 @@ fn fs_ground(in: GroundOutput) -> @location(0) vec4<f32> {
     let straight = base.rgb / max(base.a, 0.0001);
     let lit = finish(shade_matte(srgb_to_linear(straight), in.world, normal, visible));
     return vec4<f32>(select(lit * base.a, base.rgb, in.glow > 0.5), base.a * (1.0 - in.glow));
+}
+
+// --- Модели ---------------------------------------------------------------------------------
+
+// Материал части модели по стандарту glTF: цвет и затенение освещают её так же, как рельеф и фигуры, но с
+// металлом и своими картами мелкого рельефа. Все четыре карты есть всегда: у части без карты — белая точка
+// (у мелкого рельефа — ровная).
+struct ModelMaterial {
+    // Цвет `baseColorFactor` в линейной яркости.
+    base: vec4<f32>,
+    // x — металл, y — шероховатость, z — `scale` мелкого рельефа, w — `strength` затенения.
+    factors: vec4<f32>,
+};
+
+@group(1) @binding(0)
+var<uniform> model_material: ModelMaterial;
+@group(1) @binding(1)
+var model_base_texture: texture_2d<f32>;
+@group(1) @binding(2)
+var model_base_sampler: sampler;
+@group(1) @binding(3)
+var model_metal_texture: texture_2d<f32>;
+@group(1) @binding(4)
+var model_metal_sampler: sampler;
+@group(1) @binding(5)
+var model_normal_texture: texture_2d<f32>;
+@group(1) @binding(6)
+var model_normal_sampler: sampler;
+@group(1) @binding(7)
+var model_occlusion_texture: texture_2d<f32>;
+@group(1) @binding(8)
+var model_occlusion_sampler: sampler;
+
+struct ModelVertex {
+    // Вершина в осях сцены: середина основания модели в начале, низ на нуле.
+    @location(0) position: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    // xyz — направление вдоль u карты, w — знак: cross(normal, tangent.xyz) * w идёт вверх по карте.
+    @location(3) tangent: vec4<f32>,
+    @location(4) color: vec4<f32>,
+};
+
+struct ModelInstance {
+    // x, y — середина основания на земле, z, w — косинус и синус поворота.
+    @location(5) placement: vec4<f32>,
+    // x — высота основания над нулём сцены, y — во сколько раз модель увеличена.
+    @location(6) base: vec4<f32>,
+};
+
+fn model_world(vertex: ModelVertex, instance: ModelInstance) -> vec3<f32> {
+    let local = vertex.position * instance.base.y;
+    let c = instance.placement.z;
+    let s = instance.placement.w;
+    return vec3<f32>(
+        instance.placement.x + c * local.x - s * local.y,
+        instance.placement.y + s * local.x + c * local.y,
+        instance.base.x + local.z,
+    );
+}
+
+// Направление модели, повёрнутое вместе с объектом; увеличение его длины не меняет.
+fn model_direction(direction: vec3<f32>, instance: ModelInstance) -> vec3<f32> {
+    let c = instance.placement.z;
+    let s = instance.placement.w;
+    return vec3<f32>(c * direction.x - s * direction.y, s * direction.x + c * direction.y, direction.z);
+}
+
+@vertex
+fn vs_shadow_model(vertex: ModelVertex, instance: ModelInstance) -> @builtin(position) vec4<f32> {
+    return globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
+}
+
+struct ModelOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) uv: vec2<f32>,
+    @location(3) tangent: vec4<f32>,
+    @location(4) color: vec4<f32>,
+};
+
+@vertex
+fn vs_model(vertex: ModelVertex, instance: ModelInstance) -> ModelOutput {
+    let world = model_world(vertex, instance);
+    var out: ModelOutput;
+    out.clip_position = globals.view_proj * vec4<f32>(world, 1.0);
+    out.world = world;
+    out.normal = model_direction(vertex.normal, instance);
+    out.uv = vertex.uv;
+    out.tangent = vec4<f32>(model_direction(vertex.tangent.xyz, instance), vertex.tangent.w);
+    out.color = vertex.color;
+    return out;
+}
+
+// Поверхность `albedo` с металлом `metallic`: металл не рассеивает свет, а отражает им с цветом поверхности
+// (F0 — цвет, а не 0,04). Предметов вокруг для отражения нет, поэтому гладкий металл отражает небо ровным
+// светом, слабее по мере шероховатости; блик солнца — тот же GGX, что у остальных поверхностей.
+fn shade_pbr(
+    albedo: vec3<f32>,
+    metallic: f32,
+    roughness: f32,
+    ao: f32,
+    world: vec3<f32>,
+    normal: vec3<f32>,
+    visible: f32,
+) -> vec3<f32> {
+    let to_sun = globals.sun.xyz;
+    let n_l = max(dot(normal, to_sun), 0.0);
+    let sun = globals.sun_light.rgb * (n_l * visible);
+    let sky = globals.sky_light.rgb * ((1.0 + normal.z) * 0.5 * ao);
+
+    let to_eye = normalize(globals.eye.xyz - world);
+    let half_way = normalize(to_sun + to_eye);
+    let n_v = max(dot(normal, to_eye), 0.0);
+    let n_h = max(dot(normal, half_way), 0.0);
+    let v_h = max(dot(to_eye, half_way), 0.0);
+    let alpha = max(roughness * roughness, 0.002);
+    let alpha2 = alpha * alpha;
+    let denominator = n_h * n_h * (alpha2 - 1.0) + 1.0;
+    let distribution = alpha2 / (PI * denominator * denominator);
+    let k = alpha * 0.5;
+    let visibility = 0.25 / ((n_l * (1.0 - k) + k) * (n_v * (1.0 - k) + k));
+    let f0 = mix(vec3<f32>(0.04), albedo, metallic);
+    let fresnel = f0 + (vec3<f32>(1.0) - f0) * pow(clamp(1.0 - v_h, 0.0, 1.0), 5.0);
+    let glint = globals.sun_light.rgb * fresnel * (PI * distribution * visibility * n_l * visible);
+    let reflected_sky = globals.sky_light.rgb * f0 * ((1.0 + normal.z) * 0.5 * ao * (1.0 - roughness));
+
+    return albedo * (1.0 - metallic) * (sun + sky) + glint + reflected_sky;
+}
+
+@fragment
+fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
+    // Выборки до любых ветвлений: одна текстура — одна выборка.
+    let base_sample = textureSample(model_base_texture, model_base_sampler, in.uv);
+    let metal_sample = textureSample(model_metal_texture, model_metal_sampler, in.uv);
+    let normal_sample = textureSample(model_normal_texture, model_normal_sampler, in.uv);
+    let occlusion_sample = textureSample(model_occlusion_texture, model_occlusion_sampler, in.uv);
+
+    let albedo = model_material.base.rgb * in.color.rgb * base_sample.rgb;
+    let metallic = clamp(model_material.factors.x * metal_sample.b, 0.0, 1.0);
+    let roughness = clamp(model_material.factors.y * metal_sample.g, 0.0, 1.0);
+    let ao = 1.0 + model_material.factors.w * (occlusion_sample.r - 1.0);
+
+    let n = normalize(in.normal);
+    var tangent = in.tangent.xyz - n * dot(n, in.tangent.xyz);
+    if (dot(tangent, tangent) < 1e-8) {
+        let helper = select(vec3<f32>(1.0, 0.0, 0.0), vec3<f32>(0.0, 1.0, 0.0), abs(n.x) > 0.9);
+        tangent = cross(helper, n);
+    }
+    tangent = normalize(tangent);
+    let bitangent = cross(n, tangent) * in.tangent.w;
+    let tilt = (normal_sample.xyz * 2.0 - vec3<f32>(1.0)) * vec3<f32>(model_material.factors.z, model_material.factors.z, 1.0);
+    let normal = normalize(tangent * tilt.x + bitangent * tilt.y + n * tilt.z);
+
+    let visible = shadow_lit(in.world, normal);
+    return vec4<f32>(finish(shade_pbr(albedo, metallic, roughness, ao, in.world, normal, visible)), 1.0);
 }

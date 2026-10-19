@@ -1,0 +1,9 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["game"] }, "do": [["run", "tick"]] },
+    { "kind": "drive", "for": { "has": ["car"] } },
+    { "kind": "check", "for": { "has": ["car"] }, "do": [["run", "car_tick"]] },
+    { "kind": "check", "for": { "has": ["clicked"] }, "do": [["run", "on_clicked"]] },
+    { "kind": "check", "for": { "has": ["game", "bankrupt"] }, "do": [["end_game", "loss"]] }
+  ]
+}

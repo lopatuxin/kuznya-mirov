@@ -20,7 +20,7 @@ use engine::data::load::{
     ImageDecl, ImageVerdict, load_game_from_texts_with_terrain, load_rest_with_terrain, read_entry,
 };
 use engine::render::atlas::{self, AtlasImage, AtlasRect};
-use engine::render::relief::{SurfaceVertex, TerrainMesh};
+use engine::render::relief::{FlatShapes, SurfaceVertex, TerrainMesh};
 use engine::render::scene3d::{Frame3d, compose_frame3d};
 use engine::render::wind::Motion;
 use std::collections::HashSet;
@@ -2891,7 +2891,14 @@ fn frame_from(
     images: &[ImageDecl],
     rects: &[AtlasRect],
 ) -> Frame3d {
-    compose_frame3d(game, camera, &Motion::default(), images, rects)
+    compose_frame3d(
+        game,
+        camera,
+        &Motion::default(),
+        images,
+        rects,
+        &mut FlatShapes::default(),
+    )
 }
 
 fn game_frame(game: &Game, images: &[ImageDecl], rects: &[AtlasRect]) -> Frame3d {

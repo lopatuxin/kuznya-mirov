@@ -77,12 +77,13 @@ impl<'de> Deserialize<'de> for KeyOrder {
     }
 }
 
-/// Имена из таблиц `files.materials` и `files.stamps` в порядке записи в `game.json`; порядок — номер
-/// материала и номер штампа. Пусто, если таблицы нет.
+/// Имена из таблиц `files.materials`, `files.stamps` и `files.models` в порядке записи в `game.json`; порядок —
+/// номер материала, штампа и модели. Пусто, если таблицы нет.
 #[derive(Debug, Default)]
 pub(super) struct DeclarationOrder {
     pub materials: Vec<String>,
     pub stamps: Vec<String>,
+    pub models: Vec<String>,
 }
 
 pub(super) fn declaration_order(game_json: &str) -> DeclarationOrder {
@@ -90,6 +91,7 @@ pub(super) fn declaration_order(game_json: &str) -> DeclarationOrder {
     struct Files {
         materials: Option<KeyOrder>,
         stamps: Option<KeyOrder>,
+        models: Option<KeyOrder>,
     }
     #[derive(Deserialize)]
     struct Root {
@@ -104,6 +106,7 @@ pub(super) fn declaration_order(game_json: &str) -> DeclarationOrder {
     DeclarationOrder {
         materials: files.materials.map(|order| order.0).unwrap_or_default(),
         stamps: files.stamps.map(|order| order.0).unwrap_or_default(),
+        models: files.models.map(|order| order.0).unwrap_or_default(),
     }
 }
 
@@ -506,7 +509,7 @@ fn parse_terrain_image(
 }
 
 /// Что не так с точками, которые страница отдала вместо файла `path`.
-fn pixel_problem(path: &str, width: u32, height: u32, bytes: usize) -> Option<String> {
+pub(super) fn pixel_problem(path: &str, width: u32, height: u32, bytes: usize) -> Option<String> {
     if width == 0 || height == 0 {
         return Some(format!(
             "{path} — ширина и высота картинки должны быть больше нуля, получено {width}×{height}"

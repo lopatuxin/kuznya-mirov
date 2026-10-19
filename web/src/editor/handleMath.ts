@@ -1,5 +1,5 @@
 import { SCALE_HANDLE_SIDES, type FlatScaleHandle } from "./flatHandles";
-import { effectiveHeight, normalizeRotation, placementCenter, type ObjectPlacement, type Vec2 } from "./objectPlacement";
+import { effectiveHeight, hasHeight, normalizeRotation, placementCenter, type ObjectPlacement, type Vec2 } from "./objectPlacement";
 import { raisedAtPointer, type VerticalGrab } from "./verticalGrab";
 
 /** Наименьший размер объекта при масштабе — «Редактор», требование 13. */
@@ -95,9 +95,11 @@ export function scaleFactorUniform(pointerStart: Vec2, pointerNow: Vec2, referen
 /**
  * Масштаб — «Редактор», требование 13: размеры оси (или все, у общей ручки) умножаются на долю,
  * середина прямоугольника на земле остаётся на месте, размер не меньше 0,1 клетки. Свободно размеры
- * округляются до сотой клетки, с Ctrl доля — до десятой. У плоского объекта на земле высоты нет.
+ * округляются до сотой клетки, с Ctrl доля — до десятой. У плоского объекта на земле высоты нет. Модель не растягивается:
+ * любая ручка меняет оба размера и высоту в одной доле («Редактор», требование 22 фазы 25).
  */
-export function computeScale(start: ObjectPlacement, axis: ScaleAxis, factor: number, snapFactorToTenths: boolean): ObjectPlacement {
+export function computeScale(start: ObjectPlacement, handleAxis: ScaleAxis, factor: number, snapFactorToTenths: boolean): ObjectPlacement {
+  const axis = start.modelHeight === undefined ? handleAxis : "uniform";
   const applied = snapFactorToTenths ? Math.round(factor * 10) / 10 : factor;
   const scaleValue = (value: number): number => {
     const scaled = Math.max(MIN_SCALED_SIZE, value * applied);
@@ -105,7 +107,7 @@ export function computeScale(start: ObjectPlacement, axis: ScaleAxis, factor: nu
   };
   const scalesWidth = axis === "width" || axis === "uniform";
   const scalesDepth = axis === "depth" || axis === "uniform";
-  const scalesHeight = (axis === "height" || axis === "uniform") && start.hasShape;
+  const scalesHeight = (axis === "height" || axis === "uniform") && hasHeight(start);
 
   const size: [number, number] = [scalesWidth ? scaleValue(start.size[0]) : start.size[0], scalesDepth ? scaleValue(start.size[1]) : start.size[1]];
   const center = placementCenter(start);

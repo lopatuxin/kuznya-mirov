@@ -2,10 +2,13 @@ use web_sys::HtmlCanvasElement;
 use wgpu::util::DeviceExt;
 
 use super::atlas::{self, ATLAS_SIZE};
+use super::gpu_models::ModelsGpu;
 use super::gpu3d;
 use super::materials::Relief;
+use super::text_area;
 use super::video::{VideoSource, Videos};
 use super::wind;
+use crate::core::model::ModelTable;
 use crate::core::screens::{Align, FontId};
 use crate::core::terrain::Cover;
 use crate::data::load::{CoverMask, MaterialDecl};
@@ -63,6 +66,9 @@ pub struct TextDraw {
     pub font_size_px: f32,
     pub color: [f32; 4],
     pub align: Align,
+    /// «Текст»: перенос по словам по ширине `rect_px`, строки сверху; без него — одна строка посередине по
+    /// высоте.
+    pub wrap: bool,
     pub rect_px: [f32; 4],
 }
 
@@ -213,6 +219,8 @@ pub struct Renderer {
     /// «Свет и материалы»: материалы и маски покрытий игры; без них — пустые текстуры.
     materials: gpu3d::MaterialGpu,
     material_options: gpu3d::MaterialOptions,
+    /// «Трёхмерная сцена» → «Модели и движения»: модели игры и буфер их объектов в кадре.
+    models: ModelsGpu,
     /// «Картинки» → «Видео»: проигрыватели видео игры; их кадры каждую отрисовку пишутся в места
     /// видео в `atlas_texture`.
     videos: Videos,
@@ -569,6 +577,7 @@ impl Renderer {
         );
 
         let materials = gpu3d::MaterialGpu::new(&device, &queue, material_options, None);
+        let models = ModelsGpu::new(&device, &queue, material_options, &ModelTable::default());
 
         Ok(Renderer {
             _instance: instance,
@@ -608,6 +617,7 @@ impl Renderer {
             scene3d: None,
             materials,
             material_options,
+            models,
             videos: Videos::default(),
         })
     }
@@ -771,6 +781,13 @@ impl Renderer {
         self.scene3d = None;
     }
 
+    /// «Трёхмерная сцена» → «Модели и движения»: отправляет на видеокарту модели игры и заменяет ими прежние.
+    /// Ресурсы трёхмерной сцены пересоздаются: конвейеры моделей ссылаются на раскладку материала.
+    pub fn set_models(&mut self, table: &ModelTable) {
+        self.models = ModelsGpu::new(&self.device, &self.queue, self.material_options, table);
+        self.scene3d = None;
+    }
+
     /// «Свет и материалы», `set_covers`: таблица слоёв и маски покрытий на видеокарте заменяются новыми,
     /// материалы и карта цвета остаются. Ресурсы трёхмерной сцены пересоздаются, только если массив
     /// масок создан заново: их раскладка ссылается на него.
@@ -895,10 +912,11 @@ impl Renderer {
         }
     }
 
-    /// One shaped, single-line `cosmic-text` buffer, clipped to `width_px` — «Интерфейс игры» →
-    /// «Текст»: no wrapping, aligned inside the element. Shared by `build_text_buffers` (interface,
-    /// window pixels) and `build_world_text_buffers` (world, scene cells) — everything past
-    /// resolving the actual pixel rectangle is identical between the two.
+    /// One shaped `cosmic-text` buffer, clipped to `width_px` — «Интерфейс игры» → «Текст»: a single
+    /// line without wrapping, or with `wrap` lines broken at words to the width, each aligned inside the
+    /// element. Shared by `build_text_buffers` (interface, window pixels) and `build_world_text_buffers`
+    /// (world, scene cells) — everything past resolving the actual pixel rectangle is identical
+    /// between the two.
     fn shape_text_buffer(
         &mut self,
         text: &str,
@@ -906,10 +924,17 @@ impl Renderer {
         font_size_px: f32,
         align: Align,
         width_px: f32,
+        wrap: bool,
     ) -> glyphon::Buffer {
-        let metrics = glyphon::Metrics::new(font_size_px, font_size_px * 1.2);
+        let metrics =
+            glyphon::Metrics::new(font_size_px, text_area::line_height(font_size_px, wrap));
         let mut buffer = glyphon::Buffer::new(&mut self.font_system, metrics);
-        buffer.set_wrap(&mut self.font_system, glyphon::cosmic_text::Wrap::None);
+        let wrapping = if wrap {
+            glyphon::cosmic_text::Wrap::Word
+        } else {
+            glyphon::cosmic_text::Wrap::None
+        };
+        buffer.set_wrap(&mut self.font_system, wrapping);
         buffer.set_size(&mut self.font_system, Some(width_px), None);
         let family = self.fonts.get(font).map(String::as_str).unwrap_or("");
         let attrs = glyphon::Attrs::new().family(glyphon::Family::Name(family));
@@ -925,10 +950,7 @@ impl Renderer {
 
     /// One `cosmic-text` buffer per `TextDraw` — «Интерфейс игры»: `rect_px` is in window (CSS)
     /// pixels, scaled up here by the device pixel ratio, same as `ui_rects`.
-    fn build_text_buffers(
-        &mut self,
-        texts: &[TextDraw],
-    ) -> Vec<(glyphon::Buffer, [f32; 4], [f32; 4])> {
+    fn build_text_buffers(&mut self, texts: &[TextDraw]) -> Vec<ShapedText> {
         let dpr = self.device_pixel_ratio;
         texts
             .iter()
@@ -940,9 +962,20 @@ impl Renderer {
                     t.rect_px[2] * dpr,
                     t.rect_px[3] * dpr,
                 ];
-                let buffer =
-                    self.shape_text_buffer(&t.text, t.font, font_size_px, t.align, rect_px[2]);
-                (buffer, rect_px, t.color)
+                let buffer = self.shape_text_buffer(
+                    &t.text,
+                    t.font,
+                    font_size_px,
+                    t.align,
+                    rect_px[2],
+                    t.wrap,
+                );
+                ShapedText {
+                    buffer,
+                    rect_px,
+                    color: t.color,
+                    wrap: t.wrap,
+                }
             })
             .collect()
     }
@@ -951,10 +984,7 @@ impl Renderer {
     /// `rect_cells` is in scene cells, converted to device pixels through the same `world_scale`/
     /// `world_offset` the world rectangle pass uses (`set_world_frame`/`set_scene`), which already
     /// carries the device pixel ratio — unlike `build_text_buffers`, no separate multiply here.
-    fn build_world_text_buffers(
-        &mut self,
-        texts: &[WorldTextDraw],
-    ) -> Vec<(glyphon::Buffer, [f32; 4], [f32; 4])> {
+    fn build_world_text_buffers(&mut self, texts: &[WorldTextDraw]) -> Vec<ShapedText> {
         let scale = self.world_scale;
         let offset = self.world_offset;
         texts
@@ -967,9 +997,20 @@ impl Renderer {
                     t.rect_cells[2] * scale,
                     t.rect_cells[3] * scale,
                 ];
-                let buffer =
-                    self.shape_text_buffer(&t.text, t.font, font_size_px, t.align, rect_px[2]);
-                (buffer, rect_px, t.color)
+                let buffer = self.shape_text_buffer(
+                    &t.text,
+                    t.font,
+                    font_size_px,
+                    t.align,
+                    rect_px[2],
+                    false,
+                );
+                ShapedText {
+                    buffer,
+                    rect_px,
+                    color: t.color,
+                    wrap: false,
+                }
             })
             .collect()
     }
@@ -987,7 +1028,8 @@ impl Renderer {
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
     ) -> Result<(), String> {
-        self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
+        let [world_text_count, text_count] =
+            self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
         let Some(surface_texture) = self.acquire_frame()? else {
             return Ok(()); // occluded/timeout: skip this frame, try again next tick
         };
@@ -1025,9 +1067,9 @@ impl Renderer {
                 &mut pass,
                 [
                     world_instances.len(),
-                    world_texts.len(),
+                    world_text_count,
                     ui_instances.len(),
-                    texts.len(),
+                    text_count,
                 ],
             )?;
         }
@@ -1048,7 +1090,8 @@ impl Renderer {
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
     ) -> Result<(), String> {
-        self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
+        let [world_text_count, text_count] =
+            self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
         let size = [self.config.width, self.config.height];
         let atlas_view = self
             .atlas_texture
@@ -1063,10 +1106,12 @@ impl Renderer {
                 &atlas_view,
                 &self.linear_sampler,
                 &self.materials,
+                &self.models,
                 size,
             )
         });
         scene3d.upload(&self.device, &self.queue, size, frame);
+        self.models.upload(&self.device, &self.queue, frame.models);
 
         let Some(surface_texture) = self.acquire_frame()? else {
             return Ok(());
@@ -1080,7 +1125,7 @@ impl Renderer {
                 label: Some("frame_3d"),
             });
         if let Some(scene3d) = self.scene3d.as_ref() {
-            scene3d.encode(&mut encoder, &view, self.background);
+            scene3d.encode(&mut encoder, &view, self.background, &self.models);
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -1103,9 +1148,9 @@ impl Renderer {
                 &mut pass,
                 [
                     world_instances.len(),
-                    world_texts.len(),
+                    world_text_count,
                     ui_instances.len(),
-                    texts.len(),
+                    text_count,
                 ],
             )?;
         }
@@ -1115,14 +1160,15 @@ impl Renderer {
     }
 
     /// Записывает прямоугольники мира и интерфейса в буферы и готовит их тексты — общая часть кадра
-    /// плоской и трёхмерной сцены.
+    /// плоской и трёхмерной сцены. Отвечает, сколько надписей мира и интерфейса готово к рисованию:
+    /// надпись целиком вне окна не готовится и не считается.
     fn upload_overlay(
         &mut self,
         world_instances: &[DrawRect],
         world_texts: &[WorldTextDraw],
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
-    ) -> Result<(), String> {
+    ) -> Result<[usize; 2], String> {
         self.grow_world_instances(world_instances.len());
         if !world_instances.is_empty() {
             self.queue.write_buffer(
@@ -1141,7 +1187,8 @@ impl Renderer {
         }
 
         let world_buffers = self.build_world_text_buffers(world_texts);
-        let world_text_areas = text_areas_from(&world_buffers);
+        let world_text_areas = text_areas_from(&world_buffers, self.canvas_size_px);
+        let world_text_count = world_text_areas.len();
         if !world_text_areas.is_empty() {
             self.world_text_renderer
                 .prepare(
@@ -1157,7 +1204,8 @@ impl Renderer {
         }
 
         let buffers = self.build_text_buffers(texts);
-        let text_areas = text_areas_from(&buffers);
+        let text_areas = text_areas_from(&buffers, self.canvas_size_px);
+        let text_count = text_areas.len();
         if !text_areas.is_empty() {
             self.text_renderer
                 .prepare(
@@ -1171,7 +1219,7 @@ impl Renderer {
                 )
                 .map_err(|e| format!("не удалось подготовить текст: {e:?}"))?;
         }
-        Ok(())
+        Ok([world_text_count, text_count])
     }
 
     /// Рисует в открытом проходе четыре слоя: прямоугольники мира, текст в мире, прямоугольники
@@ -1212,29 +1260,39 @@ impl Renderer {
     }
 }
 
-/// Shared by `render_frame`'s two `prepare` calls — one `TextArea` per shaped buffer, vertically
-/// centered in its own rectangle and clipped to it.
-fn text_areas_from(
-    buffers: &[(glyphon::Buffer, [f32; 4], [f32; 4])],
-) -> Vec<glyphon::TextArea<'_>> {
+/// A shaped buffer with the rectangle it belongs to (device pixels), its color and whether it wraps.
+struct ShapedText {
+    buffer: glyphon::Buffer,
+    rect_px: [f32; 4],
+    color: [f32; 4],
+    wrap: bool,
+}
+
+/// Shared by `render_frame`'s two `prepare` calls — one `TextArea` per shaped buffer, in its own
+/// rectangle (vertically centered, or from the top when it wraps) and clipped to it and to the window:
+/// a label past the window edge stays where it is and is cut by the edge, a label wholly outside is
+/// left out. `window` is the canvas size in device pixels.
+fn text_areas_from(buffers: &[ShapedText], window: [f32; 2]) -> Vec<glyphon::TextArea<'_>> {
     buffers
         .iter()
-        .map(|(buffer, rect_px, color)| {
-            let line_height = buffer.metrics().line_height;
-            glyphon::TextArea {
-                buffer,
-                left: rect_px[0],
-                top: rect_px[1] + (rect_px[3] - line_height) / 2.0,
+        .filter_map(|text| {
+            let line_height = text.buffer.metrics().line_height;
+            let place = text_area::place(text.rect_px, line_height, text.wrap, window)?;
+            let [left, top, right, bottom] = place.bounds;
+            Some(glyphon::TextArea {
+                buffer: &text.buffer,
+                left: text.rect_px[0],
+                top: place.top,
                 scale: 1.0,
                 bounds: glyphon::TextBounds {
-                    left: rect_px[0] as i32,
-                    top: rect_px[1] as i32,
-                    right: (rect_px[0] + rect_px[2]) as i32,
-                    bottom: (rect_px[1] + rect_px[3]) as i32,
+                    left,
+                    top,
+                    right,
+                    bottom,
                 },
-                default_color: glyphon_color(*color),
+                default_color: glyphon_color(text.color),
                 custom_glyphs: &[],
-            }
+            })
         })
         .collect()
 }

@@ -1,4 +1,5 @@
 import init, { Engine } from "engine";
+import { attachCameraMouse } from "./cameraInput";
 import { computeCanvasLayout } from "./canvasLayout";
 import { formatError, formatErrorScreen, type EngineError } from "./engineErrors";
 import { loadGameOptions, type GameOptionsResult } from "./gameOptions";
@@ -166,10 +167,12 @@ function attachInput(engine: Engine): void {
 /**
  * `clientX`/`clientY` — те же оконные CSS-пиксели, что и `anchor`/`offset`/`size` в `screens.json`:
  * холст растянут на всё окно и стоит в его левом верхнем углу, поэтому координата курсора относительно
- * окна совпадает с координатой относительно холста. Доходит только левая кнопка (`button === 0`) —
- * «Мир на экране», требование 16: правая и средняя не должны попасть ни в мир, ни в интерфейс.
+ * окна совпадает с координатой относительно холста. Как `MouseLeft` доходит только левая кнопка (`button === 0`) —
+ * «Мир на экране», требование 16: правая и средняя не должны попасть ни в мир, ни в интерфейс; их и колесо берёт
+ * камера игрока (`attachCameraMouse`).
  */
-function attachMouse(engine: Engine): void {
+function attachMouse(engine: Engine, canvas: HTMLCanvasElement): void {
+  attachCameraMouse(engine, canvas);
   window.addEventListener("mousemove", (event) => engine.mouse_move(event.clientX, event.clientY));
   window.addEventListener("mousedown", (event) => {
     if (event.button === 0) engine.mouse_down();
@@ -345,7 +348,7 @@ async function runGame(gameName: string): Promise<void> {
   });
 
   attachInput(engine);
-  attachMouse(engine);
+  attachMouse(engine, canvas);
   attachVisibility(engine, soundPlayer);
   attachPixelRatio(engine);
   attachResize(engine, canvas);

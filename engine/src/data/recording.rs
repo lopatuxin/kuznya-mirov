@@ -18,6 +18,9 @@ pub enum ReplayCommand {
     Resume,
     Quit,
     ToggleSound,
+    /// «Экраны и состояние» → «Команды», `run`: имя функции кода и номер объекта кнопки — строки списка или
+    /// элемента с `for`, — если он был. Повтор вызывает функцию в то же место записи.
+    Run(String, Option<u32>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -39,6 +42,14 @@ pub enum ReplayEventKind {
     /// высота), от которого щелчок идёт лучом через эту точку. Запись с двумя числами точки читается
     /// с высотой 0.
     Cursor([f64; 3], Option<[f64; 3]>),
+    /// «Камера игрока», требование 20: вид, в который игрок привёл камеру, — точка, на которую она
+    /// смотрит (в трёхмерной игре с высотой), `view_height` и следит ли она за объектом.
+    Camera {
+        center: [f64; 2],
+        z: Option<f64>,
+        view_height: f64,
+        follow: bool,
+    },
     Command(ReplayCommand),
     Edit(ReplayEdit),
 }
@@ -101,6 +112,14 @@ fn parse_command(arr: &[Json]) -> Result<ReplayCommand, String> {
         "resume" => Ok(ReplayCommand::Resume),
         "quit" => Ok(ReplayCommand::Quit),
         "toggle_sound" => Ok(ReplayCommand::ToggleSound),
+        "run" => {
+            let function = want_str(arr.get(1).ok_or("run без функции")?, "run[1]")?;
+            let object = arr
+                .get(2)
+                .map(|object| want_u32(object, "run[2]"))
+                .transpose()?;
+            Ok(ReplayCommand::Run(function, object))
+        }
         other => Err(format!("неизвестная команда \"{other}\"")),
     }
 }
@@ -125,10 +144,67 @@ fn command_to_json(cmd: &ReplayCommand) -> Json {
         ReplayCommand::Resume => Json::Array(vec![Json::String("resume".to_string())]),
         ReplayCommand::Quit => Json::Array(vec![Json::String("quit".to_string())]),
         ReplayCommand::ToggleSound => Json::Array(vec![Json::String("toggle_sound".to_string())]),
+        ReplayCommand::Run(function, object) => {
+            let mut arr = vec![
+                Json::String("run".to_string()),
+                Json::String(function.clone()),
+            ];
+            arr.extend(object.map(Json::from));
+            Json::Array(arr)
+        }
     }
 }
 
-/// Parses one `events[]` entry — exactly one of `command`/`key_down`/`key_up`/`cursor`/`set`/
+fn want_f64(json: &Json, what: &str) -> Result<f64, String> {
+    json.as_f64()
+        .ok_or_else(|| format!("{what} должен быть числом"))
+}
+
+/// `camera`: `{center: [x, y] или [x, y, z], view_height, follow}`; `follow` необязателен.
+fn parse_camera_event(json: &Json, index: usize) -> Result<ReplayEventKind, String> {
+    let obj = json
+        .as_object()
+        .ok_or_else(|| format!("events[{index}].camera должен быть объектом"))?;
+    let center = obj
+        .get("center")
+        .and_then(Json::as_array)
+        .filter(|a| matches!(a.len(), 2 | 3))
+        .ok_or_else(|| {
+            format!("events[{index}].camera.center должен быть парой или тройкой чисел")
+        })?;
+    let what = |axis: usize| format!("events[{index}].camera.center[{axis}]");
+    let z = match center.get(2) {
+        Some(z) => Some(want_f64(z, &what(2))?),
+        None => None,
+    };
+    let view_height = want_f64(
+        obj.get("view_height")
+            .ok_or_else(|| format!("events[{index}].camera без \"view_height\""))?,
+        &format!("events[{index}].camera.view_height"),
+    )?;
+    if !view_height.is_finite() || view_height <= 0.0 {
+        return Err(format!(
+            "events[{index}].camera.view_height должен быть больше нуля"
+        ));
+    }
+    let follow = match obj.get("follow") {
+        None => false,
+        Some(v) => v
+            .as_bool()
+            .ok_or_else(|| format!("events[{index}].camera.follow должен быть true или false"))?,
+    };
+    Ok(ReplayEventKind::Camera {
+        center: [
+            want_f64(&center[0], &what(0))?,
+            want_f64(&center[1], &what(1))?,
+        ],
+        z,
+        view_height,
+        follow,
+    })
+}
+
+/// Parses one `events[]` entry — exactly one of `command`/`key_down`/`key_up`/`cursor`/`camera`/`set`/
 /// `remove`/`add`/`delete`/`wind` alongside `step`, unknown or missing being «Технические детали»'s
 /// "неизвестное событие".
 fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
@@ -183,6 +259,8 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
             }
         };
         ReplayEventKind::Cursor([x, y, z], eye)
+    } else if let Some(v) = obj.get("camera") {
+        parse_camera_event(v, index)?
     } else if let Some(v) = obj.get("set") {
         let arr = v.as_array().filter(|a| a.len() == 3).ok_or_else(|| {
             format!("events[{index}].set должен быть [номер, свойство, значение]")
@@ -217,7 +295,7 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
         ReplayEventKind::Edit(ReplayEdit::Wind([x, y]))
     } else {
         return Err(format!(
-            "events[{index}]: неизвестное событие — нет ни command, ни key_down/key_up/cursor, ни set/remove/add/delete/wind"
+            "events[{index}]: неизвестное событие — нет ни command, ни key_down/key_up/cursor/camera, ни set/remove/add/delete/wind"
         ));
     };
     Ok(ReplayEvent { step, kind })
@@ -242,6 +320,21 @@ fn event_to_json(event: &ReplayEvent) -> Json {
             if let Some(eye) = eye {
                 map.insert("eye".to_string(), serde_json::json!(eye));
             }
+        }
+        ReplayEventKind::Camera {
+            center,
+            z,
+            view_height,
+            follow,
+        } => {
+            let point = match z {
+                Some(z) => serde_json::json!([center[0], center[1], z]),
+                None => serde_json::json!([center[0], center[1]]),
+            };
+            map.insert(
+                "camera".to_string(),
+                serde_json::json!({"center": point, "view_height": view_height, "follow": follow}),
+            );
         }
         ReplayEventKind::Command(cmd) => {
             map.insert("command".to_string(), command_to_json(cmd));
@@ -399,6 +492,29 @@ mod tests {
     }
 
     #[test]
+    fn a_run_command_keeps_its_function_and_the_object_of_the_button() {
+        let recording = Recording {
+            steps: 4,
+            events: vec![
+                ReplayEvent {
+                    step: 1,
+                    kind: ReplayEventKind::Command(ReplayCommand::Run("take".to_string(), Some(7))),
+                },
+                ReplayEvent {
+                    step: 2,
+                    kind: ReplayEventKind::Command(ReplayCommand::Run("count".to_string(), None)),
+                },
+            ],
+        };
+        let text = serialize(&recording);
+        assert!(text.contains(r#"["run","take",7]"#), "{text}");
+        assert!(text.contains(r#"["run","count"]"#), "{text}");
+        assert_eq!(parse(&text).expect("читается"), recording);
+        let bad = r#"{"format": 1, "steps": 1, "events": [{"step": 0, "command": ["run", "take", "x"]}]}"#;
+        assert!(parse(bad).unwrap_err().contains("run[2]"));
+    }
+
+    #[test]
     fn the_camera_position_rides_next_to_the_cursor_point_in_the_same_event() {
         let event = ReplayEvent {
             step: 20,
@@ -411,6 +527,54 @@ mod tests {
         );
         let bad = r#"{"format": 1, "steps": 1, "events": [{"step": 0, "cursor": [1, 2], "eye": [1, 2]}]}"#;
         assert!(parse(bad).unwrap_err().contains("eye"));
+    }
+
+    #[test]
+    fn a_camera_event_survives_the_round_trip_with_and_without_a_height() {
+        let recording = Recording {
+            steps: 5,
+            events: vec![
+                ReplayEvent {
+                    step: 2,
+                    kind: ReplayEventKind::Camera {
+                        center: [12.5, 30.0],
+                        z: None,
+                        view_height: 46.0,
+                        follow: false,
+                    },
+                },
+                ReplayEvent {
+                    step: 3,
+                    kind: ReplayEventKind::Camera {
+                        center: [12.5, 30.0],
+                        z: Some(1.2),
+                        view_height: 40.0,
+                        follow: true,
+                    },
+                },
+            ],
+        };
+        let text = serialize(&recording);
+        assert_eq!(parse(&text).expect("читается"), recording);
+        let line = serde_json::to_string(&event_to_json(&recording.events[0])).expect("пишется");
+        assert_eq!(
+            line,
+            r#"{"camera":{"center":[12.5,30.0],"follow":false,"view_height":46.0},"step":2}"#
+        );
+    }
+
+    #[test]
+    fn a_camera_event_without_a_view_or_with_a_bad_one_is_rejected() {
+        for bad in [
+            r#"{"step": 0, "camera": {"center": [1, 2]}}"#,
+            r#"{"step": 0, "camera": {"center": [1], "view_height": 5}}"#,
+            r#"{"step": 0, "camera": {"center": [1, 2], "view_height": 0}}"#,
+            r#"{"step": 0, "camera": {"center": [1, 2], "view_height": 5, "follow": 1}}"#,
+            r#"{"step": 0, "camera": 5}"#,
+        ] {
+            let text = format!(r#"{{"format": 1, "steps": 1, "events": [{bad}]}}"#);
+            assert!(parse(&text).unwrap_err().contains("camera"), "{bad}");
+        }
     }
 
     #[test]

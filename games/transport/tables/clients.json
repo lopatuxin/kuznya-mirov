@@ -1,0 +1,291 @@
+{
+  "bakery": {
+    "short": "Хлебозавод",
+    "about": "Каждое утро — хлеб в магазины к открытию, днём — батоны и булки.",
+    "jobs": [
+      {
+        "id": "bread_am",
+        "window": [
+          "06:50",
+          "07:05"
+        ],
+        "chance": 1,
+        "repeat": 3,
+        "cargo": "Хлеб",
+        "from": "bakery",
+        "to": "shops",
+        "weight": 0.35,
+        "deadline": "09:00",
+        "price": 1000,
+        "tags": [
+          "opening"
+        ],
+        "offer": 80,
+        "why": "магазин открывается в 9:00"
+      },
+      {
+        "id": "bread_pm",
+        "window": [
+          "12:30",
+          "14:00"
+        ],
+        "chance": 0.9,
+        "repeat": 2,
+        "spread": true,
+        "cargo": "Батоны и булки",
+        "from": "bakery",
+        "to": "shops",
+        "weight": 0.25,
+        "deadline_after": 120,
+        "price": 750,
+        "tags": [],
+        "offer": 60,
+        "why": "к вечеру выпечка кончается"
+      }
+    ]
+  },
+  "wholesale": {
+    "short": "Оптовая база",
+    "about": "Весь день развозит товар по магазинам.",
+    "jobs": [
+      {
+        "id": "goods",
+        "window": [
+          "09:00",
+          "15:30"
+        ],
+        "chance": 1,
+        "repeat": 5,
+        "spread": true,
+        "cargo": "Товар",
+        "from": "wholesale",
+        "to": "shops",
+        "weight": 0.9,
+        "deadline_after": 150,
+        "price": 1300,
+        "tags": [],
+        "offer": 75,
+        "why": "в магазине кончается товар"
+      }
+    ]
+  },
+  "market": {
+    "short": "Рынок",
+    "about": "Утром торговцам нужны овощи с базы.",
+    "jobs": [
+      {
+        "id": "veg",
+        "window": [
+          "07:00",
+          "07:15"
+        ],
+        "chance": 0.9,
+        "cargo": "Овощи",
+        "from": "wholesale",
+        "to": "market",
+        "weight": 1.2,
+        "deadline": "08:30",
+        "price": 1600,
+        "tags": [
+          "urgent"
+        ],
+        "offer": 45,
+        "why": "торговцы ждут товар к открытию рынка"
+      }
+    ]
+  },
+  "pier": {
+    "short": "Пристань",
+    "about": "Когда приходит баржа, груз надо быстро вывезти на базу.",
+    "jobs": [
+      {
+        "id": "barge",
+        "window": [
+          "10:00",
+          "13:00"
+        ],
+        "chance": 0.7,
+        "cargo": "Груз с баржи",
+        "from": "pier",
+        "to": "wholesale",
+        "weight": 1.4,
+        "deadline_after": 120,
+        "price": 1950,
+        "tags": [
+          "urgent"
+        ],
+        "offer": 40,
+        "why": "баржа стоит под разгрузкой — пристань платит за срочность"
+      }
+    ]
+  },
+  "sewing": {
+    "short": "Швейная фабрика",
+    "about": "Отправляет одежду поездом — опаздывать нельзя.",
+    "jobs": [
+      {
+        "id": "train",
+        "window": [
+          "14:00",
+          "15:00"
+        ],
+        "chance": 0.8,
+        "cargo": "Партия одежды",
+        "from": "sewing",
+        "to": "station",
+        "weight": 0.7,
+        "deadline": "17:30",
+        "price": 2100,
+        "tags": [
+          "urgent"
+        ],
+        "offer": 60,
+        "why": "поезд уходит в 17:40"
+      }
+    ]
+  },
+  "plant": {
+    "short": "Завод «Электроконтакт»",
+    "about": "Заготовки со станции утром, готовые изделия на станцию днём.",
+    "jobs": [
+      {
+        "id": "parts_in",
+        "window": [
+          "08:00",
+          "10:00"
+        ],
+        "chance": 0.7,
+        "cargo": "Заготовки",
+        "from": "station",
+        "to": "plant",
+        "weight": 1.3,
+        "deadline_after": 150,
+        "price": 1750,
+        "tags": [],
+        "offer": 90,
+        "why": "цех ждёт заготовки"
+      },
+      {
+        "id": "parts_out",
+        "window": [
+          "13:00",
+          "15:00"
+        ],
+        "chance": 0.7,
+        "cargo": "Готовые изделия",
+        "from": "plant",
+        "to": "station",
+        "weight": 1.1,
+        "deadline": "17:00",
+        "price": 1900,
+        "tags": [
+          "urgent"
+        ],
+        "offer": 60,
+        "why": "вагон отправляют в 17:15"
+      }
+    ]
+  },
+  "jewelry": {
+    "short": "Ювелирная фабрика",
+    "about": "Ценные посылки — бережно и вовремя.",
+    "jobs": [
+      {
+        "id": "valuables",
+        "window": [
+          "10:00",
+          "16:00"
+        ],
+        "chance": 0.7,
+        "cargo": "Ценная посылка",
+        "from": "jewelry",
+        "to": "station",
+        "weight": 0.05,
+        "deadline_after": 120,
+        "price": 1650,
+        "tags": [
+          "careful"
+        ],
+        "offer": 60,
+        "why": "ювелирные изделия — везти бережно"
+      }
+    ]
+  },
+  "materials": {
+    "short": "Стройматериалы",
+    "about": "Цемент и кирпич на стройку.",
+    "jobs": [
+      {
+        "id": "cement",
+        "window": [
+          "08:00",
+          "14:00"
+        ],
+        "chance": 1,
+        "repeat": 2,
+        "spread": true,
+        "cargo": "Цемент",
+        "from": "materials",
+        "to": "site",
+        "weight": 1.5,
+        "deadline_after": 180,
+        "price": 1500,
+        "tags": [],
+        "offer": 90,
+        "why": "бригада без цемента простаивает"
+      }
+    ]
+  },
+  "furniture": {
+    "short": "Мебельный",
+    "about": "Доставка мебели покупателям на дом.",
+    "jobs": [
+      {
+        "id": "sofa",
+        "window": [
+          "10:00",
+          "17:00"
+        ],
+        "chance": 1,
+        "repeat": 3,
+        "spread": true,
+        "cargo": "Мебель",
+        "from": "furniture",
+        "to": "address",
+        "weight": 0.4,
+        "deadline_after": 180,
+        "price": 1150,
+        "tags": [
+          "careful"
+        ],
+        "offer": 90,
+        "why": "покупатель ждёт диван дома"
+      }
+    ]
+  },
+  "residents": {
+    "short": "Жители",
+    "about": "Переезды по городу.",
+    "jobs": [
+      {
+        "id": "move",
+        "window": [
+          "08:00",
+          "12:00"
+        ],
+        "chance": 0.8,
+        "cargo": "Переезд",
+        "from": "address",
+        "to": "address",
+        "weight": 1.3,
+        "deadline_after": 240,
+        "price": 2400,
+        "tags": [
+          "careful"
+        ],
+        "offer": 75,
+        "why": "семья переезжает"
+      }
+    ]
+  }
+}

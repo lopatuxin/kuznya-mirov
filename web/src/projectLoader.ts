@@ -1,6 +1,7 @@
 import type { Engine } from "engine";
 import { GAME_FILE_FETCH, fetchText } from "./gameOptions";
 import { buildImagePayload, buildVideoPayload, fetchImageBytes, isVideoPath, type ImageEntry, type ImageFileEntry } from "./images/imagePayload";
+import { buildModelPayload, type ModelEntry } from "./images/modelImages";
 import { releaseDecodedVideos, releaseVideoPlayer, type VideoPlayerKeeper } from "./images/videoLoader";
 import { probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import type { EngineError } from "./engineErrors";
@@ -36,6 +37,7 @@ type ReadTextsResult = {
   images: ImageEntry[];
   materials: ImageFileEntry[];
   masks: ImageFileEntry[];
+  models: ModelEntry[];
 };
 
 type LoadResult =
@@ -185,21 +187,23 @@ export async function loadProject(
 
   const audioContext = createAudioContext();
 
-  const [fonts, loadedSounds, loadedMusic, loadedImages, loadedMaterials, loadedMasks] = await Promise.all([
+  const [fonts, loadedSounds, loadedMusic, loadedImages, loadedMaterials, loadedMasks, loadedModels] = await Promise.all([
     fetchFonts(reader, needed.fonts),
     fetchSoundBytes(reader, needed.sounds),
     fetchMusicBytes(reader, needed.music),
     fetchImageBytes(needed.images, reader.readBinary),
     fetchImageBytes(needed.materials, reader.readBinary),
     fetchImageBytes(needed.masks, reader.readBinary),
+    fetchImageBytes(needed.models, reader.readBinary),
   ]);
   const videosPayloadPromise = buildVideoPayload(loadedImages.filter((image) => isVideoPath(image.path)));
-  const [musicTracks, imagesPayload, videosPayload, materialMapsPayload, coverMasksPayload] = await Promise.all([
+  const [musicTracks, imagesPayload, videosPayload, materialMapsPayload, coverMasksPayload, modelsPayload] = await Promise.all([
     readMusicVerdicts(audioContext, loadedMusic),
     buildImagePayload(loadedImages.filter((image) => !isVideoPath(image.path))),
     videosPayloadPromise,
     buildImagePayload(loadedMaterials),
     buildImagePayload(loadedMasks),
+    buildModelPayload(loadedModels),
   ]).catch((error: unknown) => {
     // Сбой соседнего чтения (трек, картинка) обрывает загрузку, а проигрыватели видео уже заведены или вот-вот заведутся.
     void videosPayloadPromise.then(releaseDecodedVideos, () => undefined);
@@ -231,6 +235,7 @@ export async function loadProject(
       coverMasksPayload,
       stamps,
       videoAnswers,
+      modelsPayload,
     ) as LoadResult;
   } catch (error) {
     for (const player of players) releaseVideoPlayer(player);

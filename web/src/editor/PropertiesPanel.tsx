@@ -20,6 +20,8 @@ type PropertiesPanelProps = {
   /** `scene.json` разобран и движок готов проверять правку — иначе поля показывают, но не пускают в правку. */
   canEdit: boolean;
   imageNames: readonly string[];
+  /** Имена моделей игры: набор выпадающего списка `model` («Редактор», требование 24 фазы 25). */
+  modelNames: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
   /** Сцена трёхмерная — `rotation` там любое число, а не выбор из четырёх значений. */
   isThreeDimensionalScene: boolean;
@@ -147,14 +149,15 @@ type PropertyValueControlProps = {
   valueText: string;
   canEdit: boolean;
   imageNames: readonly string[];
+  modelNames: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
   isThreeDimensionalScene: boolean;
   onSetValue: (value: unknown) => void;
 };
 
 /** Вид поля по свойству — «Редактор», требование 11. */
-function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNames, declaredProperties, isThreeDimensionalScene, onSetValue }: PropertyValueControlProps): React.JSX.Element {
-  const kind = propertyFieldKind(propertyKey, value, declaredProperties, imageNames, isThreeDimensionalScene);
+function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNames, modelNames, declaredProperties, isThreeDimensionalScene, onSetValue }: PropertyValueControlProps): React.JSX.Element {
+  const kind = propertyFieldKind(propertyKey, value, declaredProperties, imageNames, isThreeDimensionalScene, modelNames);
 
   if (kind.kind === "checkbox") {
     return (
@@ -336,6 +339,7 @@ export function PropertiesPanel({
   selectedObject,
   canEdit,
   imageNames,
+  modelNames,
   declaredProperties,
   isThreeDimensionalScene,
   cloudImages,
@@ -403,6 +407,7 @@ export function PropertiesPanel({
                       valueText={property.valueText}
                       canEdit={canEdit}
                       imageNames={imageNames}
+                      modelNames={modelNames}
                       declaredProperties={declaredProperties}
                       isThreeDimensionalScene={isThreeDimensionalScene}
                       onSetValue={(value) => onSetValue(property.key, value)}

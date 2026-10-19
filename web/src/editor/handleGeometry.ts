@@ -1,5 +1,5 @@
 import type { ScaleAxis } from "./handleMath";
-import { placementCenter, type ObjectPlacement, type Vec2 } from "./objectPlacement";
+import { hasHeight, placementCenter, type ObjectPlacement, type Vec2 } from "./objectPlacement";
 
 export type HandleMode = "translate" | "rotate" | "scale";
 
@@ -106,7 +106,7 @@ export function computeHandleGeometry(projection: SpaceProjection, placement: Ob
   const radians = ((placement.rotation ?? 0) * Math.PI) / 180;
   const width: Vec2 = [Math.cos(radians), Math.sin(radians)];
   const depth: Vec2 = [-Math.sin(radians), Math.cos(radians)];
-  const tipZ = placement.hasShape ? (projection.screenPoint(ground[0], ground[1], baseHeight + length) ?? null) : null;
+  const tipZ = hasHeight(placement) ? (projection.screenPoint(ground[0], ground[1], baseHeight + length) ?? null) : null;
   return { center, tipX: tipAlong(width), tipY: tipAlong(depth), tipZ, ring: [] };
 }
 
