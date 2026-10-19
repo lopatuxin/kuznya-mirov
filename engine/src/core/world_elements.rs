@@ -120,7 +120,20 @@ pub fn compute_world_draws(
     elements: &[WorldElement],
     layers: &LayerView,
 ) -> (Vec<BarDraw>, Vec<LabelDraw>) {
-    compute_draws(world, scene, properties, elements, None, layers)
+    compute_draws(world, scene, properties, elements, None, layers, 1.0)
+}
+
+/// То же при клетке надписей в `cell` клеток сцены — с камерой игрока она не растёт с приближением,
+/// `SceneConfig::label_cell`.
+pub fn compute_world_draws_scaled(
+    world: &World,
+    scene: &SceneConfig,
+    properties: &PropertyTable,
+    elements: &[WorldElement],
+    layers: &LayerView,
+    cell: f64,
+) -> (Vec<BarDraw>, Vec<LabelDraw>) {
+    compute_draws(world, scene, properties, elements, None, layers, cell)
 }
 
 /// «Трёхмерная сцена» → «Мышь и надписи», требования 24–25: то же для трёхмерной сцены, но
@@ -142,12 +155,13 @@ pub fn compute_world_draws_3d(
         elements,
         Some(camera),
         &LayerView::default(),
+        1.0,
     )
 }
 
 /// Прямоугольник объекта на экране в точках окна — `[x, y]` и `[ширина, высота]`.
 fn screen_rectangle(world: &World, id: u32, camera: &Camera3d) -> Option<([f32; 2], [f32; 2])> {
-    let [x0, y0, x1, y1] = match Body::of_object(world, id) {
+    let [x0, y0, x1, y1] = match Body::of_object(world, id).or_else(|| Body::of_model(world, id)) {
         Some(body) => body.screen_rect(camera)?,
         None => {
             let position = world.vec2(id, property::POSITION)?;
@@ -186,6 +200,7 @@ fn compute_draws(
     elements: &[WorldElement],
     camera: Option<&Camera3d>,
     layers: &LayerView,
+    flat_cell: f64,
 ) -> (Vec<BarDraw>, Vec<LabelDraw>) {
     let mut bars = Vec::new();
     let mut labels = Vec::new();
@@ -210,7 +225,7 @@ fn compute_draws(
                     (
                         [position[0] + shift[0], position[1] + shift[1]],
                         world.vec2(id, property::SIZE).expect("filtered above"),
-                        1.0,
+                        flat_cell as f32,
                     )
                 }
                 Some(camera) => {
@@ -307,6 +322,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         }
     }
 
@@ -815,6 +831,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
             ..scene_config()
         };
         // Two objects at the same layer, y_sort on: the lower bottom edge draws on top.

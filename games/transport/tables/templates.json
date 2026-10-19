@@ -1,0 +1,25 @@
+{
+  "gazel": {
+    "name": "ГАЗель",
+    "car": true,
+    "size": [
+      0.21,
+      0.55
+    ],
+    "model": "gazel",
+    "height": 0.26,
+    "drive_speed": 8.33,
+    "capacity": 1.5,
+    "load": 0,
+    "state": "idle",
+    "state_text": "ждёт заказы",
+    "driver": "Вы",
+    "has_driver": true,
+    "on_click": [
+      [
+        "clicked",
+        true
+      ]
+    ]
+  }
+}

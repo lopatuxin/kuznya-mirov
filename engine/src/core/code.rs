@@ -14,10 +14,10 @@
 //! только copy-значения (`LuaValue`) и `Rc` обычных, не-Lua данных.
 
 use std::any::Any;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use serde_json::Value as Json;
+use serde_json::{Map, Value as Json};
 
 use luars::{
     FromLua, IntoLua, Lua, LuaApi, LuaError, LuaFunction, LuaResult, LuaSandboxApi, LuaState,
@@ -27,6 +27,8 @@ use luars::{
 
 use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
+use super::roads::RoadNetwork;
+use super::scene::ObjectSpec;
 use super::sound::SoundMarks;
 use super::value::{ImageId, PropKind, Rotation, Shape, parse_color};
 use super::world::World;
@@ -75,7 +77,9 @@ const RESERVED_GLOBALS: &[&str] = &[
     "utf8",
     "find",
     "delete",
+    "create",
     "play_sound",
+    "road_route",
     "tables",
     "wind",
     "_G",
@@ -88,13 +92,55 @@ const RESERVED_GLOBALS: &[&str] = &[
 /// `function` заполняет `Runner::run` (единственное место, знающее вызванную функцию), `rule` —
 /// `step::run_code` (знает индекс правила), `step` — `Game::step` (знает номер шага). Ошибка
 /// проверки перед запуском ни одно из трёх не заполняет — до партии ни правила, ни шага ещё нет.
+/// `button` — вместо правила, когда функцию вызвала кнопка или клавиша экрана: «экран "main", кнопка
+/// "Взять"»; заполняет `Game::run_screen_function`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CodeError {
     pub message: String,
     pub line: Option<u32>,
     pub function: Option<String>,
     pub rule: Option<String>,
+    pub button: Option<String>,
     pub step: Option<u64>,
+}
+
+/// «Создание объектов кодом»: как запись объекта, что код передал в `create`, превращается в объект —
+/// разбор и проверка те же, что у объекта `scene.json`, они живут в `data`, и ядро получает их готовыми.
+/// Без своего разбора (`Default`) `create` отвечает ошибкой.
+type ParseObject = dyn Fn(&PropertyTable, &Json) -> Result<ObjectSpec, String>;
+
+#[derive(Clone)]
+pub struct ObjectParser(Rc<ParseObject>);
+
+impl ObjectParser {
+    pub fn new(
+        parse: impl Fn(&PropertyTable, &Json) -> Result<ObjectSpec, String> + 'static,
+    ) -> Self {
+        ObjectParser(Rc::new(parse))
+    }
+
+    fn parse(&self, properties: &PropertyTable, record: &Json) -> Result<ObjectSpec, String> {
+        (self.0)(properties, record)
+    }
+}
+
+impl Default for ObjectParser {
+    fn default() -> Self {
+        ObjectParser::new(|_, _| Err("создание объектов в этой игре не настроено".to_string()))
+    }
+}
+
+impl std::fmt::Debug for ObjectParser {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("ObjectParser")
+    }
+}
+
+/// Заявка кода на создание объекта: проверенная запись и функция, что её подала.
+#[derive(Debug, Clone)]
+pub struct CodeCreate {
+    pub spec: ObjectSpec,
+    pub function: String,
 }
 
 /// Raw-указатель, общий на все зарегистрированные замыкания Lua — единственный способ дать им
@@ -114,8 +160,10 @@ struct BaseCtx<'a> {
 struct WorldCtx<'a> {
     world: &'a mut World,
     deletes: &'a mut Vec<u32>,
+    creates: &'a mut Vec<CodeCreate>,
     moved: &'a mut [bool],
     marks: SoundMarks<'a>,
+    roads: &'a RefCell<RoadNetwork>,
 }
 
 fn base_ptr(cell: &CtxCell) -> Result<*mut BaseCtx<'static>, String> {
@@ -655,9 +703,25 @@ fn write_property(
             Ok(())
         }
         (PropKind::Layer, _) => Err("ожидалось целое число".to_string()),
+        (PropKind::Text, AnyValue::Str(name)) if prop == property::MODEL => {
+            let models = properties.models();
+            if models.index_of(&name).is_none() {
+                let declared = models
+                    .names()
+                    .map(|known| format!("\"{known}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!("модели \"{name}\" нет; объявлены {declared}"));
+            }
+            world.set_text(id, prop, name);
+            Ok(())
+        }
         (PropKind::Text, AnyValue::Str(s)) => {
             world.set_text(id, prop, s);
             Ok(())
+        }
+        (PropKind::Text, _) if prop == property::MODEL => {
+            Err("ожидалось имя модели строкой".to_string())
         }
         (PropKind::Text, _) => Err("ожидалась строка".to_string()),
         (PropKind::Color, AnyValue::Str(s)) => match parse_color(&s) {
@@ -771,11 +835,17 @@ fn check_shape_rules(
 ) -> Result<(), String> {
     let name = properties.name(prop);
     match prop {
-        property::SHAPE | property::HEIGHT | property::DECK if !properties.three_d() => {
+        property::MODEL | property::HEIGHT if !properties.three_d() => Err(format!(
+            "свойство \"{name}\" есть только в трёхмерной сцене"
+        )),
+        property::SHAPE | property::DECK | property::ROAD if !properties.three_d() => {
             Err(format!("{name} есть только в трёхмерной сцене"))
         }
+        property::DRIVE_SPEED | property::ROAD_SPEED if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
+            Err(format!("свойство \"{name}\" не может быть меньше нуля"))
+        }
         property::HEIGHT if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
-            Err("height должен быть больше нуля".to_string())
+            Err("свойство \"height\" должно быть больше нуля".to_string())
         }
         _ if properties.three_d()
             && (matches!(
@@ -795,11 +865,45 @@ fn check_shape_rules(
         property::PARALLAX if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
             Err("parallax не может быть меньше нуля".to_string())
         }
+        property::TIME_SCALE if matches!(value, AnyValue::Number(n) if !(0.0..=property::MAX_TIME_SCALE).contains(n)) => {
+            Err(format!(
+                "свойство \"time_scale\" должно быть от 0 до {}",
+                property::MAX_TIME_SCALE
+            ))
+        }
         property::RUN_SPEED if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
             Err("свойство \"run_speed\" не может быть меньше нуля".to_string())
         }
         property::JUMP_HEIGHT | property::JUMP_TIME if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
             Err(format!("свойство \"{name}\" должно быть больше нуля"))
+        }
+        property::MODEL
+            if [
+                property::SHAPE,
+                property::IMAGE,
+                property::COLOR,
+                property::FLIP_X,
+                property::OPACITY,
+            ]
+            .iter()
+            .any(|&other| world.has(id, other)) =>
+        {
+            Err(
+                "свойство \"model\" нельзя объекту с shape, image, color, flip_x или opacity"
+                    .to_string(),
+            )
+        }
+        property::SHAPE | property::IMAGE | property::COLOR | property::OPACITY
+            if world.has(id, property::MODEL) =>
+        {
+            Err(format!(
+                "свойство \"{name}\" нельзя объекту со свойством \"model\""
+            ))
+        }
+        property::FLIP_X
+            if matches!(value, AnyValue::Bool(true)) && world.has(id, property::MODEL) =>
+        {
+            Err("свойство \"flip_x\" нельзя объекту со свойством \"model\"".to_string())
         }
         property::SHAPE
             if world.has(id, property::IMAGE)
@@ -828,6 +932,7 @@ struct Env {
     properties: Rc<PropertyTable>,
     image_names: Rc<Vec<String>>,
     sound_names: Rc<Vec<String>>,
+    parser: ObjectParser,
     obj_mt: LuaValue,
     vec2_mt: LuaValue,
 }
@@ -1162,6 +1267,286 @@ fn install_delete(lua: &mut Lua, world_cell: &CtxCell) -> LuaResult<LuaFunction>
     })
 }
 
+/// Глубже этого таблицы в записи `create` не вкладываются.
+const MAX_TABLE_DEPTH: usize = 32;
+
+/// Больше стольких значений запись `create` не разворачивает: одна и та же таблица, вложенная в
+/// себя дважды на каждом уровне, иначе развернулась бы в миллиарды узлов мимо предела операций Lua.
+const MAX_TABLE_VALUES: usize = 100_000;
+
+/// Обход таблиц записи `create`: таблицы, внутри которых стоит текущее значение, и сколько значений
+/// уже развёрнуто.
+#[derive(Default)]
+struct TableWalk {
+    outer: Vec<LuaValue>,
+    values: usize,
+}
+
+/// «Создание объектов кодом»: значение записи, которое `create` передаёт разбору, — число, строка,
+/// признак, список или таблица с именами; пустая таблица — пустой список. `walk.outer` — таблицы, внутри
+/// которых лежит `value`: ссылка таблицы на себя, слишком глубокая вложенность и слишком много значений —
+/// ошибка кода.
+fn lua_to_json(
+    value: LuaValue,
+    state: &mut LuaState,
+    name: &str,
+    walk: &mut TableWalk,
+) -> Result<Json, String> {
+    walk.values += 1;
+    if walk.values > MAX_TABLE_VALUES {
+        return Err(format!(
+            "create: свойство \"{name}\" — в таблице больше {MAX_TABLE_VALUES} значений"
+        ));
+    }
+    if let Some(flag) = value.as_boolean() {
+        return Ok(Json::Bool(flag));
+    }
+    if let Some(n) = value.as_integer() {
+        return Ok(Json::from(n));
+    }
+    if let Some(n) = value.as_number() {
+        return serde_json::Number::from_f64(n)
+            .map(Json::Number)
+            .ok_or_else(|| format!("create: свойство \"{name}\" — число не конечное"));
+    }
+    if let Some(text) = value.as_str() {
+        return Ok(Json::String(text.to_string()));
+    }
+    let Some(table) = state.to_table_ref(value) else {
+        return Err(format!(
+            "create: свойство \"{name}\" — значение вида {} в объект не записывается",
+            kind_name(value)
+        ));
+    };
+    if walk.outer.contains(&value) {
+        return Err(format!(
+            "create: свойство \"{name}\" — таблица ссылается сама на себя"
+        ));
+    }
+    if walk.outer.len() >= MAX_TABLE_DEPTH {
+        return Err(format!(
+            "create: свойство \"{name}\" — таблица слишком глубоко вложена"
+        ));
+    }
+    let entries = table.pairs().map_err(|e| format!("{e:?}"))?;
+    walk.outer.push(value);
+    let json = entries_to_json(entries, state, name, walk);
+    walk.outer.pop();
+    json
+}
+
+/// Пары таблицы `create`: список, если ключи — числа от 1 подряд, иначе объект с именами.
+fn entries_to_json(
+    entries: Vec<(LuaValue, LuaValue)>,
+    state: &mut LuaState,
+    name: &str,
+    walk: &mut TableWalk,
+) -> Result<Json, String> {
+    let is_list = (1..=entries.len() as i64).all(|index| {
+        entries
+            .iter()
+            .any(|(key, _)| key.as_integer() == Some(index))
+    });
+    if is_list {
+        let mut items = vec![Json::Null; entries.len()];
+        for (key, item) in entries {
+            let slot = key.as_integer().unwrap_or(1) as usize - 1;
+            items[slot] = lua_to_json(item, state, name, walk)?;
+        }
+        return Ok(Json::Array(items));
+    }
+    let mut fields = Map::new();
+    for (key, item) in entries {
+        let Some(field) = key.as_str() else {
+            return Err(format!(
+                "create: свойство \"{name}\" — ключи таблицы должны быть строками"
+            ));
+        };
+        fields.insert(field.to_string(), lua_to_json(item, state, name, walk)?);
+    }
+    Ok(Json::Object(fields))
+}
+
+/// Запись объекта, переданная в `create`: таблица кода в форме объекта `scene.json`. Пара, прочитанная
+/// у другого объекта, ждёт мира и вписывается числами в `into_json`.
+struct RecordArg {
+    fields: Map<String, Json>,
+    pairs: Vec<(String, PairRef)>,
+}
+
+impl FromLua for RecordArg {
+    fn from_lua(value: LuaValue, state: &mut LuaState) -> Result<Self, String> {
+        let Some(table) = state.to_table_ref(value) else {
+            return Err(format!(
+                "create: ожидалась таблица, получено {}",
+                kind_name(value)
+            ));
+        };
+        let mut record = RecordArg {
+            fields: Map::new(),
+            pairs: Vec::new(),
+        };
+        for (key, item) in table.pairs().map_err(|e| format!("{e:?}"))? {
+            let Some(name) = key.as_str() else {
+                return Err("create: ключи записи должны быть именами свойств".to_string());
+            };
+            match PairRef::from_value(item) {
+                Ok(pair) => record.pairs.push((name.to_string(), pair)),
+                Err(_) => {
+                    let json = lua_to_json(item, state, name, &mut TableWalk::default())?;
+                    record.fields.insert(name.to_string(), json);
+                }
+            }
+        }
+        Ok(record)
+    }
+}
+
+impl RecordArg {
+    /// `create(base, changes)`: ключи `changes` заменяют ключи записи целиком.
+    fn replace_with(&mut self, changes: RecordArg) {
+        let changed = changes
+            .fields
+            .keys()
+            .chain(changes.pairs.iter().map(|(name, _)| name));
+        for name in changed {
+            self.fields.remove(name);
+            self.pairs.retain(|(own, _)| own != name);
+        }
+        self.fields.extend(changes.fields);
+        self.pairs.extend(changes.pairs);
+    }
+
+    /// Запись как JSON объекта `scene.json`: пары-прочтения — числами, пара-таблица `{x = 3, y = 4}` —
+    /// списком.
+    fn into_json(self, world: &World, properties: &PropertyTable) -> Result<Json, String> {
+        let mut fields = self.fields;
+        for (name, pair) in self.pairs {
+            let (_, [x, y]) = live_pair(world, &pair)?;
+            let mut place = vec![Json::from(x), Json::from(y)];
+            if let Some(z) = world
+                .placed_z(pair.id, pair.prop)
+                .filter(|_| matches!(pair.prop, property::POSITION | property::WALK_TO))
+            {
+                place.push(Json::from(z));
+            }
+            fields.insert(name, Json::Array(place));
+        }
+        for (name, value) in fields.iter_mut() {
+            let is_pair = properties
+                .resolve(name)
+                .is_some_and(|prop| properties.kind(prop) == PropKind::Vec2);
+            if let (true, Some(place)) = (is_pair, named_place(value)) {
+                *value = place;
+            }
+        }
+        Ok(Json::Object(fields))
+    }
+}
+
+/// Пара, записанная именами: `{x = 3, y = 4}` или `{x = 3, y = 4, z = 1}` — списком `[3, 4]`.
+fn named_place(value: &Json) -> Option<Json> {
+    let fields = value.as_object()?;
+    let coordinate = |name: &str| fields.get(name).filter(|n| n.is_number()).cloned();
+    let mut place = vec![coordinate("x")?, coordinate("y")?];
+    place.extend(coordinate("z"));
+    (place.len() == fields.len()).then_some(Json::Array(place))
+}
+
+/// «Создание объектов кодом»: `create(запись)` и `create(основа, замены)` — заявка на новый объект,
+/// что встаёт в мир после этапа удалений (или сразу после функции кнопки). Запись проверяется как объект
+/// `scene.json`.
+fn install_create(lua: &mut Lua, world_cell: &CtxCell, env: &Env) -> LuaResult<LuaFunction> {
+    let env = env.clone();
+    let world_cell = world_cell.clone();
+    lua.create_function(
+        move |record: RecordArg, changes: Option<RecordArg>| -> Result<(), String> {
+            let ptr = world_ptr(&world_cell)?;
+            // SAFETY: see `install_object_metatable` — same call-scoped pointer discipline.
+            let ctx = unsafe { &mut *ptr };
+            let mut record = record;
+            if let Some(changes) = changes {
+                record.replace_with(changes);
+            }
+            let json = record.into_json(ctx.world, &env.properties)?;
+            let spec = env
+                .parser
+                .parse(&env.properties, &json)
+                .map_err(|message| format!("create: {message}"))?;
+            ctx.creates.push(CodeCreate {
+                spec,
+                function: String::new(),
+            });
+            Ok(())
+        },
+    )
+}
+
+/// «Езда по дорогам», требование 28: результат `road_route` — таблица `{length, time}`.
+struct RouteResult {
+    length: f64,
+    time: f64,
+}
+
+impl IntoLua for RouteResult {
+    fn into_lua(self, state: &mut LuaState) -> Result<usize, String> {
+        let table = state.create_table_ref(0, 2).map_err(|e| format!("{e:?}"))?;
+        table
+            .set_typed("length".to_string(), self.length)
+            .map_err(|e| format!("{e:?}"))?;
+        table
+            .set_typed("time".to_string(), self.time)
+            .map_err(|e| format!("{e:?}"))?;
+        state
+            .push_value(table.to_value())
+            .map_err(|e| format!("{e:?}"))?;
+        Ok(1)
+    }
+}
+
+/// Точка пути для `road_route`: пара `{x = .., y = ..}` или пара, прочитанная у объекта.
+fn route_point(world: &World, value: AnyValue, name: &str) -> Result<[f64; 2], String> {
+    let wrong = || format!("road_route: {name} должна быть парой {{x = .., y = ..}}");
+    let point = match value {
+        AnyValue::Vec2 { x, y, .. } => [x, y],
+        AnyValue::Pair(pair) => live_pair(world, &pair)?.1,
+        _ => return Err(wrong()),
+    };
+    if point.iter().all(|c| c.is_finite()) {
+        Ok(point)
+    } else {
+        Err(wrong())
+    }
+}
+
+/// «Езда по дорогам», требования 28–29: `road_route(from, to, speed)` — длина в клетках и время в
+/// секундах пути по дорогам, каким его считает правило `drive`, но по осям.
+fn install_road_route(lua: &mut Lua, world_cell: &CtxCell) -> LuaResult<LuaFunction> {
+    let world_cell = world_cell.clone();
+    lua.create_function(
+        move |from: AnyValue, to: AnyValue, speed: AnyValue| -> Result<RouteResult, String> {
+            let ptr = world_ptr(&world_cell)?;
+            // SAFETY: see `install_object_metatable` — same call-scoped pointer discipline.
+            let ctx = unsafe { &mut *ptr };
+            let from = route_point(ctx.world, from, "from")?;
+            let to = route_point(ctx.world, to, "to")?;
+            let speed = match speed {
+                AnyValue::Number(n) if n.is_finite() && n > 0.0 => n,
+                _ => return Err("road_route: speed должна быть числом больше нуля".to_string()),
+            };
+            let mut roads = ctx.roads.borrow_mut();
+            roads.sync_with(|shapes, speeds| ctx.world.collect_roads(shapes, speeds));
+            let measure = roads
+                .measure(from, to, speed)
+                .ok_or_else(|| "road_route: speed должна быть числом больше нуля".to_string())?;
+            Ok(RouteResult {
+                length: measure.length,
+                time: measure.time,
+            })
+        },
+    )
+}
+
 fn install_play_sound(
     lua: &mut Lua,
     world_cell: &CtxCell,
@@ -1323,9 +1708,13 @@ pub struct Runner {
     #[allow(dead_code)]
     vec2_mt: LuaTable,
     declared_functions: Vec<String>,
+    /// Заявки кода на создание объектов с начала шага или вызова кнопки; их забирает `take_creates`.
+    creates: Vec<CodeCreate>,
     base_cell: CtxCell,
     world_cell: CtxCell,
     wind_cell: WindCell,
+    /// «Езда по дорогам»: сеть игры, та же, по которой ездит правило `drive`.
+    roads: Rc<RefCell<RoadNetwork>>,
     lua: Lua,
 }
 
@@ -1358,6 +1747,8 @@ impl Runner {
         rng: &mut Rng,
         messages: &mut Vec<String>,
         tables_json: &[(String, Json)],
+        roads: Rc<RefCell<RoadNetwork>>,
+        parser: ObjectParser,
     ) -> Result<Runner, CodeError> {
         let mut lua = Lua::new(SafeOption {
             max_memory_limit: MEMORY_LIMIT_BYTES,
@@ -1381,6 +1772,7 @@ impl Runner {
             &world_cell,
             &wind_cell,
             tables_json,
+            parser,
         );
         restore_ctx(&base_cell, prev);
 
@@ -1391,9 +1783,11 @@ impl Runner {
                 obj_mt,
                 vec2_mt,
                 declared_functions,
+                creates: Vec::new(),
                 base_cell,
                 world_cell,
                 wind_cell,
+                roads,
                 lua,
             }),
             Err(err) => {
@@ -1420,6 +1814,7 @@ impl Runner {
         world_cell: &CtxCell,
         wind_cell: &WindCell,
         tables_json: &[(String, Json)],
+        parser: ObjectParser,
     ) -> LuaResult<BuildOutput> {
         // «Код игры»: `Lua::new` не ставит стандартную библиотеку сама — `create_sandbox_env`
         // только копирует из настоящих глобальных то, что там уже есть, так что без этого
@@ -1474,6 +1869,7 @@ impl Runner {
             properties: Rc::new(properties.clone()),
             image_names: Rc::new(image_names.to_vec()),
             sound_names: Rc::new(sound_names.to_vec()),
+            parser,
             obj_mt: obj_mt_value,
             vec2_mt: vec2_mt_value,
         };
@@ -1499,14 +1895,18 @@ impl Runner {
 
         let find_fn = install_find(lua, world_cell, &env_shared)?;
         let delete_fn = install_delete(lua, world_cell)?;
+        let create_fn = install_create(lua, world_cell, &env_shared)?;
         let play_sound_fn = install_play_sound(lua, world_cell, env_shared.sound_names.clone())?;
+        let road_route_fn = install_road_route(lua, world_cell)?;
         let print_fn = install_print(lua, base_cell)?;
         let random_fn = install_math_random(lua, base_cell)?;
 
         env.set("wind", wind_ref.to_value())?;
         env.set("find", find_fn)?;
         env.set("delete", delete_fn)?;
+        env.set("create", create_fn)?;
         env.set("play_sound", play_sound_fn)?;
+        env.set("road_route", road_route_fn)?;
         env.set("print", print_fn)?;
         env.set("tables", build_tables_global(lua, tables_json)?)?;
         let math_table: LuaTable = env.get("math")?;
@@ -1608,6 +2008,12 @@ impl Runner {
         self.lua.set_instruction_budget(INSTRUCTION_LIMIT);
     }
 
+    /// Заявки на создание, что подала функция кода с прошлого вызова этого метода; `Game` исполняет их на
+    /// этапе 8 шага или сразу после функции кнопки.
+    pub fn take_creates(&mut self) -> Vec<CodeCreate> {
+        std::mem::take(&mut self.creates)
+    }
+
     /// «Код игры» → «Что ещё доступно коду»: ровный ветер, который читает глобальная `wind` —
     /// `Game::step` ставит его перед каждым шагом.
     pub fn set_wind(&self, wind: [f64; 2]) {
@@ -1637,6 +2043,7 @@ impl Runner {
                 line: None,
                 function: None,
                 rule: None,
+                button: None,
                 step: None,
             });
         };
@@ -1668,11 +2075,14 @@ impl Runner {
             _ => "return __fn(__a, __b)",
         };
 
+        let creates_before = self.creates.len();
         let mut world_ctx = WorldCtx {
             world,
             deletes,
+            creates: &mut self.creates,
             moved,
             marks,
+            roads: &self.roads,
         };
         let mut base_ctx = BaseCtx { rng, messages };
 
@@ -1681,6 +2091,9 @@ impl Runner {
         let result = self.lua.execute_sandboxed(source, &call_config);
         restore_ctx(&self.world_cell, world_prev);
         restore_ctx(&self.base_cell, base_prev);
+        for create in &mut self.creates[creates_before..] {
+            create.function = function.to_string();
+        }
 
         result.map(|_| ()).map_err(|e| self.wrap(e, function))
     }
@@ -1709,6 +2122,7 @@ fn budget_exceeded_error(line: Option<u32>) -> CodeError {
         line,
         function: None,
         rule: None,
+        button: None,
         step: None,
     }
 }
@@ -1762,6 +2176,7 @@ fn parse_full_error(chunk_name: &str, full: luars::LuaFullError) -> CodeError {
         line,
         function: None,
         rule: None,
+        button: None,
         step: None,
     }
 }
@@ -1785,6 +2200,8 @@ mod tests {
             &mut rng,
             &mut messages,
             &[],
+            Rc::default(),
+            ObjectParser::default(),
         );
         assert!(result.is_ok(), "{:?}", result.err());
     }
@@ -1811,6 +2228,8 @@ mod tests {
             &mut rng,
             &mut messages,
             &[],
+            Rc::default(),
+            ObjectParser::default(),
         )
         .expect("compile");
 
@@ -1863,6 +2282,8 @@ mod tests {
             &mut rng,
             &mut messages,
             &[],
+            Rc::default(),
+            ObjectParser::default(),
         )
         .expect("compile");
 
@@ -1885,6 +2306,53 @@ mod tests {
             assert!(result.is_ok(), "call {call}: {:?}", result.err());
         }
         assert_eq!(world.number_like(id, score), Some(CALLS as f64));
+    }
+
+    /// «Езда по дорогам», требование 28: `road_route` собирает и читает сеть, которую игра передала при
+    /// сборке исполнителя, а не свою.
+    #[test]
+    fn road_route_works_on_the_network_the_game_passed_in() {
+        let properties = PropertyTable::new();
+        let mut world = World::new(&properties);
+        let road = world.create();
+        world.set_vec2(road, crate::core::property::POSITION, [0.0, 0.0]);
+        world.set_vec2(road, crate::core::property::SIZE, [10.0, 1.0]);
+        world.set_flag(road, crate::core::property::ROAD, true);
+
+        let network = Rc::new(RefCell::new(RoadNetwork::default()));
+        let mut rng = Rng::new(1);
+        let mut messages = Vec::new();
+        let mut runner = Runner::compile(
+            "function route() road_route({x = 0.5, y = 0.5}, {x = 9.5, y = 0.5}, 4) end",
+            "code.lua",
+            &properties,
+            &[],
+            &[],
+            &mut rng,
+            &mut messages,
+            &[],
+            Rc::clone(&network),
+            ObjectParser::default(),
+        )
+        .expect("compile");
+        assert!(network.borrow().is_empty());
+
+        let mut deletes = Vec::new();
+        let mut moved = vec![false; 1];
+        let mut sound_window = super::super::sound::SoundWindow::new(0);
+        runner
+            .run(
+                "route",
+                &[],
+                &mut world,
+                &mut rng,
+                &mut deletes,
+                &mut moved,
+                sound_window.marks(),
+                &mut messages,
+            )
+            .expect("road_route отработал");
+        assert!(!network.borrow().is_empty(), "дорога попала в сеть игры");
     }
 
     /// «Фаза 07» → нефункциональные требования: замер скорости, снятый до и после переключения
@@ -1930,6 +2398,8 @@ mod tests {
             &mut rng,
             &mut messages,
             &[],
+            Rc::default(),
+            ObjectParser::default(),
         )
         .expect("compile");
 
@@ -1981,6 +2451,8 @@ mod tests {
             &mut rng,
             &mut messages,
             &[],
+            Rc::default(),
+            ObjectParser::default(),
         )
         .expect("compile");
         let mut world = World::new(&properties);
@@ -2018,6 +2490,8 @@ mod tests {
             &mut rng,
             &mut messages,
             &[],
+            Rc::default(),
+            ObjectParser::default(),
         )
         .err()
     }

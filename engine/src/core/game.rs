@@ -1,20 +1,33 @@
-use super::camera::{self, Camera3d, CameraHeight, EditorCamera, FlatEditorCamera};
-use super::code::{self, CodeError};
+use super::camera::{
+    self, Camera3d, CameraHeight, EditorCamera, FlatEditorCamera, FreeView, PlayerCamera,
+};
+use super::code::{self, CodeCreate, CodeError, ObjectParser};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
 use super::math3::Vec3;
 use super::pathfind::WalkCaches;
 use super::property::{self, PropertyId, PropertyTable};
-use super::report::{DeleteCause, StepReport, StepReportBuilder};
+use super::report::{CreatedObject, DeleteCause, StepReport, StepReportBuilder};
 use super::rng::Rng;
+use super::roads::{RoadLinks, RoadState};
 use super::rules::{Outcome, RuleSet};
-use super::scene::{GroundLayer, ObjectSpec, SceneConfig, letterbox};
+use super::scene::{self, GroundLayer, ObjectSpec, SceneConfig, letterbox};
 use super::sound::SoundWindow;
 use super::step;
 use super::surface;
 use super::terrain::{Cover, Terrain};
 use super::value::{Value, Vec2};
 use super::world::World;
+
+/// «Мир на экране» → «Камера игрока», требование 20: вид камеры игрока, как он идёт в запись партии.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerView {
+    pub center: Vec2,
+    /// Высота точки взгляда; только в трёхмерной сцене. Без неё повтор ставит камеру на землю под точкой.
+    pub z: Option<f64>,
+    pub view_height: f64,
+    pub follow: bool,
+}
 
 #[derive(Debug)]
 pub struct Game {
@@ -53,6 +66,8 @@ pub struct Game {
     /// глобальную `tables` заново из исходных данных, а не из того, что успел переписать код
     /// прошлой партии.
     tables: Vec<(String, serde_json::Value)>,
+    /// «Создание объектов кодом»: как запись, что код передал в `create`, становится объектом.
+    object_parser: ObjectParser,
     code: Option<code::Runner>,
     /// «Код игры»: ошибка кода во время партии — раз поднятая, остаётся до `new_game`/`quit`;
     /// `is_running` смотрит и сюда, и на `outcome`.
@@ -116,6 +131,16 @@ pub struct Game {
     /// «Ходьба», требование 28: запомненные пути идущих объектов — вне мира, сброшены там же, где
     /// `camera_last`.
     walk_paths: WalkCaches,
+    /// «Езда по дорогам»: сеть дорог и пути машин — вне мира, сброшены там же, где пути идущих.
+    roads: RoadState,
+    /// «Мир на экране» → «Камера игрока»: вид камеры, которой водит игрок; `None`, пока у сцены нет
+    /// `player_camera`. Сброшен там же, где `camera_last`.
+    player: Option<PlayerCamera>,
+    /// Сколько записей `camera_follows` мир насчитал к тому моменту, когда камера в последний раз
+    /// решала, следить ли ей: новая запись — слежение возвращается.
+    follow_writes_seen: u64,
+    /// Требование 11: клавиши, названные в `keys` объектов `scene.json`, — камера игрока их не берёт.
+    taken_keys: std::collections::HashSet<String>,
     /// «Редактор», «Сцена»: камера редактора трёхмерной сцены — последняя, что прислал редактор;
     /// `None`, пока не присылал. Сборка мира её не сбрасывает.
     editor_camera: Option<EditorCamera>,
@@ -135,29 +160,36 @@ pub(crate) fn world_from_scene(properties: &PropertyTable, scene_objects: &[Obje
     let mut seated_by_data = Vec::with_capacity(scene_objects.len());
     for spec in scene_objects {
         let id = world.create();
-        seated_by_data.push(
-            spec.values.iter().any(|(prop, value)| {
-                *prop == property::POSITION && matches!(value, Value::Vec3(_))
-            }),
-        );
-        for (prop, value) in placed_last(&spec.values) {
-            world.set_value(id, prop, value);
-        }
-        if let Some(grid) = &spec.grid {
-            world.set_grid(id, property::GRID, *grid);
-            world.set_grid_counter(id, grid.interval_steps);
-        }
-        if let Some(keys) = &spec.keys {
-            world.set_keys(id, property::KEYS, keys.clone());
-        }
-        if let Some(on_click) = &spec.on_click {
-            world.set_on_click(id, property::ON_CLICK, on_click.clone());
-        }
+        seated_by_data.push(fill_object(&mut world, id, spec));
     }
     if world.three_d() {
         seat_scene(&mut world, &seated_by_data);
     }
     world
+}
+
+/// Пишет в свежий объект `id` значения, `grid`, `keys` и `on_click` записи `spec` — общее у объекта
+/// сцены и объекта, созданного кодом. `true`, если высоту основания задали данные (третье число
+/// `position`).
+fn fill_object(world: &mut World, id: u32, spec: &ObjectSpec) -> bool {
+    let seated_by_data = spec
+        .values
+        .iter()
+        .any(|(prop, value)| *prop == property::POSITION && matches!(value, Value::Vec3(_)));
+    for (prop, value) in placed_last(&spec.values) {
+        world.set_value(id, prop, value);
+    }
+    if let Some(grid) = &spec.grid {
+        world.set_grid(id, property::GRID, *grid);
+        world.set_grid_counter(id, grid.interval_steps);
+    }
+    if let Some(keys) = &spec.keys {
+        world.set_keys(id, property::KEYS, keys.clone());
+    }
+    if let Some(on_click) = &spec.on_click {
+        world.set_on_click(id, property::ON_CLICK, on_click.clone());
+    }
+    seated_by_data
 }
 
 /// Значения объекта, `position` последним: пока места нет, ни поворот, ни размер объект не пересаживают.
@@ -207,7 +239,13 @@ impl Game {
         sound_names: Vec<String>,
         start_is_live: bool,
         tables: Vec<(String, serde_json::Value)>,
+        object_parser: ObjectParser,
     ) -> Self {
+        let taken_keys = scene_objects
+            .iter()
+            .filter_map(|spec| spec.keys.as_ref())
+            .flat_map(|keys| keys.keys().cloned())
+            .collect();
         let mut game = Game {
             properties,
             world,
@@ -227,6 +265,7 @@ impl Game {
             image_names,
             sound_names,
             tables,
+            object_parser,
             code: None,
             code_error: None,
             world_held_keys: std::collections::HashSet::new(),
@@ -250,6 +289,10 @@ impl Game {
             camera_last: None,
             camera_height: CameraHeight::default(),
             walk_paths: WalkCaches::new(),
+            roads: RoadState::new(),
+            player: None,
+            follow_writes_seen: 0,
+            taken_keys,
             editor_camera: None,
             flat_editor_camera: None,
         };
@@ -262,6 +305,7 @@ impl Game {
             game.load_code();
         }
         game.update_camera();
+        game.reset_player_camera();
         game.prepare_walking();
         game
     }
@@ -303,6 +347,8 @@ impl Game {
             &mut self.rng,
             &mut self.messages,
             &self.tables,
+            self.roads.network_handle(),
+            self.object_parser.clone(),
         ) {
             Ok(runner) => self.code = Some(runner),
             Err(err) => self.code_error = Some(err),
@@ -527,6 +573,7 @@ impl Game {
         // next `new_game` (not `quit`) is the one that loads a fresh one.
         self.code = None;
         self.code_error = None;
+        self.camera_release_input();
     }
 
     /// «Редактор», требование 39: rebuilds the world exactly the way `data::load::load_rest`
@@ -578,9 +625,11 @@ impl Game {
         self.camera_last = None;
         self.camera_height = CameraHeight::default();
         self.walk_paths.clear_paths();
-        if self.scene.is_3d() {
+        self.roads.clear();
+        if self.scene.is_3d() || self.scene.player_camera.is_some() {
             self.update_camera();
         }
+        self.reset_player_camera();
     }
 
     /// «Рельеф» → «Ходьба», нефункциональные требования: идущим по рельефу и настилам готовится всё, что
@@ -602,6 +651,7 @@ impl Game {
             self.camera_last = Some(center);
             self.camera_height.snap(z);
         }
+        self.follow_again_if_written();
     }
 
     /// «Рельеф» → «Камера», требование 24: то же после шага, но скачок основания на ступеньке камера
@@ -614,33 +664,318 @@ impl Game {
             self.camera_last = Some(center);
             self.camera_height.step(z, moved);
         }
+        self.follow_again_if_written();
+    }
+
+    fn scene_middle(&self) -> Vec2 {
+        [
+            self.scene.width as f64 / 2.0,
+            self.scene.height as f64 / 2.0,
+        ]
+    }
+
+    /// «Мир на экране» → «Камера игрока», требования 3–4: камера при сборке мира — на объекте слежения,
+    /// а без него стоит на `start` или в середине сцены, вид — `view_height` из `game.json`.
+    fn reset_player_camera(&mut self) {
+        self.follow_writes_seen = self.world.camera_follow_writes();
+        self.player = self.scene.player_camera.map(|config| {
+            let free = camera::followed_point(&self.world).is_none().then(|| {
+                let center = config.start.unwrap_or_else(|| self.scene_middle());
+                FreeView {
+                    center,
+                    z: self.world.terrain().height_at(center[0], center[1]),
+                }
+            });
+            PlayerCamera::new(self.scene.view_height.unwrap_or(config.zoom[0]), free)
+        });
+    }
+
+    /// Требование 16: объекту записали `camera_follows` — камера снова следит за объектом, если он
+    /// есть, с этого шага.
+    fn follow_again_if_written(&mut self) {
+        let writes = self.world.camera_follow_writes();
+        if writes == self.follow_writes_seen {
+            return;
+        }
+        self.follow_writes_seen = writes;
+        if camera::followed_point(&self.world).is_some()
+            && let Some(player) = self.player.as_mut()
+        {
+            player.set_free(None);
+        }
+    }
+
+    /// Вид и место, на которые камера смотрит сейчас, до прижатия к краю сцены: у камеры игрока,
+    /// которую сдвинули, — её место, иначе последняя точка слежения или середина сцены.
+    fn camera_state(&self) -> (Option<f64>, Vec2, f64) {
+        let followed = (
+            self.camera_last.unwrap_or_else(|| self.scene_middle()),
+            self.camera_height.z(),
+        );
+        match &self.player {
+            Some(player) => {
+                let (center, z) = player.free().map_or(followed, |free| (free.center, free.z));
+                (Some(player.view_height()), center, z)
+            }
+            None => (self.scene.view_height, followed.0, followed.1),
+        }
+    }
+
+    /// Середина камеры, не заглядывающей за край сцены при виде `view_height`.
+    fn clamp_center(&self, view_height: f64, viewport: [f64; 2], center: Vec2) -> Vec2 {
+        match self.scene.camera {
+            Some(camera) => {
+                camera::clamp_center_3d(&self.scene, camera.pitch, view_height, viewport, center)
+            }
+            None => camera::clamp_center_flat(&self.scene, view_height, viewport, center),
+        }
     }
 
     /// «Трёхмерная сцена», требования 2–5: камера сверху под углом на середину followed-объекта,
-    /// остановленная у края сцены; `None` в плоской сцене.
+    /// остановленная у края сцены; `None` в плоской сцене. «Мир на экране» → «Камера игрока»: камера
+    /// игрока смотрит с её видом и места, а клетка надписей остаётся по `view_height` из `game.json`.
     pub fn camera_3d(&self, viewport: [f32; 2]) -> Option<Camera3d> {
         let pitch = self.scene.camera?.pitch;
-        let view_height = self.scene.view_height?;
+        let base_view_height = self.scene.view_height?;
         let viewport = [viewport[0] as f64, viewport[1] as f64];
-        let center = self.camera_last.unwrap_or([
-            self.scene.width as f64 / 2.0,
-            self.scene.height as f64 / 2.0,
-        ]);
-        let center = camera::clamp_center_3d(&self.scene, pitch, view_height, viewport, center);
+        let (view_height, center, z) = self.camera_state();
+        let view_height = view_height.unwrap_or(base_view_height);
+        let center = self.clamp_center(view_height, viewport, center);
         Some(
             Camera3d::looking_at(center, pitch, view_height, viewport)
-                .raised(self.camera_height.z()),
+                .raised(z)
+                .with_label_view_height(base_view_height),
         )
     }
 
     /// «Камера», требование 4: the scale/offset «Мир на экране» draws and picks the world by
     /// right now — the followed point if one was ever known, the scene's own middle otherwise.
     pub fn camera_frame(&self, viewport: [f32; 2]) -> (f32, [f32; 2]) {
-        let center = self.camera_last.unwrap_or([
-            self.scene.width as f64 / 2.0,
-            self.scene.height as f64 / 2.0,
-        ]);
-        camera::frame(&self.scene, center, viewport)
+        let (view_height, center, _) = self.camera_state();
+        match view_height {
+            Some(view_height) => camera::frame_at(&self.scene, view_height, center, viewport),
+            None => camera::frame(&self.scene, center, viewport),
+        }
+    }
+
+    /// «Камера игрока», требование 13: камерой водит игрок на любом экране, где мир есть.
+    pub fn player_camera_works(&self) -> bool {
+        self.player.is_some() && self.world_exists
+    }
+
+    /// Нынешний вид камеры игрока; `None`, пока у сцены нет `player_camera`.
+    pub fn player_view_height(&self) -> Option<f64> {
+        self.player.as_ref().map(PlayerCamera::view_height)
+    }
+
+    /// Следит ли камера игрока за объектом; `None` без камеры игрока.
+    pub fn player_camera_follows(&self) -> Option<bool> {
+        self.player.as_ref().map(|player| player.free().is_none())
+    }
+
+    /// Место на сцене под точкой окна `pointer`: в плоской сцене сама точка, в трёхмерной — место на
+    /// земле, воде или настиле под ней на его высоте.
+    fn scene_point_under(&self, pointer: [f32; 2], viewport: [f32; 2]) -> Vec3 {
+        match self.camera_3d(viewport) {
+            Some(camera) => scene::pointer_hit(
+                &self.world,
+                &self.scene,
+                &camera,
+                [pointer[0] as f64, pointer[1] as f64],
+            )
+            .unwrap_or([camera.target[0], camera.target[1], camera.target_z]),
+            None => {
+                let (scale, offset) = self.camera_frame(viewport);
+                let point = self.scene.window_to_scene_frame(pointer, scale, offset);
+                [point[0], point[1], 0.0]
+            }
+        }
+    }
+
+    /// Ставит камеру игрока на место `center` с высотой `z`: слежение отпущено.
+    fn set_player_free(&mut self, center: Vec2, z: f64) {
+        if let Some(player) = self.player.as_mut() {
+            player.set_free(Some(FreeView { center, z }));
+        }
+    }
+
+    /// Требование 5–7: колесо на `delta_y` точек у точки окна `pointer`. Вид меняется, место под
+    /// указателем остаётся под ним; пока камера следит, объект остаётся в середине окна. `true` —
+    /// вид изменился.
+    pub fn camera_wheel(&mut self, delta_y: f64, pointer: [f32; 2], viewport: [f32; 2]) -> bool {
+        let (Some(config), Some(player), true) = (
+            self.scene.player_camera,
+            self.player.as_ref(),
+            self.world_exists,
+        ) else {
+            return false;
+        };
+        let current = player.view_height();
+        let next = camera::zoomed_height(current, delta_y, config.zoom);
+        if !delta_y.is_finite() || next == current {
+            return false;
+        }
+        let Some(free) = player.free() else {
+            if let Some(player) = self.player.as_mut() {
+                player.set_view_height(next);
+            }
+            return true;
+        };
+        let viewport64 = [viewport[0] as f64, viewport[1] as f64];
+        let anchor = self.scene_point_under(pointer, viewport);
+        let pointer64 = [pointer[0] as f64, pointer[1] as f64];
+        let (center, z) = match self.camera_3d(viewport) {
+            Some(camera) => {
+                let target = [camera.target[0], camera.target[1], camera.target_z];
+                let moved = camera::dolly_target(target, anchor, next / current);
+                ([moved[0], moved[1]], moved[2])
+            }
+            None => (
+                camera::flat_center_under([anchor[0], anchor[1]], pointer64, next, viewport64),
+                free.z,
+            ),
+        };
+        let center = self.clamp_center(next, viewport64, center);
+        self.set_player_free(center, z);
+        if let Some(player) = self.player.as_mut() {
+            player.set_view_height(next);
+        }
+        true
+    }
+
+    /// Требование 9: правая или средняя кнопка нажата над миром у точки окна `pointer` — схватить место
+    /// сцены под указателем.
+    pub fn camera_grab(&mut self, pointer: [f32; 2], viewport: [f32; 2]) -> bool {
+        if !self.player_camera_works() {
+            return false;
+        }
+        let anchor = self.scene_point_under(pointer, viewport);
+        if let Some(player) = self.player.as_mut() {
+            player.set_grab(Some(anchor));
+        }
+        true
+    }
+
+    /// Указатель сдвинулся, пока карту держат: схваченное место остаётся под ним, слежение отпущено.
+    /// `true` — камера сдвинулась.
+    pub fn camera_drag(&mut self, pointer: [f32; 2], viewport: [f32; 2]) -> bool {
+        let Some((anchor, view_height)) = self
+            .player
+            .as_ref()
+            .and_then(|player| Some((player.grab()?, player.view_height())))
+        else {
+            return false;
+        };
+        let viewport64 = [viewport[0] as f64, viewport[1] as f64];
+        let pointer64 = [pointer[0] as f64, pointer[1] as f64];
+        let (center, z) = match self.camera_3d(viewport) {
+            Some(camera) => match camera::dragged_target(&camera, anchor, pointer64) {
+                Some(center) => (center, camera.target_z),
+                None => return false,
+            },
+            None => (
+                camera::flat_center_under(
+                    [anchor[0], anchor[1]],
+                    pointer64,
+                    view_height,
+                    viewport64,
+                ),
+                0.0,
+            ),
+        };
+        let center = self.clamp_center(view_height, viewport64, center);
+        self.set_player_free(center, z);
+        true
+    }
+
+    /// Кнопку отпустили: карту больше не держат.
+    pub fn camera_release(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.set_grab(None);
+        }
+    }
+
+    /// Требование 11: берёт ли камера игрока клавишу `code` — это её клавиша, мир есть и ни у одного
+    /// объекта `scene.json` она не названа в `keys`. Клавишу активного экрана проверяет вызывающий.
+    pub fn camera_takes_key(&self, code: &str) -> bool {
+        self.player_camera_works() && camera::is_pan_key(code) && !self.taken_keys.contains(code)
+    }
+
+    /// Камера берёт нажатую клавишу, если может; `true` — взяла, и в мир клавиша не идёт.
+    pub fn camera_key_down(&mut self, code: &str) -> bool {
+        self.camera_takes_key(code)
+            && self
+                .player
+                .as_mut()
+                .is_some_and(|player| player.key_down(code))
+    }
+
+    /// Камера отпускает клавишу, которую держала; `true` — держала, и в мир отпускание не идёт.
+    pub fn camera_key_up(&mut self, code: &str) -> bool {
+        self.player
+            .as_mut()
+            .is_some_and(|player| player.key_up(code))
+    }
+
+    /// Камера забывает зажатые клавиши и схваченное место: пауза, спрятанная вкладка.
+    pub fn camera_release_input(&mut self) {
+        if let Some(player) = self.player.as_mut() {
+            player.release_keys();
+            player.set_grab(None);
+        }
+    }
+
+    /// Требования 10, 12: зажатые клавиши камеры сдвигают её за `seconds` настоящего времени кадра на
+    /// 0,6 видимой высоты в секунду; слежение отпущено. `true` — камера сдвинулась.
+    pub fn camera_pan(&mut self, seconds: f64, viewport: [f32; 2]) -> bool {
+        let Some(player) = self.player.as_ref().filter(|_| self.world_exists) else {
+            return false;
+        };
+        let direction = player.pan_direction();
+        if direction == [0.0, 0.0] || !seconds.is_finite() || seconds <= 0.0 {
+            return false;
+        }
+        let view_height = player.view_height();
+        let viewport64 = [viewport[0] as f64, viewport[1] as f64];
+        let (_, center, z) = self.camera_state();
+        let center = self.clamp_center(view_height, viewport64, center);
+        let step = camera::PAN_VIEW_SHARE_PER_SECOND * view_height * seconds;
+        let moved = [
+            center[0] + direction[0] * step,
+            center[1] + direction[1] * step,
+        ];
+        let moved = self.clamp_center(view_height, viewport64, moved);
+        self.set_player_free(moved, z);
+        true
+    }
+
+    /// Требование 20: вид камеры игрока для записи партии — место (в трёхмерной сцене с высотой), вид и
+    /// следит ли она; `None` без камеры игрока.
+    pub fn player_view(&self) -> Option<PlayerView> {
+        let player = self.player.as_ref()?;
+        let (_, center, z) = self.camera_state();
+        Some(PlayerView {
+            center,
+            z: self.scene.is_3d().then_some(z),
+            view_height: player.view_height(),
+            follow: player.free().is_none(),
+        })
+    }
+
+    /// Повтор записи ставит камеру игрока по записанному виду; слежение — как в записи.
+    pub fn set_player_view(&mut self, view: PlayerView) {
+        let z = view.z.unwrap_or_else(|| {
+            self.world
+                .terrain()
+                .height_at(view.center[0], view.center[1])
+        });
+        if let Some(player) = self.player.as_mut() {
+            player.set_view_height(view.view_height);
+            player.set_free((!view.follow).then_some(FreeView {
+                center: view.center,
+                z,
+            }));
+        }
     }
 
     /// «Редактор», «Правка сцены», требование 18: ставит объект `id` на `position` в живом мире.
@@ -651,6 +986,19 @@ impl Game {
         if !self.scene.is_3d() {
             self.update_camera();
         }
+    }
+
+    /// «Езда по дорогам»: у скольких машин запомнен путь.
+    pub fn road_path_count(&self) -> usize {
+        self.roads.path_count()
+    }
+
+    /// «Редактор», «Вызовы движка», `road_links`: связи дороги `id` по нынешнему миру — сеть сверяется
+    /// с дорогами мира и собирается заново, если их правили. `None`, если `id` не дорога.
+    pub fn road_links(&mut self, id: u32) -> Option<RoadLinks> {
+        self.roads
+            .sync_with(|shapes, speeds| self.world.collect_roads(shapes, speeds));
+        self.roads.links_of(id)
     }
 
     /// «Редактор», «Сцена»: запоминает камеру редактора; наклон и расстояние приводятся к
@@ -741,6 +1089,133 @@ impl Game {
 
     pub fn is_running(&self) -> bool {
         self.outcome.is_none() && self.code_error.is_none()
+    }
+
+    /// «Исполнение игры» → «Шаг и кадр»: скорость времени мира — `time_scale` объекта с меньшим
+    /// номером, у которого оно есть, от 0 до `MAX_TIME_SCALE`; ни у кого нет — 1.
+    pub fn time_scale(&self) -> f64 {
+        self.world
+            .ids()
+            .find_map(|id| self.world.number_like(id, property::TIME_SCALE))
+            .map_or(1.0, |scale| {
+                if scale.is_nan() {
+                    1.0
+                } else {
+                    scale.clamp(0.0, property::MAX_TIME_SCALE)
+                }
+            })
+    }
+
+    /// Мир стоит, потому что скорость времени 0, а не потому что экран без `world_runs`.
+    pub fn time_is_stopped(&self) -> bool {
+        self.world_exists && self.time_scale() <= 0.0
+    }
+
+    /// «Экраны и состояние» → «Команды», `run`: вызывает функцию кода игры `function` между шагами —
+    /// с объектом кнопки `object`, если он есть, — и сразу исполняет её заявки: удаления, потом создания.
+    /// Работает на живом мире и на замершем; без мира, без кода и после ошибки кода не делает ничего.
+    /// Предел операций и памяти — свой на этот вызов. Ошибка останавливает игру, как ошибка кода в шаге;
+    /// `origin` называет экран и кнопку или клавишу, что вызвали функцию.
+    pub fn run_screen_function(&mut self, function: &str, object: Option<u32>, origin: &str) {
+        if !self.world_exists || self.code_error.is_some() {
+            return;
+        }
+        self.ensure_code_loaded();
+        self.ensure_scratch_capacity();
+        let Some(runner) = self.code.as_mut() else {
+            return;
+        };
+        runner.reset_step_budget();
+        runner.set_wind(self.wind);
+        let args: Vec<u32> = object
+            .into_iter()
+            .filter(|&id| self.world.is_alive(id))
+            .collect();
+        let messages_before = self.messages.len();
+        let mut deletes = Vec::new();
+        let result = runner.run(
+            function,
+            &args,
+            &mut self.world,
+            &mut self.rng,
+            &mut deletes,
+            &mut self.moved,
+            self.sound_window.marks(),
+            &mut self.messages,
+        );
+        let creates = runner.take_creates();
+        let failure = result.err();
+        if failure.is_none() {
+            deletes.sort_unstable();
+            deletes.dedup();
+            for id in deletes {
+                self.world.delete(id);
+            }
+            self.spawn_code_creates(creates, &mut None);
+        }
+        if self.session_active {
+            for message in &self.messages[messages_before..] {
+                self.session_messages
+                    .push((self.session_step, message.clone()));
+            }
+        }
+        if let Some(mut err) = failure {
+            err.button = Some(origin.to_string());
+            err.step = Some(self.step_count);
+            self.code_error = Some(err);
+            return;
+        }
+        self.update_camera();
+    }
+
+    /// Стоит ли мир на потолке `max_objects`: тогда новая заявка отбрасывается, а сообщение об этом —
+    /// одно за партию.
+    fn object_ceiling_reached(&mut self) -> bool {
+        if self.world.alive_count() < self.max_objects {
+            return false;
+        }
+        if !self.max_objects_warned {
+            self.max_objects_warned = true;
+            self.messages.push(format!(
+                "достигнут потолок объектов ({}): заявка на создание отброшена",
+                self.max_objects
+            ));
+        }
+        true
+    }
+
+    /// «Создание объектов кодом»: исполняет заявки `create` — этап 8 после создания правил или сразу
+    /// после функции кнопки. Объект без `position` — данные, с `position` в трёхмерной сцене без `z` —
+    /// встаёт на поверхность, как объект `scene.json`.
+    fn spawn_code_creates(
+        &mut self,
+        creates: Vec<CodeCreate>,
+        report: &mut Option<StepReportBuilder>,
+    ) {
+        for create in creates {
+            if self.object_ceiling_reached() {
+                continue;
+            }
+            let id = self.world.create();
+            if !fill_object(&mut self.world, id, &create.spec) {
+                surface::seat_fresh(&mut self.world, id);
+            }
+            if let Some(r) = report.as_mut() {
+                let name = create
+                    .spec
+                    .values
+                    .iter()
+                    .find_map(|(prop, value)| match value {
+                        Value::Text(text) if *prop == property::NAME => Some(text.clone()),
+                        _ => None,
+                    });
+                r.created.push(CreatedObject {
+                    id,
+                    name,
+                    rule: format!("функция \"{}\"", create.function),
+                });
+            }
+        }
     }
 
     /// «Редактор», требования 8, 13: whether a world exists right now — see `world_exists`'s own
@@ -963,6 +1438,7 @@ impl Game {
             &mut self.rng,
             &mut outcome_flag,
             &mut self.walk_paths,
+            &mut self.roads,
         ) {
             let mut err = err;
             err.step = Some(self.step_count);
@@ -1050,14 +1526,7 @@ impl Game {
             self.world.delete(id);
         }
         for create in creates {
-            if self.world.alive_count() >= self.max_objects {
-                if !self.max_objects_warned {
-                    self.max_objects_warned = true;
-                    self.messages.push(format!(
-                        "достигнут потолок объектов ({}): заявка на создание отброшена",
-                        self.max_objects
-                    ));
-                }
+            if self.object_ceiling_reached() {
                 continue;
             }
             let id = self.world.create();
@@ -1093,6 +1562,13 @@ impl Game {
                 });
             }
         }
+
+        let code_creates = self
+            .code
+            .as_mut()
+            .map(code::Runner::take_creates)
+            .unwrap_or_default();
+        self.spawn_code_creates(code_creates, &mut report);
 
         if let Some(outcome) = outcome_flag {
             self.outcome = Some((outcome, self.step_count));

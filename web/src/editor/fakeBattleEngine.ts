@@ -65,6 +65,8 @@ export function createFakeBattleEngine({ fileWind = [0, 0], replayWind = DEFAULT
     }),
     world_objects: vi.fn(() => []),
     scene_point: vi.fn(() => [5, 3]),
+    ground_at: vi.fn((): number[] | undefined => [5, 3, 0]),
+    model_sizes: vi.fn((): { name: string; size: number[] }[] => []),
     object_at: vi.fn((): number | undefined => undefined),
     object_rect: vi.fn((): { x: number; y: number; width: number; height: number } | undefined => undefined),
     add_object: vi.fn(() => ({ ok: true, id: 1 })),

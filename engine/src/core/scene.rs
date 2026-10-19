@@ -20,6 +20,15 @@ pub struct CameraConfig {
     pub pitch: f64,
 }
 
+/// «Мир на экране» → «Камера игрока»: `scene.player_camera` — самый близкий и самый дальний вид (сколько
+/// клеток видно по высоте окна) и необязательная точка, на которую камера смотрит при сборке мира без
+/// объекта слежения.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerCameraConfig {
+    pub zoom: [f64; 2],
+    pub start: Option<Vec2>,
+}
+
 /// «Трёхмерная сцена» → «Земля, свет и плоские объекты»: `scene.light`; без него — эти значения.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LightConfig {
@@ -76,11 +85,26 @@ pub struct SceneConfig {
     /// Точек картинки на клетку из `scene` в `game.json`: по нему размер картинки без `size` — в клетках
     /// («Облака»). `None` — поля нет.
     pub cell_pixels: Option<f64>,
+    /// «Мир на экране» → «Камера игрока»: есть поле — камерой водит игрок.
+    pub player_camera: Option<PlayerCameraConfig>,
 }
 
 impl SceneConfig {
     pub fn is_3d(&self) -> bool {
         self.camera.is_some()
+    }
+
+    /// «Камера игрока», требование 18: сколько клеток плоской сцены занимает клетка надписей и полосок,
+    /// когда сцена нарисована в `scale` точек на клетку. С камерой игрока это высота окна, делённая на
+    /// `view_height` из `game.json`, в точках, — надписи не растут и не мельчают при приближении; без
+    /// неё — одна клетка сцены.
+    pub fn label_cell(&self, scale: f32, viewport: [f32; 2]) -> f64 {
+        match (self.player_camera, self.view_height) {
+            (Some(_), Some(view_height)) if scale > 0.0 => {
+                viewport[1] as f64 / view_height / scale as f64
+            }
+            _ => 1.0,
+        }
     }
 }
 
@@ -576,6 +600,7 @@ pub fn editor_target_ray(
         camera.ray_direction(window),
         |id| {
             world.shape(id, property::SHAPE).is_some()
+                || world.has(id, property::MODEL)
                 || world.image(id, property::IMAGE).is_some()
                 || world.color(id, property::COLOR).is_some()
         },
@@ -629,7 +654,9 @@ fn ray_distance(
     origin: super::math3::Vec3,
     direction: super::math3::Vec3,
 ) -> Option<f64> {
-    if let Some(body) = super::shapes::Body::of_object(world, id) {
+    if let Some(body) = super::shapes::Body::of_object(world, id)
+        .or_else(|| super::shapes::Body::of_model(world, id))
+    {
         return body.ray_hit(origin, direction);
     }
     let footprint = ground_footprint(world, id)?;
@@ -812,6 +839,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         // A 10x20 scene into an 800x600 window scales by 30 (600/20), letterboxed 100px on
         // each side horizontally (800 - 10*30 = 500, halved).
@@ -834,6 +862,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let cell = scene.window_to_scene([-500.0, -500.0], [800.0, 600.0]);
         assert_eq!(cell, [0.0, 0.0]);
@@ -857,6 +886,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let id = world.create();
         world.set_vec2(id, property::POSITION, [1.0, 2.0]);
@@ -882,6 +912,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let bare = world.create();
         assert_eq!(object_rect(&world, &scene, bare, [800.0, 600.0]), None);
@@ -901,6 +932,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let moved = world.create();
         world.set_vec2(moved, property::POSITION, [1.0, 2.0]);
@@ -951,6 +983,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let viewport = [100.0, 100.0]; // scale 10, no letterbox margin
 
@@ -982,6 +1015,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let viewport = [800.0, 600.0]; // scale 30, offset [250, 0]
 
@@ -1008,6 +1042,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let viewport = [100.0, 100.0]; // scale 10, no margin
 
@@ -1049,6 +1084,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         }
     }
 
@@ -1063,6 +1099,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         };
         let (scale, offset) = letterbox([800.0, 600.0], [20.0, 15.0]);
         let visible = scene.visible_cell_range(scale, offset, [800.0, 600.0]);

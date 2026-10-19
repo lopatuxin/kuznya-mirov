@@ -1,0 +1,126 @@
+{
+  "name": "Транспортная компания",
+  "scene": {
+    "width": 280,
+    "height": 170,
+    "background": "#8a8b7f",
+    "view_height": 40,
+    "camera": {
+      "pitch": 55
+    },
+    "player_camera": {
+      "zoom": [
+        8,
+        170
+      ],
+      "start": [
+        174.9,
+        100.2
+      ]
+    },
+    "light": {
+      "sun_from": 35,
+      "sun_height": 48,
+      "shadow": 0.45,
+      "sun_color": "#fff3e0",
+      "sky_color": "#cfe0f2"
+    }
+  },
+  "random_seed": 1802,
+  "max_objects": 30000,
+  "start_screen": "menu",
+  "loss_screen": "bankrupt",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "terrain": "terrain.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Rubik.ttf"
+    },
+    "tables": {
+      "clients": "tables/clients.json",
+      "templates": "tables/templates.json",
+      "addresses": "tables/addresses.json"
+    },
+    "models": {
+      "bakery": {
+        "path": "models/bakery.glb"
+      },
+      "birch": {
+        "path": "models/birch.glb"
+      },
+      "brick_house": {
+        "path": "models/brick_house.glb"
+      },
+      "gazel": {
+        "path": "models/gazel.glb"
+      },
+      "gazel_green": {
+        "path": "models/gazel_green.glb"
+      },
+      "izba_blue_grey": {
+        "path": "models/izba_blue_grey.glb"
+      },
+      "izba_brown_green": {
+        "path": "models/izba_brown_green.glb"
+      },
+      "izba_green_red": {
+        "path": "models/izba_green_red.glb"
+      },
+      "izba_ochre_green": {
+        "path": "models/izba_ochre_green.glb"
+      },
+      "khrush_grey": {
+        "path": "models/khrush_grey.glb"
+      },
+      "khrush_sand": {
+        "path": "models/khrush_sand.glb"
+      },
+      "linden": {
+        "path": "models/linden.glb"
+      },
+      "market": {
+        "path": "models/market.glb"
+      },
+      "materials": {
+        "path": "models/materials.glb"
+      },
+      "office": {
+        "path": "models/office.glb"
+      },
+      "old_pink": {
+        "path": "models/old_pink.glb"
+      },
+      "old_yellow": {
+        "path": "models/old_yellow.glb"
+      },
+      "pier": {
+        "path": "models/pier.glb"
+      },
+      "pine": {
+        "path": "models/pine.glb"
+      },
+      "shop": {
+        "path": "models/shop.glb"
+      },
+      "site": {
+        "path": "models/site.glb"
+      },
+      "two_storey_blue": {
+        "path": "models/two_storey_blue.glb"
+      },
+      "two_storey_cream": {
+        "path": "models/two_storey_cream.glb"
+      },
+      "white_house": {
+        "path": "models/white_house.glb"
+      },
+      "wholesale": {
+        "path": "models/wholesale.glb"
+      }
+    }
+  }
+}

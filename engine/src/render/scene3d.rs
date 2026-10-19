@@ -12,7 +12,8 @@ use crate::core::value::Shape;
 use crate::data::load::ImageDecl;
 
 use super::atlas::{self, AtlasRect, RectPaint};
-use super::relief::{self, SurfaceVertex};
+use super::models::{self, ModelInstance};
+use super::relief::{self, FlatShapes, SurfaceVertex};
 use super::wind::Motion;
 
 /// Одна фигура кадра: место, размеры, поворот и цвет — всё, что вершинному шейдеру нужно поверх
@@ -35,6 +36,8 @@ pub struct ShapeDraw {
 #[derive(Debug, Clone, PartialEq)]
 pub struct Frame3d {
     pub shapes: Vec<ShapeDraw>,
+    /// Объекты каждой модели игры по номеру модели.
+    pub models: Vec<Vec<ModelInstance>>,
     /// Плитки земли, затем плоские объекты в порядке рисования.
     pub ground: Vec<RectPaint>,
     /// Те же плитки и плоские объекты треугольниками на рельефе и на верху настилов.
@@ -248,13 +251,15 @@ fn sun_projection(
 }
 
 /// Кадр трёхмерной сцены по миру `game` и камере `camera`. `motion` — часы движения, по ним
-/// выбирается кадр анимации картинок, как у плоской сцены.
+/// выбирается кадр анимации картинок, как у плоской сцены. `flat_shapes` хранит готовые формы плоских
+/// объектов от кадра к кадру.
 pub fn compose_frame3d(
     game: &Game,
     camera: &Camera3d,
     motion: &Motion,
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
+    flat_shapes: &mut FlatShapes,
 ) -> Frame3d {
     let shapes = shape_draws(game);
     let terrain = game.world.terrain();
@@ -262,10 +267,12 @@ pub fn compose_frame3d(
     let level = terrain.water().map(|water| water.level);
     let ground_low = level.map_or(land_low, |level| land_low.min(level));
     let ground_high = level.map_or(land_high, |level| land_high.max(level));
+    let model_draws = models::model_draws(game);
     let top = shapes
         .iter()
         .map(|s| f64::from(s.base + s.height))
-        .fold(ground_high, f64::max);
+        .fold(ground_high, f64::max)
+        .max(model_draws.top);
 
     let mut ground = atlas::compose_ground_paints(
         &game.ground,
@@ -282,7 +289,7 @@ pub fn compose_frame3d(
         atlas_rects,
         &LayerView::default(),
     ));
-    let surface = relief::surface_triangles(&game.world, &ground);
+    let surface = relief::surface_triangles(&game.world, &ground, flat_shapes);
 
     let toward_sun = game.scene.light.direction();
     let (light_view_proj, depth) =
@@ -290,6 +297,7 @@ pub fn compose_frame3d(
     let (sun_light, sky_light) = light_colors(&game.scene.light);
     Frame3d {
         shapes,
+        models: model_draws.instances,
         ground,
         surface,
         view_proj: camera.view_proj(),
@@ -323,6 +331,7 @@ mod tests {
             camera: Some(CameraConfig { pitch: 55.0 }),
             light: LightConfig::default(),
             cell_pixels: None,
+            player_camera: None,
         }
     }
 

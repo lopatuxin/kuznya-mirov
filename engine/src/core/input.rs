@@ -169,13 +169,34 @@ impl UiQueue {
     }
 }
 
-/// Cursor position plus which button (by index into the active screen's `elements`) is
-/// hovered or has captured the press — «Интерфейс игры» → «Мышь».
+/// Какая именно кнопка экрана: номер её элемента на экране; объект, для которого она показана, — её
+/// строки в списке или элемента с `for`; номер кнопки внутри строки. Кнопку, что осталась на месте, но
+/// сменила объект, нажатие не считает прежней — «Интерфейс игры» → «Мышь».
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ButtonKey {
+    pub element: usize,
+    pub object: Option<u32>,
+    pub inner: usize,
+}
+
+impl ButtonKey {
+    /// Кнопка в самом списке элементов экрана, без объекта.
+    pub fn plain(element: usize) -> Self {
+        ButtonKey {
+            element,
+            object: None,
+            inner: 0,
+        }
+    }
+}
+
+/// Cursor position plus which button is hovered or has captured the press — «Интерфейс игры» →
+/// «Мышь».
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MouseState {
     pub position: [f32; 2],
-    pub hover: Option<usize>,
-    pub captured: Option<usize>,
+    pub hover: Option<ButtonKey>,
+    pub captured: Option<ButtonKey>,
     /// «Мышь в мире», требования 13–15: whether the press currently held down went to the world
     /// as `MouseLeft` (not over a button or a panel) — decides where the matching release goes,
     /// wherever the cursor sits when it comes.

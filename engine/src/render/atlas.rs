@@ -1308,6 +1308,7 @@ mod tests {
             camera: None,
             light: Default::default(),
             cell_pixels: None,
+            player_camera: None,
         }
     }
 
@@ -1660,7 +1661,7 @@ mod tests {
         assert_eq!(atlas.rects[2].h, 50);
     }
 
-    use crate::core::input::MouseState;
+    use crate::core::input::{ButtonKey, MouseState};
     use crate::core::property::PropertyTable;
     use crate::core::screens::{Anchor, button_fill};
 
@@ -1877,12 +1878,12 @@ mod tests {
             opacity: 1.0,
         };
         let mouse = MouseState {
-            hover: Some(0),
+            hover: Some(ButtonKey::plain(0)),
             captured: None,
             ..Default::default()
         };
 
-        let chosen = button_fill(&base, &base, &base, 0, &mouse);
+        let chosen = button_fill(&base, &base, &base, ButtonKey::plain(0), &mouse);
         let atlas_rect = fill_paint(chosen, 0.0, &images, &atlas_rects).atlas_rect;
         assert_eq!(atlas_rect, atlas_rects[0]);
     }
@@ -1915,12 +1916,12 @@ mod tests {
             opacity: 1.0,
         };
         let mouse = MouseState {
-            hover: Some(0),
+            hover: Some(ButtonKey::plain(0)),
             captured: None,
             ..Default::default()
         };
 
-        let chosen = button_fill(&base, &hover, &base, 0, &mouse);
+        let chosen = button_fill(&base, &hover, &base, ButtonKey::plain(0), &mouse);
         let atlas_rect = fill_paint(chosen, 0.0, &images, &atlas_rects).atlas_rect;
         assert_eq!(atlas_rect, atlas_rects[1]);
     }

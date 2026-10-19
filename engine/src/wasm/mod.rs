@@ -5,9 +5,12 @@ use web_sys::{HtmlCanvasElement, HtmlVideoElement};
 use crate::core::camera::{Camera3d, EditorCamera, FlatEditorCamera};
 use crate::core::game::Game;
 use crate::core::input::{MouseState, UiQueue};
+use crate::core::interface::{self, Part};
 use crate::core::math3::Vec3;
+use crate::core::model::ModelTable;
 use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
+use crate::core::roads::RoadLinks;
 use crate::core::rules::Outcome;
 use crate::core::run_jump::{self, OutlineKind};
 use crate::core::runner::{Runner, UiClock};
@@ -21,14 +24,15 @@ use crate::core::world_elements;
 use crate::data::edit;
 use crate::data::error::GameError;
 use crate::data::load::{
-    self, CoverMask, GameConfig, ImageDecl, ImageVerdict, MaterialDecl, MusicVerdict, NeededMedia,
+    self, CoverMask, GameConfig, ImageDecl, ImageVerdict, MaterialDecl, ModelFile, MusicVerdict,
+    NeededMedia,
 };
 use crate::data::session::{self, PlaySession};
 use crate::render::VideoSource;
 use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint};
 use crate::render::clouds::Camera;
 use crate::render::materials::Relief;
-use crate::render::relief::TerrainMesh;
+use crate::render::relief::{FlatShapes, TerrainMesh};
 use crate::render::scene3d::{self, Frame3d};
 use crate::render::wind::Motion;
 use crate::render::{
@@ -224,6 +228,11 @@ fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> J
     );
     set(&obj, "materials", &js_numbered_paths(&needed.materials));
     set(&obj, "masks", &js_numbered_paths(&needed.masks));
+    set(
+        &obj,
+        "models",
+        &js_indexed_media_table(&needed.models, &needed.models),
+    );
     obj.into()
 }
 
@@ -244,6 +253,9 @@ fn code_error_message(rules_path: &str, err: &crate::core::code::CodeError) -> S
     }
     if let Some(rule) = &err.rule {
         parts.push(format!("правило {rules_path} → {rule}"));
+    }
+    if let Some(button) = &err.button {
+        parts.push(button.clone());
     }
     if let Some(step) = err.step {
         parts.push(format!("шаг {step}"));
@@ -395,6 +407,11 @@ fn js_step_report(report: &StepReport) -> JsValue {
             RuleFired::RunJump { rule, objects } => {
                 set(&item, "rule", &JsValue::from_str(rule));
                 set(&item, "kind", &JsValue::from_str("run_jump"));
+                set(&item, "objects", &js_id_array(objects));
+            }
+            RuleFired::Drive { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("drive"));
                 set(&item, "objects", &js_id_array(objects));
             }
         }
@@ -587,34 +604,76 @@ fn parse_image_verdicts(
         let Some(name) = resolve_indexed_name(&item, table) else {
             continue;
         };
-        let verdict = match Reflect::get(&item, &JsValue::from_str("verdict"))
-            .ok()
-            .and_then(|v| v.as_string())
-            .as_deref()
-        {
-            Some("ok") => {
-                let width = Reflect::get(&item, &JsValue::from_str("width"))
+        out.push((name, image_verdict(&item)));
+    }
+    out
+}
+
+/// Ответ страницы по одной картинке: `{verdict: "ok"|"missing"|"rejected", width?, height?, pixels?}`.
+fn image_verdict(item: &JsValue) -> ImageVerdict {
+    match Reflect::get(item, &JsValue::from_str("verdict"))
+        .ok()
+        .and_then(|v| v.as_string())
+        .as_deref()
+    {
+        Some("ok") => {
+            let number = |key: &str| {
+                Reflect::get(item, &JsValue::from_str(key))
                     .ok()
                     .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0) as u32;
-                let height = Reflect::get(&item, &JsValue::from_str("height"))
-                    .ok()
-                    .and_then(|v| v.as_f64())
-                    .unwrap_or(0.0) as u32;
-                let pixels = Reflect::get(&item, &JsValue::from_str("pixels"))
-                    .ok()
-                    .map(|v| Uint8Array::new(&v).to_vec())
-                    .unwrap_or_default();
-                ImageVerdict::Ok {
-                    width,
-                    height,
-                    pixels,
-                }
+                    .unwrap_or(0.0) as u32
+            };
+            let pixels = Reflect::get(item, &JsValue::from_str("pixels"))
+                .ok()
+                .map(|v| Uint8Array::new(&v).to_vec())
+                .unwrap_or_default();
+            ImageVerdict::Ok {
+                width: number("width"),
+                height: number("height"),
+                pixels,
             }
-            Some("rejected") => ImageVerdict::Rejected,
-            _ => ImageVerdict::Missing,
+        }
+        Some("rejected") => ImageVerdict::Rejected,
+        _ => ImageVerdict::Missing,
+    }
+}
+
+/// Reads `models` — the page's `[{index, bytes: Uint8Array|null, images: [{index, verdict: "ok"|"missing"|
+/// "rejected", width?, height?, pixels?}]}]`, numbered the way `read_texts()` numbered `models`; each
+/// `images` item is numbered by the image's place in the file's own `images` list — into the shape
+/// `load::load_rest_with_models` wants; `undefined` is no models at all. «Трёхмерная сцена» → «Модели и
+/// движения».
+fn parse_model_files(models: &JsValue, table: &[(String, String)]) -> Vec<(String, ModelFile)> {
+    if models.is_undefined() || models.is_null() {
+        return Vec::new();
+    }
+    let arr = Array::from(models);
+    let mut out = Vec::with_capacity(arr.length() as usize);
+    for item in arr.iter() {
+        let Some(name) = resolve_indexed_name(&item, table) else {
+            continue;
         };
-        out.push((name, verdict));
+        let bytes = Reflect::get(&item, &JsValue::from_str("bytes"))
+            .ok()
+            .filter(|v| !v.is_null() && !v.is_undefined())
+            .map(|v| Uint8Array::new(&v).to_vec());
+        let images = Reflect::get(&item, &JsValue::from_str("images"))
+            .ok()
+            .filter(|v| v.is_object())
+            .map(|v| {
+                Array::from(&v)
+                    .iter()
+                    .filter_map(|image| {
+                        let index = Reflect::get(&image, &JsValue::from_str("index"))
+                            .ok()
+                            .and_then(|v| v.as_f64())
+                            .filter(|n| n.is_finite() && *n >= 0.0)?;
+                        Some((index as usize, image_verdict(&image)))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        out.push((name, ModelFile { bytes, images }));
     }
     out
 }
@@ -715,6 +774,42 @@ fn js_point3(point: Vec3) -> JsValue {
         triple.push(&JsValue::from_f64(coordinate));
     }
     triple.into()
+}
+
+/// «Редактор», «Вызовы движка», `road_links`: связи дороги — ось, точки связей с номерами связанных
+/// дорог, концы без связи и оси соседей, везде с высотой дороги.
+fn js_road_links(links: &RoadLinks) -> JsValue {
+    let with_height = |point: [f64; 2], z: f64| js_point3([point[0], point[1], z]);
+    let axis = |ends: [[f64; 2]; 2], z: f64| {
+        let pair = Array::new();
+        pair.push(&with_height(ends[0], z));
+        pair.push(&with_height(ends[1], z));
+        pair
+    };
+    let obj = Object::new();
+    set(&obj, "axis", &axis(links.axis, links.z));
+    let linked = Array::new();
+    for (point, road) in &links.links {
+        let item = Object::new();
+        set(&item, "point", &with_height(*point, links.z));
+        set(&item, "road", &JsValue::from_f64(f64::from(*road)));
+        linked.push(&item);
+    }
+    set(&obj, "links", &linked);
+    let ends = Array::new();
+    for end in &links.ends {
+        ends.push(&with_height(*end, links.z));
+    }
+    set(&obj, "ends", &ends);
+    let neighbours = Array::new();
+    for (road, ends, z) in &links.neighbours {
+        let item = Object::new();
+        set(&item, "road", &JsValue::from_f64(f64::from(*road)));
+        set(&item, "axis", &axis(*ends, *z));
+        neighbours.push(&item);
+    }
+    set(&obj, "neighbours", &neighbours);
+    obj.into()
 }
 
 fn js_editor_camera(camera: &EditorCamera) -> JsValue {
@@ -1026,12 +1121,14 @@ fn fill_rect(position: [f32; 2], size: [f32; 2], paint: FillPaint) -> RectPaint 
 /// Panels and buttons become `DrawRect`s in window pixels; labels and button captions become
 /// `TextDraw`s. «Интерфейс игры» → «Отрисовка»: elements draw in list order (panels can sit
 /// under buttons on the same screen), text always ends up on top of every rectangle because it
-/// is collected separately and drawn as its own pass, never interleaved with the rects.
-/// «Картинки» → «Кадры»: `ui_elapsed_steps` is window time, already converted to steps — never
-/// frozen, unlike the world's own frame in `compose_instances`.
+/// is collected separately and drawn as its own pass, never interleaved with the rects. A list
+/// draws its visible rows and its scroll bar at its own place in the order — «Элемент при объекте»,
+/// «Список». «Картинки» → «Кадры»: `ui_elapsed_steps` is window time, already converted to steps —
+/// never frozen, unlike the world's own frame in `compose_instances`.
 #[allow(clippy::too_many_arguments)]
 fn compose_ui(
-    screen: &screens::Screen,
+    config: &ScreensConfig,
+    state: &ScreenState,
     world: &World,
     properties: &PropertyTable,
     mouse: &MouseState,
@@ -1040,38 +1137,51 @@ fn compose_ui(
     atlas_rects: &[AtlasRect],
     ui_elapsed_steps: f64,
 ) -> (Vec<DrawRect>, Vec<TextDraw>) {
+    let screen_id = state.active();
+    let screen = &config.screens[screen_id];
     let mut rects = Vec::with_capacity(screen.elements.len());
     let mut texts = Vec::new();
-    for (index, element) in screen.elements.iter().enumerate() {
-        match element {
-            screens::Element::Panel { placement, fill } => {
-                let paint = atlas::fill_paint(fill, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect(&fill_rect(
-                    placement.top_left(viewport),
-                    placement.size,
-                    paint,
+    for part in interface::layout(screen, screen_id, world, state, viewport) {
+        let placed = match part {
+            Part::ScrollBar { rect, color } => {
+                rects.push(draw_rect(&RectPaint::flat(
+                    [rect[0], rect[1]],
+                    [rect[2], rect[3]],
+                    color,
+                    atlas::WHITE_PIXEL,
+                    false,
+                    false,
                 )));
+                continue;
+            }
+            Part::Element(placed) => placed,
+        };
+        let [x, y, width, height] = placed.rect;
+        match placed.element {
+            screens::Element::Panel { fill, .. } => {
+                let paint = atlas::fill_paint(fill, ui_elapsed_steps, images, atlas_rects);
+                rects.push(draw_rect(&fill_rect([x, y], [width, height], paint)));
             }
             screens::Element::Label {
-                placement,
                 text,
                 font,
                 font_size,
                 color,
                 align,
+                wrap,
+                ..
             } => {
-                let [x, y] = placement.top_left(viewport);
                 texts.push(TextDraw {
-                    text: screens::format_text(text, world, properties),
+                    text: screens::format_text_for(text, world, properties, placed.object),
                     font: *font,
                     font_size_px: *font_size,
                     color: *color,
                     align: *align,
-                    rect_px: [x, y, placement.size[0], placement.size[1]],
+                    wrap: *wrap,
+                    rect_px: [x, y, width, height],
                 });
             }
             screens::Element::Button {
-                placement,
                 text,
                 font,
                 font_size,
@@ -1079,23 +1189,25 @@ fn compose_ui(
                 fill,
                 fill_hover,
                 fill_pressed,
-                on_click: _,
+                ..
             } => {
-                let [x, y] = placement.top_left(viewport);
-                let chosen = screens::button_fill(fill, fill_hover, fill_pressed, index, mouse);
+                let chosen =
+                    screens::button_fill(fill, fill_hover, fill_pressed, placed.key, mouse);
                 let paint = atlas::fill_paint(chosen, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect(&fill_rect([x, y], placement.size, paint)));
+                rects.push(draw_rect(&fill_rect([x, y], [width, height], paint)));
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
                 texts.push(TextDraw {
-                    text: screens::format_text(text, world, properties),
+                    text: screens::format_text_for(text, world, properties, placed.object),
                     font: *font,
                     font_size_px: *font_size,
                     color: *text_color,
                     align: screens::Align::Center,
-                    rect_px: [x, y, placement.size[0], placement.size[1]],
+                    wrap: false,
+                    rect_px: [x, y, width, height],
                 });
             }
+            screens::Element::List { .. } => {}
         }
     }
     (rects, texts)
@@ -1111,14 +1223,16 @@ fn compose_world_elements(
     screens_config: &ScreensConfig,
     camera: Option<&Camera3d>,
     layers: &LayerView,
+    cell: f64,
 ) -> (Vec<DrawRect>, Vec<WorldTextDraw>) {
     let (bars, labels) = match camera {
-        None => world_elements::compute_world_draws(
+        None => world_elements::compute_world_draws_scaled(
             &game.world,
             &game.scene,
             &game.properties,
             &screens_config.world_elements,
             layers,
+            cell,
         ),
         Some(camera) => world_elements::compute_world_draws_3d(
             &game.world,
@@ -1214,6 +1328,7 @@ fn render_world(
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
     terrain: Option<&TerrainMesh>,
+    flat_shapes: &mut FlatShapes,
     view: &View,
     viewport: [f32; 2],
     ui_instances: &[DrawRect],
@@ -1238,8 +1353,9 @@ fn render_world(
             // редакторе вне партии тоже, в отличие от интерфейса, который виден только в партии.
             let world_texts = match config {
                 Some(config) => {
+                    let cell = game.scene.label_cell(*scale, viewport);
                     let (bar_rects, world_texts) =
-                        compose_world_elements(game, config, None, &layers);
+                        compose_world_elements(game, config, None, &layers, cell);
                     world_instances.extend(bar_rects);
                     world_texts
                 }
@@ -1250,10 +1366,11 @@ fn render_world(
         View::Space(camera) => {
             // Полоски и надписи над фигурами посчитаны сразу в точках окна.
             renderer.set_world_frame(1.0, [0.0, 0.0]);
-            let frame = scene3d::compose_frame3d(game, camera, motion, images, atlas_rects);
+            let frame =
+                scene3d::compose_frame3d(game, camera, motion, images, atlas_rects, flat_shapes);
             let (bar_rects, world_texts) = match config {
                 Some(config) => {
-                    compose_world_elements(game, config, Some(camera), &LayerView::default())
+                    compose_world_elements(game, config, Some(camera), &LayerView::default(), 1.0)
                 }
                 None => (Vec::new(), Vec::new()),
             };
@@ -1263,6 +1380,7 @@ fn render_world(
                 terrain,
                 ground: &ground,
                 shapes: [&shapes[0], &shapes[1], &shapes[2], &shapes[3]],
+                models: &frame.models,
             };
             renderer.render_frame_3d(&parts, &bar_rects, &world_texts, ui_instances, texts)
         }
@@ -1368,6 +1486,8 @@ pub struct Engine {
     /// «Рельеф» → «Вид»: сетка рельефа и воды, построенная при загрузке; `None`, пока в сцене нет файла
     /// высот.
     terrain_mesh: Option<TerrainMesh>,
+    /// «Рельеф» → «Вид»: готовые формы плоских объектов на земле, от кадра к кадру.
+    flat_shapes: FlatShapes,
     /// «Свет и материалы»: `files.materials` загруженной игры — слои покрытий, которые ставит `set_covers`,
     /// называют материалы по ним, а таблица слоёв берёт из них размер карты.
     material_decls: Vec<MaterialDecl>,
@@ -1423,6 +1543,7 @@ impl Engine {
             images: Vec::new(),
             atlas_rects: Vec::new(),
             terrain_mesh: None,
+            flat_shapes: FlatShapes::default(),
             material_decls: Vec::new(),
             rules_path: String::new(),
             ui_clock: UiClock::new(),
@@ -1511,6 +1632,10 @@ impl Engine {
     /// оба слоя вместе, `player` — `HTMLVideoElement`: без звука, по кругу, с готовым первым кадром, а
     /// `pixels` — первый кадр в RGBA с прозрачностью из маски: с его непрозрачных точек срываются листья.
     /// Ответ по видео в `images` не читается, по картинке в `videos` тоже.
+    /// «Трёхмерная сцена» → «Модели и движения»: `models` — ответы страницы по файлам `.glb`, `[{index,
+    /// bytes: Uint8Array|null, images: [{index, verdict: "ok"|"missing"|"rejected", width?, height?, pixels?}]}]`,
+    /// по номерам из `read_texts()`'s `models`; `images` — картинки PNG и JPEG из файла, разжатые браузером,
+    /// по номеру картинки в списке `images` самого файла, как `images` игры.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -1529,6 +1654,7 @@ impl Engine {
         cover_masks: JsValue,
         stamps: JsValue,
         videos: JsValue,
+        models: JsValue,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -1571,7 +1697,14 @@ impl Engine {
             .unwrap_or_default();
         let map_verdicts = parse_image_verdicts(&material_maps, &path_table(&map_paths));
         let mask_verdicts = parse_image_verdicts(&cover_masks, &path_table(&mask_paths));
-        match load::load_rest_with_stamps(
+        let model_table: Vec<(String, String)> = config
+            .files
+            .models
+            .iter()
+            .map(|decl| (decl.name.clone(), decl.path.clone()))
+            .collect();
+        let model_files = parse_model_files(&models, &model_table);
+        match load::load_rest_with_models(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -1589,6 +1722,7 @@ impl Engine {
             &map_verdicts,
             &mask_verdicts,
             &stamp_texts,
+            &model_files,
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -1677,6 +1811,7 @@ impl Engine {
                     [game.scene.width, game.scene.height],
                 );
                 self.renderer.set_relief(relief.as_ref());
+                self.renderer.set_models(game.properties.models());
                 self.images = image_order;
                 self.material_decls = material_decls;
                 self.rules_path = rules_path;
@@ -1696,6 +1831,7 @@ impl Engine {
                 self.screen_state = Some(ScreenState::new(screens_config.start_screen));
                 self.screens_config = Some(screens_config);
                 self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
+                self.flat_shapes = FlatShapes::default();
                 self.game = Some(game);
                 self.motion.world_rebuilt();
                 self.runner = Runner::new();
@@ -1721,6 +1857,7 @@ impl Engine {
         self.game = None;
         self.screens_config = None;
         self.terrain_mesh = None;
+        self.flat_shapes = FlatShapes::default();
         self.screen_state = None;
         self.images = Vec::new();
         self.atlas_rects = Vec::new();
@@ -1728,6 +1865,7 @@ impl Engine {
         self.rules_path = String::new();
         self.renderer.reset_fonts();
         self.renderer.set_relief(None);
+        self.renderer.set_models(&ModelTable::default());
         self.renderer.set_videos(Vec::new());
         self.session = None;
     }
@@ -1749,6 +1887,76 @@ impl Engine {
         let game = self.game.as_ref()?;
         let viewport = self.renderer.window_size_css();
         Some(frame_for(game, self.battle_view, viewport))
+    }
+
+    /// Камера игрока ведётся мышью и клавишами страницы: на странице игры и в идущей партии редактора,
+    /// но не вне партии (там камера редактора) и не в повторе (там вид идёт из записи).
+    fn camera_input_open(&self) -> bool {
+        self.battle_view && !self.session.as_ref().is_some_and(PlaySession::is_replay)
+    }
+
+    /// Берёт ли камера игрока клавишу: она клавиша камеры, мир есть и ни у одного объекта сцены, ни у
+    /// активного экрана она не названа в `keys`.
+    fn camera_takes_key(&self, code: &str) -> bool {
+        let (Some(game), Some(config), Some(state)) = (
+            self.game.as_ref(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_ref(),
+        ) else {
+            return false;
+        };
+        self.camera_input_open()
+            && game.camera_takes_key(code)
+            && !config.screens[state.active()].keys.contains_key(code)
+    }
+
+    /// Точка окна, у которой действует колесо и хватается карта: последняя известная точка мыши, а
+    /// пока мышь не двигалась — середина окна. `None`, если камера ввода не берёт или точка над кнопкой
+    /// или панелью экрана.
+    fn camera_pointer(&self) -> Option<[f32; 2]> {
+        let (game, config, state) = (
+            self.game.as_ref()?,
+            self.screens_config.as_ref()?,
+            self.screen_state.as_ref()?,
+        );
+        if !self.camera_input_open() || !game.player_camera_works() {
+            return None;
+        }
+        let viewport = self.renderer.window_size_css();
+        let pointer = self
+            .last_mouse_window_pos
+            .unwrap_or([viewport[0] / 2.0, viewport[1] / 2.0]);
+        (!screens::over_interface(config, state, &game.world, viewport, pointer)).then_some(pointer)
+    }
+
+    /// «Интерфейс игры» → «Список»: колесо над списком экрана прокручивает его строки, а не водит камеру.
+    /// `true` — под указателем список, колесо ему и отдано. Прокрутка — состояние интерфейса, в запись
+    /// партии она не идёт.
+    fn scroll_list_under_pointer(&mut self, delta_y: f64) -> bool {
+        if !self.battle_view {
+            return false;
+        }
+        let viewport = self.renderer.window_size_css();
+        let pointer = self
+            .last_mouse_window_pos
+            .unwrap_or([viewport[0] / 2.0, viewport[1] / 2.0]);
+        let (Some(game), Some(config), Some(state)) = (
+            self.game.as_ref(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_mut(),
+        ) else {
+            return false;
+        };
+        screens::scroll_wheel(config, state, &game.world, viewport, pointer, delta_y)
+    }
+
+    /// Камера игрока сдвинулась по воле игрока: вид идёт в запись партии, точка под курсором считается
+    /// заново.
+    fn after_camera_change(&mut self) {
+        if let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_ref()) {
+            session.record_camera(game);
+        }
+        self.recompute_cursor();
     }
 
     /// «Камера», требование 12: точка под курсором пересчитывается от последнего известного
@@ -1809,9 +2017,9 @@ impl Engine {
         ) {
             (true, Some(config), Some(state)) => {
                 let viewport = self.renderer.window_size_css();
-                let screen = &config.screens[state.active()];
                 compose_ui(
-                    screen,
+                    config,
+                    state,
                     &game.world,
                     &game.properties,
                     &self.mouse,
@@ -1831,6 +2039,7 @@ impl Engine {
             &self.images,
             &self.atlas_rects,
             self.terrain_mesh.as_ref(),
+            &mut self.flat_shapes,
             &view,
             viewport,
             &ui_instances,
@@ -1944,6 +2153,17 @@ impl Engine {
         list
     }
 
+    /// «Редактор», «Вызовы движка», `road_links`: связи дороги `id` по нынешнему миру —
+    /// `{axis: [[x, y, z], [x, y, z]], links: [{point: [x, y, z], road}], ends: [[x, y, z]],
+    /// neighbours: [{road, axis}]}`: ось дороги, точки связей с номерами связанных дорог, концы оси
+    /// без связи и оси связанных дорог. `null`, если `id` не дорога или игры нет.
+    pub fn road_links(&mut self, id: u32) -> JsValue {
+        self.game
+            .as_mut()
+            .and_then(|game| game.road_links(id))
+            .map_or(JsValue::NULL, |links| js_road_links(&links))
+    }
+
     /// «Редактор», требование 30: moves object `id` to `(x, y)` — scene cells — in the world
     /// alone. The scene `show_scene` built the world from, and the files on disk, are untouched:
     /// the next `show_scene` rebuilds the world from the scene as it was. Does nothing without a
@@ -1956,6 +2176,27 @@ impl Engine {
             // «Рельеф»: с `z` основание встаёт ровно на него, без — объект садится на поверхность.
             game.move_object(id, [x as f64, y as f64], z.filter(|z| z.is_finite()));
         }
+    }
+
+    /// «Редактор», «Вызовы движка»: модели игры — `[{name, size: [x, y, height]}]` в порядке объявления в
+    /// `game.json`, размер модели в клетках без `height` у объекта: ширина по `x`, глубина по `y` и высота. По
+    /// нему вкладка «Модели» и `size` перетащенной на сцену модели. Пусто, пока игра не загружена.
+    pub fn model_sizes(&self) -> JsValue {
+        let list = Array::new();
+        let Some(game) = self.game.as_ref() else {
+            return list.into();
+        };
+        for model in game.properties.models().iter() {
+            let item = Object::new();
+            set(&item, "name", &JsValue::from_str(&model.name));
+            let size = Array::new();
+            for side in model.size {
+                size.push(&JsValue::from_f64(side));
+            }
+            set(&item, "size", &size);
+            list.push(&item);
+        }
+        list.into()
     }
 
     /// «Рельеф», «Вызовы движка»: основание, на которое встал бы объект `id`, сдвинутый на место
@@ -2192,11 +2433,65 @@ impl Engine {
     /// `world_runs`, except a key named in that screen's own `keys` table — «Экраны и
     /// состояние» → «Клавиши экрана».
     pub fn key_down(&mut self, code: &str) {
+        if self.camera_takes_key(code) {
+            if let Some(game) = self.game.as_mut() {
+                game.camera_key_down(code);
+            }
+            return;
+        }
         self.ui_queue.push_key_down(code);
     }
 
     pub fn key_up(&mut self, code: &str) {
+        if self
+            .game
+            .as_mut()
+            .is_some_and(|game| game.camera_key_up(code))
+        {
+            return;
+        }
         self.ui_queue.push_key_up(code);
+    }
+
+    /// «Мир на экране» → «Камера игрока», требования 21–22: колесо над миром приближает камеру к точке
+    /// под указателем, `delta_y` — как у события `wheel` (минус — от себя, ближе; щелчок колеса — сто
+    /// точек). Указатель — тот, что назвал последний `mouse_move`: страница шлёт его перед колесом.
+    /// Над кнопкой или панелью экрана, без мира и в повторе камера не меняется.
+    pub fn mouse_wheel(&mut self, delta_y: f64) {
+        if self.scroll_list_under_pointer(delta_y) {
+            return;
+        }
+        let Some(pointer) = self.camera_pointer() else {
+            return;
+        };
+        let viewport = self.renderer.window_size_css();
+        let changed = self
+            .game
+            .as_mut()
+            .is_some_and(|game| game.camera_wheel(delta_y, pointer, viewport));
+        if changed {
+            self.after_camera_change();
+        }
+    }
+
+    /// Правая или средняя кнопка нажата: если указатель над миром, а не над кнопкой или панелью,
+    /// карту схватили — пока кнопку держат, место под указателем остаётся под ним. Нажатая над
+    /// интерфейсом карту не хватает; правая и средняя кнопки до мира не доходят.
+    pub fn pan_down(&mut self) {
+        let Some(pointer) = self.camera_pointer() else {
+            return;
+        };
+        let viewport = self.renderer.window_size_css();
+        if let Some(game) = self.game.as_mut() {
+            game.camera_grab(pointer, viewport);
+        }
+    }
+
+    /// Кнопка отпущена, где бы ни стоял указатель: карту больше не держат.
+    pub fn pan_up(&mut self) {
+        if let Some(game) = self.game.as_mut() {
+            game.camera_release();
+        }
     }
 
     /// `x`/`y` in window (CSS) pixels — the same unit `screens.json`'s `anchor`/`offset`/`size`
@@ -2211,6 +2506,18 @@ impl Engine {
     pub fn mouse_move(&mut self, x: f32, y: f32) {
         self.ui_queue.push_mouse_move(x, y);
         self.last_mouse_window_pos = Some([x, y]);
+        if self.camera_input_open() {
+            let viewport = self.renderer.window_size_css();
+            let dragged = self
+                .game
+                .as_mut()
+                .is_some_and(|game| game.camera_drag([x, y], viewport));
+            if dragged
+                && let (Some(session), Some(game)) = (self.session.as_mut(), self.game.as_ref())
+            {
+                session.record_camera(game);
+            }
+        }
         if self.session.as_ref().is_some_and(PlaySession::is_replay) {
             return;
         }
@@ -2303,12 +2610,18 @@ impl Engine {
             ),
         }
         self.last_ui_elapsed_steps = ui_clock_steps;
+        let is_replay = self.session.as_ref().is_some_and(PlaySession::is_replay);
+        if self.battle_view && !is_replay && game.camera_pan(dt_seconds, viewport) {
+            if let Some(session) = self.session.as_mut() {
+                session.record_camera(game);
+            }
+        }
         recompute_cursor_after_step(
             game,
             self.battle_view,
             viewport,
             self.last_mouse_window_pos,
-            self.session.as_ref().is_some_and(PlaySession::is_replay),
+            is_replay,
             self.session.as_mut(),
         );
 
@@ -2334,9 +2647,9 @@ impl Engine {
             self.renderer
                 .set_videos_playing(self.motion.clock_running(dt_seconds));
         }
-        let screen = &config.screens[state.active()];
         let (ui_instances, texts) = compose_ui(
-            screen,
+            config,
+            state,
             &game.world,
             &game.properties,
             &self.mouse,
@@ -2353,6 +2666,7 @@ impl Engine {
             &self.images,
             &self.atlas_rects,
             self.terrain_mesh.as_ref(),
+            &mut self.flat_shapes,
             &view,
             viewport,
             &ui_instances,
@@ -2384,6 +2698,9 @@ impl Engine {
     pub fn tab_hidden(&mut self) {
         self.runner.reset();
         self.runner.forget_last_tick();
+        if let Some(game) = self.game.as_mut() {
+            game.camera_release_input();
+        }
     }
 
     /// Once-only runtime warnings collected so far (max_objects reached, random_cell exhausted).
@@ -2452,6 +2769,7 @@ impl Engine {
                 session.record_key_releases(game, &released);
             }
         }
+        game.camera_release_input();
         // «Редактор», требование 10: время паузы не догоняется, same as `tab_hidden`.
         self.runner.reset();
         self.runner.forget_last_tick();

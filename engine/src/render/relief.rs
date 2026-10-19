@@ -3,15 +3,18 @@
 //! объекты каждый кадр ложатся на неё треугольниками (`surface_triangles`), так что склон, настил и
 //! ровная земля рисуются одним путём.
 
+use std::ops::Range;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use crate::core::footprint::Footprint;
 use crate::core::math3::{self, Vec3};
+use crate::core::scene::ground_footprint;
 use crate::core::surface::{self, Lies};
 use crate::core::terrain::Terrain;
 use crate::core::value::Vec2;
 use crate::core::world::World;
 
-use super::atlas::RectPaint;
+use super::atlas::{RectPaint, Turn};
 
 static NEXT_MESH: AtomicU64 = AtomicU64::new(1);
 
@@ -186,12 +189,18 @@ impl<'a> Paint<'a> {
         [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]].map(|unit| self.ground_point(unit))
     }
 
-    /// Прямоугольник целиком на высоте `z`.
-    fn push_level_quad(&self, z: f64, out: &mut Vec<SurfaceVertex>) {
+    /// Прямоугольник целиком на высоте `z`: вершины его треугольников отдаются `put` — место, нормаль
+    /// (её даёт `normal_at` по месту на земле), место в прямоугольнике.
+    fn level_quad(
+        &self,
+        z: f64,
+        normal_at: impl Fn(Vec2) -> Vec3,
+        mut put: impl FnMut(Vec3, Vec3, Vec2),
+    ) {
         let units = [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]];
         for index in [0, 1, 2, 0, 2, 3] {
             let point = self.ground_point(units[index]);
-            out.push(self.vertex([point[0], point[1], z], UP, units[index]));
+            put([point[0], point[1], z], normal_at(point), units[index]);
         }
     }
 }
@@ -248,7 +257,11 @@ fn push_tile(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>)
     ];
     let squares = terrain.squares();
     if squares[0] == 0 {
-        paint.push_level_quad(0.0, out);
+        paint.level_quad(
+            0.0,
+            |_| UP,
+            |position, normal, unit| out.push(paint.vertex(position, normal, unit)),
+        );
         return;
     }
     let density = terrain.density();
@@ -274,11 +287,8 @@ fn push_tile(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>)
     }
 }
 
-/// Плоский объект на рельефе: его прямоугольник, обрезанный по треугольникам рельефа под ним, с
-/// высотами вершин по плоскости каждого треугольника и нормалями освещения земли в этих местах. Часть
-/// за краем сцены не рисуется.
-fn push_on_terrain(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>) {
-    let quad = paint.corners();
+/// Квадраты сетки по столбцам и по строкам, которые задевает четырёхугольник `quad`.
+fn touched_squares(terrain: &Terrain, quad: &[Vec2; 4]) -> [Range<usize>; 2] {
     let squares = terrain.squares();
     let low = quad
         .iter()
@@ -286,8 +296,20 @@ fn push_on_terrain(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVe
     let high = quad.iter().fold([f64::NEG_INFINITY; 2], |m, c| {
         [m[0].max(c[0]), m[1].max(c[1])]
     });
-    for row in terrain.square_span(low[1], high[1], squares[1]) {
-        for column in terrain.square_span(low[0], high[0], squares[0]) {
+    [
+        terrain.square_span(low[0], high[0], squares[0]),
+        terrain.square_span(low[1], high[1], squares[1]),
+    ]
+}
+
+/// Плоский объект на рельефе: его прямоугольник, обрезанный по треугольникам рельефа под ним, с
+/// высотами вершин по плоскости каждого треугольника и нормалями освещения земли в этих местах. Часть
+/// за краем сцены не рисуется.
+fn on_terrain(terrain: &Terrain, paint: &Paint<'_>, mut put: impl FnMut(Vec3, Vec3, Vec2)) {
+    let quad = paint.corners();
+    let [columns, rows] = touched_squares(terrain, &quad);
+    for row in rows {
+        for column in columns.clone() {
             for which in 0..2 {
                 let triangle = terrain.triangle(column, row, which);
                 let footprint = triangle.map(|corner| [corner[0], corner[1]]);
@@ -295,42 +317,194 @@ fn push_on_terrain(terrain: &Terrain, paint: &Paint<'_>, out: &mut Vec<SurfaceVe
                 if piece.len() < 3 {
                     continue;
                 }
-                let vertex = |point: Vec2| {
+                let mut vertex = |point: Vec2| {
                     let position = [point[0], point[1], plane_height(&triangle, point)];
                     let normal = terrain.normal_at(point[0], point[1]);
-                    paint.vertex(position, normal, paint.unit_of(point))
+                    put(position, normal, paint.unit_of(point));
                 };
                 for at in 1..piece.len() - 1 {
-                    out.extend([vertex(piece[0]), vertex(piece[at]), vertex(piece[at + 1])]);
+                    for corner in [piece[0], piece[at], piece[at + 1]] {
+                        vertex(corner);
+                    }
                 }
             }
         }
     }
 }
 
-fn push_flat_object(world: &World, id: u32, paint: &Paint<'_>, out: &mut Vec<SurfaceVertex>) {
-    if paint.rect.size[0] <= 0.0 || paint.rect.size[1] <= 0.0 {
-        return;
+/// Перепад земли под объектом не больше этого — земля под ним ровная.
+const LEVEL_TOLERANCE: f64 = 1e-9;
+
+/// Прямоугольник целиком на сцене и нормаль освещения земли одна во всех точках сетки под ним и в его
+/// углах. Торчащий за край сцены объект режется, как на склоне: часть за краем не рисуется.
+fn lit_evenly(terrain: &Terrain, paint: &Paint<'_>) -> bool {
+    let quad = paint.corners();
+    let squares = terrain.squares();
+    let density = terrain.density().max(1) as f64;
+    let extent = [squares[0] as f64 / density, squares[1] as f64 / density];
+    // Без файла рельефа сетки нет: земля ровная везде, резать нечем.
+    let on_scene = squares[0] == 0
+        || quad.iter().all(|corner| {
+            (0.0..=extent[0]).contains(&corner[0]) && (0.0..=extent[1]).contains(&corner[1])
+        });
+    if !on_scene {
+        return false;
     }
-    let terrain = world.terrain();
-    match surface::lies_on(world, id) {
-        Some(Lies::Deck { top }) => paint.push_level_quad(top, out),
-        Some(Lies::Terrain { low, .. }) if terrain.is_flat() => paint.push_level_quad(low, out),
-        Some(Lies::Terrain { .. }) => push_on_terrain(terrain, paint, out),
-        None => paint.push_level_quad(world.base_z(id), out),
+    let reference = terrain.normal_at(quad[0][0], quad[0][1]);
+    let [columns, rows] = touched_squares(terrain, &quad);
+    quad.iter()
+        .all(|corner| terrain.normal_at(corner[0], corner[1]) == reference)
+        && rows
+            .flat_map(|row| columns.clone().map(move |column| (column, row)))
+            .flat_map(|(column, row)| (0..2).map(move |which| (column, row, which)))
+            .all(|(column, row, which)| {
+                terrain
+                    .triangle_normals(column, row, which)
+                    .iter()
+                    .all(|normal| *normal == reference)
+            })
+}
+
+/// Плоский объект над локально ровной землёй на высоте `low`: одним прямоугольником, если свет земли под
+/// ним везде один, иначе кусками по треугольникам рельефа, как на склоне.
+fn on_level_ground(
+    terrain: &Terrain,
+    paint: &Paint<'_>,
+    low: f64,
+    mut put: impl FnMut(Vec3, Vec3, Vec2),
+) {
+    if lit_evenly(terrain, paint) {
+        paint.level_quad(low, |point| terrain.normal_at(point[0], point[1]), put);
+    } else {
+        on_terrain(terrain, paint, &mut put);
     }
 }
 
+/// Вершина готовой формы плоского объекта: место, нормаль и положение в прямоугольнике от 0 до 1.
+#[derive(Debug, Clone, Copy)]
+struct Corner {
+    position: Vec3,
+    normal: Vec3,
+    unit: Vec2,
+}
+
+/// Всё, от чего зависит форма плоского объекта: его прямоугольник и поворот в кадре, место в мире,
+/// высота основания и состояние земли с настилами.
+#[derive(Debug, Clone, PartialEq)]
+struct ShapeKey {
+    position: [f32; 2],
+    size: [f32; 2],
+    turn: Turn,
+    place: Option<Footprint>,
+    base_z: f64,
+    revision: u64,
+}
+
+impl ShapeKey {
+    fn of(world: &World, id: u32, rect: &RectPaint) -> ShapeKey {
+        ShapeKey {
+            position: rect.position,
+            size: rect.size,
+            turn: rect.turn,
+            place: ground_footprint(world, id),
+            base_z: world.base_z(id),
+            revision: world.surface_revision(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct Slot {
+    key: Option<ShapeKey>,
+    corners: Vec<Corner>,
+}
+
+/// Готовые формы плоских объектов на земле, по номеру объекта. Форма считается заново, только когда
+/// сменилось то, от чего она зависит (`ShapeKey`); цвет, картинка, кадр, `opacity` и `layer` в нём не
+/// участвуют.
+#[derive(Debug, Default)]
+pub struct FlatShapes {
+    slots: Vec<Slot>,
+    builds: usize,
+}
+
+impl FlatShapes {
+    /// Сколько форм посчитано с самого начала.
+    pub fn builds(&self) -> usize {
+        self.builds
+    }
+
+    /// Готовая форма объекта `id` для прямоугольника `paint`; считается, если ключ сменился.
+    fn shape(&mut self, world: &World, id: u32, paint: &Paint<'_>) -> &[Corner] {
+        let key = ShapeKey::of(world, id, paint.rect);
+        let index = id as usize;
+        if self.slots.len() <= index {
+            self.slots.resize_with(index + 1, Slot::default);
+        }
+        let slot = &mut self.slots[index];
+        if slot.key.as_ref() != Some(&key) {
+            slot.corners.clear();
+            build_flat_shape(world, id, paint, &mut slot.corners);
+            slot.key = Some(key);
+            self.builds += 1;
+        }
+        &slot.corners
+    }
+}
+
+/// Форма плоского объекта: прямоугольник на высоте верха настила под ним или ровной земли, иначе куски по
+/// треугольникам рельефа.
+fn build_flat_shape(world: &World, id: u32, paint: &Paint<'_>, corners: &mut Vec<Corner>) {
+    let mut put = |position, normal, unit| {
+        corners.push(Corner {
+            position,
+            normal,
+            unit,
+        });
+    };
+    match surface::lies_on(world, id) {
+        Some(Lies::Deck { top }) => paint.level_quad(top, |_| UP, put),
+        Some(Lies::Terrain { low, high }) if high - low <= LEVEL_TOLERANCE => {
+            on_level_ground(world.terrain(), paint, low, put);
+        }
+        Some(Lies::Terrain { .. }) => on_terrain(world.terrain(), paint, &mut put),
+        None => paint.level_quad(world.base_z(id), |_| UP, put),
+    }
+}
+
+fn push_flat_object(
+    world: &World,
+    id: u32,
+    paint: &Paint<'_>,
+    shapes: &mut FlatShapes,
+    out: &mut Vec<SurfaceVertex>,
+) {
+    if paint.rect.size[0] <= 0.0 || paint.rect.size[1] <= 0.0 {
+        return;
+    }
+    out.extend(
+        shapes
+            .shape(world, id, paint)
+            .iter()
+            .map(|corner| paint.vertex(corner.position, corner.normal, corner.unit)),
+    );
+}
+
 /// Треугольники кадра: плитки земли и плоские объекты `rects` в их порядке, каждый лежит на
-/// рельефе или на верху настила.
-pub fn surface_triangles(world: &World, rects: &[RectPaint]) -> Vec<SurfaceVertex> {
+/// рельефе или на верху настила. Форму плоского объекта берёт из `shapes` и считает заново, только
+/// если она устарела.
+pub fn surface_triangles(
+    world: &World,
+    rects: &[RectPaint],
+    shapes: &mut FlatShapes,
+) -> Vec<SurfaceVertex> {
     let terrain = world.terrain();
     let mut out = Vec::new();
     for rect in rects {
         let paint = Paint::new(rect);
         match rect.object {
             None => push_tile(terrain, &paint, &mut out),
-            Some(id) => push_flat_object(world, id, &paint, &mut out),
+            Some(id) => push_flat_object(world, id, &paint, shapes, &mut out),
         }
     }
     out
@@ -339,6 +513,7 @@ pub fn surface_triangles(world: &World, rects: &[RectPaint]) -> Vec<SurfaceVerte
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::atlas::AtlasRect;
 
     fn square(low: f64, high: f64) -> Vec<Vec2> {
         vec![[low, low], [high, low], [high, high], [low, high]]
@@ -353,6 +528,88 @@ mod tests {
             .sum::<f64>()
             .abs()
             / 2.0
+    }
+
+    type Piece = (Vec3, Vec3, Vec2);
+
+    /// Плато высотой 2 в клетках 8–12 по x и 4–8 по y, склон до клетки 13,5, вокруг земля на нуле.
+    fn hill() -> Terrain {
+        let height = |x: f64, y: f64| {
+            let d = (x - 10.0).abs().max((y - 6.0).abs());
+            if d <= 2.0 {
+                2.0
+            } else if d <= 3.5 {
+                2.0 * (3.5 - d) / 1.5
+            } else {
+                0.0
+            }
+        };
+        let rows = (0..=24)
+            .map(|row| {
+                (0..=40)
+                    .map(|column| height(f64::from(column) / 2.0, f64::from(row) / 2.0))
+                    .collect()
+            })
+            .collect::<Vec<Vec<f64>>>();
+        Terrain::from_rows([20, 12], &rows, None).expect("рельеф")
+    }
+
+    fn rect(position: [f32; 2], size: [f32; 2]) -> RectPaint {
+        let atlas = AtlasRect {
+            x: 0,
+            y: 0,
+            w: 1,
+            h: 1,
+            sheet: 0,
+        };
+        RectPaint::flat(position, size, [1.0; 4], atlas, false, false)
+    }
+
+    fn collect(fill: impl FnOnce(&mut dyn FnMut(Vec3, Vec3, Vec2))) -> Vec<Piece> {
+        let mut pieces = Vec::new();
+        fill(&mut |position, normal, unit| pieces.push((position, normal, unit)));
+        pieces
+    }
+
+    #[test]
+    fn an_object_over_several_cells_at_a_plateau_edge_is_cut_like_on_a_slope() {
+        let terrain = hill();
+        let rect = rect([10.5, 5.0], [3.0, 1.0]);
+        let paint = Paint::new(&rect);
+        let cut = collect(|put| on_level_ground(&terrain, &paint, 2.0, put));
+        let before = collect(|put| on_terrain(&terrain, &paint, put));
+        let single = collect(|put| {
+            paint.level_quad(2.0, |point| terrain.normal_at(point[0], point[1]), put);
+        });
+        assert!(before.len() > 6);
+        assert_eq!(cut, before);
+        assert_ne!(cut, single);
+    }
+
+    #[test]
+    fn an_object_in_the_middle_of_a_plain_is_one_rectangle() {
+        let terrain = hill();
+        let rect = rect([1.0, 1.0], [3.0, 2.0]);
+        let paint = Paint::new(&rect);
+        let quad = collect(|put| on_level_ground(&terrain, &paint, 0.0, put));
+        assert_eq!(quad.len(), 6);
+        assert!(
+            quad.iter()
+                .all(|(position, normal, _)| position[2] == 0.0 && *normal == UP)
+        );
+    }
+
+    #[test]
+    fn an_object_sticking_out_of_the_scene_is_cut_at_its_edge() {
+        let terrain = hill();
+        let rect = rect([-1.0, 1.0], [3.0, 2.0]);
+        let paint = Paint::new(&rect);
+        let cut = collect(|put| on_level_ground(&terrain, &paint, 0.0, put));
+        assert_eq!(cut, collect(|put| on_terrain(&terrain, &paint, put)));
+        assert!(
+            cut.iter().all(|(position, _, _)| position[0] >= 0.0),
+            "часть за краем сцены не рисуется"
+        );
     }
 
     #[test]

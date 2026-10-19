@@ -38,7 +38,7 @@ describe("вкладка «Картинки»", () => {
 
 describe("вкладка «Эффекты» в нижней панели", () => {
   const render = (particlesPanel: React.ReactNode | null): string =>
-    renderToStaticMarkup(<ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} particlesPanel={particlesPanel} onSelectObject={() => {}} />);
+    renderToStaticMarkup(<ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} particlesPanel={particlesPanel} models={null} onSelectObject={() => {}} />);
 
   it("в плоской сцене стоит после «Картинок»", () => {
     const html = render(<span />);
@@ -54,7 +54,7 @@ describe("вкладка «Эффекты» в нижней панели", () =>
 describe("нижняя панель", () => {
   it("после «Сообщений» — вкладка «Картинки»", () => {
     const html = renderToStaticMarkup(
-      <ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} particlesPanel={null} onSelectObject={() => {}} />,
+      <ProblemsTabs errorLines={[]} warningLines={[]} isLoading={false} stepReport={undefined} messages={[]} imageTiles={[]} particlesPanel={null} models={null} onSelectObject={() => {}} />,
     );
 
     expect(html.indexOf(">Сообщения")).toBeLessThan(html.indexOf(">Картинки"));

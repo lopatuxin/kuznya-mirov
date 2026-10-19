@@ -41,10 +41,13 @@ pub fn kind(world: &World, id: u32) -> Kind {
     }
 }
 
-/// `height` объекта: у фигуры и объекта без `shape`, `image` и `color` по умолчанию одна клетка; тем же
-/// ростом меряется просвет под настилом для идущего плоского объекта.
+/// `height` объекта: у фигуры и объекта без `shape`, `image` и `color` по умолчанию одна клетка, у модели —
+/// её высота в файле; тем же ростом меряется просвет под настилом для идущего плоского объекта.
 pub fn body_height(world: &World, id: u32) -> f64 {
-    world.number_like(id, property::HEIGHT).unwrap_or(1.0)
+    world
+        .number_like(id, property::HEIGHT)
+        .or_else(|| world.model_of(id).map(|model| model.size[2]))
+        .unwrap_or(1.0)
 }
 
 /// Верх настила: `z + height`; у настила без фигуры и без `height` — сам `z`.
@@ -58,12 +61,12 @@ pub fn deck_top(world: &World, id: u32) -> f64 {
     base + height.unwrap_or(0.0)
 }
 
-/// Настилы мира: номер, место на земле и верх.
+/// Настилы мира: номер, место на земле и верх. Идёт по списку настилов мира, а не по всем объектам.
 pub fn decks(world: &World) -> impl Iterator<Item = (u32, Footprint, f64)> + '_ {
     world
-        .ids()
-        .filter(|&id| world.flag(id, property::DECK))
-        .filter_map(|id| Some((id, ground_footprint(world, id)?, deck_top(world, id))))
+        .deck_ids()
+        .iter()
+        .filter_map(|&id| Some((id, ground_footprint(world, id)?, deck_top(world, id))))
 }
 
 /// Есть ли в мире хоть один настил.

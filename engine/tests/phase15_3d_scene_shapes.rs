@@ -20,6 +20,7 @@ use engine::data::load::{
 use engine::data::recording::{self, ReplayEventKind};
 use engine::data::session::PlaySession;
 use engine::render::atlas::{self, AtlasImage};
+use engine::render::relief::FlatShapes;
 use engine::render::scene3d::compose_frame3d;
 use engine::render::wind::Motion;
 
@@ -1581,7 +1582,14 @@ fn the_frame_lists_shapes_with_their_place_and_flat_objects_by_layer_over_the_gr
     }])
     .expect("влезает");
     let camera = game.camera_3d(WINDOW).expect("камера");
-    let frame = compose_frame3d(&game, &camera, &Motion::default(), &images, &packed.rects);
+    let frame = compose_frame3d(
+        &game,
+        &camera,
+        &Motion::default(),
+        &images,
+        &packed.rects,
+        &mut FlatShapes::default(),
+    );
 
     // Фигуры: место, размер, поворот, цвет.
     assert_eq!(frame.shapes.len(), 2);

@@ -1,0 +1,12 @@
+Авторы данных, графики и шрифта Транспортной компании
+
+Карта Кинешмы — улицы, дома, вода, железная дорога, адреса — из OpenStreetMap
+  © участники OpenStreetMap, https://www.openstreetmap.org/copyright
+  Лицензия: Open Database License (ODbL) 1.0
+  Перевод в сцену — программа проекта tools/city/osm2scene.mjs, настройки art/transport/city.json
+
+Модели — машины, дома, деревья, здания клиентов — сделаны программой проекта в Blender
+  (art/transport/models/build.py), чужого авторства в них нет
+
+Шрифт надписей — Rubik
+  Лицензия: SIL Open Font License 1.1 (fonts/OFL-Rubik.txt)

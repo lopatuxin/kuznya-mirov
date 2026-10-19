@@ -6,10 +6,10 @@
 
 use serde_json::Value as Json;
 
-use crate::core::game::Game;
+use crate::core::game::{Game, PlayerView};
 use crate::core::input::{MouseState, UiQueue};
 use crate::core::property::PropertyId;
-use crate::core::runner::{MAX_CATCHUP_STEPS, Runner};
+use crate::core::runner::{Runner, catchup_limit};
 use crate::core::screens::{self, RecordedEvent, ScreenId, ScreenState, ScreensConfig};
 use crate::core::value::Value;
 
@@ -37,6 +37,8 @@ pub struct PlaySession {
     /// «Редактор», требование 27: dedupes consecutive identical cursor positions so a paddle
     /// tracking the mouse for ten minutes doesn't write one event per `mouse_move` call.
     last_cursor: Option<([f64; 3], Option<[f64; 3]>)>,
+    /// «Камера игрока», требование 20: вид, что записан последним, — одинаковый вид второй раз не пишется.
+    last_camera: Option<PlayerView>,
     /// «Редактор», требование 5: the replay step whose own recorded events `step_once` last fed
     /// into the world — `None` before the first one. A repeated `step_once` call landing on the
     /// same session step (the active screen still isn't live, so the world never actually
@@ -56,6 +58,7 @@ impl PlaySession {
             mode: Mode::Live,
             recording: Recording::default(),
             last_cursor: None,
+            last_camera: game.player_view(),
             applied_events_step: None,
         }
     }
@@ -89,6 +92,7 @@ impl PlaySession {
             mode: Mode::Replay,
             recording,
             last_cursor: None,
+            last_camera: None,
             applied_events_step: None,
         })
     }
@@ -149,16 +153,14 @@ impl PlaySession {
         images: &[ImageDecl],
     ) {
         for event in events {
-            let kind = match event {
-                RecordedEvent::WorldKeyDown(code) => ReplayEventKind::KeyDown(code),
-                RecordedEvent::WorldKeyUp(code) => ReplayEventKind::KeyUp(code),
-                RecordedEvent::Command(cmd) => ReplayEventKind::Command(replay_command_of(
-                    cmd,
-                    config,
-                    &game.properties,
-                    images,
-                )),
-            };
+            let kind =
+                match event {
+                    RecordedEvent::WorldKeyDown(code) => ReplayEventKind::KeyDown(code),
+                    RecordedEvent::WorldKeyUp(code) => ReplayEventKind::KeyUp(code),
+                    RecordedEvent::Command(cmd, object) => ReplayEventKind::Command(
+                        replay_command_of(cmd, object, config, &game.properties, images),
+                    ),
+                };
             self.recording.events.push(ReplayEvent { step, kind });
         }
     }
@@ -190,6 +192,34 @@ impl PlaySession {
             step: game.session_step_count(),
             kind: ReplayEventKind::Cursor(point, pointer.1),
         });
+    }
+
+    /// «Камера игрока», требование 20: записывает вид камеры игрока, когда он сменился, с номером шага,
+    /// перед которым это случилось. Несколько перемен между двумя шагами сливаются в последнюю. В
+    /// повторе записывать нечего — вид идёт из записи.
+    pub fn record_camera(&mut self, game: &Game) {
+        let Some(view) = game.player_view() else {
+            return;
+        };
+        if !self.is_live() || self.last_camera == Some(view) {
+            return;
+        }
+        self.last_camera = Some(view);
+        let step = game.session_step_count();
+        let kind = ReplayEventKind::Camera {
+            center: view.center,
+            z: view.z,
+            view_height: view.view_height,
+            follow: view.follow,
+        };
+        match self.recording.events.last_mut() {
+            Some(last)
+                if last.step == step && matches!(last.kind, ReplayEventKind::Camera { .. }) =>
+            {
+                last.kind = kind;
+            }
+            _ => self.recording.events.push(ReplayEvent { step, kind }),
+        }
     }
 
     /// «Пауза», требование 40: records the releases `Game::release_held_keys` just applied to the
@@ -273,11 +303,18 @@ impl PlaySession {
         images: &[ImageDecl],
     ) {
         game.sound_window_mut().clear_marks();
-        runner.accumulate(dt_seconds);
+        let scale = game.time_scale();
+        if scale <= 0.0 && game.session_step_count() < self.recording.steps {
+            // Мир стоит, но события этого шага записи применяются: среди них может быть кнопка, что
+            // пускает время дальше.
+            self.step_once(queue, mouse, game, config, state, viewport, images);
+            runner.reset();
+            return;
+        }
+        runner.accumulate(dt_seconds, scale);
+        let limit = catchup_limit(scale);
         let mut ran = 0;
-        while ran < MAX_CATCHUP_STEPS
-            && game.session_step_count() < self.recording.steps
-            && runner.take_step()
+        while ran < limit && game.session_step_count() < self.recording.steps && runner.take_step()
         {
             let before = game.session_step_count();
             self.step_once(queue, mouse, game, config, state, viewport, images);
@@ -286,10 +323,7 @@ impl PlaySession {
                 break;
             }
         }
-        if ran == MAX_CATCHUP_STEPS
-            || !game.is_running()
-            || game.session_step_count() >= self.recording.steps
-        {
+        if ran == limit || !game.is_running() || game.session_step_count() >= self.recording.steps {
             runner.reset();
         }
     }
@@ -471,6 +505,9 @@ impl PlaySession {
             if !state.is_live(config) {
                 return Some("Повтор разошёлся с записью");
             }
+            if game.time_is_stopped() {
+                return Some("Скорость времени 0");
+            }
             return None;
         }
         if !state.is_live(config) {
@@ -481,6 +518,9 @@ impl PlaySession {
         }
         if game.code_error().is_some() {
             return Some("Ошибка кода игры");
+        }
+        if game.time_is_stopped() {
+            return Some("Скорость времени 0");
         }
         None
     }
@@ -507,6 +547,17 @@ impl PlaySession {
                 ReplayEventKind::KeyDown(code) => game.press_key(code),
                 ReplayEventKind::KeyUp(code) => game.release_key(code),
                 ReplayEventKind::Cursor(point, eye) => game.set_cursor_point(*point, *eye),
+                ReplayEventKind::Camera {
+                    center,
+                    z,
+                    view_height,
+                    follow,
+                } => game.set_player_view(PlayerView {
+                    center: *center,
+                    z: *z,
+                    view_height: *view_height,
+                    follow: *follow,
+                }),
                 ReplayEventKind::Command(cmd) => {
                     apply_replay_command(cmd, game, config, state, images)
                 }
@@ -673,6 +724,7 @@ fn parse_wind(wind: &Json) -> Result<[f64; 2], String> {
 
 fn replay_command_of(
     cmd: screens::ButtonCommand,
+    object: Option<u32>,
     config: &ScreensConfig,
     properties: &crate::core::property::PropertyTable,
     images: &[ImageDecl],
@@ -699,6 +751,7 @@ fn replay_command_of(
         ButtonCommand::Resume => ReplayCommand::Resume,
         ButtonCommand::Quit => ReplayCommand::Quit,
         ButtonCommand::ToggleSound => ReplayCommand::ToggleSound,
+        ButtonCommand::Run(run) => ReplayCommand::Run(config.runs[run].function.clone(), object),
     }
 }
 
@@ -755,6 +808,10 @@ fn apply_replay_command(
         }
         ReplayCommand::ToggleSound => {
             screens::apply_command(screens::ButtonCommand::ToggleSound, game, config, state);
+        }
+        ReplayCommand::Run(function, object) => {
+            let origin = format!("повтор записи, вызов функции \"{function}\"");
+            game.run_screen_function(function, *object, &origin);
         }
     }
 }

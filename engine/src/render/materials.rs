@@ -163,7 +163,7 @@ pub fn level_count(side: u32) -> usize {
     (32 - side.max(1).leading_zeros()) as usize
 }
 
-fn srgb_to_linear(value: u8) -> f32 {
+pub(super) fn srgb_to_linear(value: u8) -> f32 {
     let c = f32::from(value) / 255.0;
     if c <= 0.04045 {
         c / 12.92
@@ -172,7 +172,7 @@ fn srgb_to_linear(value: u8) -> f32 {
     }
 }
 
-fn linear_to_srgb(value: f32) -> u8 {
+pub(super) fn linear_to_srgb(value: f32) -> u8 {
     let c = value.clamp(0.0, 1.0);
     let encoded = if c <= 0.003_130_8 {
         c * 12.92

@@ -14,6 +14,8 @@ export type ObjectPlacement = {
   height: number | null;
   rotation: number | null;
   hasShape: boolean;
+  /** Высота модели без `height` в клетках, по `model_sizes()`; есть только у объекта с `model` — у него есть высота, но нет `shape`. */
+  modelHeight?: number;
 };
 
 /** Свойства объекта, которые пишут ручки, — по одному ключу файла. */
@@ -32,8 +34,14 @@ function readNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
 
-/** Место из свойств объекта в виде файла (текст `scene.json` или `object_properties`); нет `position` или `size` — `null`. */
-export function readObjectPlacement(properties: Record<string, unknown> | null | undefined): ObjectPlacement | null {
+/** Высота модели без `height` по её имени; имени нет в `model_sizes()` — как у фигуры. */
+export type ModelHeightOf = (modelName: string) => number | undefined;
+
+/**
+ * Место из свойств объекта в виде файла (текст `scene.json` или `object_properties`); нет `position` или `size` — `null`.
+ * `modelHeightOf` зовётся, только если у объекта есть `model`.
+ */
+export function readObjectPlacement(properties: Record<string, unknown> | null | undefined, modelHeightOf?: ModelHeightOf): ObjectPlacement | null {
   if (properties === null || properties === undefined) return null;
   const position = readVec2(properties.position);
   const size = readVec2(properties.size);
@@ -45,6 +53,7 @@ export function readObjectPlacement(properties: Record<string, unknown> | null |
     height: readNumber(properties.height),
     rotation: readNumber(properties.rotation),
     hasShape: typeof properties.shape === "string",
+    ...(typeof properties.model === "string" ? { modelHeight: modelHeightOf?.(properties.model) ?? DEFAULT_SHAPE_HEIGHT } : {}),
   };
 }
 
@@ -52,10 +61,15 @@ export function placementCenter(placement: ObjectPlacement): [number, number] {
   return [placement.position[0] + placement.size[0] / 2, placement.position[1] + placement.size[1] / 2];
 }
 
-/** Высота фигуры для расчёта: записанная или единица; у плоского объекта высоты нет. */
+/** У фигуры и у модели есть высота и вертикальная ручка масштаба; плоский объект на земле высоты не имеет. */
+export function hasHeight(placement: ObjectPlacement): boolean {
+  return placement.hasShape || placement.modelHeight !== undefined;
+}
+
+/** Высота для расчёта: записанная, иначе высота модели в файле или единица у фигуры; у плоского объекта высоты нет. */
 export function effectiveHeight(placement: ObjectPlacement): number | null {
-  if (!placement.hasShape) return null;
-  return placement.height ?? DEFAULT_SHAPE_HEIGHT;
+  if (!hasHeight(placement)) return null;
+  return placement.height ?? placement.modelHeight ?? DEFAULT_SHAPE_HEIGHT;
 }
 
 /** `rotation` в отрезке от 0 до 360, 360 не включая. */

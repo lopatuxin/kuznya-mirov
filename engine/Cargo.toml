@@ -11,6 +11,7 @@ opt-level = "s"
 lto = true
 
 [dependencies]
+gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 libm = "0.2.16"
 luars = { path = "../luars", features = ["sandbox", "serde"] }
 serde = { version = "1.0.229", features = ["derive"] }

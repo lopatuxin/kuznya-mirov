@@ -10,11 +10,13 @@ use super::pathfind::{self, WalkCaches};
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{DeleteCause, RuleFired, StepReportBuilder};
 use super::rng::Rng;
+use super::roads::{Driver, RoadState, Side};
 use super::rules::{
     CollideEffect, CommonAction, Condition, NumberExpr, Outcome, Rule, Selector, SetValue,
     ShiftSpec, SpawnPlace, SpawnVariant, TemplateValue, TurnDir, TurnSpec,
 };
 use super::run_jump;
+use super::runner::STEP_SECONDS;
 use super::scene::{self, SceneConfig};
 use super::sound::SoundMarks;
 use super::surface::{self, Pillar};
@@ -37,6 +39,7 @@ fn run_missing() -> CodeError {
         line: None,
         function: None,
         rule: None,
+        button: None,
         step: None,
     }
 }
@@ -1035,7 +1038,94 @@ fn apply_run_jump_rule(
     }
 }
 
-/// Stage 4: "move", "check", "walk" and "run_jump" rules, in file order — «Исполнение игры»: перемешаны, а не
+/// «Езда по дорогам», требование 24: направление сдвига в мере `rotation` — 0 вниз сцены, 90 влево,
+/// 180 вверх, 270 вправо.
+fn heading_degrees(dx: f64, dy: f64) -> f64 {
+    if dx == 0.0 {
+        return if dy >= 0.0 { 0.0 } else { 180.0 };
+    }
+    if dy == 0.0 {
+        return if dx < 0.0 { 90.0 } else { 270.0 };
+    }
+    libm::atan2(-dx, dy).to_degrees().rem_euclid(360.0)
+}
+
+/// «Езда по дорогам», требования 9–23: one `drive` rule — every object `for_` picks out that carries
+/// `drive_to` drives toward it along the road network at `drive_speed`, by its `side` of the road,
+/// and turns to face where it went. `drive_speed` 0 or less leaves it standing, `drive_to` unchanged
+/// (требование 20). Marks `moved` and reports `RuleFired::Drive`, same as `apply_walk_rule`. Пути машин
+/// общие для всех правил `drive`: машины этого правила дописываются в `driving`, а лишние пути убирает
+/// `apply_stage4` один раз за шаг.
+#[allow(clippy::too_many_arguments)]
+fn apply_drive_rule(
+    world: &mut World,
+    for_: &Selector,
+    side: Side,
+    moved: &mut [bool],
+    report: &mut Option<StepReportBuilder>,
+    rule_index: usize,
+    roads: &mut RoadState,
+    driving: &mut HashSet<u32>,
+) {
+    let drivers: Vec<u32> = world
+        .ids()
+        .filter(|&id| selector_matches(for_, world, id))
+        .filter(|&id| world.has(id, property::DRIVE_TO))
+        .collect();
+    driving.extend(&drivers);
+    if drivers.is_empty() {
+        return;
+    }
+    roads.sync_with(|shapes, speeds| world.collect_roads(shapes, speeds));
+    let mut moved_objects: Vec<u32> = Vec::new();
+    for id in drivers {
+        let (Some(position), Some(size), Some(target)) = (
+            world.vec2(id, property::POSITION),
+            world.vec2(id, property::SIZE),
+            world.vec2(id, property::DRIVE_TO),
+        ) else {
+            continue;
+        };
+        let speed = world.number_like(id, property::DRIVE_SPEED).unwrap_or(0.0);
+        if speed.is_nan() || speed <= 0.0 || !target.iter().all(|c| c.is_finite()) {
+            continue;
+        }
+        let driver = Driver {
+            position,
+            size,
+            z: world.base_z(id),
+            target,
+            speed,
+            side,
+        };
+        let result = roads.drive(id, &driver, STEP_SECONDS);
+        if result.position != position {
+            let shift = [
+                result.position[0] - position[0],
+                result.position[1] - position[1],
+            ];
+            world.set_vec2(id, property::POSITION, result.position);
+            if let Some(facing) = Rotation::from_degrees(heading_degrees(shift[0], shift[1])) {
+                world.set_rotation(id, property::ROTATION, facing);
+            }
+            moved[id as usize] = true;
+            moved_objects.push(id);
+        }
+        if result.arrived {
+            world.clear_property(id, property::DRIVE_TO);
+        }
+    }
+    if let Some(r) = report.as_mut()
+        && !moved_objects.is_empty()
+    {
+        r.fired.push(RuleFired::Drive {
+            rule: format!("rules[{rule_index}]"),
+            objects: moved_objects,
+        });
+    }
+}
+
+/// Stage 4: "move", "check", "walk", "run_jump" and "drive" rules, in file order — «Исполнение игры»: перемешаны, а не
 /// «сначала все move, потом все check», так что `after_move_of` внутри `check` видит движения,
 /// сделанные более ранними правилами того же шага. `deleted` starts out seeded with stage 3's
 /// `expired` and grows with every object a `check` rule's code deletes, so a later `check`'s own
@@ -1055,7 +1145,9 @@ pub fn apply_stage4(
     rng: &mut Rng,
     outcome: &mut Option<Outcome>,
     walk_paths: &mut WalkCaches,
+    roads: &mut RoadState,
 ) -> Result<(), CodeError> {
+    let mut driving: Option<HashSet<u32>> = None;
     for (index, rule) in rules.iter().enumerate() {
         match rule {
             Rule::Move { for_ } => {
@@ -1088,8 +1180,21 @@ pub fn apply_stage4(
                 solid,
                 one_way,
             } => apply_run_jump_rule(world, for_, (solid, one_way), moved, report, index),
+            Rule::Drive { for_, side } => apply_drive_rule(
+                world,
+                for_,
+                *side,
+                moved,
+                report,
+                index,
+                roads,
+                driving.get_or_insert_default(),
+            ),
             _ => {}
         }
+    }
+    if let Some(driving) = driving {
+        roads.prune(&driving);
     }
     Ok(())
 }
@@ -1491,7 +1596,8 @@ struct PendingState {
 struct Newcomer {
     size: Vec2,
     rotation: Option<Rotation>,
-    height: f64,
+    height: Option<f64>,
+    model: Option<String>,
     flat: bool,
 }
 
@@ -1507,8 +1613,12 @@ impl Newcomer {
             _ => None,
         };
         let height = match find(property::HEIGHT) {
-            Some(Value::Number(h)) => *h,
-            _ => 1.0,
+            Some(Value::Number(h)) => Some(*h),
+            _ => None,
+        };
+        let model = match find(property::MODEL) {
+            Some(Value::Text(name)) => Some(name.clone()),
+            _ => None,
         };
         let flat = find(property::SHAPE).is_none()
             && (find(property::IMAGE).is_some() || find(property::COLOR).is_some());
@@ -1516,8 +1626,20 @@ impl Newcomer {
             size,
             rotation,
             height,
+            model,
             flat,
         }
+    }
+
+    /// Высота нового объекта: `height`, иначе высота его модели, иначе клетка.
+    fn height_in(&self, world: &World) -> f64 {
+        self.height
+            .or_else(|| {
+                let models = world.models();
+                let model = models.get(models.index_of(self.model.as_deref()?)?)?;
+                Some(model.size[2])
+            })
+            .unwrap_or(1.0)
     }
 
     /// Столб нового объекта, вставшего на клетку `(x, y)`.
@@ -1529,7 +1651,11 @@ impl Newcomer {
         let z = surface::rest_height(world, None, &place, from);
         Pillar {
             low: z,
-            high: if self.flat { z } else { z + self.height },
+            high: if self.flat {
+                z
+            } else {
+                z + self.height_in(world)
+            },
             closed: self.flat,
         }
     }

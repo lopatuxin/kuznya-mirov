@@ -8,6 +8,9 @@ export const PROPERTY_KINDS: readonly PropertyKind[] = ["flag", "number", "time"
 /** Бег и прыжок («Формат игры», Фаза 37): `on_ground` пишет сам движок, в подсказках его нет. */
 const RUN_JUMP_PROPERTY_NAMES: readonly string[] = ["run_speed", "jump_height", "jump_time", "hold_left", "hold_right", "hold_jump"];
 
+/** Езда по дорогам («Формат игры», Фаза 38): дорога и её предел скорости, куда и с какой скоростью едет машина. */
+const ROAD_PROPERTY_NAMES: readonly string[] = ["road", "road_speed", "drive_to", "drive_speed"];
+
 /**
  * Свойства движка — закрытый список («Формат игры» → «Объекты и свойства»). `name` в список не
  * входит: у объекта оно есть почти всегда, но подсказка для «+ свойство» по нему не нужна отдельно —
@@ -41,6 +44,9 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "sway",
   ...RUN_JUMP_PROPERTY_NAMES,
   ...PARTICLE_PROPERTY_NAMES,
+  ...ROAD_PROPERTY_NAMES,
+  "model",
+  "time_scale",
 ];
 
 /** Свойства движка, которые есть только в плоской сцене: в трёхмерной «+ свойство» их не предлагает. */

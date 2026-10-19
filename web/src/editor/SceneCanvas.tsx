@@ -1,13 +1,14 @@
 import type { Engine } from "engine";
 import { useEffect, useRef, useState, type Dispatch, type RefObject, type SetStateAction } from "react";
 import { createPortal } from "react-dom";
+import { isPanButton, wheelDeltaPoints } from "../cameraInput";
 import { computeCanvasLayout } from "../canvasLayout";
 import type { EditorCameraStore, FlatCameraStore } from "./editorCamera";
 import type { FlatSceneContext } from "./flatSceneController";
 import type { HandleMode } from "./handleGeometry";
 import { HandleModeToolbar, type TerrainTool } from "./HandleModeToolbar";
 import type { MaskSet } from "./maskBytes";
-import { IMAGE_DRAG_TYPE, LEAVES_DRAG_TYPE, PARTICLES_DRAG_TYPE, resolveSceneDropEffect } from "./imageDrag";
+import { IMAGE_DRAG_TYPE, LEAVES_DRAG_TYPE, MODEL_DRAG_TYPE, PARTICLES_DRAG_TYPE, resolveSceneDropEffect } from "./imageDrag";
 import type { StampShape } from "./imprintGeometry";
 import type { PlacementChange } from "./objectPlacement";
 import { secondsSinceLastFrame } from "./frameClock";
@@ -71,6 +72,8 @@ type SceneCanvasProps = {
   onCommitPlacement: (objectIndex: number, changes: PlacementChange[]) => void;
   /** Картинку из вкладки «Картинки» отпустили над сценой: имя картинки и точка холста («Редактор», требование 25). */
   onDropImage: (imageName: string, x: number, y: number) => void;
+  /** Имя из вкладки «Модели» отпустили над трёхмерной сценой: имя модели и точка холста («Редактор», требование 23 фазы 25). */
+  onDropModel: (modelName: string, x: number, y: number) => void;
   /** Карточку из вкладки «Эффекты» отпустили над сценой: ключ эффекта и точка холста («Редактор», требования 34–35). */
   onDropParticles: (effectId: string, x: number, y: number) => void;
   /** Объект, которому достанется листопад, если карточку листьев отпустить в точке холста; `undefined` — такого объекта нет («Редактор», требование 35). */
@@ -159,6 +162,7 @@ export function SceneCanvas({
   onSelect,
   onCommitPlacement,
   onDropImage,
+  onDropModel,
   onDropParticles,
   leavesTargetAt,
   terrainWater,
@@ -294,6 +298,7 @@ export function SceneCanvas({
     clearPreviewRef.current = spaceScene.clearPreview;
   }, [clearPreviewRef, spaceScene]);
   const canAcceptImages = areHandlesAvailable && !isThreeDimensionalScene;
+  const canAcceptModels = areHandlesAvailable && isThreeDimensionalScene;
 
   // «Запуск» и всё, что убирает кисти или «Отпечаток», — вместо них ручки «Перенос»; после «Стопа» остаются ручки.
   useEffect(() => {
@@ -353,6 +358,26 @@ export function SceneCanvas({
     }
     window.addEventListener("pointermove", handlePointerMove);
     return () => window.removeEventListener("pointermove", handlePointerMove);
+  }, [isGameInputActive, engine]);
+
+  /**
+   * Колесо над холстом в идущей партии приближает камеру игрока и не прокручивает страницу — «Камера игрока», требование 22.
+   * Точка под указателем известна движку из `mouse_move`, поэтому она уходит перед колесом. `passive: false` — иначе
+   * `preventDefault` не действует.
+   */
+  useEffect(() => {
+    const overlayCanvas = overlayCanvasRef.current;
+    if (!isGameInputActive || !engine || !overlayCanvas) return;
+    const activeEngine = engine;
+    const activeCanvas = overlayCanvas;
+    function handleWheel(event: WheelEvent): void {
+      event.preventDefault();
+      const bounds = activeCanvas.getBoundingClientRect();
+      activeEngine.mouse_move(event.clientX - bounds.left, event.clientY - bounds.top);
+      activeEngine.mouse_wheel(wheelDeltaPoints(event.deltaY, event.deltaMode));
+    }
+    activeCanvas.addEventListener("wheel", handleWheel, { passive: false });
+    return () => activeCanvas.removeEventListener("wheel", handleWheel);
   }, [isGameInputActive, engine]);
 
   useEffect(() => {
@@ -434,21 +459,38 @@ export function SceneCanvas({
    * движение, начавшееся ещё до входа курсора в холст.
    */
   function handlePointerDown(event: React.PointerEvent<HTMLCanvasElement>): void {
-    if (!engine || event.button !== 0 || !isGameInputActiveRef.current) return;
+    if (!engine || !isGameInputActiveRef.current) return;
+    if (isPanButton(event.button)) {
+      // Правая и средняя кнопки тащат карту камеры игрока, а не идут в мир как `MouseLeft` — «Камера игрока», требование 22.
+      event.preventDefault();
+      const bounds = event.currentTarget.getBoundingClientRect();
+      event.currentTarget.focus();
+      event.currentTarget.setPointerCapture(event.pointerId);
+      engine.mouse_move(event.clientX - bounds.left, event.clientY - bounds.top);
+      engine.pan_down();
+      return;
+    }
+    if (event.button !== 0) return;
     event.currentTarget.focus();
     event.currentTarget.setPointerCapture(event.pointerId);
     engine.mouse_down();
   }
 
   function handlePointerUp(event: React.PointerEvent<HTMLCanvasElement>): void {
-    // Только левая кнопка доходит до игры (требование 44) — нажатие правой/средней уже не дошло
-    // до `mouse_down`, поэтому и её отпускание не должно звонить `mouse_up`.
-    if (isGameInputActiveRef.current && event.button === 0) engine?.mouse_up();
+    if (!isGameInputActiveRef.current) return;
+    // В мир как `MouseLeft` доходит только левая кнопка (требование 44); отпускание правой и средней отпускает карту.
+    if (event.button === 0) engine?.mouse_up();
+    if (isPanButton(event.button)) engine?.pan_up();
   }
 
-  /** Картинку и карточку частиц принимает только плоская сцена, когда её можно править: иначе указатель показывает запрет («Редактор», требование 25). */
+  /** Меню правой кнопки над холстом идущей партии не открывается: правая кнопка тащит карту. */
+  function handleContextMenu(event: React.MouseEvent<HTMLCanvasElement>): void {
+    if (isGameInputActiveRef.current) event.preventDefault();
+  }
+
+  /** Картинку и карточку частиц принимает только плоская сцена, имя модели — только трёхмерная, когда её можно править: иначе указатель показывает запрет («Редактор», требование 25). */
   function handleDragOver(event: React.DragEvent<HTMLCanvasElement>): void {
-    const effect = resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages);
+    const effect = resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages, canAcceptModels);
     if (effect === null) return;
     event.dataTransfer.dropEffect = effect;
     if (effect !== "copy") return;
@@ -467,17 +509,19 @@ export function SceneCanvas({
 
   function handleDrop(event: React.DragEvent<HTMLCanvasElement>): void {
     leavesTargetRef.current = null;
-    if (resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages) !== "copy") return;
+    if (resolveSceneDropEffect(event.dataTransfer.types, canAcceptImages, canAcceptModels) !== "copy") return;
     event.preventDefault();
     const imageName = event.dataTransfer.getData(IMAGE_DRAG_TYPE);
     const effectId = event.dataTransfer.getData(PARTICLES_DRAG_TYPE);
-    if (imageName === "" && effectId === "") return;
+    const modelName = event.dataTransfer.getData(MODEL_DRAG_TYPE);
+    if (imageName === "" && effectId === "" && modelName === "") return;
     // Открытое поле свойства записывается в прежний объект до появления нового — как при смене выбора щелчком.
     if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
     const bounds = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - bounds.left;
     const y = event.clientY - bounds.top;
     if (imageName !== "") onDropImage(imageName, x, y);
+    else if (modelName !== "") onDropModel(modelName, x, y);
     else onDropParticles(effectId, x, y);
   }
 
@@ -496,6 +540,7 @@ export function SceneCanvas({
           data-game-input={isGameInputActive ? "true" : undefined}
           onPointerDown={handlePointerDown}
           onPointerUp={handlePointerUp}
+          onContextMenu={handleContextMenu}
           onDragOver={handleDragOver}
           onDragLeave={() => {
             leavesTargetRef.current = null;

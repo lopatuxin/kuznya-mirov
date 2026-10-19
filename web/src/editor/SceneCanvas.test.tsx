@@ -3,7 +3,7 @@ import type { Engine } from "engine";
 import { cleanup, createEvent, fireEvent, render } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createEditorCameraStore, createFlatCameraStore } from "./editorCamera";
-import { IMAGE_DRAG_TYPE, LEAVES_DRAG_TYPE, PARTICLES_DRAG_TYPE } from "./imageDrag";
+import { IMAGE_DRAG_TYPE, LEAVES_DRAG_TYPE, MODEL_DRAG_TYPE, PARTICLES_DRAG_TYPE } from "./imageDrag";
 import { MAX_FRAME_SECONDS } from "./frameClock";
 import { NO_MASKS } from "./maskBytes";
 import { SceneCanvas } from "./SceneCanvas";
@@ -38,6 +38,7 @@ function sceneCanvasProps(engine: Engine): SceneCanvasProps {
     onSelect: noop,
     onCommitPlacement: noop,
     onDropImage: noop,
+    onDropModel: noop,
     onDropParticles: noop,
     leavesTargetAt: () => undefined,
     terrainWater: null,
@@ -198,6 +199,25 @@ describe("SceneCanvas: карточка частиц, отпущенная на 
 
     expect(onDropParticles).not.toHaveBeenCalled();
   });
+
+  it("имя модели и точка холста уходят onDropModel — в трёхмерной сцене", () => {
+    const onDropModel = vi.fn();
+    const onDropImage = vi.fn();
+
+    dropOnScene({ onDropModel, onDropImage, isThreeDimensionalScene: true }, [MODEL_DRAG_TYPE], { [MODEL_DRAG_TYPE]: "house" });
+
+    expect(onDropModel).toHaveBeenCalledWith("house", 30, 20);
+    expect(onDropImage).not.toHaveBeenCalled();
+  });
+
+  it("в плоской сцене и при запрещённой правке имя модели не принимается", () => {
+    const onDropModel = vi.fn();
+
+    dropOnScene({ onDropModel }, [MODEL_DRAG_TYPE], { [MODEL_DRAG_TYPE]: "house" });
+    dropOnScene({ onDropModel, isThreeDimensionalScene: true, canEditScene: false }, [MODEL_DRAG_TYPE], { [MODEL_DRAG_TYPE]: "house" });
+
+    expect(onDropModel).not.toHaveBeenCalled();
+  });
 });
 
 describe("SceneCanvas: рамка над целью, пока тянут листья", () => {
@@ -308,5 +328,95 @@ describe("SceneCanvas: рамка над целью, пока тянут лис�
     runFrame(1000);
 
     expect(fillRect).not.toHaveBeenCalled();
+  });
+});
+
+describe("SceneCanvas: камера игрока в партии", () => {
+  const calls: string[] = [];
+
+  beforeEach(() => {
+    calls.length = 0;
+    vi.stubGlobal("requestAnimationFrame", () => 1);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    vi.stubGlobal("ResizeObserver", class { observe(): void {} disconnect(): void {} });
+    vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue(null);
+    HTMLCanvasElement.prototype.setPointerCapture = () => {};
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  /** Движок, что записывает вызовы камеры игрока; остальное отвечает пустотой. */
+  function renderGame(isGameInputActive: boolean): HTMLElement {
+    const recorded = {
+      mouse_move: (x: number, y: number) => calls.push(`move ${x} ${y}`),
+      mouse_down: () => calls.push("mouse_down"),
+      mouse_up: () => calls.push("mouse_up"),
+      mouse_wheel: (deltaY: number) => calls.push(`wheel ${deltaY}`),
+      pan_down: () => calls.push("pan_down"),
+      pan_up: () => calls.push("pan_up"),
+    };
+    const engine = new Proxy(recorded, { get: (target, name) => (name in target ? target[name as keyof typeof target] : () => undefined) }) as unknown as Engine;
+    const { container } = render(<SceneCanvas {...sceneCanvasProps(engine)} isGameInputActive={isGameInputActive} />);
+    return container.querySelector(".scene-view__overlay") as HTMLElement;
+  }
+
+  it("колесо в партии: точка указателя, потом прокрутка, страница не прокручивается", () => {
+    const overlay = renderGame(true);
+    const wheel = createEvent.wheel(overlay, { deltaY: -100, clientX: 30, clientY: 20 });
+
+    fireEvent(overlay, wheel);
+
+    expect(calls).toEqual(["move 30 20", "wheel -100"]);
+    expect(wheel.defaultPrevented).toBe(true);
+  });
+
+  it("колесо вне партии и на паузе игре не уходит", () => {
+    const overlay = renderGame(false);
+
+    fireEvent.wheel(overlay, { deltaY: -100 });
+
+    expect(calls).toEqual([]);
+  });
+
+  it("правая и средняя кнопки хватают и отпускают карту, MouseLeft из них не выходит", () => {
+    const overlay = renderGame(true);
+
+    for (const button of [1, 2]) {
+      fireEvent.pointerDown(overlay, { button, clientX: 5, clientY: 6 });
+      fireEvent.pointerUp(overlay, { button });
+    }
+
+    expect(calls).toEqual(["move 5 6", "pan_down", "pan_up", "move 5 6", "pan_down", "pan_up"]);
+  });
+
+  it("левая кнопка идёт в мир, карту не хватает", () => {
+    const overlay = renderGame(true);
+
+    fireEvent.pointerDown(overlay, { button: 0 });
+    fireEvent.pointerUp(overlay, { button: 0 });
+
+    expect(calls).toEqual(["mouse_down", "mouse_up"]);
+  });
+
+  it("на паузе правая кнопка карту не хватает", () => {
+    const overlay = renderGame(false);
+
+    fireEvent.pointerDown(overlay, { button: 2 });
+    fireEvent.pointerUp(overlay, { button: 2 });
+
+    expect(calls).toEqual([]);
+  });
+
+  it("меню правой кнопки в партии не открывается, вне партии — как было", () => {
+    const playing = renderGame(true);
+    expect(fireEvent.contextMenu(playing)).toBe(false);
+    cleanup();
+
+    const idle = renderGame(false);
+    expect(fireEvent.contextMenu(idle)).toBe(true);
   });
 });
