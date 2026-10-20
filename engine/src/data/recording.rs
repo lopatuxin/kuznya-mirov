@@ -38,6 +38,9 @@ pub enum ReplayEdit {
 pub enum ReplayEventKind {
     KeyDown(String),
     KeyUp(String),
+    /// «Надписи, полоски и картинки в мире», требование 7: нажатие левой кнопки по картинке в мире —
+    /// номер объекта, чья она. Повтор щёлкает по тому же объекту, где бы ни стоял курсор.
+    Click(u32),
     /// Точка под курсором с высотой и, в трёхмерной игре, место камеры `eye` (клетки сцены и
     /// высота), от которого щелчок идёт лучом через эту точку. Запись с двумя числами точки читается
     /// с высотой 0.
@@ -204,7 +207,7 @@ fn parse_camera_event(json: &Json, index: usize) -> Result<ReplayEventKind, Stri
     })
 }
 
-/// Parses one `events[]` entry — exactly one of `command`/`key_down`/`key_up`/`cursor`/`camera`/`set`/
+/// Parses one `events[]` entry — exactly one of `command`/`key_down`/`key_up`/`click`/`cursor`/`camera`/`set`/
 /// `remove`/`add`/`delete`/`wind` alongside `step`, unknown or missing being «Технические детали»'s
 /// "неизвестное событие".
 fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
@@ -225,6 +228,8 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
         ReplayEventKind::KeyDown(want_str(v, &format!("events[{index}].key_down"))?)
     } else if let Some(v) = obj.get("key_up") {
         ReplayEventKind::KeyUp(want_str(v, &format!("events[{index}].key_up"))?)
+    } else if let Some(v) = obj.get("click") {
+        ReplayEventKind::Click(want_u32(v, &format!("events[{index}].click"))?)
     } else if let Some(v) = obj.get("cursor") {
         let arr = v
             .as_array()
@@ -295,7 +300,7 @@ fn parse_event(json: &Json, index: usize) -> Result<ReplayEvent, String> {
         ReplayEventKind::Edit(ReplayEdit::Wind([x, y]))
     } else {
         return Err(format!(
-            "events[{index}]: неизвестное событие — нет ни command, ни key_down/key_up/cursor/camera, ни set/remove/add/delete/wind"
+            "events[{index}]: неизвестное событие — нет ни command, ни key_down/key_up/click/cursor/camera, ни set/remove/add/delete/wind"
         ));
     };
     Ok(ReplayEvent { step, kind })
@@ -310,6 +315,9 @@ fn event_to_json(event: &ReplayEvent) -> Json {
         }
         ReplayEventKind::KeyUp(code) => {
             map.insert("key_up".to_string(), Json::String(code.clone()));
+        }
+        ReplayEventKind::Click(object) => {
+            map.insert("click".to_string(), Json::from(*object));
         }
         ReplayEventKind::Cursor([x, y, z], eye) => {
             let point = match eye {
@@ -449,6 +457,10 @@ mod tests {
                 ReplayEvent {
                     step: 15,
                     kind: ReplayEventKind::KeyUp("ArrowLeft".to_string()),
+                },
+                ReplayEvent {
+                    step: 16,
+                    kind: ReplayEventKind::Click(7),
                 },
                 ReplayEvent {
                     step: 20,
@@ -593,6 +605,18 @@ mod tests {
     fn garbage_text_is_not_json() {
         let err = parse("не json").unwrap_err();
         assert!(err.contains("JSON"), "{err}");
+    }
+
+    /// Фаза 44, требование 7: щелчок по картинке в мире записан номером объекта.
+    #[test]
+    fn a_click_on_a_world_image_is_written_as_the_object_number() {
+        let text = r#"{"format": 1, "steps": 3, "events": [{"step": 1, "click": 7}]}"#;
+        let recording = parse(text).expect("запись должна разобраться");
+        assert_eq!(recording.events[0].kind, ReplayEventKind::Click(7));
+        assert!(serialize(&recording).contains(r#"{"click":7,"step":1}"#));
+        let err = parse(r#"{"format": 1, "steps": 1, "events": [{"step": 0, "click": "a"}]}"#)
+            .unwrap_err();
+        assert!(err.contains("click"), "{err}");
     }
 
     #[test]

@@ -7,7 +7,7 @@ use serde_json::Value as Json;
 
 use crate::core::keys::{EditValue, KeyEdit};
 use crate::core::model::{Image, Model, ModelTable};
-use crate::core::property;
+use crate::core::property::PropertyId;
 use crate::core::value::Value;
 use crate::data::glb;
 
@@ -185,19 +185,20 @@ pub(super) fn load_models(
     ModelTable::new(models)
 }
 
-/// Модели, которые объекты `scene.json` называют сами: в `model` объекта или в привязке его клавиши или щелчка.
-pub(super) fn named_in_scene(objects: &[ParsedObject]) -> HashSet<String> {
-    let is_model_edit = |edit: &&KeyEdit| edit.property == property::MODEL;
+/// Имена, которые объекты `scene.json` дают текстовому свойству `prop` (`model`, `road_kind`): в значении
+/// объекта или в привязке его клавиши или щелчка.
+pub(super) fn named_in_scene(objects: &[ParsedObject], prop: PropertyId) -> HashSet<String> {
+    let is_named_edit = |edit: &&KeyEdit| edit.property == prop;
     let mut named = HashSet::new();
     for object in objects {
-        if let Some(Value::Text(name)) = find_value(&object.values, property::MODEL) {
+        if let Some(Value::Text(name)) = find_value(&object.values, prop) {
             named.insert(name.clone());
         }
         let bindings = object.keys.iter().flat_map(|keys| keys.values());
         let edits = bindings
             .flat_map(|binding| binding.press.iter().chain(&binding.release))
             .chain(object.on_click.iter().flatten());
-        for edit in edits.filter(is_model_edit) {
+        for edit in edits.filter(is_named_edit) {
             if let EditValue::Const(Value::Text(name)) = &edit.value {
                 named.insert(name.clone());
             }

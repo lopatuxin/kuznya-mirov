@@ -627,6 +627,7 @@ fn write_property(
     }
     let value = match value {
         AnyValue::Nil => {
+            check_road_kept(world, id, prop)?;
             world.clear_property(id, prop);
             return Ok(());
         }
@@ -716,12 +717,28 @@ fn write_property(
             world.set_text(id, prop, name);
             Ok(())
         }
+        (PropKind::Text, AnyValue::Str(name)) if prop == property::ROAD_KIND => {
+            let kinds = properties.road_kinds();
+            if kinds.index_of(&name).is_none() {
+                let declared = kinds
+                    .names()
+                    .map(|known| format!("\"{known}\""))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(format!("вида дороги \"{name}\" нет; объявлены {declared}"));
+            }
+            world.set_text(id, prop, name);
+            Ok(())
+        }
         (PropKind::Text, AnyValue::Str(s)) => {
             world.set_text(id, prop, s);
             Ok(())
         }
         (PropKind::Text, _) if prop == property::MODEL => {
             Err("ожидалось имя модели строкой".to_string())
+        }
+        (PropKind::Text, _) if prop == property::ROAD_KIND => {
+            Err("ожидалось имя вида дороги строкой".to_string())
         }
         (PropKind::Text, _) => Err("ожидалась строка".to_string()),
         (PropKind::Color, AnyValue::Str(s)) => match parse_color(&s) {
@@ -826,6 +843,17 @@ fn check_height_write(properties: &PropertyTable, prop: PropertyId, z: f64) -> R
 /// подтягивается к нему при рисовании, не ошибка. «Огонь», требование 23: свойства огня в трёхмерной
 /// сцене, `fire`, `fire_glow`, `fire_coals` и `fire_smolder` вне отрезка от 0 до 1 — ошибка. «Бег и
 /// прыжок», требование 21: `run_speed` меньше нуля, `jump_height` и `jump_time` не больше нуля — ошибка.
+/// «Вид дороги», требование 21: `road_kind` бывает только у дороги, поэтому признак `road` у дороги вида код не
+/// снимает ни записью `false`, ни `nil` — иначе остался бы невидимый объект, который ловит щелчок.
+fn check_road_kept(world: &World, id: u32, prop: PropertyId) -> Result<(), String> {
+    if prop == property::ROAD && world.has(id, property::ROAD_KIND) {
+        return Err(
+            "признак \"road\" нельзя снять с объекта со свойством \"road_kind\"".to_string(),
+        );
+    }
+    Ok(())
+}
+
 fn check_shape_rules(
     world: &World,
     properties: &PropertyTable,
@@ -840,6 +868,34 @@ fn check_shape_rules(
         )),
         property::SHAPE | property::DECK | property::ROAD if !properties.three_d() => {
             Err(format!("{name} есть только в трёхмерной сцене"))
+        }
+        property::ROAD_KIND if !properties.three_d() => {
+            Err("свойство \"road_kind\" есть только в трёхмерной сцене".to_string())
+        }
+        property::ROAD_KIND if !world.flag(id, property::ROAD) => {
+            Err("свойство \"road_kind\" нельзя объекту без road".to_string())
+        }
+        property::ROAD if matches!(value, AnyValue::Bool(false)) => {
+            check_road_kept(world, id, prop)
+        }
+        property::ROAD_KIND
+            if [
+                property::COLOR,
+                property::IMAGE,
+                property::SHAPE,
+                property::MODEL,
+            ]
+            .iter()
+            .any(|&other| world.has(id, other)) =>
+        {
+            Err("свойство \"road_kind\" нельзя объекту с color, image, shape или model".to_string())
+        }
+        property::COLOR | property::IMAGE | property::SHAPE | property::MODEL
+            if world.has(id, property::ROAD_KIND) =>
+        {
+            Err(format!(
+                "свойство \"{name}\" нельзя объекту со свойством \"road_kind\""
+            ))
         }
         property::DRIVE_SPEED | property::ROAD_SPEED if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
             Err(format!("свойство \"{name}\" не может быть меньше нуля"))

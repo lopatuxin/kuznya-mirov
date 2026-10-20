@@ -15,6 +15,7 @@ export function projector(bbox, cell) {
     height: Math.round((maxLat - minLat) * perLat),
     cell,
     toCell: (lat, lon) => [(lon - minLon) * perLon, (maxLat - lat) * perLat],
+    toLatLon: (x, y) => [maxLat - y / perLat, minLon + x / perLon],
   };
 }
 

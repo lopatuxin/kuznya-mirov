@@ -84,6 +84,15 @@ describe("propertyFieldKind", () => {
     expect(propertyFieldKind("model", "house", NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
   });
 
+  it("road_kind из видов дорог игры — выпадающий список имён (Фаза 43, требование 24)", () => {
+    expect(propertyFieldKind("road_kind", "street", NO_AUTHOR_PROPERTIES, IMAGES, true, [], ["street", "avenue"])).toEqual({ kind: "select", options: ["street", "avenue"] });
+  });
+
+  it("road_kind, которого нет среди видов игры, или без видов — текстовое поле", () => {
+    expect(propertyFieldKind("road_kind", "gone", NO_AUTHOR_PROPERTIES, IMAGES, true, [], ["street"])).toEqual({ kind: "text" });
+    expect(propertyFieldKind("road_kind", "street", NO_AUTHOR_PROPERTIES, IMAGES, true)).toEqual({ kind: "text" });
+  });
+
   it("rotation из четырёх значений — выпадающий список", () => {
     expect(propertyFieldKind("rotation", 90, NO_AUTHOR_PROPERTIES, IMAGES, false)).toEqual({ kind: "select", options: [0, 90, 180, 270] });
   });

@@ -13,7 +13,10 @@ use gltf::texture::{MagFilter, MinFilter, WrappingMode};
 use gltf::{Gltf, Node};
 use serde_json::Value as Json;
 
-use crate::core::model::{Image, Material, Model, ModelVertex, Part, Sampler, Texture, Wrap};
+use crate::core::model::{
+    AlphaMode, DEFAULT_ALPHA_CUTOFF, Image, Material, Model, ModelVertex, Part, Sampler, Texture,
+    Wrap,
+};
 
 type Vec3 = [f32; 3];
 /// Матрица 4 × 4 по столбцам, как в glTF.
@@ -108,6 +111,7 @@ pub fn parse_model(
             "сжатие {compression} движок не читает; выгрузите модель без сжатия"
         ));
     }
+    check_alpha_cutoffs(&glb.json)?;
     let document = Gltf::from_slice(&without_ignored_requirements(&glb.json))
         .map_err(|e| format!("не читается как glTF: {e}"))?;
     if document
@@ -174,6 +178,28 @@ fn compression_used(json: &[u8]) -> Option<&'static str> {
     COMPRESSIONS
         .into_iter()
         .find(|name| used.iter().any(|used| used.as_str() == Some(name)))
+}
+
+/// «Свет и материалы», прозрачность материала: `alphaCutoff` каждого материала — число от 0 до 1. Библиотека
+/// glTF порог не проверяет, а значение не числом назвала бы без имени поля.
+fn check_alpha_cutoffs(json: &[u8]) -> Result<(), String> {
+    let Ok(root) = serde_json::from_slice::<Json>(json) else {
+        return Ok(());
+    };
+    let Some(materials) = root.get("materials").and_then(Json::as_array) else {
+        return Ok(());
+    };
+    for (index, material) in materials.iter().enumerate() {
+        let Some(cutoff) = material.get("alphaCutoff") else {
+            continue;
+        };
+        if !cutoff.as_f64().is_some_and(|c| (0.0..=1.0).contains(&c)) {
+            return Err(format!(
+                "материал {index}: \"alphaCutoff\" должен быть числом от 0 до 1, получено {cutoff}"
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// Расширения, что движок пропускает: библиотека отвергла бы файл, где они в `extensionsRequired`.
@@ -339,6 +365,12 @@ impl<F: FnMut(usize) -> Result<Image, String>> Builder<'_, F> {
             metal_rough_texture,
             normal_texture,
             occlusion_texture,
+            alpha_mode: match material.alpha_mode() {
+                gltf::material::AlphaMode::Opaque => AlphaMode::Opaque,
+                gltf::material::AlphaMode::Mask => AlphaMode::Mask,
+                gltf::material::AlphaMode::Blend => AlphaMode::Blend,
+            },
+            alpha_cutoff: material.alpha_cutoff().unwrap_or(DEFAULT_ALPHA_CUTOFF),
         })
     }
 
@@ -856,6 +888,83 @@ mod tests {
         assert_eq!(
             model.parts[1].vertices[0].color, [1.0; 4],
             "без цвета вершин — белый"
+        );
+    }
+
+    /// Файл из ящиков с материалами `materials` (JSON-список), у каждого ящика — свой номер материала.
+    fn parse_with_materials(materials: &str, count: usize) -> Result<Model, String> {
+        let meshes: Vec<TestMesh> = (0..count)
+            .map(|k| {
+                cube(
+                    [k as f32 * 2.0, 0.0, 0.0],
+                    [k as f32 * 2.0 + 1.0, 1.0, 1.0],
+                    Some(k),
+                )
+            })
+            .collect();
+        let children: Vec<String> = (1..count).map(|k| k.to_string()).collect();
+        let nodes = format!(
+            r#"[{{"mesh":0,"children":[{}]}}{}]"#,
+            children.join(","),
+            (1..count)
+                .map(|k| format!(r#",{{"mesh":{k}}}"#))
+                .collect::<String>()
+        );
+        parse(&glb_file(&meshes, &nodes, materials, ""))
+    }
+
+    /// «Свет и материалы», прозрачность материала: `alphaMode` и `alphaCutoff` читаются из файла; без записи —
+    /// сплошной материал и порог 0,5.
+    #[test]
+    fn the_alpha_mode_and_cutoff_are_read_and_default_to_opaque_and_one_half() {
+        let model = parse_with_materials(
+            r#"[{"pbrMetallicRoughness":{}},
+                {"alphaMode":"MASK","alphaCutoff":0.3,"pbrMetallicRoughness":{}},
+                {"alphaMode":"MASK","pbrMetallicRoughness":{}},
+                {"alphaMode":"BLEND","pbrMetallicRoughness":{"baseColorFactor":[1,1,1,0.35]}},
+                {"alphaMode":"OPAQUE","alphaCutoff":0.9,"pbrMetallicRoughness":{}}]"#,
+            5,
+        )
+        .expect("модель читается");
+        let modes: Vec<(AlphaMode, f32)> = model
+            .parts
+            .iter()
+            .map(|part| {
+                let material = &model.materials[part.material];
+                (material.alpha_mode, material.alpha_cutoff)
+            })
+            .collect();
+        assert_eq!(
+            modes,
+            [
+                (AlphaMode::Opaque, 0.5),
+                (AlphaMode::Mask, 0.3),
+                (AlphaMode::Mask, 0.5),
+                (AlphaMode::Blend, 0.5),
+                (AlphaMode::Opaque, 0.9),
+            ]
+        );
+        assert_eq!(model.materials[3].base_color[3], 0.35);
+        assert!(model.has_blend());
+        assert_eq!(Material::plain().alpha_mode, AlphaMode::Opaque);
+    }
+
+    #[test]
+    fn an_alpha_cutoff_outside_zero_to_one_or_not_a_number_is_an_error_naming_the_field() {
+        for cutoff in ["1.5", "-0.1", r#""half""#] {
+            let materials = format!(
+                r#"[{{"alphaMode":"MASK","alphaCutoff":{cutoff},"pbrMetallicRoughness":{{}}}}]"#
+            );
+            let error = parse_with_materials(&materials, 1).expect_err("порог не годится");
+            assert!(
+                error.contains("\"alphaCutoff\"") && error.contains("от 0 до 1"),
+                "{cutoff}: {error}"
+            );
+        }
+        let edge = r#"[{"alphaMode":"MASK","alphaCutoff":1,"pbrMetallicRoughness":{}}]"#;
+        assert!(
+            parse_with_materials(edge, 1).is_ok(),
+            "границы отрезка годятся"
         );
     }
 

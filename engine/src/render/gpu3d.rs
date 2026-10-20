@@ -6,15 +6,15 @@
 
 use wgpu::util::DeviceExt;
 
+use crate::core::model::AlphaMode;
 use crate::core::shapes::{self, MeshVertex};
 use crate::core::terrain::Cover;
 use crate::core::value::Shape;
 use crate::data::load::{CoverMask, MaterialDecl};
 
 use super::atlas::webgl2_safe_layer_count;
-use super::gpu_models::{self, ModelsGpu};
+use super::gpu_models::{self, ModelsFrame, ModelsGpu};
 use super::materials::{self, COVER_TABLE_LEN, Relief};
-use super::models::ModelInstance;
 use super::relief::TerrainMesh;
 
 /// Карта теней — предел `downlevel_webgl2_defaults`.
@@ -74,8 +74,8 @@ pub struct Scene3dFrame<'a> {
     pub terrain: Option<&'a TerrainMesh>,
     pub ground: &'a [GroundVertex],
     pub shapes: [&'a [ShapeInstance]; 4],
-    /// Объекты каждой модели игры по номеру модели.
-    pub models: &'a [Vec<ModelInstance>],
+    /// Объекты моделей игры, куски дорог и узлы, порядок объектов с частью `BLEND`.
+    pub models: ModelsFrame<'a>,
 }
 
 struct MeshBuffers {
@@ -97,7 +97,11 @@ pub struct Scene3d {
     water_pipeline: wgpu::RenderPipeline,
     shape_pipeline: wgpu::RenderPipeline,
     model_shadow_pipeline: wgpu::RenderPipeline,
+    model_mask_shadow_pipeline: wgpu::RenderPipeline,
     model_pipeline: wgpu::RenderPipeline,
+    model_mask_pipeline: wgpu::RenderPipeline,
+    model_blend_pipeline: wgpu::RenderPipeline,
+    road_pipeline: wgpu::RenderPipeline,
     ground_pipeline: wgpu::RenderPipeline,
     meshes: [MeshBuffers; 4],
     shape_buffer: wgpu::Buffer,
@@ -747,6 +751,13 @@ impl Scene3d {
                 bind_group_layouts: &[Some(&main_layout), Some(models.material_layout())],
                 immediate_size: 0,
             });
+        // Тень части `MASK` читает прозрачность из материала части.
+        let model_mask_shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("model_mask_shadow_pipeline_layout"),
+                bind_group_layouts: &[Some(&shadow_layout), Some(models.material_layout())],
+                immediate_size: 0,
+            });
         let terrain_buffers = [wgpu::VertexBufferLayout {
             array_stride: TERRAIN_STRIDE,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -799,6 +810,28 @@ impl Scene3d {
                     compilation_options: wgpu::PipelineCompilationOptions::default(),
                 },
                 fragment: None,
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            });
+        let model_mask_shadow_pipeline =
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some("model_mask_shadow_pipeline"),
+                layout: Some(&model_mask_shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_shadow_model_mask"),
+                    buffers: &model_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some("fs_shadow_model_mask"),
+                    targets: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
                 primitive: wgpu::PrimitiveState::default(),
                 depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
                 multisample: wgpu::MultisampleState::default(),
@@ -869,29 +902,56 @@ impl Scene3d {
             multiview_mask: None,
             cache: None,
         });
-        let model_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-            label: Some("model_pipeline"),
-            layout: Some(&model_pipeline_layout),
-            vertex: wgpu::VertexState {
-                module: &shader,
-                entry_point: Some("vs_model"),
-                buffers: &model_buffers,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            },
-            fragment: Some(wgpu::FragmentState {
-                module: &shader,
-                entry_point: Some("fs_model"),
-                targets: &shape_targets,
-                compilation_options: wgpu::PipelineCompilationOptions::default(),
-            }),
-            primitive: wgpu::PrimitiveState::default(),
-            depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
-            multisample: wgpu::MultisampleState::default(),
-            multiview_mask: None,
-            cache: None,
-        });
+        let model_surface_pipeline =
+            |label: &str,
+             fragment_entry: &str,
+             targets: &[Option<wgpu::ColorTargetState>],
+             depth: wgpu::DepthStencilState| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&model_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some("vs_model"),
+                        buffers: &model_buffers,
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fragment_entry),
+                        targets,
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(depth),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        let solid_depth = depth_state(true, wgpu::CompareFunction::Less);
+        let model_pipeline = model_surface_pipeline(
+            "model_pipeline",
+            "fs_model",
+            &shape_targets,
+            solid_depth.clone(),
+        );
+        let model_mask_pipeline = model_surface_pipeline(
+            "model_mask_pipeline",
+            "fs_model_mask",
+            &shape_targets,
+            solid_depth,
+        );
+        // Части `BLEND` смешиваются с нарисованным, глубины не пишут и тем не закрывают то, что дальше них.
+        let blend_targets = color_target(wgpu::BlendState::ALPHA_BLENDING);
+        let model_blend_pipeline = model_surface_pipeline(
+            "model_blend_pipeline",
+            "fs_model_blend",
+            &blend_targets,
+            depth_state(false, wgpu::CompareFunction::Less),
+        );
         // Плитки и плоские объекты лежат на поверхности рельефа или настила: без сдвига к камере
-        // их глубина спорила бы с глубиной поверхности под ними.
+        // их глубина спорила бы с глубиной поверхности под ними. Куски дорог и узлы лежат так же.
         let ground_depth = wgpu::DepthStencilState {
             bias: wgpu::DepthBiasState {
                 constant: -2,
@@ -900,6 +960,12 @@ impl Scene3d {
             },
             ..depth_state(false, wgpu::CompareFunction::LessEqual)
         };
+        let road_pipeline = model_surface_pipeline(
+            "road_pipeline",
+            "fs_model_blend",
+            &blend_targets,
+            ground_depth.clone(),
+        );
         let ground_targets = color_target(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
         let ground_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("ground_pipeline"),
@@ -938,7 +1004,11 @@ impl Scene3d {
             water_pipeline,
             shape_pipeline,
             model_shadow_pipeline,
+            model_mask_shadow_pipeline,
             model_pipeline,
+            model_mask_pipeline,
+            model_blend_pipeline,
+            road_pipeline,
             ground_pipeline,
             meshes: Shape::ALL.map(|shape| make_mesh_buffers(device, shape)),
             shape_buffer: make_instance_buffer::<ShapeInstance>(
@@ -1066,9 +1136,10 @@ impl Scene3d {
         }
     }
 
-    /// Проход теней (фигуры и рельеф) и основной проход: рельеф с водой, фигуры, затем плитки и
-    /// плоские объекты — они лежат на поверхностях, которые уже записали глубину. Цвет очищается
-    /// фоном сцены; следующий за ними проход интерфейса берёт цвет как есть.
+    /// Проход теней (фигуры, модели и рельеф) и основной проход: рельеф с водой, фигуры, сплошные части
+    /// моделей, куски дорог с узлами, затем плитки и плоские объекты — они лежат на поверхностях, которые уже
+    /// записали глубину, — и в конце части `BLEND` от дальней к ближней. Цвет очищается фоном сцены;
+    /// следующий за ними проход интерфейса берёт цвет как есть.
     pub fn encode(
         &self,
         encoder: &mut wgpu::CommandEncoder,
@@ -1096,7 +1167,9 @@ impl Scene3d {
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
             self.draw_shapes(&mut pass);
             pass.set_pipeline(&self.model_shadow_pipeline);
-            models.draw(&mut pass, false);
+            models.draw(&mut pass, AlphaMode::Opaque, false);
+            pass.set_pipeline(&self.model_mask_shadow_pipeline);
+            models.draw(&mut pass, AlphaMode::Mask, true);
             if let Some(terrain) = &self.terrain {
                 pass.set_pipeline(&self.terrain_shadow_pipeline);
                 pass.set_vertex_buffer(0, terrain.buffer.slice(..));
@@ -1145,11 +1218,17 @@ impl Scene3d {
         pass.set_pipeline(&self.shape_pipeline);
         self.draw_shapes(&mut pass);
         pass.set_pipeline(&self.model_pipeline);
-        models.draw(&mut pass, true);
+        models.draw(&mut pass, AlphaMode::Opaque, true);
+        pass.set_pipeline(&self.model_mask_pipeline);
+        models.draw(&mut pass, AlphaMode::Mask, true);
+        pass.set_pipeline(&self.road_pipeline);
+        models.draw_roads(&mut pass);
         if self.ground_count > 0 {
             pass.set_pipeline(&self.ground_pipeline);
             pass.set_vertex_buffer(0, self.ground_buffer.slice(..));
             pass.draw(0..self.ground_count, 0..1);
         }
+        pass.set_pipeline(&self.model_blend_pipeline);
+        models.draw_blended(&mut pass);
     }
 }

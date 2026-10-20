@@ -52,6 +52,24 @@ describe("withErrorLabels", () => {
     expect(labelled('свойство "sort_by" называет свойство другого вида')).toBe('свойство "порядок по" называет свойство другого вида');
   });
 
+  it("ключи видов дорог в кавычках — их подписи, «road_kinds» не получает подпись «road_kind»", () => {
+    expect(labelled('свойство "road_kind" называет вид "street", которого нет среди "road_kinds"')).toBe(
+      'свойство "вид дороги" называет вид "street", которого нет среди "вид дорог"',
+    );
+    expect(labelled('у вида "street" нет "piece"; у вида "avenue" нет "node"')).toBe('у вида "street" нет "прямой кусок"; у вида "avenue" нет "узел"');
+    expect(labelled('свойство "alphaCutoff" должно быть от 0 до 1, получено 2')).toBe('свойство "порог прозрачности" должно быть от 0 до 1, получено 2');
+  });
+
+  it("подписи видов дорог не задевают прежние: \"road\", \"model\" и похожие слова", () => {
+    expect(labelled('"road_kind" вместе с "model" у объекта без "road"; "road_kinds_x", "pieces", "node_a", "my_piece"')).toBe(
+      '"вид дороги" вместе с "модель" у объекта без "дорога"; "road_kinds_x", "pieces", "node_a", "my_piece"',
+    );
+  });
+
+  it("ключ image не подписан: так зовутся и картинка объекта, и картинка над ним в мире", () => {
+    expect(labelled('свойство "image" нельзя объекту со свойством "model"')).toBe('свойство "image" нельзя объекту со свойством "модель"');
+  });
+
   it("ключ files.models — «ключ models»", () => {
     expect(labelled("files.models есть только в трёхмерной сцене: у scene в game.json нет camera")).toBe("ключ models есть только в трёхмерной сцене: у scene в game.json нет camera");
     expect(labelled("files.models — ожидалась таблица")).toBe("ключ models — ожидалась таблица");

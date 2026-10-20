@@ -6,6 +6,7 @@ import {
   parseProjectFilePaths,
   parseProjectImageDescriptions,
   parseProjectMaterialNames,
+  parseProjectRoadKindNames,
   parseProjectStamps,
 } from "./projectFiles";
 
@@ -49,6 +50,23 @@ describe("parseProjectMaterialNames", () => {
     expect(parseProjectMaterialNames('{ "files": { "materials": "x" } }')).toEqual([]);
     expect(parseProjectMaterialNames("{")).toEqual([]);
     expect(parseProjectMaterialNames(null)).toEqual([]);
+  });
+});
+
+describe("parseProjectRoadKindNames", () => {
+  it("имена из scene.road_kinds в порядке объявления", () => {
+    const text = '{ "scene": { "road_kinds": { "street": { "piece": ["a", "b"], "node": "n" }, "avenue": { "piece": "c", "node": "n" } } } }';
+
+    expect(parseProjectRoadKindNames(text)).toEqual(["street", "avenue"]);
+  });
+
+  it("без scene.road_kinds, не объект и непонятный текст — видов нет", () => {
+    expect(parseProjectRoadKindNames('{ "scene": {} }')).toEqual([]);
+    expect(parseProjectRoadKindNames('{ "scene": { "road_kinds": [] } }')).toEqual([]);
+    expect(parseProjectRoadKindNames('{ "scene": { "road_kinds": "x" } }')).toEqual([]);
+    expect(parseProjectRoadKindNames('{ "scene": null }')).toEqual([]);
+    expect(parseProjectRoadKindNames("{")).toEqual([]);
+    expect(parseProjectRoadKindNames(null)).toEqual([]);
   });
 });
 

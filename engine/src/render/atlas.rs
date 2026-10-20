@@ -479,6 +479,21 @@ pub fn fill_paint(
     }
 }
 
+/// «Картинки» → «Где появляется картинка»: картинка над объектом в мире — всегда первый кадр, без
+/// `frame_time` и `frame_by`; у видео — место его кадра в атласе.
+pub fn first_frame_paint(
+    image: ImageId,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+) -> FillPaint {
+    FillPaint {
+        color: [1.0; 4],
+        atlas_rect: frame_atlas_rect_at(image, 0, images, atlas_rects),
+        smooth: images[image].smooth,
+        glow: images[image].glow,
+    }
+}
+
 /// «Трёхмерная сцена», требование 19: поворот плоского прямоугольника на земле — вся заливка вместе
 /// с картинкой поворачивается вокруг середины объекта на угол `rotation`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1689,6 +1704,44 @@ mod tests {
             frame_seconds: 0.0,
             video: false,
         }
+    }
+
+    /// Фаза 44: картинка над объектом в мире не листает кадры — ни по времени, ни по свойству.
+    #[test]
+    fn a_world_icon_always_shows_the_first_frame() {
+        let strip = ImageDecl {
+            frames: 3,
+            animated: true,
+            frame_steps: 1,
+            smooth: true,
+            ..one_frame_image()
+        };
+        let rect = AtlasRect {
+            x: 4,
+            y: 8,
+            w: 30,
+            h: 10,
+            sheet: 0,
+        };
+        let later = fill_paint(
+            &Fill::Image {
+                image: 0,
+                opacity: 1.0,
+            },
+            1.0,
+            std::slice::from_ref(&strip),
+            &[rect],
+        );
+        assert_eq!(
+            later.atlas_rect.x,
+            rect.x + 10,
+            "картинка объекта листает кадры"
+        );
+
+        let paint = first_frame_paint(0, std::slice::from_ref(&strip), &[rect]);
+        assert_eq!(paint.atlas_rect, AtlasRect { w: 10, ..rect });
+        assert_eq!(paint.color, [1.0; 4]);
+        assert!(paint.smooth);
     }
 
     /// «Ветер и частицы» → «Листопад»: у места видео в атласе своих точек нет — листья берут

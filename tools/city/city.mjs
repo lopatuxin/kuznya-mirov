@@ -7,6 +7,10 @@ import { createRaster, drawLine, fillPolygon, floodFill, sample } from "./raster
 
 const UNPAVED = new Set(["unpaved", "ground", "dirt", "gravel", "compacted", "sand", "grass", "fine_gravel", "earth", "mud"]);
 const COLLINEAR_DEGREES = 5;
+// Улица вида заходит за свою вершину на столько клеток, а не на полширины, как цветной прямоугольник: сеть дорог её
+// связывает с соседней, а точки стыка сходятся ближе, чем движок их сливает (0,05), — и стык получает один узел или
+// продолжение излома, а не три узла подряд. Больше округления записи (0,001).
+const KIND_JOINT = 0.02;
 
 /** Сцена города по выгрузке `osm` (ответ Overpass с `out geom`) и настройкам `config`. */
 export function buildCity(osm, config) {
@@ -61,8 +65,9 @@ export function buildCity(osm, config) {
       const cx = (p[0] + q[0]) / 2, cy = (p[1] + q[1]) / 2;
       const rec = {
         ...(t.name ? { name: t.name } : {}),
-        ...rectRecord(cx, cy, len + width, width, norm360(angle)),
-        color: unpaved ? config.unpaved_color : style.color,
+        ...rectRecord(cx, cy, len + (style.kind ? KIND_JOINT : width), width, norm360(angle)),
+        // Улица вида рисуется кусками своего вида, а не цветом.
+        ...(style.kind ? { road_kind: style.kind } : { color: unpaved ? config.unpaved_color : style.color }),
         layer: style.layer,
         road: true,
         ...(style.main ? { main_road: true } : {}),
@@ -229,12 +234,18 @@ export function buildCity(osm, config) {
     heights.push(row);
   }
 
+  // Территории мест (см. `territory`): улицы карты внутри них в сцену не попадут, поэтому и остановок на них нет.
+  const territories = config.places.filter((p) => p.territory).map((p) => territory(p, config, proj));
+  const inTerritory = (p) => territories.some((t) => inside(p, t.ring));
+  const kept = roadSegments.filter((s) => !inTerritory([(s.a[0] + s.b[0]) / 2, (s.a[1] + s.b[1]) / 2]));
+
   // Места игры на настоящих зданиях; остановка — на улице главной связной сети, куда доезжает машина.
-  const drivable = roadSegments.filter((s) => !s.service && !s.bridge);
-  const connected = roadSegments.filter((s) => !s.service);
+  const drivable = kept.filter((s) => !s.service && !s.bridge);
+  const connected = kept.filter((s) => !s.service);
   const main = mainNetwork(connected, segmentIndex(connected, 4));
   const placeObjects = [];
   for (const place of config.places) {
+    if (place.territory) continue;
     const target = findPlace(place, els, buildingObjects, proj, zones, ringOf);
     if (!target) throw new Error(`место «${place.id}» не найдено в выгрузке`);
     const center = target.center;
@@ -247,7 +258,8 @@ export function buildCity(osm, config) {
     if (!best) throw new Error(`у места «${place.id}» нет проезжей улицы в главной сети`);
     const street = streetForm(best ? best.name : "");
     const name = street ? place.name.replace("{street}", street) : place.name.replace(/ на {street}/, "");
-    const fields = { name, place: place.id, stop_x: round(best.point[0]), stop_y: round(best.point[1]) };
+    // Улица остановки — для карточки места: в имени её может и не быть.
+    const fields = { name, place: place.id, ...(place.icon ? { icon: place.icon } : {}), ...(best.name ? { street: best.name } : {}), stop_x: round(best.point[0]), stop_y: round(best.point[1]) };
     if (target.building) {
       Object.assign(target.building.rec, fields, config.place_fields || {});
       if (place.color) target.building.rec.color = place.color;
@@ -335,6 +347,7 @@ export function buildCity(osm, config) {
   const addresses = [];
   for (const list of bins.values()) {
     const b = list[Math.floor(rand() * list.length)];
+    if (inTerritory([b.box.cx, b.box.cy])) continue;
     const stop = drivableIndex.nearest([b.box.cx, b.box.cy], 3);
     if (!stop || stop.distance > config.addresses.max_gap || !main.has(stop.segment)) continue;
     if (stop.point[0] < 1 || stop.point[1] < 1 || stop.point[0] > proj.width - 1 || stop.point[1] > proj.height - 1) continue;
@@ -354,13 +367,18 @@ export function buildCity(osm, config) {
     treeRecords = treeObjects.map((rec) => dressTree(rec, config, rand));
   }
 
+  // Дома, деревья и дороги карты, чьи середины внутри территорий, уступают место моделям; после выбора моделей
+  // и деревьев, чтобы счётчик случайности дал остальному городу те же дома и деревья.
+  const outside = (rec) => !inTerritory([rec.position[0] + rec.size[0] / 2, rec.position[1] + rec.size[1] / 2]);
   const objects = [
     ...railObjects,
-    ...roadObjects,
+    ...roadObjects.filter(outside),
+    ...territories.flatMap((t) => t.roads),
     ...placeRecords,
+    ...territories.map((t) => t.record),
     ...deckObjects,
-    ...buildingRecords,
-    ...treeRecords,
+    ...buildingRecords.filter(outside),
+    ...treeRecords.filter(outside),
   ];
   return {
     width: proj.width,
@@ -534,7 +552,8 @@ function dressTree(rec, config, rand) {
   };
 }
 
-/** Прямые куски ломаной: точки ближе `minLen` и изломы меньше 5° сливаются. */
+/** Прямые куски ломаной: точки ближе `minLen` сливаются; излом меньше 5° сливается, пока общая прямая отходит от
+ *  ломаной не дальше `minLen` — иначе плавная дуга стала бы одной хордой в стороне от настоящей улицы. */
 export function straightPieces(points, minLen) {
   const pts = [];
   for (const p of points) {
@@ -543,13 +562,18 @@ export function straightPieces(points, minLen) {
   }
   if (pts.length < 2) return [];
   const keep = [pts[0]];
+  let from = 0;
+  const strays = (to) => pts.slice(from + 1, to).some((p) => nearestOnSegment(p, pts[from], pts[to]).distance > minLen);
   for (let i = 1; i < pts.length - 1; i++) {
     const a = keep[keep.length - 1], b = pts[i], c = pts[i + 1];
     const d1 = Math.atan2(b[1] - a[1], b[0] - a[0]);
     const d2 = Math.atan2(c[1] - b[1], c[0] - b[0]);
     let turn = Math.abs(d2 - d1) * (180 / Math.PI);
     if (turn > 180) turn = 360 - turn;
-    if (turn >= COLLINEAR_DEGREES) keep.push(b);
+    if (turn >= COLLINEAR_DEGREES || strays(i + 1)) {
+      keep.push(b);
+      from = i;
+    }
   }
   keep.push(pts[pts.length - 1]);
   const pieces = [];
@@ -616,8 +640,69 @@ export function signSpeed(tag) {
   return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
+/**
+ * Место игры со своей территорией: модель стоит, как на местности. `lat`/`lon` — начало осей модели, `rotation` —
+ * поворот её оси X по часовой стрелке от востока; остальное — в метрах модели (y — её ось Y, на север при нулевом
+ * повороте): `clear` — многоугольник, где карта уступает место модели, `roads` — проезды территории (`hidden` — без
+ * цвета: землю под ними рисует модель; `speed` — предел в км/ч, без него как у грунтовки), `stop` — где машина
+ * встаёт под погрузку. Имя места берётся как есть.
+ */
+function territory(place, config, proj) {
+  const model = config.models?.places?.[place.id];
+  if (!model || !model.center) throw new Error(`у территории «${place.id}» нет модели с серединой в models.places`);
+  const t = place.territory;
+  const cell = config.cell;
+  const toCell = modelFrame(proj.toCell(place.lat, place.lon), t.rotation, cell);
+  const [cx, cy] = toCell(model.center);
+  const [sx, sy] = toCell(t.stop);
+  const record = {
+    ...rectRecord(cx, cy, model.size[0] / cell, model.size[1] / cell, norm360(t.rotation)),
+    map: true,
+    name: place.name,
+    place: place.id,
+    ...(place.icon ? { icon: place.icon } : {}),
+    ...(place.street ? { street: place.street } : {}),
+    stop_x: round(sx),
+    stop_y: round(sy),
+    ...(config.place_fields || {}),
+    model: model.name,
+    height: round(model.height / cell),
+  };
+  const roads = [];
+  for (const road of t.roads) {
+    const width = road.width / cell;
+    const speed = round(((road.speed ?? config.unpaved_speed) * 1000) / cell / 60 / config.minute_seconds, 3);
+    const pts = road.path.map(toCell);
+    for (let i = 0; i + 1 < pts.length; i++) {
+      const [p, q] = [pts[i], pts[i + 1]];
+      const len = Math.hypot(q[0] - p[0], q[1] - p[1]);
+      const angle = (Math.atan2(q[1] - p[1], q[0] - p[0]) * 180) / Math.PI;
+      roads.push({
+        ...rectRecord((p[0] + q[0]) / 2, (p[1] + q[1]) / 2, len + (!road.hidden && config.roads.service?.kind ? KIND_JOINT : width), width, norm360(angle)),
+        ...(road.hidden ? {} : config.roads.service?.kind ? { road_kind: config.roads.service.kind } : { color: config.unpaved_color }),
+        layer: 2,
+        road: true,
+        road_speed: speed,
+        map: true,
+      });
+    }
+  }
+  return { ring: t.clear.map(toCell), record, roads };
+}
+
+/**
+ * Точка модели в клетках сцены: `origin` — начало осей модели в клетках, `rotation` — поворот её оси X по часовой
+ * стрелке от востока в градусах; точка `[u, v]` — в метрах модели, ось Y — на север при нулевом повороте.
+ */
+export function modelFrame(origin, rotation, cell) {
+  const rad = (rotation * Math.PI) / 180;
+  const cos = Math.cos(rad), sin = Math.sin(rad);
+  return ([u, v]) => [origin[0] + (u * cos + v * sin) / cell, origin[1] + (u * sin - v * cos) / cell];
+}
+
 /** Здание места игры: по элементу OpenStreetMap (`w…` или `n…`) или по точке; не здание — самое большое здание внутри.
- *  Точка с `pad` — площадка такого размера в метрах на месте точки, без здания: заправка, автосервис. */
+ *  Точка с `pad` — площадка такого размера в метрах на месте точки, без здания: заправка, автосервис; `pad_angle` —
+ *  поворот её длинной стороны в градусах, без него — вдоль оси x. */
 function findPlace(place, els, buildings, proj, zones, ringOf) {
   if (place.osm) {
     const type = place.osm[0] === "w" ? "way" : place.osm[0] === "n" ? "node" : "relation";
@@ -626,7 +711,7 @@ function findPlace(place, els, buildings, proj, zones, ringOf) {
     if (!el) return null;
     if (type === "node" && place.pad) {
       const [cx, cy] = proj.toCell(el.lat, el.lon);
-      const box = { cx, cy, length: place.pad[0] / proj.cell, width: place.pad[1] / proj.cell, angle: 0 };
+      const box = { cx, cy, length: place.pad[0] / proj.cell, width: place.pad[1] / proj.cell, angle: place.pad_angle ?? 0 };
       return { box, center: [cx, cy] };
     }
     if (type === "way" && el.tags && el.tags.building) {
@@ -673,6 +758,7 @@ export function streetForm(name) {
     .replace(/ бульвар$/i, " бульваре")
     .replace(/ шоссе$/i, " шоссе")
     .replace(/ набережная$/i, " набережной")
+    .replace(/ тракт$/i, " тракте")
     .replace(/(ая) (улице|площади|набережной)$/i, "ой $2")
-    .replace(/(ий|ый) (проспекте|переулке|бульваре)$/i, "ом $2");
+    .replace(/(ий|ый|ой) (проспекте|переулке|бульваре|тракте)$/i, "ом $2");
 }

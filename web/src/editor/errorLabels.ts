@@ -1,6 +1,6 @@
 import type { EngineError } from "../engineErrors";
 
-/** Русские подписи ключей в тексте ошибки движка: бег и прыжок, езда, модели, списки экрана, скорость времени. */
+/** Русские подписи ключей в тексте ошибки движка: бег и прыжок, езда, модели, виды дорог, списки экрана, скорость времени. Ключ `image` не подписан: так зовутся и картинка объекта, и картинка над ним в мире. */
 const ERROR_KEY_LABELS: Readonly<Record<string, string>> = {
   run_speed: "скорость бега",
   jump_height: "высота прыжка",
@@ -11,6 +11,11 @@ const ERROR_KEY_LABELS: Readonly<Record<string, string>> = {
   drive_speed: "скорость езды",
   drive_to: "куда ехать",
   model: "модель",
+  road_kind: "вид дороги",
+  road_kinds: "вид дорог",
+  piece: "прямой кусок",
+  node: "узел",
+  alphaCutoff: "порог прозрачности",
   height: "высота",
   row_height: "высота строки",
   sort_by: "порядок по",

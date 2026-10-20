@@ -8,22 +8,89 @@ use crate::core::value::Rotation;
 
 use super::materials::{linear_to_srgb, srgb_to_linear};
 
-/// Один объект модели в кадре: середина основания на земле с косинусом и синусом поворота и высота
-/// основания с увеличением модели. Вершины модели уже лежат серединой основания в начале.
+/// Один объект модели в кадре: середина основания на земле с косинусом и синусом поворота, высота
+/// основания, увеличение модели и растяжение вдоль её локальной оси +Y — у кусков дороги. Вершины модели уже
+/// лежат серединой основания в начале.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelInstance {
     /// `[x, y, cos, sin]`.
     pub placement: [f32; 4],
-    /// `[z, scale, 0, 0]`.
+    /// `[z, scale, stretch, 0]`; `stretch` — единица у всего, кроме кусков дороги.
     pub base: [f32; 4],
 }
 
-/// Объекты каждой модели кадра по номеру модели и самая высокая точка среди них — по ней охватывается
-/// карта теней.
+/// Объект с частью `BLEND`: номер модели и номер объекта в её списке кадра.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlendedDraw {
+    pub model: u32,
+    pub index: u32,
+}
+
+/// Объекты каждой модели кадра по номеру модели, самая высокая точка среди них — по ней охватывается карта
+/// теней, — и середины объектов, чьи модели имеют часть `BLEND`.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelDraws {
     pub instances: Vec<Vec<ModelInstance>>,
     pub top: f64,
+    blended: Vec<(BlendedDraw, [f64; 3])>,
+}
+
+impl ModelDraws {
+    /// «Свет и материалы», прозрачность: объекты с частью `BLEND` от дальнего к ближнему по середине объекта,
+    /// как их рисовать; равноудалённые — в порядке моделей и объектов.
+    pub fn blended_far_to_near(&self, eye: [f64; 3]) -> Vec<BlendedDraw> {
+        let reach = |middle: &[f64; 3]| {
+            (0..3)
+                .map(|axis| (middle[axis] - eye[axis]).powi(2))
+                .sum::<f64>()
+        };
+        let mut order: Vec<&(BlendedDraw, [f64; 3])> = self.blended.iter().collect();
+        order.sort_by(|a, b| reach(&b.1).total_cmp(&reach(&a.1)));
+        order.into_iter().map(|(draw, _)| *draw).collect()
+    }
+}
+
+/// Куски и узлы видов дорог кадра по номеру модели: сначала рисуются все куски, потом все узлы.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RoadDraws {
+    pub pieces: Vec<Vec<ModelInstance>>,
+    pub nodes: Vec<Vec<ModelInstance>>,
+}
+
+/// «Вид дороги»: куски и узлы раскладки `game` по моделям.
+pub fn road_draws(game: &Game) -> RoadDraws {
+    let count = game.world.models().len();
+    let mut draws = RoadDraws {
+        pieces: vec![Vec::new(); count],
+        nodes: vec![Vec::new(); count],
+    };
+    let layout = game.road_kind_layout();
+    let instance =
+        |center: [f64; 2], z: f64, cos: f64, sin: f64, scale: f64, stretch: f64| ModelInstance {
+            placement: [center[0] as f32, center[1] as f32, cos as f32, sin as f32],
+            base: [z as f32, scale as f32, stretch as f32, 0.0],
+        };
+    for piece in layout.pieces() {
+        draws.pieces[piece.model].push(instance(
+            piece.center,
+            piece.z,
+            piece.cos,
+            piece.sin,
+            piece.scale,
+            piece.stretch,
+        ));
+    }
+    for node in layout.nodes() {
+        draws.nodes[node.model].push(instance(
+            node.center,
+            node.z,
+            node.cos,
+            node.sin,
+            node.scale,
+            1.0,
+        ));
+    }
+    draws
 }
 
 /// Объекты мира с `model`, `position` и `size`, разложенные по моделям. Модель без частей не рисуется.
@@ -33,6 +100,7 @@ pub fn model_draws(game: &Game) -> ModelDraws {
     let mut draws = ModelDraws {
         instances: vec![Vec::new(); models.len()],
         top: f64::NEG_INFINITY,
+        blended: Vec::new(),
     };
     if models.is_empty() {
         return draws;
@@ -59,15 +127,20 @@ pub fn model_draws(game: &Game) -> ModelDraws {
             .rotation(id, property::ROTATION)
             .map_or((0.0, 1.0), Rotation::sin_cos);
         let base = world.base_z(id);
+        let middle = [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0];
         draws.top = draws.top.max(base + model.size[2] * scale);
+        if model.has_blend() {
+            draws.blended.push((
+                BlendedDraw {
+                    model: index as u32,
+                    index: draws.instances[index].len() as u32,
+                },
+                [middle[0], middle[1], base + model.size[2] * scale / 2.0],
+            ));
+        }
         draws.instances[index].push(ModelInstance {
-            placement: [
-                (position[0] + size[0] / 2.0) as f32,
-                (position[1] + size[1] / 2.0) as f32,
-                cos as f32,
-                sin as f32,
-            ],
-            base: [base as f32, scale as f32, 0.0, 0.0],
+            placement: [middle[0] as f32, middle[1] as f32, cos as f32, sin as f32],
+            base: [base as f32, scale as f32, 1.0, 0.0],
         });
     }
     draws

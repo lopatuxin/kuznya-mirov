@@ -6,6 +6,8 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import bakery  # noqa: E402
+import gazel  # noqa: E402
 import lib  # noqa: E402
 from lib import Model  # noqa: E402
 
@@ -18,41 +20,6 @@ def save(name):
     os.makedirs(OUT, exist_ok=True)
     lib.export(os.path.join(OUT, name + ".glb"))
     print("written", name)
-
-
-def gazel(name, tent):
-    """ГАЗель с тентом: перед — −Y; длина 5,5, ширина 2,1, высота 2,6."""
-    lib.reset()
-    m = Model(name)
-    white = m.mat("body", "#f3f2ee", 0.35, 0.3)
-    dark = m.mat("dark", "#2b2b2e", 0.8)
-    tyre = m.mat("tyre", "#1c1c1e", 0.95)
-    hub = m.mat("hub", "#9a9ca0", 0.4, 0.6)
-    glass = m.mat("glass", GLASS, 0.15)
-    stripe = m.mat("stripe", "#e8782b", 0.5)
-    lamp = m.mat("lamp", "#f7f0c8", 0.2)
-    canvas = m.mat("tent", tent, 0.85)
-    bed = m.mat("bed", "#6b6e72", 0.7)
-    for x in (-0.86, 0.86):
-        for y in (-1.75, 1.6):
-            m.cylinder_x(x, y, 0.36, 0.36, 0.26, tyre, 14)
-            m.cylinder_x(x * 1.02, y, 0.36, 0.18, 0.28, hub, 10)
-    m.box(-0.55, -2.55, 0.32, 0.55, 2.7, 0.55, dark)
-    m.box(-1.0, -2.75, 0.55, 1.0, -2.15, 1.25, white)
-    m.box(-1.0, -2.2, 0.55, 1.0, -0.95, 2.15, white)
-    m.box(-0.92, -2.22, 1.32, 0.92, -2.2, 1.98, glass)
-    for x0, x1 in ((-1.02, -1.0), (1.0, 1.02)):
-        m.box(x0, -2.05, 1.35, x1, -1.25, 1.95, glass)
-        m.box(x0, -2.75, 0.9, x1, -0.95, 1.05, stripe)
-    m.box(-0.7, -2.77, 0.62, 0.7, -2.75, 0.9, dark)
-    for x in (-0.78, 0.78):
-        m.box(x - 0.16, -2.78, 0.88, x + 0.16, -2.75, 1.05, lamp)
-    m.box(-1.06, -0.85, 0.55, 1.06, 2.78, 0.75, bed)
-    m.box(-1.06, -0.85, 0.75, 1.06, 2.78, 2.55, canvas)
-    for x0, x1 in ((-1.08, -1.06), (1.06, 1.08)):
-        m.box(x0, -0.8, 1.95, x1, 2.73, 2.1, stripe)
-    m.finish()
-    save(name)
 
 
 IZBA_COLORS = {"brown": "#7a5232", "green": "#6e9474", "blue": "#6a8db0", "ochre": "#c4a35e"}
@@ -251,32 +218,6 @@ def office():
     save("office")
 
 
-def bakery():
-    """Хлебозавод: кирпичный корпус 24 × 14, труба, вывеска «ХЛЕБ», рампа."""
-    lib.reset()
-    m = Model("bakery")
-    brick = m.mat("brick", "#a3563d", 0.9)
-    trim = m.mat("trim", "#efe6d6", 0.8)
-    roof = m.mat("roof", "#5d5f61", 0.9)
-    g = m.mat("glass", GLASS, 0.25)
-    f = m.mat("frame", FRAME, 0.7)
-    sign = m.mat("sign", "#f1e3c4", 0.6)
-    m.box(-12, -7, 0, 12, 7, 0.5, m.mat("base", "#6f6a64", 0.9))
-    m.box(-11.95, -6.95, 0.5, 11.95, 6.95, 8.0, brick)
-    m.box(-12.1, -7.1, 8.0, 12.1, 7.1, 8.5, trim)
-    m.box(-11.8, -6.8, 8.5, 11.8, 6.8, 8.55, roof)
-    for z in (1.5, 4.8):
-        for u in range(-10, 11, 3):
-            m.window(("front", -6.95), u, z, 1.6, 2.0, g, f)
-            m.window(("back", 6.95), u, z, 1.6, 2.0, g, f)
-    m.cylinder(8.5, 3.5, 8.5, 1.1, 14.0, brick, 12, r_top=0.8)
-    m.box(-6, -8.5, 0, 6, -6.95, 1.2, m.mat("ramp", "#8f8a82", 0.9))
-    m.box(-4.5, -7.25, 5.6, 4.5, -6.95, 7.6, sign)
-    o = m.finish()
-    lib.text(o, "ХЛЕБ", 1.6, (0, -7.32, 6.6), 0, "#8a3b22")
-    save("bakery")
-
-
 def shop():
     """Магазин: одноэтажный 10 × 8, витрины, вывеска «ПРОДУКТЫ», козырёк."""
     lib.reset()
@@ -402,8 +343,8 @@ def warehouse(name, wall, sign_text):
 
 
 def main():
-    gazel("gazel", "#2f6aa3")
-    gazel("gazel_green", "#3f7a4a")
+    gazel.build("gazel", "#2f6aa3")
+    gazel.build("gazel_green", "#3f7a4a")
     izba("izba_brown_green", IZBA_COLORS["brown"], ROOFS["green"])
     izba("izba_green_red", IZBA_COLORS["green"], ROOFS["red"])
     izba("izba_blue_grey", IZBA_COLORS["blue"], ROOFS["grey"])
@@ -420,7 +361,7 @@ def main():
     linden("linden", 2)
     pine("pine")
     office()
-    bakery()
+    bakery.build()
     shop()
     market()
     site()

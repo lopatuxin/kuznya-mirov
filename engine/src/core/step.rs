@@ -207,9 +207,13 @@ fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec3, eye: Opti
     } else {
         scene::on_click_target(world, scene, [point[0], point[1]])
     };
-    let Some(id) = target else {
-        return;
-    };
+    if let Some(id) = target {
+        fire_on_click(world, scene, id, point);
+    }
+}
+
+/// Записи `on_click` объекта `id`; `"cursor"` в них — `point`.
+fn fire_on_click(world: &mut World, scene: &SceneConfig, id: u32, point: Vec3) {
     let Some(edits) = world.on_click(id, property::ON_CLICK).map(<[_]>::to_vec) else {
         return;
     };
@@ -220,6 +224,27 @@ fn apply_on_click(world: &mut World, scene: &SceneConfig, point: Vec3, eye: Opti
             world.set_value(id, edit.property, &value);
         }
     }
+}
+
+/// «Надписи, полоски и картинки в мире», требование 6: щелчок по картинке в мире — `on_click` самого
+/// объекта `id`, как будто щёлкнули по нему: `"cursor"` в его записях — середина объекта. Нет
+/// объекта (повтор по изменённым файлам) или его `position` и `size` — ничего.
+fn click_object(world: &mut World, scene: &SceneConfig, id: u32) {
+    if !world.is_alive(id) {
+        return;
+    }
+    let (Some(position), Some(size)) = (
+        world.vec2(id, property::POSITION),
+        world.vec2(id, property::SIZE),
+    ) else {
+        return;
+    };
+    let middle = [
+        position[0] + size[0] / 2.0,
+        position[1] + size[1] / 2.0,
+        world.base_z(id),
+    ];
+    fire_on_click(world, scene, id, middle);
 }
 
 /// Stage 2: press/release events turn into property writes named by each object's `keys` table —
@@ -257,11 +282,14 @@ pub fn apply_input(
             world.set_value(id, prop, &value);
         }
     }
-    if let Some(point) = cursor {
-        for event in events {
-            if event.code == "MouseLeft" && event.action == KeyAction::Press {
-                apply_on_click(world, scene, point, eye);
-            }
+    for event in events {
+        if event.code != "MouseLeft" || event.action != KeyAction::Press {
+            continue;
+        }
+        match (event.target, cursor) {
+            (Some(id), _) => click_object(world, scene, id),
+            (None, Some(point)) => apply_on_click(world, scene, point, eye),
+            (None, None) => {}
         }
     }
 }
@@ -1621,7 +1649,9 @@ impl Newcomer {
             _ => None,
         };
         let flat = find(property::SHAPE).is_none()
-            && (find(property::IMAGE).is_some() || find(property::COLOR).is_some());
+            && (find(property::IMAGE).is_some()
+                || find(property::COLOR).is_some()
+                || find(property::ROAD_KIND).is_some());
         Newcomer {
             size,
             rotation,

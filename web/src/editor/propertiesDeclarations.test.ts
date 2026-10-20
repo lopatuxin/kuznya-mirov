@@ -89,6 +89,11 @@ describe("suggestPropertyNames", () => {
     expect(suggestPropertyNames(["model"], {}, true)).not.toContain("model");
   });
 
+  it("road_kind Фазы 43 — среди подсказок, пока её нет у объекта", () => {
+    expect(suggestPropertyNames([], {}, true)).toContain("road_kind");
+    expect(suggestPropertyNames(["road_kind"], {}, true)).not.toContain("road_kind");
+  });
+
   it("clouds и cloud_images не предлагаются: их ставит группа «Облака» колонки «Свойства»", () => {
     const suggestions = suggestPropertyNames([], {}, false);
     expect(suggestions).not.toContain("clouds");

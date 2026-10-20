@@ -138,7 +138,7 @@ fn bar_and_label_parse_and_compute_end_to_end() {
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
     assert_eq!(screens_config.world_elements.len(), 2);
 
-    let (bars, labels) = world_elements::compute_world_draws(
+    let (bars, labels, _) = world_elements::compute_world_draws(
         &game.world,
         &game.scene,
         &game.properties,
@@ -167,7 +167,7 @@ fn world_elements_with_a_color_table_resolve_the_by_property() {
     let (game, screens_config, warnings) =
         load_with_font(props, scene, RULES_EMPTY, screens).expect("должно загрузиться");
     assert_eq!(warnings, Vec::new(), "{warnings:?}");
-    let (_, labels) = world_elements::compute_world_draws(
+    let (_, labels, _) = world_elements::compute_world_draws(
         &game.world,
         &game.scene,
         &game.properties,

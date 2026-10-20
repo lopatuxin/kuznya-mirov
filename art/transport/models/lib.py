@@ -189,6 +189,7 @@ def text(model_obj, words, size, location, rotation_z, color, depth=0.04):
     return mobj
 
 
-def export(path):
+def export(path, vertex_color="MATERIAL"):
+    """Выгрузка сцены в .glb; `vertex_color="ACTIVE"` — с цветом вершин, например запечённым затенением."""
     bpy.ops.export_scene.gltf(filepath=path, export_format="GLB", export_yup=True, export_apply=True,
-                              export_vertex_color="MATERIAL")
+                              export_vertex_color=vertex_color)

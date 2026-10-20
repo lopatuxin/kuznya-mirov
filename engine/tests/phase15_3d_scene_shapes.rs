@@ -1484,7 +1484,7 @@ fn the_top_anchor_sits_above_the_capsules_top_point_and_sizes_do_not_depend_on_d
     ]}"##;
     let (game, screens) = labelled_game(scene);
     let camera = game.camera_3d(WINDOW).unwrap();
-    let (bars, labels) = compute_world_draws_3d(
+    let (bars, labels, _) = compute_world_draws_3d(
         &game.world,
         &game.scene,
         &game.properties,

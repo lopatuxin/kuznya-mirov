@@ -46,6 +46,7 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   ...PARTICLE_PROPERTY_NAMES,
   ...ROAD_PROPERTY_NAMES,
   "model",
+  "road_kind",
   "time_scale",
 ];
 

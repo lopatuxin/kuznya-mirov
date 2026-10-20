@@ -1,4 +1,5 @@
 use std::rc::Rc;
+use std::sync::Arc;
 
 use serde_json::Value as Json;
 
@@ -20,9 +21,9 @@ use crate::core::scene::{
     CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, SceneConfig,
 };
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, Element, Fill, FontId, MaxSpec, MusicId, Placement, RunCall,
-    RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor, WorldElement,
-    WorldElementKind, WorldTextPart,
+    Align, Anchor, ButtonCommand, Element, Fill, FontId, ImageRef, MaxSpec, MusicId, Placement,
+    RunCall, RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor,
+    WorldElement, WorldElementKind, WorldTextPart,
 };
 use crate::core::terrain::{DENSITIES, Terrain, Water};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
@@ -36,6 +37,7 @@ use super::wav;
 
 mod materials;
 mod models;
+mod road_kinds;
 mod stamps;
 
 pub use super::error::{GameError, LoadFailure};
@@ -48,6 +50,10 @@ use materials::{
 };
 pub use models::{ModelDecl, ModelFile};
 use models::{load_models, named_in_scene, parse_models_table, warn_unused_models};
+pub use road_kinds::RoadKindDecl;
+use road_kinds::{
+    build_road_kinds, parse_road_kinds, validate_kind_models, warn_unused_road_kinds,
+};
 pub use stamps::parse_edit_imprints;
 use stamps::{parse_imprints, parse_stamp_table, warn_unused_stamps};
 
@@ -486,6 +492,14 @@ pub(crate) fn parse_scalar_value(
             }
             let name = expect_string(value, file, path, errors)?;
             resolve_model(&name, properties, file, path, errors).map(Value::Text)
+        }
+        PropKind::Text if prop == property::ROAD_KIND => {
+            if !properties.three_d() {
+                errors.push(file, path, ROAD_KIND_IN_FLAT_SCENE);
+                return None;
+            }
+            let name = expect_string(value, file, path, errors)?;
+            resolve_road_kind(&name, properties, file, path, errors).map(Value::Text)
         }
         PropKind::Text => expect_string(value, file, path, errors).map(Value::Text),
         PropKind::Image => {
@@ -933,6 +947,38 @@ fn resolve_model(
     None
 }
 
+const ROAD_KIND_IN_FLAT_SCENE: &str =
+    "свойство \"road_kind\" есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+/// Вид дороги по имени: `road_kind` называет только вид из `scene.road_kinds`.
+fn resolve_road_kind(
+    name: &str,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<String> {
+    let kinds = properties.road_kinds();
+    if kinds.index_of(name).is_some() {
+        return Some(name.to_string());
+    }
+    let declared = kinds
+        .names()
+        .map(|known| format!("\"{known}\""))
+        .collect::<Vec<_>>()
+        .join(", ");
+    errors.push(
+        file,
+        path,
+        if kinds.is_empty() {
+            format!("вида дороги \"{name}\" нет; виды не объявлены")
+        } else {
+            format!("вида дороги \"{name}\" нет; объявлены {declared}")
+        },
+    );
+    None
+}
+
 const SHAPE_IN_FLAT_SCENE: &str =
     "shape есть только в трёхмерной сцене: у scene в game.json нет camera";
 
@@ -1342,6 +1388,53 @@ fn validate_road_shape(
     }
 }
 
+/// «Вид дороги», требование 22: `road_kind` — только дороге (`road`) с `position` и `size`, которая не рисуется
+/// ничем другим: ни `color`, ни `image`, ни `shape`, ни `model`. `check_position` — как у
+/// `validate_follow_mouse_shape`.
+fn validate_road_kind_shape(
+    shape: &std::collections::HashSet<PropertyId>,
+    check_position: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if !shape.contains(&property::ROAD_KIND) {
+        return;
+    }
+    if !shape.contains(&property::ROAD) {
+        errors.push(
+            file,
+            path,
+            "свойство \"road_kind\" задано объекту без road: вид есть только у дороги",
+        );
+    }
+    for (prop, name) in [
+        (property::COLOR, "color"),
+        (property::IMAGE, "image"),
+        (property::SHAPE, "shape"),
+        (property::MODEL, "model"),
+    ] {
+        if shape.contains(&prop) {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "свойство \"{name}\" задано объекту со свойством \"road_kind\": дорога вида рисуется кусками своего вида"
+                ),
+            );
+        }
+    }
+    let missing_size = !shape.contains(&property::SIZE);
+    let missing_position = check_position && !shape.contains(&property::POSITION);
+    if missing_size || missing_position {
+        errors.push(
+            file,
+            path,
+            "свойство \"road_kind\" разрешено только объекту с position и size",
+        );
+    }
+}
+
 /// «Трёхмерная сцена», требование 30: `height` есть только в трёхмерной сцене — везде, где его можно
 /// записать: объект, шаблон, клавиша, `on_click`, `add`/`set` правил.
 fn height_fits_the_scene(
@@ -1626,6 +1719,7 @@ fn parse_scene_object(
     validate_model_fill(&shape, true, file, &path, errors);
     validate_deck_shape(&shape, true, file, &path, errors);
     validate_road_shape(&shape, true, file, &path, errors);
+    validate_road_kind_shape(&shape, true, file, &path, errors);
     validate_particles_shape(&shape, true, file, &path, errors);
     validate_fire_shape(&shape, true, file, &path, errors);
     validate_clouds_shape(&shape, true, file, &path, errors);
@@ -2147,6 +2241,7 @@ struct SceneJsonConfig {
     light: LightConfig,
     cell_pixels: Option<f64>,
     player_camera: Option<PlayerCameraConfig>,
+    road_kinds: Vec<RoadKindDecl>,
 }
 
 /// «Мир на экране» → «Камера игрока», требования 1–3, 23: `player_camera` — `zoom` из двух чисел,
@@ -2327,6 +2422,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
             "light",
             "cell_pixels",
             "player_camera",
+            "road_kinds",
         ],
         "game.json",
         "scene",
@@ -2422,6 +2518,11 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         }
         Some(v) => parse_player_camera(v, (width, height), view_height.flatten(), errors).map(Some),
     };
+    // «Вид дороги»: необязательна — нет ключа, нет и видов; только в трёхмерной сцене.
+    let road_kinds = match obj.get("road_kinds") {
+        None => Some(Vec::new()),
+        Some(v) => parse_road_kinds(v, obj.contains_key("camera"), errors),
+    };
     Some(SceneJsonConfig {
         width: width?,
         height: height?,
@@ -2432,6 +2533,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         light: light?,
         cell_pixels: cell_pixels?,
         player_camera: player_camera?,
+        road_kinds: road_kinds?,
     })
 }
 
@@ -2614,6 +2716,8 @@ pub struct NeededMedia {
 #[derive(Debug, Clone)]
 pub struct GameConfig {
     pub scene: SceneConfig,
+    /// «Вид дороги»: `scene.road_kinds` — виды дорог игры; пусто, если не объявлены.
+    pub road_kinds: Vec<RoadKindDecl>,
     pub random_seed: u64,
     pub max_objects: usize,
     pub files: FilePaths,
@@ -2970,6 +3074,11 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             "files.stamps есть только в трёхмерной сцене: у scene в game.json нет camera",
         );
     }
+    validate_kind_models(
+        &scene.road_kinds,
+        models.as_deref().unwrap_or_default(),
+        errors,
+    );
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
@@ -2986,6 +3095,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             cell_pixels: scene.cell_pixels,
             player_camera: scene.player_camera,
         },
+        road_kinds: scene.road_kinds,
         random_seed,
         max_objects: max_objects as usize,
         files: FilePaths {
@@ -4595,6 +4705,7 @@ fn parse_template(
     validate_model_fill(&shape, false, file, path, errors);
     validate_deck_shape(&shape, false, file, path, errors);
     validate_road_shape(&shape, false, file, path, errors);
+    validate_road_kind_shape(&shape, false, file, path, errors);
     validate_particles_shape(&shape, false, file, path, errors);
     validate_fire_shape(&shape, false, file, path, errors);
     validate_clouds_shape(&shape, false, file, path, errors);
@@ -6414,6 +6525,12 @@ fn mark_world_elements_used(
                     used.insert(*p);
                 }
             }
+            WorldElementKind::Image {
+                image: ImageRef::Own { property, .. },
+            } => {
+                used.insert(*property);
+            }
+            WorldElementKind::Image { .. } => {}
         }
     }
 }
@@ -8486,6 +8603,7 @@ const WORLD_LABEL_KEYS: &[&str] = &[
     "font_size",
     "align",
 ];
+const WORLD_IMAGE_KEYS: &[&str] = &["kind", "for", "anchor", "offset", "size", "image"];
 const WORLD_BAR_KEYS: &[&str] = &[
     "kind",
     "for",
@@ -8650,6 +8768,63 @@ fn parse_world_max(
     Some(MaxSpec::Property(prop))
 }
 
+/// «Надписи, полоски и картинки в мире», требование 1: `image` — имя картинки из `files.images` или
+/// `{свойство}`, занимающее строку целиком: имя берётся из свойства самого объекта.
+#[derive(Debug, Clone)]
+enum ParsedImageRef {
+    Name(String),
+    Own(PropertyId),
+}
+
+fn parse_world_image(
+    value: &Json,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedImageRef> {
+    let text = expect_string(value, file, path, errors)?;
+    let Some(inner) = text
+        .strip_prefix('{')
+        .and_then(|rest| rest.strip_suffix('}'))
+    else {
+        if text.contains(['{', '}']) {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "\"{text}\": подстановка {{свойство}} должна занимать имя картинки целиком"
+                ),
+            );
+            return None;
+        }
+        return Some(ParsedImageRef::Name(text));
+    };
+    if inner.is_empty() || inner.contains(['{', '}', '.']) {
+        errors.push(
+            file,
+            path,
+            format!(
+                "подстановка \"{text}\" над объектом в мире называет одно собственное свойство объекта, без точки и скобок внутри"
+            ),
+        );
+        return None;
+    }
+    let property = resolve_property(inner, properties, file, path, errors)?;
+    if properties.kind(property) != PropKind::Text {
+        errors.push(
+            file,
+            path,
+            format!(
+                "подстановка \"{text}\" называет не строковое свойство: у \"{inner}\" вид {}, а имя картинки берётся из свойства вида text",
+                properties.kind(property).label()
+            ),
+        );
+        return None;
+    }
+    Some(ParsedImageRef::Own(property))
+}
+
 /// Parsed, but with a `label`'s font still a name (`ParsedScreen`/`ParsedElementData`'s own
 /// pattern) — `files.fonts` isn't known yet at parse time.
 #[derive(Debug, Clone)]
@@ -8664,6 +8839,9 @@ enum ParsedWorldElementKind {
         value: PropertyId,
         max: MaxSpec,
         back_color: Option<[f32; 4]>,
+    },
+    Image {
+        image: ParsedImageRef,
     },
 }
 
@@ -8769,11 +8947,29 @@ fn parse_world_element(
                 },
             })
         }
+        "image" => {
+            reject_unknown_keys(obj, WORLD_IMAGE_KEYS, file, path, errors);
+            let for_obj_json = require_field(obj, "for", file, path, errors)?;
+            let for_obj = expect_object(for_obj_json, file, &join(path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(path, "for"), errors);
+            let placement = parse_placement(obj, file, path, errors)?;
+            let image_json = require_field(obj, "image", file, path, errors)?;
+            let image =
+                parse_world_image(image_json, properties, file, &join(path, "image"), errors)?;
+            Some(ParsedWorldElement {
+                for_,
+                placement,
+                color: WorldColor::Solid([1.0; 4]),
+                kind: ParsedWorldElementKind::Image { image },
+            })
+        }
         other => {
             errors.push(
                 file,
                 &join(path, "kind"),
-                format!("неизвестный вид элемента в мире \"{other}\": ожидался label или bar"),
+                format!(
+                    "неизвестный вид элемента в мире \"{other}\": ожидался label, bar или image"
+                ),
             );
             None
         }
@@ -8786,6 +8982,8 @@ fn parse_world_element(
 fn resolve_world_element(
     parsed: &ParsedWorldElement,
     fonts: &[(String, String)],
+    images: &[ImageDecl],
+    image_names: &Arc<[String]>,
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
@@ -8824,20 +9022,51 @@ fn resolve_world_element(
                 },
             })
         }
+        ParsedWorldElementKind::Image { image } => {
+            let image = match image {
+                ParsedImageRef::Name(name) => ImageRef::Fixed(resolve_image(
+                    name,
+                    images,
+                    file,
+                    &join(path, "image"),
+                    errors,
+                )?),
+                ParsedImageRef::Own(property) => ImageRef::Own {
+                    property: *property,
+                    names: Arc::clone(image_names),
+                },
+            };
+            Some(WorldElement {
+                for_: parsed.for_.clone(),
+                placement: parsed.placement,
+                color: parsed.color.clone(),
+                kind: WorldElementKind::Image { image },
+            })
+        }
     }
 }
 
 fn resolve_world_elements(
     parsed: &[ParsedWorldElement],
     fonts: &[(String, String)],
+    images: &[ImageDecl],
     file: &str,
     errors: &mut ErrorSink,
 ) -> Vec<WorldElement> {
+    let image_names: Arc<[String]> = images.iter().map(|decl| decl.name.clone()).collect();
     parsed
         .iter()
         .enumerate()
         .filter_map(|(i, p)| {
-            resolve_world_element(p, fonts, file, &format!("world_elements[{i}]"), errors)
+            resolve_world_element(
+                p,
+                fonts,
+                images,
+                &image_names,
+                file,
+                &format!("world_elements[{i}]"),
+                errors,
+            )
         })
         .collect()
 }
@@ -9532,22 +9761,32 @@ fn mark_fill_used(used: &mut std::collections::HashSet<ImageId>, fill: &Fill) {
     }
 }
 
-/// Картинки, которые называет значение: `image` одну, `cloud_images` — все из списка.
-fn mark_value_used(used: &mut std::collections::HashSet<ImageId>, value: &Value) {
+/// Картинки, которые называет значение: `image` одну, `cloud_images` — все из списка; строка — ту
+/// из `text_names`, чьё имя она несёт (имя для `{свойство}` у картинки над объектом в мире).
+fn mark_value_used(
+    used: &mut std::collections::HashSet<ImageId>,
+    value: &Value,
+    text_names: &[ImageDecl],
+) {
     match value {
         Value::Image(id) => {
             used.insert(*id);
         }
         Value::ImageList(ids) => used.extend(ids),
+        Value::Text(name) => used.extend(text_names.iter().position(|decl| decl.name == *name)),
         _ => {}
     }
 }
 
-fn mark_key_table_used(used: &mut std::collections::HashSet<ImageId>, table: &KeyTable) {
+fn mark_key_table_used(
+    used: &mut std::collections::HashSet<ImageId>,
+    table: &KeyTable,
+    text_names: &[ImageDecl],
+) {
     for binding in table.values() {
         for edit in binding.press.iter().chain(&binding.release) {
             if let EditValue::Const(value) = &edit.value {
-                mark_value_used(used, value);
+                mark_value_used(used, value, text_names);
             }
         }
     }
@@ -9561,23 +9800,44 @@ fn collect_used_images(
     scene: &[ParsedObject],
     rules: &RuleSet,
     screens: &[Screen],
+    world_elements: &[WorldElement],
     ground: &[GroundLayer],
+    images: &[ImageDecl],
 ) -> std::collections::HashSet<ImageId> {
     let mut used = std::collections::HashSet::new();
+    // Картинку над объектом в мире по `{свойство}` называет значение свойства, а не поле: все строки
+    // игры, совпавшие с именем картинки, считаются её названием.
+    let named_by_property = world_elements.iter().any(|element| {
+        matches!(
+            &element.kind,
+            WorldElementKind::Image {
+                image: ImageRef::Own { .. }
+            }
+        )
+    });
+    let text_names = if named_by_property { images } else { &[] };
+    for element in world_elements {
+        if let WorldElementKind::Image {
+            image: ImageRef::Fixed(image),
+        } = &element.kind
+        {
+            used.insert(*image);
+        }
+    }
     for layer in ground {
         used.insert(layer.image);
     }
     for obj in scene {
         for (_, v) in &obj.values {
-            mark_value_used(&mut used, v);
+            mark_value_used(&mut used, v, text_names);
         }
         if let Some(table) = &obj.keys {
-            mark_key_table_used(&mut used, table);
+            mark_key_table_used(&mut used, table, text_names);
         }
         if let Some(edits) = &obj.on_click {
             for edit in edits {
                 if let EditValue::Const(value) = &edit.value {
-                    mark_value_used(&mut used, value);
+                    mark_value_used(&mut used, value, text_names);
                 }
             }
         }
@@ -9586,7 +9846,7 @@ fn collect_used_images(
                          template: &[(PropertyId, TemplateValue)]| {
         for (_, tv) in template {
             if let TemplateValue::Const(value) = tv {
-                mark_value_used(used, value);
+                mark_value_used(used, value, text_names);
             }
         }
     };
@@ -9597,7 +9857,7 @@ fn collect_used_images(
                 ..
             } = action
             {
-                mark_value_used(used, value);
+                mark_value_used(used, value, text_names);
             }
         });
     };
@@ -9632,7 +9892,7 @@ fn collect_used_images(
                         ..
                     } = effect
                     {
-                        mark_value_used(&mut used, value);
+                        mark_value_used(&mut used, value, text_names);
                     }
                 }
                 mark_do(&mut used, do_);
@@ -9670,11 +9930,12 @@ fn validate_unused_images(
     scene: &[ParsedObject],
     rules: &RuleSet,
     screens: &[Screen],
+    world_elements: &[WorldElement],
     ground: &[GroundLayer],
     code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
-    let used = collect_used_images(scene, rules, screens, ground);
+    let used = collect_used_images(scene, rules, screens, world_elements, ground, images);
     for (i, decl) in images.iter().enumerate() {
         if !used.contains(&i) && !code.is_some_and(|c| code_mentions_word(c, &decl.name)) {
             errors.push_warning(
@@ -10110,12 +10371,14 @@ pub fn load_rest_with_models(
         _ => {}
     }
     properties.set_stamps(stamp_table);
-    properties.set_models(load_models(
+    let models = load_models(
         &config.files.models,
         model_files,
         skip_media_validation,
         &mut errors,
-    ));
+    );
+    properties.set_road_kinds(build_road_kinds(&config.road_kinds, &models, &mut errors));
+    properties.set_models(models);
 
     let ParsedSceneFile {
         objects: scene_objects,
@@ -10239,6 +10502,7 @@ pub fn load_rest_with_models(
     let world_elements = resolve_world_elements(
         &parsed_world_elements,
         &config.files.fonts,
+        &config.files.images,
         &config.files.screens,
         &mut errors,
     );
@@ -10408,9 +10672,23 @@ pub fn load_rest_with_models(
             .terrain()
             .map_or(&[][..], |terrain| terrain.imprints());
         warn_unused_stamps(&config.files.stamps, imprints, &mut errors);
+        let mut named_models = named_in_scene(&scene_objects, property::MODEL);
+        named_models.extend(config.road_kinds.iter().flat_map(|kind| {
+            kind.pieces
+                .iter()
+                .chain(std::iter::once(&kind.node))
+                .cloned()
+        }));
         warn_unused_models(
             &config.files.models,
-            &named_in_scene(&scene_objects),
+            &named_models,
+            rules_json,
+            code_json,
+            &mut errors,
+        );
+        warn_unused_road_kinds(
+            &config.road_kinds,
+            &named_in_scene(&scene_objects, property::ROAD_KIND),
             rules_json,
             code_json,
             &mut errors,
@@ -10424,6 +10702,7 @@ pub fn load_rest_with_models(
                 &scene_objects,
                 &rules,
                 &sc.screens,
+                &world_elements,
                 &ground,
                 code_json,
                 &mut errors,

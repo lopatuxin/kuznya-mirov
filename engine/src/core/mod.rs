@@ -16,6 +16,7 @@ pub mod pathfind;
 pub mod property;
 pub mod report;
 pub mod rng;
+pub mod road_kinds;
 pub mod roads;
 pub mod rules;
 pub mod run_jump;

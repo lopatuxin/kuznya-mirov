@@ -9,7 +9,7 @@ import { pathToFileURL } from "node:url";
 import { buildCity } from "./city.mjs";
 import { encodePng } from "./png.mjs";
 import { createRaster, fillPolygon } from "./raster.mjs";
-import { random } from "./geo.mjs";
+import { random, round } from "./geo.mjs";
 
 const TINT_WIDTH = 2048;
 
@@ -80,7 +80,20 @@ export async function run(configPath, root = process.cwd()) {
   const config = JSON.parse(await readFile(configPath, "utf8"));
   const osm = JSON.parse(await readFile(resolve(root, config.osm), "utf8"));
   const city = buildCity(osm, config);
+  return writeCity(city, config, config.name, root);
+}
+
+/**
+ * Пишет карту `city` в папку игры `config.out`: объекты карты в `scene.json` поверх объектов автора, рельеф,
+ * адреса и карту цвета земли. Под карту подстраивается и остальное: машина автора встаёт к конторе (место
+ * `office`), камера игрока — над ней, название города `name` — в свойство `town` объекта игры, в `game.json` —
+ * виды дорог настроек `road_kinds` и ровно те модели, что названы в сцене, видах дорог, правилах, коде или
+ * таблицах: модели прежней карты уходят, новой — добавляются.
+ */
+export async function writeCity(city, config, name, root = process.cwd()) {
   const out = resolve(root, config.out);
+  const office = city.objects.find((o) => o.place === "office");
+  if (!office) throw new Error("на карте нет конторы — места office");
   await mkdir(join(out, "terrain"), { recursive: true });
   await mkdir(join(out, "tables"), { recursive: true });
 
@@ -94,7 +107,14 @@ export async function run(configPath, root = process.cwd()) {
   } catch (error) {
     if (error.code !== "ENOENT") throw error;
   }
-  await writeFile(join(out, "scene.json"), sceneText([...city.objects, ...kept], rest));
+  kept = kept.map((o) => {
+    if (o.car) return { ...o, position: [round(office.stop_x - o.size[0] / 2), round(office.stop_y - o.size[1] / 2)] };
+    if (o.game) return { ...o, town: name };
+    return o;
+  });
+  const objects = [...city.objects, ...kept];
+  await writeFile(join(out, "scene.json"), sceneText(objects, rest));
+  await writeGameJson(out, objects, office, config.road_kinds);
   await writeFile(
     join(out, "terrain.json"),
     terrainText({ water: { level: config.water.level, color: config.water.color }, tint: "terrain/tint.png", heights: city.heights }),
@@ -103,6 +123,27 @@ export async function run(configPath, root = process.cwd()) {
   const tint = tintImage(city, config);
   await writeFile(join(out, "terrain", "tint.png"), tint.png);
   return { size: [city.width, city.height], kept: kept.length, ...city.stats };
+}
+
+/** Камера игрока — над конторой; виды дорог `roadKinds`, без них — никаких; модели — те, что названы в сцене,
+ *  видах дорог, правилах, коде или таблицах, по алфавиту. */
+async function writeGameJson(out, objects, office, roadKinds) {
+  const path = join(out, "game.json");
+  const text = await readFile(path, "utf8");
+  const game = JSON.parse(text);
+  game.scene.player_camera.start = [round(office.stop_x, 1), round(office.stop_y, 1)];
+  const files = [game.files.rules, game.files.code, ...Object.values(game.files.tables || {})].filter(Boolean);
+  const named = (await Promise.all(files.map((f) => readFile(join(out, f), "utf8")))).join("\n");
+  if (roadKinds) game.scene.road_kinds = roadKinds;
+  else delete game.scene.road_kinds;
+  const inScene = new Set(objects.map((o) => o.model).filter(Boolean));
+  const ofRoads = Object.values(roadKinds ?? {}).flatMap((k) => [k.piece, k.node].flat());
+  const used = new Set([...inScene, ...ofRoads, ...Object.keys(game.files.models).filter((m) => named.includes(`"${m}"`))]);
+  game.files.models = Object.fromEntries(
+    [...used].sort().map((m) => [m, game.files.models[m] ?? { path: `models/${m}.glb` }]),
+  );
+  const eol = text.includes("\r\n") ? "\r\n" : "\n";
+  await writeFile(path, (JSON.stringify(game, null, 2) + "\n").replace(/\n/g, eol));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

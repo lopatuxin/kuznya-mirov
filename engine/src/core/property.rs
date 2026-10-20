@@ -4,6 +4,7 @@ use std::sync::Arc;
 use super::clouds::CloudMisfit;
 use super::imprints::StampTable;
 use super::model::ModelTable;
+use super::road_kinds::RoadKindTable;
 use super::terrain::Terrain;
 use super::value::{ImageId, PropKind};
 
@@ -79,6 +80,8 @@ pub const DRIVE_SPEED: PropertyId = 51;
 pub const MODEL: PropertyId = 52;
 /// «Исполнение игры» → «Шаг и кадр»: скорость времени мира, число от 0 до `MAX_TIME_SCALE`.
 pub const TIME_SCALE: PropertyId = 53;
+/// «Трёхмерная сцена» → «Вид дороги»: имя вида из `scene.road_kinds`, кусками которого рисуется дорога.
+pub const ROAD_KIND: PropertyId = 54;
 
 /// Наибольшая скорость времени.
 pub const MAX_TIME_SCALE: f64 = 16.0;
@@ -158,6 +161,7 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("drive_speed", PropKind::Number),
     ("model", PropKind::Text),
     ("time_scale", PropKind::Number),
+    ("road_kind", PropKind::Text),
 ];
 
 #[derive(Debug, Clone)]
@@ -186,6 +190,9 @@ pub struct PropertyTable {
     /// «Трёхмерная сцена» → «Модели и движения»: модели `files.models` — по ним проверяется `model` и рисуется
     /// объект; таблицу видят все миры, что строятся по этим свойствам.
     models: Arc<ModelTable>,
+    /// «Трёхмерная сцена» → «Вид дороги»: виды дорог `scene.road_kinds` — по ним проверяется `road_kind` и
+    /// кладутся куски; таблицу видят все миры, что строятся по этим свойствам.
+    road_kinds: Arc<RoadKindTable>,
 }
 
 impl PropertyTable {
@@ -198,6 +205,7 @@ impl PropertyTable {
             stamps: StampTable::default(),
             cloud_misfits: Vec::new(),
             models: Arc::default(),
+            road_kinds: Arc::default(),
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -249,6 +257,14 @@ impl PropertyTable {
 
     pub fn models(&self) -> &Arc<ModelTable> {
         &self.models
+    }
+
+    pub fn set_road_kinds(&mut self, road_kinds: RoadKindTable) {
+        self.road_kinds = Arc::new(road_kinds);
+    }
+
+    pub fn road_kinds(&self) -> &Arc<RoadKindTable> {
+        &self.road_kinds
     }
 
     pub fn set_stamps(&mut self, stamps: StampTable) {
@@ -382,6 +398,8 @@ mod tests {
         }
         assert_eq!(table.resolve("time_scale"), Some(TIME_SCALE));
         assert_eq!(table.kind(TIME_SCALE), PropKind::Number);
+        assert_eq!(table.resolve("road_kind"), Some(ROAD_KIND));
+        assert_eq!(table.kind(ROAD_KIND), PropKind::Text);
         assert_eq!(table.resolve("particles"), None);
     }
 

@@ -1,0 +1,233 @@
+{
+  "base": "city.json",
+  "town": {
+    "seed": 1930,
+    "stage": 8,
+    "names": [
+      {
+        "name": "Наволоки",
+        "tracts": [
+          "Кинешемский",
+          "Вичугский",
+          "Ивановский"
+        ]
+      },
+      {
+        "name": "Юрьевец",
+        "tracts": [
+          "Кинешемский",
+          "Пучежский",
+          "Ивановский"
+        ]
+      },
+      {
+        "name": "Пучеж",
+        "tracts": [
+          "Юрьевецкий",
+          "Ивановский",
+          "Лухский"
+        ]
+      },
+      {
+        "name": "Зубцов",
+        "tracts": [
+          "Ржевский",
+          "Тверской",
+          "Погорельский"
+        ]
+      },
+      {
+        "name": "Старица",
+        "tracts": [
+          "Ржевский",
+          "Тверской",
+          "Торжокский"
+        ]
+      },
+      {
+        "name": "Калязин",
+        "tracts": [
+          "Кашинский",
+          "Угличский",
+          "Кимрский"
+        ]
+      }
+    ]
+  },
+  "roads": {
+    "secondary": {
+      "kind": "main"
+    },
+    "tertiary": {
+      "kind": "main"
+    },
+    "residential": {
+      "kind": "street"
+    },
+    "service": {
+      "kind": "drive"
+    }
+  },
+  "road_kinds": {
+    "main": {
+      "piece": [
+        "road_main_a",
+        "road_main_b"
+      ],
+      "node": "road_node"
+    },
+    "street": {
+      "piece": [
+        "road_street_a",
+        "road_street_b"
+      ],
+      "node": "road_node"
+    },
+    "drive": {
+      "piece": [
+        "road_drive_a",
+        "road_drive_b"
+      ],
+      "node": "road_node"
+    }
+  },
+  "water": {
+    "seeds": []
+  },
+  "trees": {
+    "spacing": {
+      "wood": 24
+    }
+  },
+  "models": {
+    "house": [
+      {
+        "name": "izba_brown_green",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "izba_green_red",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "izba_blue_grey",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "izba_ochre_green",
+        "size": [
+          6.5,
+          8.5
+        ],
+        "long": "y",
+        "height": 7
+      },
+      {
+        "name": "two_storey_blue",
+        "size": [
+          7,
+          7
+        ],
+        "long": "x",
+        "height": 8.4,
+        "square": true
+      },
+      {
+        "name": "two_storey_cream",
+        "size": [
+          7,
+          7
+        ],
+        "long": "x",
+        "height": 8.4,
+        "square": true
+      },
+      {
+        "name": "brick_house",
+        "size": [
+          9,
+          8
+        ],
+        "long": "x",
+        "height": 5.7,
+        "square": true
+      },
+      {
+        "name": "white_house",
+        "size": [
+          9,
+          8
+        ],
+        "long": "x",
+        "height": 5.7,
+        "square": true
+      }
+    ],
+    "places": {
+      "shop_1": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "shop_2": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "shop_3": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "shop_4": {
+        "name": "shop",
+        "size": [
+          10,
+          8
+        ],
+        "long": "x",
+        "height": 5.2
+      },
+      "jewelry": {
+        "name": "old_pink",
+        "size": [
+          14,
+          10
+        ],
+        "long": "x",
+        "height": 10.6
+      }
+    }
+  },
+  "addresses": {
+    "bin": 3,
+    "max_gap": 2.5
+  }
+}

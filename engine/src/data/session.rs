@@ -157,6 +157,7 @@ impl PlaySession {
                 match event {
                     RecordedEvent::WorldKeyDown(code) => ReplayEventKind::KeyDown(code),
                     RecordedEvent::WorldKeyUp(code) => ReplayEventKind::KeyUp(code),
+                    RecordedEvent::WorldClick(object) => ReplayEventKind::Click(object),
                     RecordedEvent::Command(cmd, object) => ReplayEventKind::Command(
                         replay_command_of(cmd, object, config, &game.properties, images),
                     ),
@@ -546,6 +547,7 @@ impl PlaySession {
             match &event.kind {
                 ReplayEventKind::KeyDown(code) => game.press_key(code),
                 ReplayEventKind::KeyUp(code) => game.release_key(code),
+                ReplayEventKind::Click(object) => game.press_key_on("MouseLeft", *object),
                 ReplayEventKind::Cursor(point, eye) => game.set_cursor_point(*point, *eye),
                 ReplayEventKind::Camera {
                     center,

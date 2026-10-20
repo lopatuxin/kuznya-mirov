@@ -20,27 +20,27 @@ pub const ARC_WIDTH_SHARE: f64 = 0.5;
 
 const EPS: f64 = 1e-9;
 
-fn sub(a: Vec2, b: Vec2) -> Vec2 {
+pub(super) fn sub(a: Vec2, b: Vec2) -> Vec2 {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn add_scaled(a: Vec2, direction: Vec2, k: f64) -> Vec2 {
+pub(super) fn add_scaled(a: Vec2, direction: Vec2, k: f64) -> Vec2 {
     [a[0] + direction[0] * k, a[1] + direction[1] * k]
 }
 
-fn dot(a: Vec2, b: Vec2) -> f64 {
+pub(super) fn dot(a: Vec2, b: Vec2) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
 
-fn cross(a: Vec2, b: Vec2) -> f64 {
+pub(super) fn cross(a: Vec2, b: Vec2) -> f64 {
     a[0] * b[1] - a[1] * b[0]
 }
 
-fn length(a: Vec2) -> f64 {
+pub(super) fn length(a: Vec2) -> f64 {
     dot(a, a).sqrt()
 }
 
-fn distance(a: Vec2, b: Vec2) -> f64 {
+pub(super) fn distance(a: Vec2, b: Vec2) -> f64 {
     length(sub(a, b))
 }
 
@@ -76,18 +76,18 @@ pub struct RoadShape {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Road {
-    id: u32,
-    center: Vec2,
-    dir: Vec2,
-    half_length: f64,
-    half_width: f64,
-    z: f64,
+pub(super) struct Road {
+    pub(super) id: u32,
+    pub(super) center: Vec2,
+    pub(super) dir: Vec2,
+    pub(super) half_length: f64,
+    pub(super) half_width: f64,
+    pub(super) z: f64,
 }
 
 impl Road {
     /// Ось идёт вдоль длинной стороны; у квадрата — вдоль ширины `size`.
-    fn from_shape(shape: &RoadShape) -> Road {
+    pub(super) fn from_shape(shape: &RoadShape) -> Road {
         let (sin, cos) = shape.sin_cos;
         let center = [
             shape.position[0] + shape.size[0] / 2.0,
@@ -108,15 +108,15 @@ impl Road {
         }
     }
 
-    fn length(&self) -> f64 {
+    pub(super) fn length(&self) -> f64 {
         self.half_length * 2.0
     }
 
-    fn point_at(&self, along: f64) -> Vec2 {
+    pub(super) fn point_at(&self, along: f64) -> Vec2 {
         add_scaled(self.center, self.dir, along - self.half_length)
     }
 
-    fn end(&self, which: usize) -> Vec2 {
+    pub(super) fn end(&self, which: usize) -> Vec2 {
         self.point_at(if which == 0 { 0.0 } else { self.length() })
     }
 
@@ -154,12 +154,12 @@ impl Road {
 /// Связь двух дорог: точка на оси каждой. Концом `end_of_a` называется тот конец оси дороги `a`,
 /// что лежит внутри прямоугольника `b`; у пересечения осей его нет.
 #[derive(Debug, Clone, Copy)]
-struct Link {
-    a: usize,
-    b: usize,
-    end_of_a: Option<usize>,
-    point_a: Vec2,
-    point_b: Vec2,
+pub(super) struct Link {
+    pub(super) a: usize,
+    pub(super) b: usize,
+    pub(super) end_of_a: Option<usize>,
+    pub(super) point_a: Vec2,
+    pub(super) point_b: Vec2,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -254,7 +254,7 @@ fn links_between(roads: &[Road], a: usize, b: usize, links: &mut Vec<Link>) {
     }
 }
 
-fn find_links(roads: &[Road]) -> Vec<Link> {
+pub(super) fn find_links(roads: &[Road]) -> Vec<Link> {
     let mut links = Vec::new();
     for (a, b) in candidate_pairs(roads) {
         links_between(roads, a, b, &mut links);

@@ -264,11 +264,19 @@ local function trust_text(client)
   return "ушёл к Сидорову"
 end
 
+-- Карточка места: первой строкой улица, где оно стоит, — в имени места её нет.
+local function set_place_info(p, text)
+  if p.street ~= nil and p.street ~= "" then
+    text = p.street .. (text ~= "" and "\n" .. text or "")
+  end
+  p.info_text = text
+end
+
 local function change_trust(client, delta)
   state.trust[client] = clamp(trust(client) + delta, 0, 100)
   local p = places()[client]
   if p ~= nil then
-    p.info_text = tables.clients[client].about .. "\nДоверие: " .. trust_text(client)
+    set_place_info(p, tables.clients[client].about .. "\nДоверие: " .. trust_text(client))
   end
 end
 
@@ -1036,24 +1044,24 @@ end
 local function first_step(g)
   for id, p in pairs(places()) do
     local info = tables.clients[id]
+    local text = ""
     if info ~= nil then
-      p.info_text = info.about .. "\nДоверие: " .. trust_text(id)
+      text = info.about .. "\nДоверие: " .. trust_text(id)
     elseif string.sub(id, 1, 5) == "shop_" then
-      p.info_text = "Магазин: сюда возят хлеб и товар."
+      text = "Магазин: сюда возят хлеб и товар."
     elseif string.sub(id, 1, 5) == "fuel_" then
-      p.info_text = "Заправка: водитель сам заезжает сюда, когда в баке меньше " .. FUEL_RESERVE_L ..
+      text = "Заправка: водитель сам заезжает сюда, когда в баке меньше " .. FUEL_RESERVE_L ..
         " литров. Бензин — " .. fmt_money(FUEL_PRICE) .. " за литр."
     elseif string.sub(id, 1, 8) == "service_" then
-      p.info_text = "Автосервис: ТО за " .. fmt_money(TO_COST) .. " и полтора часа. Ставится кнопкой «На ТО» в карточке машины."
+      text = "Автосервис: ТО за " .. fmt_money(TO_COST) .. " и полтора часа. Ставится кнопкой «На ТО» в карточке машины."
     elseif id == "office" then
-      p.info_text = "Ваша контора: здесь стоят машины и начинается день."
+      text = "Ваша контора: здесь стоят машины и начинается день."
     elseif id == "station" then
-      p.info_text = "Товарный двор: отсюда грузы уходят поездом."
+      text = "Товарный двор: отсюда грузы уходят поездом."
     elseif id == "site" then
-      p.info_text = "Стройка: сюда возят цемент и кирпич."
-    else
-      p.info_text = ""
+      text = "Стройка: сюда возят цемент и кирпич."
     end
+    set_place_info(p, text)
   end
   g.started = true
   mark_car_rows()

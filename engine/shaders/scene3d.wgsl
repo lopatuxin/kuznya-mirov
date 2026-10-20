@@ -1,8 +1,10 @@
 // «Трёхмерная сцена», «Свет и материалы»: рельеф с водой и покрытиями, фигуры, плитки и плоские
 // объекты на земле и карта теней от солнца. Проходы: тени (`vs_shadow` — фигуры, `vs_shadow_terrain`
 // — рельеф; только глубина от солнца), затем рельеф (`vs_terrain`, `fs_terrain`), вода (`fs_water`),
-// фигуры (`vs_shape`, `fs_shape`), модели (`vs_model`, `fs_model`; в тенях — `vs_shadow_model`) и плитки с
-// плоскими объектами (`vs_ground`, `fs_ground`), которые лежат на рельефе и верху настилов.
+// фигуры (`vs_shape`, `fs_shape`), модели (`vs_model`; части с прозрачностью `OPAQUE` — `fs_model`, `MASK` —
+// `fs_model_mask`, `BLEND` и куски дорог — `fs_model_blend`; в тенях — `vs_shadow_model` и для `MASK`
+// `vs_shadow_model_mask` с `fs_shadow_model_mask`) и плитки с плоскими объектами (`vs_ground`, `fs_ground`),
+// которые лежат на рельефе и верху настилов.
 // Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным проходом без глубины.
 //
 // Свет считается в линейной яркости, кадр сводится к экрану кривой Khronos PBR Neutral и кодируется в
@@ -636,6 +638,8 @@ struct ModelMaterial {
     base: vec4<f32>,
     // x — металл, y — шероховатость, z — `scale` мелкого рельефа, w — `strength` затенения.
     factors: vec4<f32>,
+    // x — `alphaMode`: 0 — `OPAQUE`, 1 — `MASK`, 2 — `BLEND`; y — `alphaCutoff`.
+    alpha: vec4<f32>,
 };
 
 @group(1) @binding(0)
@@ -670,12 +674,13 @@ struct ModelVertex {
 struct ModelInstance {
     // x, y — середина основания на земле, z, w — косинус и синус поворота.
     @location(5) placement: vec4<f32>,
-    // x — высота основания над нулём сцены, y — во сколько раз модель увеличена.
+    // x — высота основания над нулём сцены, y — во сколько раз модель увеличена, z — во сколько раз она ещё
+    // растянута вдоль своей оси +Y (у кусков дороги; у остальных 1).
     @location(6) base: vec4<f32>,
 };
 
 fn model_world(vertex: ModelVertex, instance: ModelInstance) -> vec3<f32> {
-    let local = vertex.position * instance.base.y;
+    let local = vertex.position * instance.base.y * vec3<f32>(1.0, instance.base.z, 1.0);
     let c = instance.placement.z;
     let s = instance.placement.w;
     return vec3<f32>(
@@ -697,6 +702,30 @@ fn vs_shadow_model(vertex: ModelVertex, instance: ModelInstance) -> @builtin(pos
     return globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
 }
 
+struct ShadowMaskOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+    @location(1) vertex_alpha: f32,
+};
+
+// Тень части `MASK`: той же формы, но точки с прозрачностью меньше порога в неё не попадают.
+@vertex
+fn vs_shadow_model_mask(vertex: ModelVertex, instance: ModelInstance) -> ShadowMaskOutput {
+    var out: ShadowMaskOutput;
+    out.clip_position = globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
+    out.uv = vertex.uv;
+    out.vertex_alpha = vertex.color.a;
+    return out;
+}
+
+@fragment
+fn fs_shadow_model_mask(in: ShadowMaskOutput) {
+    let base_sample = textureSample(model_base_texture, model_base_sampler, in.uv);
+    if (model_material.base.a * in.vertex_alpha * base_sample.a < model_material.alpha.y) {
+        discard;
+    }
+}
+
 struct ModelOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world: vec3<f32>,
@@ -712,9 +741,11 @@ fn vs_model(vertex: ModelVertex, instance: ModelInstance) -> ModelOutput {
     var out: ModelOutput;
     out.clip_position = globals.view_proj * vec4<f32>(world, 1.0);
     out.world = world;
-    out.normal = model_direction(vertex.normal, instance);
+    // При растяжении вдоль +Y нормаль идёт через обратное растяжение, касательная — через само.
+    let stretch = vec3<f32>(1.0, instance.base.z, 1.0);
+    out.normal = model_direction(normalize(vertex.normal / stretch), instance);
     out.uv = vertex.uv;
-    out.tangent = vec4<f32>(model_direction(vertex.tangent.xyz, instance), vertex.tangent.w);
+    out.tangent = vec4<f32>(model_direction(normalize(vertex.tangent.xyz * stretch), instance), vertex.tangent.w);
     out.color = vertex.color;
     return out;
 }
@@ -755,8 +786,9 @@ fn shade_pbr(
     return albedo * (1.0 - metallic) * (sun + sky) + glint + reflected_sky;
 }
 
-@fragment
-fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
+// Точка модели: освещённый цвет после кривой яркости и прозрачность точки — `baseColorFactor` на картинку цвета
+// на цвет вершины, все три по альфе. Режим материала решает, что с прозрачностью делать, точка входа.
+fn model_point(in: ModelOutput) -> vec4<f32> {
     // Выборки до любых ветвлений: одна текстура — одна выборка.
     let base_sample = textureSample(model_base_texture, model_base_sampler, in.uv);
     let metal_sample = textureSample(model_metal_texture, model_metal_sampler, in.uv);
@@ -780,5 +812,36 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
     let normal = normalize(tangent * tilt.x + bitangent * tilt.y + n * tilt.z);
 
     let visible = shadow_lit(in.world, normal);
-    return vec4<f32>(finish(shade_pbr(albedo, metallic, roughness, ao, in.world, normal, visible)), 1.0);
+    let alpha = model_material.base.a * in.color.a * base_sample.a;
+    return vec4<f32>(finish(shade_pbr(albedo, metallic, roughness, ao, in.world, normal, visible)), alpha);
+}
+
+// `OPAQUE`: прозрачность не учитывается.
+@fragment
+fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
+    let point = model_point(in);
+    return vec4<f32>(point.rgb, 1.0);
+}
+
+// `MASK`: точки с прозрачностью меньше порога не рисуются, остальные сплошные.
+@fragment
+fn fs_model_mask(in: ModelOutput) -> @location(0) vec4<f32> {
+    let point = model_point(in);
+    if (point.a < model_material.alpha.y) {
+        discard;
+    }
+    return vec4<f32>(point.rgb, 1.0);
+}
+
+// Часть со смешиванием: цвет с прозрачностью точки ложится на то, что уже нарисовано; конвейер смешивает по
+// альфе. Так же рисуются куски дорог, у чьих материалов любой режим: `OPAQUE` ложится сплошным, `MASK` с
+// вырезом.
+@fragment
+fn fs_model_blend(in: ModelOutput) -> @location(0) vec4<f32> {
+    let point = model_point(in);
+    let mode = model_material.alpha.x;
+    if (mode > 0.5 && mode < 1.5 && point.a < model_material.alpha.y) {
+        discard;
+    }
+    return vec4<f32>(point.rgb, select(1.0, point.a, mode > 1.5));
 }

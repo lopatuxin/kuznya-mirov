@@ -14,8 +14,8 @@
         170
       ],
       "start": [
-        174.9,
-        100.2
+        132.4,
+        38.9
       ]
     },
     "light": {
@@ -24,6 +24,29 @@
       "shadow": 0.45,
       "sun_color": "#fff3e0",
       "sky_color": "#cfe0f2"
+    },
+    "road_kinds": {
+      "main": {
+        "piece": [
+          "road_main_a",
+          "road_main_b"
+        ],
+        "node": "road_node"
+      },
+      "street": {
+        "piece": [
+          "road_street_a",
+          "road_street_b"
+        ],
+        "node": "road_node"
+      },
+      "drive": {
+        "piece": [
+          "road_drive_a",
+          "road_drive_b"
+        ],
+        "node": "road_node"
+      }
     }
   },
   "random_seed": 1802,
@@ -80,12 +103,6 @@
       "izba_ochre_green": {
         "path": "models/izba_ochre_green.glb"
       },
-      "khrush_grey": {
-        "path": "models/khrush_grey.glb"
-      },
-      "khrush_sand": {
-        "path": "models/khrush_sand.glb"
-      },
       "linden": {
         "path": "models/linden.glb"
       },
@@ -110,6 +127,27 @@
       "pine": {
         "path": "models/pine.glb"
       },
+      "road_drive_a": {
+        "path": "models/road_drive_a.glb"
+      },
+      "road_drive_b": {
+        "path": "models/road_drive_b.glb"
+      },
+      "road_main_a": {
+        "path": "models/road_main_a.glb"
+      },
+      "road_main_b": {
+        "path": "models/road_main_b.glb"
+      },
+      "road_node": {
+        "path": "models/road_node.glb"
+      },
+      "road_street_a": {
+        "path": "models/road_street_a.glb"
+      },
+      "road_street_b": {
+        "path": "models/road_street_b.glb"
+      },
       "shop": {
         "path": "models/shop.glb"
       },
@@ -127,6 +165,53 @@
       },
       "wholesale": {
         "path": "models/wholesale.glb"
+      }
+    },
+    "images": {
+      "bakery": {
+        "path": "icons/bakery.png"
+      },
+      "fuel": {
+        "path": "icons/fuel.png"
+      },
+      "furniture": {
+        "path": "icons/furniture.png"
+      },
+      "jewelry": {
+        "path": "icons/jewelry.png"
+      },
+      "market": {
+        "path": "icons/market.png"
+      },
+      "materials": {
+        "path": "icons/materials.png"
+      },
+      "office": {
+        "path": "icons/office.png"
+      },
+      "pier": {
+        "path": "icons/pier.png"
+      },
+      "plant": {
+        "path": "icons/plant.png"
+      },
+      "service": {
+        "path": "icons/service.png"
+      },
+      "sewing": {
+        "path": "icons/sewing.png"
+      },
+      "shop": {
+        "path": "icons/shop.png"
+      },
+      "site": {
+        "path": "icons/site.png"
+      },
+      "station": {
+        "path": "icons/station.png"
+      },
+      "wholesale": {
+        "path": "icons/wholesale.png"
       }
     }
   }

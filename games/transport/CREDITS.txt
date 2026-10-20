@@ -1,12 +1,32 @@
 Авторы данных, графики и шрифта Транспортной компании
 
-Карта Кинешмы — улицы, дома, вода, железная дорога, адреса — из OpenStreetMap
-  © участники OpenStreetMap, https://www.openstreetmap.org/copyright
-  Лицензия: Open Database License (ODbL) 1.0
-  Перевод в сцену — программа проекта tools/city/osm2scene.mjs, настройки art/transport/city.json
+Карта — городок, начерченный программой проекта tools/city/seed.mjs по настройкам art/transport/seed.json;
+  чужого авторства в ней нет. Названия городка и трактов — настоящие названия мест Верхней Волги
+
+Прежняя карта Кинешмы в игре сейчас не стоит; её строит программа tools/city/osm2scene.mjs из OpenStreetMap
+  (настройки art/transport/city.json): © участники OpenStreetMap, https://www.openstreetmap.org/copyright,
+  лицензия Open Database License (ODbL) 1.0
 
 Модели — машины, дома, деревья, здания клиентов — сделаны программой проекта в Blender
-  (art/transport/models/build.py), чужого авторства в них нет
+  (art/transport/models/build.py), чужого авторства в их форме нет
+
+Материалы хлебозавода (models/bakery.glb) — карты цвета, рельефа, шероховатости и затенения с Poly Haven,
+  уменьшены до 512 точек (art/transport/textures): white_sandstone_bricks_03, brick_wall_001, white_stucco,
+  bitumen, corrugated_iron_02, rusty_corrugated_iron, concrete_panels, garage_floor, painted_metal_shutter
+  Источник: https://polyhaven.com/textures
+  Лицензия: CC0
+  Асфальт двора и заплат, земля стоянки — ambientCG: Asphalt023S, Asphalt024A, Ground103; карты затенения,
+  шероховатости и металла сведены в одну картинку, как у Poly Haven
+  Источник: https://ambientcg.com
+  Лицензия: CC0
+
+Куски грунтовых дорог (models/road_*.glb) — плоские модели программы проекта art/transport/models/roads.py;
+  их карты рисует программа tools/art/roads.mjs поверх грунта ambientCG Ground103: колеи, островки травы,
+  неровный край
+  Источник: https://ambientcg.com
+  Лицензия: CC0
+
+Значки мест (art/transport/icons) нарисованы программой проекта tools/art/icons.mjs, чужого авторства в них нет
 
 Шрифт надписей — Rubik
   Лицензия: SIL Open Font License 1.1 (fonts/OFL-Rubik.txt)

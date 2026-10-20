@@ -22,7 +22,7 @@ const CHECKBOX_PROPERTY_NAMES: readonly string[] = ["collides", "deck", "camera_
  * автора вида `text` — строковое поле без разбора JSON («Таблицы данных», требование 40); остальное —
  * текст. Значение, которого нет в наборе поля (`rotation: 45`, `collides: 1`, картинки нет в списке), —
  * текстовое поле. `walk_to` и `walk_speed` (Фаза 11, требование 45) — как другие пары и числа,
- * `model` (Фаза 25, требование 24) — выбор из имён моделей игры, как `image` из картинок. `on_click` — как `keys`, а `height` и `parallax` (Фаза 28, требование 22) — как другие числа: всё это уже текст по умолчанию, отдельного вида не заводится. `road_speed`, `drive_speed` (числа) и `drive_to` (пара, как `walk_to`) — тоже текст.
+ * `model` (Фаза 25, требование 24) — выбор из имён моделей игры, как `image` из картинок. `on_click` — как `keys`, а `height` и `parallax` (Фаза 28, требование 22) — как другие числа: всё это уже текст по умолчанию, отдельного вида не заводится. `road_speed`, `drive_speed` (числа) и `drive_to` (пара, как `walk_to`) — тоже текст. `road_kind` (Фаза 43, требование 24) — выбор из видов дорог `scene.road_kinds`, как `model`.
  */
 export function propertyFieldKind(
   key: string,
@@ -31,6 +31,7 @@ export function propertyFieldKind(
   imageNames: readonly string[],
   isThreeDimensionalScene: boolean,
   modelNames: readonly string[] = [],
+  roadKindNames: readonly string[] = [],
 ): PropertyFieldKind {
   if (authorPropertyKinds[key] === "text") return { kind: "raw-text" };
   if (CHECKBOX_PROPERTY_NAMES.includes(key) || authorPropertyKinds[key] === "flag") {
@@ -41,6 +42,9 @@ export function propertyFieldKind(
   }
   if (key === "model") {
     return typeof value === "string" && modelNames.includes(value) ? { kind: "select", options: modelNames } : { kind: "text" };
+  }
+  if (key === "road_kind") {
+    return typeof value === "string" && roadKindNames.includes(value) ? { kind: "select", options: roadKindNames } : { kind: "text" };
   }
   if (key === "shape") {
     return typeof value === "string" && (SHAPE_OPTIONS as readonly string[]).includes(value)

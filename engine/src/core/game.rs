@@ -1,3 +1,5 @@
+use std::cell::{Ref, RefCell};
+
 use super::camera::{
     self, Camera3d, CameraHeight, EditorCamera, FlatEditorCamera, FreeView, PlayerCamera,
 };
@@ -9,6 +11,7 @@ use super::pathfind::WalkCaches;
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{CreatedObject, DeleteCause, StepReport, StepReportBuilder};
 use super::rng::Rng;
+use super::road_kinds::RoadKindLayout;
 use super::roads::{RoadLinks, RoadState};
 use super::rules::{Outcome, RuleSet};
 use super::scene::{self, GroundLayer, ObjectSpec, SceneConfig, letterbox};
@@ -133,6 +136,9 @@ pub struct Game {
     walk_paths: WalkCaches,
     /// «Езда по дорогам»: сеть дорог и пути машин — вне мира, сброшены там же, где пути идущих.
     roads: RoadState,
+    /// «Вид дороги»: раскладка кусков и узлов по дорогам мира — кэш рисования, он пересобирается при показе
+    /// кадра (`road_kind_layout`), а не на шаге, потому что редактор правит дороги и вне партии.
+    road_view: RefCell<RoadKindLayout>,
     /// «Мир на экране» → «Камера игрока»: вид камеры, которой водит игрок; `None`, пока у сцены нет
     /// `player_camera`. Сброшен там же, где `camera_last`.
     player: Option<PlayerCamera>,
@@ -290,6 +296,7 @@ impl Game {
             camera_height: CameraHeight::default(),
             walk_paths: WalkCaches::new(),
             roads: RoadState::new(),
+            road_view: RefCell::default(),
             player: None,
             follow_writes_seen: 0,
             taken_keys,
@@ -359,6 +366,12 @@ impl Game {
         self.input_queue.press(code);
     }
 
+    /// «Надписи, полоски и картинки в мире», требование 6: то же для нажатия, нацеленного на объект
+    /// `target`, — щелчок по его картинке в мире.
+    pub fn key_down_on(&mut self, code: &str, target: u32) {
+        self.input_queue.press_on(code, Some(target));
+    }
+
     pub fn key_up(&mut self, code: &str) {
         self.input_queue.release(code);
     }
@@ -416,6 +429,7 @@ impl Game {
             .map(|code| KeyEvent {
                 code: code.clone(),
                 action: KeyAction::Release,
+                target: None,
             })
             .collect();
         self.apply_to_world(&events);
@@ -453,6 +467,7 @@ impl Game {
             self.apply_to_world(std::slice::from_ref(&KeyEvent {
                 code: code.to_string(),
                 action: KeyAction::Release,
+                target: None,
             }));
         }
         self.input_queue.forget(code);
@@ -464,10 +479,21 @@ impl Game {
     /// step's presses only once `step` runs, after every edit/command of the same step already has,
     /// regardless of where the press actually fell among them when it was recorded.
     pub fn press_key(&mut self, code: &str) {
+        self.press_key_aimed(code, None);
+    }
+
+    /// «Надписи, полоски и картинки в мире», требование 7: то же для нажатия, нацеленного на объект
+    /// `target` — повтор щелчка по картинке попадает в тот же объект.
+    pub fn press_key_on(&mut self, code: &str, target: u32) {
+        self.press_key_aimed(code, Some(target));
+    }
+
+    fn press_key_aimed(&mut self, code: &str, target: Option<u32>) {
         if !self.is_key_held(code) {
             self.apply_to_world(std::slice::from_ref(&KeyEvent {
                 code: code.to_string(),
                 action: KeyAction::Press,
+                target,
             }));
         }
         self.input_queue.forget(code);
@@ -991,6 +1017,19 @@ impl Game {
     /// «Езда по дорогам»: у скольких машин запомнен путь.
     pub fn road_path_count(&self) -> usize {
         self.roads.path_count()
+    }
+
+    /// «Вид дороги»: раскладка кусков и узлов по нынешним дорогам мира — собирается заново, только когда дороги
+    /// сменились (требование 17), иначе отдаётся готовая. Без видов в игре дороги не просматриваются. Пока
+    /// кто-то держит раскладку, она уже свежа с его вызова, и повторный вызов её не сверяет.
+    pub fn road_kind_layout(&self) -> Ref<'_, RoadKindLayout> {
+        let kinds = self.world.road_kinds();
+        if !kinds.is_empty()
+            && let Ok(mut layout) = self.road_view.try_borrow_mut()
+        {
+            layout.sync_with(kinds, |roads| self.world.collect_layout_roads(roads));
+        }
+        self.road_view.borrow()
     }
 
     /// «Редактор», «Вызовы движка», `road_links`: связи дороги `id` по нынешнему миру — сеть сверяется
