@@ -1,0 +1,45 @@
+{
+  "properties": {
+    "game": "flag",
+    "sunk": "flag",
+    "tuning": "flag",
+    "notice": "flag",
+    "up": "flag",
+    "down": "flag",
+    "left": "flag",
+    "right": "flag",
+    "res_text": "text",
+    "ship_text": "text",
+    "stats_text": "text",
+    "notice_text": "text",
+    "tune_text": "text",
+    "result_text": "text",
+
+    "cell": "flag",
+    "top": "flag",
+    "fresh": "flag",
+    "clicked": "flag",
+    "damaged": "flag",
+    "helm_label": "flag",
+    "hunting": "flag",
+    "vid": "number",
+    "gx": "number",
+    "gy": "number",
+    "part": "text",
+    "hp": "number",
+    "max_hp": "number",
+
+    "debris": "flag",
+    "did": "number",
+    "ghost": "flag",
+    "rope": "flag",
+
+    "part_kind": "flag",
+    "listed": "flag",
+    "pk": "text",
+    "order": "number",
+    "mark": "text",
+    "cost_text": "text",
+    "effect_text": "text"
+  }
+}

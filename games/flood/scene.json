@@ -1,0 +1,24 @@
+{
+  "objects": [
+    {
+      "name": "game",
+      "game": true,
+      "keys": {
+        "KeyW": { "press": [["up", true]], "release": [["up", false]] },
+        "ArrowUp": { "press": [["up", true]], "release": [["up", false]] },
+        "KeyS": { "press": [["down", true]], "release": [["down", false]] },
+        "ArrowDown": { "press": [["down", true]], "release": [["down", false]] },
+        "KeyA": { "press": [["left", true]], "release": [["left", false]] },
+        "ArrowLeft": { "press": [["left", true]], "release": [["left", false]] },
+        "KeyD": { "press": [["right", true]], "release": [["right", false]] },
+        "ArrowRight": { "press": [["right", true]], "release": [["right", false]] }
+      }
+    },
+    { "part_kind": true, "pk": "deck", "order": 1, "name": "Настил" },
+    { "part_kind": true, "pk": "sail", "order": 2, "name": "Парус" },
+    { "part_kind": true, "pk": "net", "order": 3, "name": "Сеть" },
+    { "part_kind": true, "pk": "ram", "order": 4, "name": "Таран" },
+    { "part_kind": true, "pk": "armor", "order": 5, "name": "Броня" },
+    { "part_kind": true, "pk": "remove", "order": 6, "name": "Снять" }
+  ]
+}

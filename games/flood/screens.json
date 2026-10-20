@@ -1,0 +1,58 @@
+{
+  "screens": [
+    { "name": "menu", "world_runs": false, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [620, 360], "color": "#10232dee" },
+      { "kind": "label", "anchor": "center", "offset": [0, -118], "size": [560, 56], "text": "Потоп", "font": "ui", "font_size": 44, "color": "#f1ede4", "align": "center" },
+      { "kind": "label", "anchor": "center", "offset": [0, -36], "size": [540, 96], "wrap": true, "text": "Мир ушёл под воду. У тебя плот из четырёх досок. Вылавливай обломки, ставь на плот паруса, сеть и таран и не попадайся тем, кто крупнее. Потопленное судно — тоже добыча.", "font": "ui", "font_size": 17, "color": "#b9c7cf", "align": "center" },
+      { "kind": "label", "anchor": "center", "offset": [0, 44], "size": [540, 40], "wrap": true, "text": "W S — вперёд и назад, A D — поворот, щелчок по обломку — крюк, T — стройка, Esc — пауза", "font": "ui", "font_size": 14, "color": "#8fa3ad", "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [0, 116], "size": [220, 52], "text": "Играть", "font": "ui", "font_size": 22, "text_color": "#ffffff", "color": "#2f7a55", "color_hover": "#3a9467", "color_pressed": "#255f43", "on_click": ["new_game", "game"] }
+    ] },
+
+    { "name": "game", "world_runs": true, "keys": { "Escape": ["show_screen", "pause"], "KeyT": ["run", "toggle_tuning"] }, "elements": [
+      { "kind": "panel", "anchor": "top_left", "offset": [16, 16], "size": [440, 96], "color": "#10232dcc" },
+      { "kind": "label", "anchor": "top_left", "offset": [32, 24], "size": [410, 28], "text": "{game.res_text}", "font": "ui", "font_size": 19, "color": "#f1ede4" },
+      { "kind": "label", "anchor": "top_left", "offset": [32, 56], "size": [410, 22], "text": "{game.ship_text}", "font": "ui", "font_size": 14, "color": "#b9c7cf" },
+      { "kind": "label", "anchor": "top_left", "offset": [32, 80], "size": [410, 22], "text": "{game.stats_text}", "font": "ui", "font_size": 14, "color": "#b9c7cf" },
+
+      { "kind": "panel", "anchor": "bottom", "offset": [0, 52], "size": [600, 52], "color": "#10232ddd", "for": { "has": ["game", "notice"] } },
+      { "kind": "label", "anchor": "bottom", "offset": [0, 56], "size": [576, 44], "wrap": true, "text": "{notice_text}", "font": "ui", "font_size": 15, "color": "#f0c27a", "align": "center", "for": { "has": ["game", "notice"] } },
+
+      { "kind": "panel", "anchor": "bottom", "offset": [0, 10], "size": [920, 32], "color": "#10232daa" },
+      { "kind": "label", "anchor": "bottom", "offset": [0, 14], "size": [900, 24], "text": "W S — вперёд и назад · A D — поворот · щелчок по обломку — крюк · T — стройка · колесо — ближе и дальше · Esc — пауза", "font": "ui", "font_size": 14, "color": "#d9e4ea", "align": "center" },
+      { "kind": "button", "anchor": "bottom_right", "offset": [16, 52], "size": [190, 48], "text": "Стройка (T)", "font": "ui", "font_size": 18, "text_color": "#ffffff", "color": "#2f7a55", "color_hover": "#3a9467", "color_pressed": "#255f43", "on_click": ["run", "toggle_tuning"], "for": { "has": ["game"], "without": ["tuning", "sunk"] } },
+
+      { "kind": "panel", "anchor": "right", "offset": [16, 0], "size": [440, 640], "color": "#10232df2", "for": { "has": ["game", "tuning"] } },
+      { "kind": "label", "anchor": "right", "offset": [36, -292], "size": [400, 32], "text": "Стройка плота", "font": "ui", "font_size": 22, "color": "#f1ede4", "for": { "has": ["game", "tuning"] } },
+      { "kind": "label", "anchor": "right", "offset": [36, -262], "size": [400, 20], "text": "Море замерло, пока идёт стройка, паруса свёрнуты", "font": "ui", "font_size": 13, "color": "#8fa3ad", "for": { "has": ["game", "tuning"] } },
+      { "kind": "list", "anchor": "right", "offset": [31, -20], "size": [410, 444], "for": { "has": ["part_kind", "listed"] }, "sort_by": "order", "row_height": 70, "gap": 4, "row": [
+        { "kind": "button", "offset": [0, 0], "size": [410, 70], "text": "", "font": "ui", "font_size": 13, "text_color": "#ffffff", "color": "#ffffff10", "color_hover": "#ffffff22", "color_pressed": "#ffffff08", "on_click": ["run", "pick_part"] },
+        { "kind": "label", "offset": [12, 5], "size": [386, 24], "text": "{mark} {name}", "font": "ui", "font_size": 17, "color": "#f1ede4" },
+        { "kind": "label", "offset": [12, 29], "size": [386, 18], "text": "{cost_text}", "font": "ui", "font_size": 13, "color": "#f0c27a" },
+        { "kind": "label", "offset": [12, 48], "size": [386, 18], "text": "{effect_text}", "font": "ui", "font_size": 12, "color": "#a9b6bd" }
+      ] },
+      { "kind": "button", "anchor": "right", "offset": [240, 232], "size": [196, 40], "text": "Починить", "font": "ui", "font_size": 16, "text_color": "#ffffff", "color": "#3a434c", "color_hover": "#4a545e", "color_pressed": "#2b3239", "on_click": ["run", "repair"], "for": { "has": ["game", "tuning"] } },
+      { "kind": "button", "anchor": "right", "offset": [36, 232], "size": [196, 40], "text": "Готово (T)", "font": "ui", "font_size": 16, "text_color": "#ffffff", "color": "#2f7a55", "color_hover": "#3a9467", "color_pressed": "#255f43", "on_click": ["run", "finish_tuning"], "for": { "has": ["game", "tuning"] } },
+      { "kind": "label", "anchor": "right", "offset": [36, 284], "size": [400, 40], "wrap": true, "text": "{tune_text}", "font": "ui", "font_size": 13, "color": "#f0c27a", "for": { "has": ["game", "tuning"] } }
+    ] },
+
+    { "name": "pause", "world_runs": false, "keys": { "Escape": ["resume"] }, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [420, 220], "color": "#10232dee" },
+      { "kind": "label", "anchor": "center", "offset": [0, -60], "size": [380, 44], "text": "Пауза", "font": "ui", "font_size": 30, "color": "#f1ede4", "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [-96, 40], "size": [170, 48], "text": "Продолжить", "font": "ui", "font_size": 18, "text_color": "#ffffff", "color": "#2f7a55", "color_hover": "#3a9467", "color_pressed": "#255f43", "on_click": ["resume"] },
+      { "kind": "button", "anchor": "center", "offset": [96, 40], "size": [170, 48], "text": "В меню", "font": "ui", "font_size": 18, "text_color": "#ffffff", "color": "#3a434c", "color_hover": "#4a545e", "color_pressed": "#2b3239", "on_click": ["quit"] }
+    ] },
+
+    { "name": "sunk", "world_runs": false, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [520, 260], "color": "#10232dee" },
+      { "kind": "label", "anchor": "center", "offset": [0, -76], "size": [480, 44], "text": "Плот потоплен", "font": "ui", "font_size": 30, "color": "#f1ede4", "align": "center" },
+      { "kind": "label", "anchor": "center", "offset": [0, -16], "size": [470, 60], "wrap": true, "text": "{game.result_text}", "font": "ui", "font_size": 16, "color": "#b9c7cf", "align": "center" },
+      { "kind": "button", "anchor": "center", "offset": [-96, 70], "size": [170, 48], "text": "Ещё раз", "font": "ui", "font_size": 18, "text_color": "#ffffff", "color": "#2f7a55", "color_hover": "#3a9467", "color_pressed": "#255f43", "on_click": ["new_game", "game"] },
+      { "kind": "button", "anchor": "center", "offset": [96, 70], "size": [170, 48], "text": "В меню", "font": "ui", "font_size": 18, "text_color": "#ffffff", "color": "#3a434c", "color_hover": "#4a545e", "color_pressed": "#2b3239", "on_click": ["quit"] }
+    ] }
+  ],
+  "world_elements": [
+    { "kind": "bar", "for": { "has": ["cell", "damaged"] }, "anchor": "top", "offset": [0, -0.15], "size": [0.8, 0.12], "value": "hp", "max": "max_hp", "color": "#e0533f", "back_color": "#000000aa" },
+    { "kind": "label", "for": { "has": ["helm_label"], "without": ["hunting"] }, "anchor": "top", "offset": [0, -1.1], "size": [7, 0.7], "text": "{name}", "font": "ui", "font_size": 0.5, "align": "center", "color": "#e8e2d0" },
+    { "kind": "label", "for": { "has": ["helm_label", "hunting"] }, "anchor": "top", "offset": [0, -1.1], "size": [7, 0.7], "text": "{name} — за тобой!", "font": "ui", "font_size": 0.5, "align": "center", "color": "#ff7a66" }
+  ]
+}

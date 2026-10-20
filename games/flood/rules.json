@@ -1,0 +1,9 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["clicked"] }, "do": [["run", "on_clicked"]] },
+    { "kind": "check", "for": { "has": ["game"] }, "do": [["run", "tick"]] },
+    { "kind": "check", "for": { "has": ["game", "sunk"] }, "do": [["end_game", "loss"]] },
+    { "kind": "collide", "a": { "has": ["cell"] }, "b": { "has": ["debris"] }, "do": [["run", "touch_debris"]] },
+    { "kind": "collide", "a": { "has": ["cell"] }, "b": { "has": ["cell"] }, "do": [["run", "touch_cell"]] }
+  ]
+}

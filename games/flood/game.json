@@ -1,0 +1,36 @@
+{
+  "name": "Потоп",
+  "scene": {
+    "width": 256,
+    "height": 256,
+    "background": "#2b6a80",
+    "view_height": 24,
+    "camera": { "pitch": 58 },
+    "player_camera": { "zoom": [10, 70] },
+    "light": {
+      "sun_from": 35,
+      "sun_height": 50,
+      "shadow": 0.45,
+      "sun_color": "#fff2dc",
+      "sky_color": "#cddfee"
+    }
+  },
+  "random_seed": 2026,
+  "max_objects": 4000,
+  "start_screen": "menu",
+  "loss_screen": "sunk",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "terrain": "terrain.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" },
+    "tables": {
+      "parts": "tables/parts.json",
+      "vessels": "tables/vessels.json",
+      "debris": "tables/debris.json"
+    }
+  }
+}

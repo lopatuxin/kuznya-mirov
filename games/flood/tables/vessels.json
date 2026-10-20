@@ -1,0 +1,45 @@
+{
+  "raft": {
+    "name": "Твой плот",
+    "deck": "#a57d4d",
+    "sail": "#ece2c6",
+    "person": "#c9483b",
+    "cells": [[0, 0, "helm"], [1, 0, "deck"], [0, 1, "deck"], [1, 1, "deck"]]
+  },
+  "gather": {
+    "name": "Сборщик",
+    "deck": "#8f8574",
+    "sail": "#c4baa0",
+    "person": "#6f8794",
+    "cargo": { "wood": 2, "cloth": 1 },
+    "cells": [[0, 0, "helm"], [1, 0, "deck"], [0, 1, "deck"], [1, 1, "deck"], [0, 2, "deck"]]
+  },
+  "raid": {
+    "name": "Налётчик",
+    "deck": "#5d4531",
+    "sail": "#9c382c",
+    "person": "#2a2a2a",
+    "cargo": { "wood": 2, "cloth": 2, "metal": 2 },
+    "cells": [
+      [0, -2, "ram"],
+      [-1, -1, "deck"], [0, -1, "deck"], [1, -1, "deck"],
+      [-1, 0, "sail"], [0, 0, "helm"], [1, 0, "sail"],
+      [-1, 1, "deck"], [0, 1, "deck"], [1, 1, "deck"]
+    ]
+  },
+  "hunt": {
+    "name": "Баржа",
+    "deck": "#4a423c",
+    "sail": "#2e2e33",
+    "person": "#55305f",
+    "cargo": { "wood": 4, "cloth": 3, "metal": 5 },
+    "cells": [
+      [-1, -3, "ram"], [0, -3, "ram"], [1, -3, "ram"],
+      [-2, -2, "armor"], [-1, -2, "deck"], [0, -2, "deck"], [1, -2, "deck"], [2, -2, "armor"],
+      [-2, -1, "deck"], [-1, -1, "sail"], [0, -1, "deck"], [1, -1, "sail"], [2, -1, "deck"],
+      [-2, 0, "deck"], [-1, 0, "deck"], [0, 0, "helm"], [1, 0, "deck"], [2, 0, "deck"],
+      [-2, 1, "deck"], [-1, 1, "sail"], [0, 1, "deck"], [1, 1, "sail"], [2, 1, "deck"],
+      [-2, 2, "armor"], [-1, 2, "deck"], [0, 2, "deck"], [1, 2, "deck"], [2, 2, "armor"]
+    ]
+  }
+}

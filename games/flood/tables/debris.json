@@ -1,0 +1,7 @@
+{
+  "plank":  { "shape": "box",      "size": [0.92, 0.3],  "height": 0.12, "z": -0.05, "color": "#8b6a43", "gives": { "wood": 1 },  "weight": 50 },
+  "tarp":   { "shape": "box",      "size": [0.7, 0.55],  "height": 0.06, "z": -0.02, "color": "#d8ceac", "gives": { "cloth": 1 }, "weight": 18 },
+  "scrap":  { "shape": "box",      "size": [0.5, 0.38],  "height": 0.16, "z": -0.06, "color": "#7d8389", "gives": { "metal": 1 }, "weight": 12 },
+  "crate":  { "shape": "box",      "size": [0.62, 0.62], "height": 0.5,  "z": -0.25, "color": "#a47b48", "gives": { "wood": 2, "cloth": 1 }, "weight": 12 },
+  "barrel": { "shape": "cylinder", "size": [0.56, 0.56], "height": 0.72, "z": -0.38, "color": "#6a4a2f", "gives": { "wood": 1, "metal": 2 }, "weight": 8 }
+}
