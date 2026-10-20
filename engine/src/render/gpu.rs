@@ -86,6 +86,35 @@ pub struct WorldTextDraw {
     pub rect_cells: [f32; 4],
 }
 
+/// Один отрезок слоя мира в порядке рисования — «Надписи, полоски и картинки в мире», требование
+/// 5: прямоугольники `WorldOverlay::instances` или надписи `WorldOverlay::texts`, по номерам.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum WorldRun {
+    Rects(std::ops::Range<usize>),
+    Texts(std::ops::Range<usize>),
+}
+
+/// Всё, что кадр рисует между миром и интерфейсом: прямоугольники мира (в клетках сцены, у
+/// трёхмерной — в точках окна) и надписи в мире, а `runs` говорит, в каком порядке их чередовать:
+/// картинка, стоящая в списке `world_elements` после надписи, рисуется поверх неё.
+#[derive(Default)]
+pub struct WorldOverlay {
+    pub instances: Vec<DrawRect>,
+    pub texts: Vec<WorldTextDraw>,
+    pub runs: Vec<WorldRun>,
+}
+
+impl WorldOverlay {
+    /// Только прямоугольники — кадр без надписей и картинок в мире.
+    pub fn of_rects(instances: Vec<DrawRect>) -> WorldOverlay {
+        WorldOverlay {
+            runs: vec![WorldRun::Rects(0..instances.len())],
+            instances,
+            texts: Vec::new(),
+        }
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
 struct Globals {
@@ -191,12 +220,13 @@ pub struct Renderer {
     text_atlas: glyphon::TextAtlas,
     text_viewport: glyphon::Viewport,
     text_renderer: glyphon::TextRenderer,
-    /// «Надписи и полоски в мире», требование 14: a second `TextRenderer` sharing the same atlas/
-    /// cache/viewport as `text_renderer` — glyphon's own renderer holds one prepared batch at a
-    /// time, so a world-text pass drawn *between* the world and interface rectangle passes (this
-    /// module's own doc comment on `render_frame`) needs its own instance rather than a second
-    /// `prepare`/`render` on `text_renderer`, which would just overwrite the interface's batch.
-    world_text_renderer: glyphon::TextRenderer,
+    /// «Надписи и полоски в мире», требование 14: `TextRenderer`s sharing the same atlas/cache/viewport
+    /// as `text_renderer` — glyphon's own renderer holds one prepared batch at a time, so a world-text
+    /// pass drawn *between* the world and interface rectangle passes (this module's own doc comment on
+    /// `render_frame`) needs its own instance rather than a second `prepare`/`render` on `text_renderer`,
+    /// which would just overwrite the interface's batch. «Картинки в мире», требование 5: по одному на
+    /// каждый отрезок надписей кадра (`WorldRun::Texts`), растут по мере надобности.
+    world_text_renderers: Vec<glyphon::TextRenderer>,
     /// `FontId` (index into this table) → the family name `cosmic-text` shaping needs, resolved
     /// from the font file itself when it was loaded — see `load_font`.
     fonts: Vec<String>,
@@ -569,13 +599,6 @@ impl Renderer {
             wgpu::MultisampleState::default(),
             None,
         );
-        let world_text_renderer = glyphon::TextRenderer::new(
-            &mut text_atlas,
-            &device,
-            wgpu::MultisampleState::default(),
-            None,
-        );
-
         let materials = gpu3d::MaterialGpu::new(&device, &queue, material_options, None);
         let models = ModelsGpu::new(&device, &queue, material_options, &ModelTable::default());
 
@@ -605,7 +628,7 @@ impl Renderer {
             text_atlas,
             text_viewport,
             text_renderer,
-            world_text_renderer,
+            world_text_renderers: Vec::new(),
             fonts: Vec::new(),
             background,
             backend,
@@ -1015,21 +1038,20 @@ impl Renderer {
             .collect()
     }
 
-    /// Draws one frame in five layers, back to front — «Интерфейс игры» → «Отрисовка»: the world's
-    /// colored rectangles (`world_instances`, scene cells, letterboxed — a world element's own bar
-    /// rectangles are appended to this same list by the caller, so they draw over the objects
-    /// beneath them for free), the world's own labels (`world_texts`, a separate `glyphon` pass so
-    /// a screen panel drawn after it can still cover it), the interface's panels and buttons
-    /// (`ui_instances`, window pixels), then the interface's text (`texts`) on top of everything.
+    /// Draws one frame in layers, back to front — «Интерфейс игры» → «Отрисовка»: the world's colored
+    /// rectangles (`world.instances`, scene cells, letterboxed — a world element's own bar and image
+    /// rectangles are appended to this same list by the caller, so they draw over the objects beneath
+    /// them for free), the world's own labels (`world.texts`, a separate `glyphon` pass so a screen
+    /// panel drawn after it can still cover it) interleaved with the images by `world.runs`, the
+    /// interface's panels and buttons (`ui_instances`, window pixels), then the interface's text
+    /// (`texts`) on top of everything.
     pub fn render_frame(
         &mut self,
-        world_instances: &[DrawRect],
-        world_texts: &[WorldTextDraw],
+        world: &WorldOverlay,
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
     ) -> Result<(), String> {
-        let [world_text_count, text_count] =
-            self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
+        let (world_text_counts, text_count) = self.upload_overlay(world, ui_instances, texts)?;
         let Some(surface_texture) = self.acquire_frame()? else {
             return Ok(()); // occluded/timeout: skip this frame, try again next tick
         };
@@ -1065,12 +1087,9 @@ impl Renderer {
             });
             self.draw_overlay(
                 &mut pass,
-                [
-                    world_instances.len(),
-                    world_text_count,
-                    ui_instances.len(),
-                    text_count,
-                ],
+                world,
+                &world_text_counts,
+                [ui_instances.len(), text_count],
             )?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -1080,18 +1099,16 @@ impl Renderer {
 
     /// «Трёхмерная сцена»: кадр из трёх частей — тени и мир с глубиной (`gpu3d::Scene3d::encode`),
     /// затем тот же проход без глубины, что у плоской сцены, поверх готового цвета: полоски мира
-    /// (`world_instances`, в точках окна), надписи в мире, интерфейс — надписи и полоски над
+    /// (`world.instances`, в точках окна), надписи и картинки в мире, интерфейс — надписи и полоски над
     /// фигурами не закрывает ничто.
     pub fn render_frame_3d(
         &mut self,
         frame: &gpu3d::Scene3dFrame<'_>,
-        world_instances: &[DrawRect],
-        world_texts: &[WorldTextDraw],
+        world: &WorldOverlay,
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
     ) -> Result<(), String> {
-        let [world_text_count, text_count] =
-            self.upload_overlay(world_instances, world_texts, ui_instances, texts)?;
+        let (world_text_counts, text_count) = self.upload_overlay(world, ui_instances, texts)?;
         let size = [self.config.width, self.config.height];
         let atlas_view = self
             .atlas_texture
@@ -1111,7 +1128,7 @@ impl Renderer {
             )
         });
         scene3d.upload(&self.device, &self.queue, size, frame);
-        self.models.upload(&self.device, &self.queue, frame.models);
+        self.models.upload(&self.device, &self.queue, &frame.models);
 
         let Some(surface_texture) = self.acquire_frame()? else {
             return Ok(());
@@ -1146,12 +1163,9 @@ impl Renderer {
             });
             self.draw_overlay(
                 &mut pass,
-                [
-                    world_instances.len(),
-                    world_text_count,
-                    ui_instances.len(),
-                    text_count,
-                ],
+                world,
+                &world_text_counts,
+                [ui_instances.len(), text_count],
             )?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
@@ -1160,21 +1174,21 @@ impl Renderer {
     }
 
     /// Записывает прямоугольники мира и интерфейса в буферы и готовит их тексты — общая часть кадра
-    /// плоской и трёхмерной сцены. Отвечает, сколько надписей мира и интерфейса готово к рисованию:
-    /// надпись целиком вне окна не готовится и не считается.
+    /// плоской и трёхмерной сцены. Отвечает, сколько надписей готово у каждого отрезка надписей мира
+    /// (по порядку `WorldRun::Texts`) и сколько у интерфейса: надпись целиком вне окна не готовится и
+    /// не считается.
     fn upload_overlay(
         &mut self,
-        world_instances: &[DrawRect],
-        world_texts: &[WorldTextDraw],
+        world: &WorldOverlay,
         ui_instances: &[DrawRect],
         texts: &[TextDraw],
-    ) -> Result<[usize; 2], String> {
-        self.grow_world_instances(world_instances.len());
-        if !world_instances.is_empty() {
+    ) -> Result<(Vec<usize>, usize), String> {
+        self.grow_world_instances(world.instances.len());
+        if !world.instances.is_empty() {
             self.queue.write_buffer(
                 &self.world_instance_buffer,
                 0,
-                bytemuck::cast_slice(world_instances),
+                bytemuck::cast_slice(&world.instances),
             );
         }
         self.grow_ui_instances(ui_instances.len());
@@ -1186,21 +1200,14 @@ impl Renderer {
             );
         }
 
-        let world_buffers = self.build_world_text_buffers(world_texts);
-        let world_text_areas = text_areas_from(&world_buffers, self.canvas_size_px);
-        let world_text_count = world_text_areas.len();
-        if !world_text_areas.is_empty() {
-            self.world_text_renderer
-                .prepare(
-                    &self.device,
-                    &self.queue,
-                    &mut self.font_system,
-                    &mut self.text_atlas,
-                    &self.text_viewport,
-                    world_text_areas,
-                    &mut self.swash_cache,
-                )
-                .map_err(|e| format!("не удалось подготовить текст в мире: {e:?}"))?;
+        let mut world_text_counts = Vec::new();
+        for run in &world.runs {
+            let WorldRun::Texts(range) = run else {
+                continue;
+            };
+            world_text_counts.push(
+                self.prepare_world_text_run(world_text_counts.len(), &world.texts[range.clone()])?,
+            );
         }
 
         let buffers = self.build_text_buffers(texts);
@@ -1219,31 +1226,82 @@ impl Renderer {
                 )
                 .map_err(|e| format!("не удалось подготовить текст: {e:?}"))?;
         }
-        Ok([world_text_count, text_count])
+        Ok((world_text_counts, text_count))
     }
 
-    /// Рисует в открытом проходе четыре слоя: прямоугольники мира, текст в мире, прямоугольники
-    /// интерфейса, текст интерфейса; `counts` — сколько чего подготовил `upload_overlay`.
+    /// Готовит надписи мира одного отрезка рендерером `index` — он заводится, когда отрезков в кадре
+    /// стало больше, чем было. Отвечает, сколько надписей готово к рисованию.
+    fn prepare_world_text_run(
+        &mut self,
+        index: usize,
+        texts: &[WorldTextDraw],
+    ) -> Result<usize, String> {
+        while self.world_text_renderers.len() <= index {
+            self.world_text_renderers.push(glyphon::TextRenderer::new(
+                &mut self.text_atlas,
+                &self.device,
+                wgpu::MultisampleState::default(),
+                None,
+            ));
+        }
+        let buffers = self.build_world_text_buffers(texts);
+        let areas = text_areas_from(&buffers, self.canvas_size_px);
+        let count = areas.len();
+        if count > 0 {
+            self.world_text_renderers[index]
+                .prepare(
+                    &self.device,
+                    &self.queue,
+                    &mut self.font_system,
+                    &mut self.text_atlas,
+                    &self.text_viewport,
+                    areas,
+                    &mut self.swash_cache,
+                )
+                .map_err(|e| format!("не удалось подготовить текст в мире: {e:?}"))?;
+        }
+        Ok(count)
+    }
+
+    /// Рисует в открытом проходе слои по порядку: отрезки мира (прямоугольники и текст), прямоугольники
+    /// интерфейса, текст интерфейса; `world_text_counts` — сколько надписей подготовил каждый отрезок
+    /// текста, `ui_counts` — сколько прямоугольников и надписей интерфейса.
     fn draw_overlay(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
-        counts: [usize; 4],
+        world: &WorldOverlay,
+        world_text_counts: &[usize],
+        ui_counts: [usize; 2],
     ) -> Result<(), String> {
-        let [world_instances, world_texts, ui_instances, texts] = counts;
-        pass.set_pipeline(&self.rect_pipeline);
-        pass.set_vertex_buffer(0, self.strip_buffer.slice(..));
-        if world_instances > 0 {
-            pass.set_bind_group(0, &self.world_bind_group, &[]);
-            pass.set_vertex_buffer(1, self.world_instance_buffer.slice(..));
-            pass.draw(0..wind::STRIP_VERTICES as u32, 0..world_instances as u32);
+        let [ui_instances, texts] = ui_counts;
+        let mut text_runs = 0;
+        for run in &world.runs {
+            match run {
+                WorldRun::Rects(range) => {
+                    if range.is_empty() {
+                        continue;
+                    }
+                    // Рендерер текста, нарисовавший отрезок до этого, переставил свой конвейер и
+                    // вершинный буфер на этом же проходе — здесь они возвращаются.
+                    pass.set_pipeline(&self.rect_pipeline);
+                    pass.set_vertex_buffer(0, self.strip_buffer.slice(..));
+                    pass.set_bind_group(0, &self.world_bind_group, &[]);
+                    pass.set_vertex_buffer(1, self.world_instance_buffer.slice(..));
+                    pass.draw(
+                        0..wind::STRIP_VERTICES as u32,
+                        range.start as u32..range.end as u32,
+                    );
+                }
+                WorldRun::Texts(_) => {
+                    if world_text_counts[text_runs] > 0 {
+                        self.world_text_renderers[text_runs]
+                            .render(&self.text_atlas, &self.text_viewport, pass)
+                            .map_err(|e| format!("не удалось нарисовать текст в мире: {e:?}"))?;
+                    }
+                    text_runs += 1;
+                }
+            }
         }
-        if world_texts > 0 {
-            self.world_text_renderer
-                .render(&self.text_atlas, &self.text_viewport, pass)
-                .map_err(|e| format!("не удалось нарисовать текст в мире: {e:?}"))?;
-        }
-        // `world_text_renderer.render` above rebinds its own pipeline/vertex buffer on this
-        // same pass — restored here before the interface rectangles draw.
         pass.set_pipeline(&self.rect_pipeline);
         pass.set_vertex_buffer(0, self.strip_buffer.slice(..));
         if ui_instances > 0 {

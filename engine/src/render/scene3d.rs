@@ -12,7 +12,7 @@ use crate::core::value::Shape;
 use crate::data::load::ImageDecl;
 
 use super::atlas::{self, AtlasRect, RectPaint};
-use super::models::{self, ModelInstance};
+use super::models::{self, BlendedDraw, ModelInstance};
 use super::relief::{self, FlatShapes, SurfaceVertex};
 use super::wind::Motion;
 
@@ -38,6 +38,11 @@ pub struct Frame3d {
     pub shapes: Vec<ShapeDraw>,
     /// Объекты каждой модели игры по номеру модели.
     pub models: Vec<Vec<ModelInstance>>,
+    /// «Вид дороги»: куски дорог и узлы по номеру модели; рисуются после моделей и до плоских объектов.
+    pub road_pieces: Vec<Vec<ModelInstance>>,
+    pub road_nodes: Vec<Vec<ModelInstance>>,
+    /// «Свет и материалы», прозрачность: объекты с частью `BLEND` от дальнего к ближнему.
+    pub blended: Vec<BlendedDraw>,
     /// Плитки земли, затем плоские объекты в порядке рисования.
     pub ground: Vec<RectPaint>,
     /// Те же плитки и плоские объекты треугольниками на рельефе и на верху настилов.
@@ -268,6 +273,8 @@ pub fn compose_frame3d(
     let ground_low = level.map_or(land_low, |level| land_low.min(level));
     let ground_high = level.map_or(land_high, |level| land_high.max(level));
     let model_draws = models::model_draws(game);
+    let road_draws = models::road_draws(game);
+    let blended = model_draws.blended_far_to_near(camera.eye);
     let top = shapes
         .iter()
         .map(|s| f64::from(s.base + s.height))
@@ -298,6 +305,9 @@ pub fn compose_frame3d(
     Frame3d {
         shapes,
         models: model_draws.instances,
+        road_pieces: road_draws.pieces,
+        road_nodes: road_draws.nodes,
+        blended,
         ground,
         surface,
         view_proj: camera.view_proj(),

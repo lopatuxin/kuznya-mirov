@@ -123,6 +123,18 @@ export function parseProjectCellPixels(gameJsonText: string | null): number | nu
   }
 }
 
+/** Виды дорог из `scene.road_kinds` в порядке объявления — «Редактор», требование 24 фазы 43: набор выпадающего списка `road_kind`. */
+export function parseProjectRoadKindNames(gameJsonText: string | null): string[] {
+  if (gameJsonText === null) return [];
+  try {
+    const scene = (JSON.parse(gameJsonText) as { scene?: unknown } | null)?.scene;
+    const roadKinds = scene !== null && typeof scene === "object" ? (scene as { road_kinds?: unknown }).road_kinds : undefined;
+    return roadKinds !== null && typeof roadKinds === "object" && !Array.isArray(roadKinds) ? Object.keys(roadKinds) : [];
+  } catch {
+    return [];
+  }
+}
+
 function isCloudImageDescription(description: unknown, cellPixels: number | null): boolean {
   const fields = description !== null && typeof description === "object" && !Array.isArray(description) ? (description as Record<string, unknown>) : {};
   if (typeof fields.path === "string" && isVideoPath(fields.path)) return false;

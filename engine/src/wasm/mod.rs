@@ -18,9 +18,9 @@ use crate::core::scene::{
     CellRange, GroundLayer, LayerView, ObjectTransform, pointer_hit, recorded_place, stamp_hit,
     terrain_hit, window_point,
 };
-use crate::core::screens::{self, ScreenState, ScreensConfig};
+use crate::core::screens::{self, Fill, ScreenState, ScreensConfig, WorldElementKind};
 use crate::core::world::World;
-use crate::core::world_elements;
+use crate::core::world_elements::{self, ImageDraw, OverlayRun, WorldDraws};
 use crate::data::edit;
 use crate::data::error::GameError;
 use crate::data::load::{
@@ -36,8 +36,8 @@ use crate::render::relief::{FlatShapes, TerrainMesh};
 use crate::render::scene3d::{self, Frame3d};
 use crate::render::wind::Motion;
 use crate::render::{
-    DrawRect, Globals3d, GroundVertex, Renderer, Scene3dFrame, ShapeInstance, TextDraw,
-    WorldTextDraw,
+    DrawRect, Globals3d, GroundVertex, ModelsFrame, Renderer, Scene3dFrame, ShapeInstance,
+    TextDraw, WorldOverlay, WorldRun, WorldTextDraw,
 };
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
@@ -1213,19 +1213,16 @@ fn compose_ui(
     (rects, texts)
 }
 
-/// «Надписи и полоски в мире», требования 13, 17, 37: bar backing/fill rectangles (scene cells —
-/// appended by the caller into the same `world_instances` list the world's own objects draw
-/// through, so they land on top of them for free) and label texts (a separate pass — требование
-/// 14: below the interface, above every world rectangle). Drawn whenever the world itself is
-/// drawn, battle or not — unlike `compose_ui`, never gated on a live/replay session.
-fn compose_world_elements(
+/// «Надписи, полоски и картинки в мире», требование 17: полоски, надписи и картинки мира этого
+/// кадра. `cell` — клетка надписей плоской сцены; в трёхмерной (`camera`) всё сразу в точках окна.
+fn world_element_draws(
     game: &Game,
     screens_config: &ScreensConfig,
     camera: Option<&Camera3d>,
     layers: &LayerView,
     cell: f64,
-) -> (Vec<DrawRect>, Vec<WorldTextDraw>) {
-    let (bars, labels) = match camera {
+) -> WorldDraws {
+    match camera {
         None => world_elements::compute_world_draws_scaled(
             &game.world,
             &game.scene,
@@ -1241,32 +1238,132 @@ fn compose_world_elements(
             &screens_config.world_elements,
             camera,
         ),
+    }
+}
+
+/// «Надписи, полоски и картинки в мире», требование 6: объект, чья картинка в мире стоит под точкой
+/// окна `pointer` в кадре `view`; из нескольких — верхняя. `None`, если в игре нет картинок в мире.
+fn image_object_under(
+    game: &Game,
+    screens_config: &ScreensConfig,
+    view: &View,
+    viewport: [f32; 2],
+    pointer: [f32; 2],
+) -> Option<u32> {
+    let has_images = screens_config
+        .world_elements
+        .iter()
+        .any(|element| matches!(element.kind, WorldElementKind::Image { .. }));
+    if !has_images {
+        return None;
+    }
+    let (images, point) = match view {
+        View::Flat { scale, offset } => {
+            let layers = LayerView::of_frame(&game.scene, *scale, *offset, viewport);
+            let cell = game.scene.label_cell(*scale, viewport);
+            let (_, _, images) = world_element_draws(game, screens_config, None, &layers, cell);
+            let point = [
+                (pointer[0] - offset[0]) / scale,
+                (pointer[1] - offset[1]) / scale,
+            ];
+            (images, point)
+        }
+        View::Space(camera) => {
+            let (_, _, images) = world_element_draws(
+                game,
+                screens_config,
+                Some(camera),
+                &LayerView::default(),
+                1.0,
+            );
+            (images, pointer)
+        }
     };
-    let mut rects = Vec::with_capacity(bars.len() * 2);
-    for bar in &bars {
-        for part in bar.back.iter().chain([&bar.fill]) {
-            rects.push(draw_rect(&RectPaint::flat(
-                part.position,
-                part.size,
-                part.color,
-                atlas::WHITE_PIXEL,
-                false,
-                false,
-            )));
+    world_elements::image_object_at(&images, point)
+}
+
+/// Прямоугольник картинки в мире — всегда её первый кадр.
+fn world_image_rect(draw: &ImageDraw, images: &[ImageDecl], atlas_rects: &[AtlasRect]) -> DrawRect {
+    let paint = atlas::first_frame_paint(draw.image, images, atlas_rects);
+    draw_rect(&fill_rect(draw.position, draw.size, paint))
+}
+
+/// «Надписи, полоски и картинки в мире», требования 5, 13, 17, 37: слой мира над готовыми
+/// прямоугольниками `instances` (объекты мира — те же, что рисуют сами себя): полоски, картинки и
+/// надписи вперемешку в порядке списка `world_elements`, текст поверх полосок. Рисуется везде, где
+/// нарисован мир, в партии или нет, — в отличие от `compose_ui`, без оглядки на живую сессию или
+/// повтор.
+#[allow(clippy::too_many_arguments)]
+fn compose_world_elements(
+    game: &Game,
+    screens_config: &ScreensConfig,
+    camera: Option<&Camera3d>,
+    layers: &LayerView,
+    cell: f64,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+    mut instances: Vec<DrawRect>,
+) -> WorldOverlay {
+    let (bars, labels, image_draws) =
+        world_element_draws(game, screens_config, camera, layers, cell);
+    let mut runs = vec![WorldRun::Rects(0..instances.len())];
+    let mut texts = Vec::with_capacity(labels.len());
+    let order = world_elements::overlay_runs(&bars, &labels, &image_draws);
+    let mut bars = bars.iter();
+    let mut labels = labels.into_iter();
+    let mut image_draws = image_draws.iter();
+    for run in order {
+        match run {
+            OverlayRun::Bars(count) => {
+                let start = instances.len();
+                for bar in bars.by_ref().take(count) {
+                    for part in bar.back.iter().chain([&bar.fill]) {
+                        instances.push(draw_rect(&RectPaint::flat(
+                            part.position,
+                            part.size,
+                            part.color,
+                            atlas::WHITE_PIXEL,
+                            false,
+                            false,
+                        )));
+                    }
+                }
+                runs.push(WorldRun::Rects(start..instances.len()));
+            }
+            OverlayRun::Images(count) => {
+                let start = instances.len();
+                instances.extend(
+                    image_draws
+                        .by_ref()
+                        .take(count)
+                        .map(|draw| world_image_rect(draw, images, atlas_rects)),
+                );
+                runs.push(WorldRun::Rects(start..instances.len()));
+            }
+            OverlayRun::Labels(count) => {
+                let start = texts.len();
+                texts.extend(labels.by_ref().take(count).map(|label| WorldTextDraw {
+                    text: label.text,
+                    font: label.font,
+                    font_size_cells: label.font_size,
+                    color: label.color,
+                    align: label.align,
+                    rect_cells: [
+                        label.position[0],
+                        label.position[1],
+                        label.size[0],
+                        label.size[1],
+                    ],
+                }));
+                runs.push(WorldRun::Texts(start..texts.len()));
+            }
         }
     }
-    let texts = labels
-        .into_iter()
-        .map(|l| WorldTextDraw {
-            text: l.text,
-            font: l.font,
-            font_size_cells: l.font_size,
-            color: l.color,
-            align: l.align,
-            rect_cells: [l.position[0], l.position[1], l.size[0], l.size[1]],
-        })
-        .collect();
-    (rects, texts)
+    WorldOverlay {
+        instances,
+        texts,
+        runs,
+    }
 }
 
 /// «Трёхмерная сцена»: кадр мира в данные для видеокарты — фигуры по видам, вершины плиток и
@@ -1351,28 +1448,41 @@ fn render_world(
             ));
             // «Надписи и полоски в мире», требование 37: рисуются везде, где нарисован мир — в
             // редакторе вне партии тоже, в отличие от интерфейса, который виден только в партии.
-            let world_texts = match config {
+            let overlay = match config {
                 Some(config) => {
                     let cell = game.scene.label_cell(*scale, viewport);
-                    let (bar_rects, world_texts) =
-                        compose_world_elements(game, config, None, &layers, cell);
-                    world_instances.extend(bar_rects);
-                    world_texts
+                    compose_world_elements(
+                        game,
+                        config,
+                        None,
+                        &layers,
+                        cell,
+                        images,
+                        atlas_rects,
+                        world_instances,
+                    )
                 }
-                None => Vec::new(),
+                None => WorldOverlay::of_rects(world_instances),
             };
-            renderer.render_frame(&world_instances, &world_texts, ui_instances, texts)
+            renderer.render_frame(&overlay, ui_instances, texts)
         }
         View::Space(camera) => {
             // Полоски и надписи над фигурами посчитаны сразу в точках окна.
             renderer.set_world_frame(1.0, [0.0, 0.0]);
             let frame =
                 scene3d::compose_frame3d(game, camera, motion, images, atlas_rects, flat_shapes);
-            let (bar_rects, world_texts) = match config {
-                Some(config) => {
-                    compose_world_elements(game, config, Some(camera), &LayerView::default(), 1.0)
-                }
-                None => (Vec::new(), Vec::new()),
+            let overlay = match config {
+                Some(config) => compose_world_elements(
+                    game,
+                    config,
+                    Some(camera),
+                    &LayerView::default(),
+                    1.0,
+                    images,
+                    atlas_rects,
+                    Vec::new(),
+                ),
+                None => WorldOverlay::default(),
             };
             let (globals, ground, shapes) = gpu_frame_parts(&frame);
             let parts = Scene3dFrame {
@@ -1380,9 +1490,14 @@ fn render_world(
                 terrain,
                 ground: &ground,
                 shapes: [&shapes[0], &shapes[1], &shapes[2], &shapes[3]],
-                models: &frame.models,
+                models: ModelsFrame {
+                    objects: &frame.models,
+                    pieces: &frame.road_pieces,
+                    nodes: &frame.road_nodes,
+                    blended: &frame.blended,
+                },
             };
-            renderer.render_frame_3d(&parts, &bar_rects, &world_texts, ui_instances, texts)
+            renderer.render_frame_3d(&parts, &overlay, ui_instances, texts)
         }
     }
 }
@@ -1889,6 +2004,18 @@ impl Engine {
         Some(frame_for(game, self.battle_view, viewport))
     }
 
+    /// Объект картинки в мире под последним известным положением мыши в кадре, который виден сейчас.
+    fn image_object_under_pointer(&self) -> Option<u32> {
+        let pointer = self.last_mouse_window_pos?;
+        image_object_under(
+            self.game.as_ref()?,
+            self.screens_config.as_ref()?,
+            &self.frame()?,
+            self.renderer.window_size_css(),
+            pointer,
+        )
+    }
+
     /// Камера игрока ведётся мышью и клавишами страницы: на странице игры и в идущей партии редактора,
     /// но не вне партии (там камера редактора) и не в повторе (там вид идёт из записи).
     fn camera_input_open(&self) -> bool {
@@ -1991,7 +2118,9 @@ impl Engine {
     /// fills). An empty frame without a loaded game.
     pub fn draw(&mut self, dt: f64) {
         if self.game.is_none() {
-            let _ = self.renderer.render_frame(&[], &[], &[], &[]);
+            let _ = self
+                .renderer
+                .render_frame(&WorldOverlay::default(), &[], &[]);
             return;
         }
         let view = self.frame().expect("checked above");
@@ -2056,6 +2185,14 @@ impl Engine {
         let Some(game) = self.game.as_ref() else {
             return JsValue::UNDEFINED;
         };
+        // «Надписи, полоски и картинки в мире», требование 6: картинка в мире нарисована выше всех
+        // объектов, и редактор выбирает её объект.
+        if let (Some(config), Some(view)) = (self.screens_config.as_ref(), self.frame())
+            && let Some(id) =
+                image_object_under(game, config, &view, self.renderer.window_size_css(), [x, y])
+        {
+            return JsValue::from_f64(id as f64);
+        }
         let picked = match self.frame() {
             Some(View::Flat { scale, offset }) => crate::core::scene::object_at_frame(
                 &game.world,
@@ -2533,8 +2670,14 @@ impl Engine {
         }
     }
 
+    /// «Надписи, полоски и картинки в мире», требование 6: нажатие над картинкой в мире идёт в очередь
+    /// с её объектом — что под курсором, знает кадр, который видит игрок; кнопка или панель экрана над
+    /// картинкой заберёт нажатие, когда очередь дойдёт до него.
     pub fn mouse_down(&mut self) {
-        self.ui_queue.push_mouse_down();
+        match self.image_object_under_pointer() {
+            Some(object) => self.ui_queue.push_mouse_down_on(object),
+            None => self.ui_queue.push_mouse_down(),
+        }
     }
 
     pub fn mouse_up(&mut self) {
@@ -2561,7 +2704,9 @@ impl Engine {
             // path, so `key_down`/`key_up`/`mouse_*` piling onto a page stuck here would grow it
             // without bound.
             self.ui_queue = UiQueue::new();
-            let _ = self.renderer.render_frame(&[], &[], &[], &[]);
+            let _ = self
+                .renderer
+                .render_frame(&WorldOverlay::default(), &[], &[]);
             return js_running();
         };
 

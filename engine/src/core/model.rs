@@ -51,7 +51,21 @@ pub struct Texture {
     pub sampler: Sampler,
 }
 
-/// Материал по стандарту glTF: цвет, мелкий рельеф, шероховатость и металл, затенение.
+/// «Свет и материалы», «Прозрачность материала модели»: `alphaMode` материала по стандарту glTF.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AlphaMode {
+    /// Прозрачность не учитывается.
+    Opaque,
+    /// Точки с прозрачностью меньше порога не рисуются, остальные сплошные.
+    Mask,
+    /// Часть смешивается с тем, что за ней.
+    Blend,
+}
+
+/// Порог `MASK`, если в файле нет `alphaCutoff`.
+pub const DEFAULT_ALPHA_CUTOFF: f32 = 0.5;
+
+/// Материал по стандарту glTF: цвет, мелкий рельеф, шероховатость и металл, затенение, прозрачность.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Material {
     pub base_color: [f32; 4],
@@ -64,10 +78,13 @@ pub struct Material {
     pub normal_texture: Option<(Texture, f32)>,
     /// Карта затенения (красный канал) и её `strength`.
     pub occlusion_texture: Option<(Texture, f32)>,
+    pub alpha_mode: AlphaMode,
+    /// Порог `MASK`; у других режимов не читается.
+    pub alpha_cutoff: f32,
 }
 
 impl Material {
-    /// Часть без материала — белая матовая.
+    /// Часть без материала — белая матовая сплошная.
     pub fn plain() -> Material {
         Material {
             base_color: [1.0; 4],
@@ -77,6 +94,8 @@ impl Material {
             metal_rough_texture: None,
             normal_texture: None,
             occlusion_texture: None,
+            alpha_mode: AlphaMode::Opaque,
+            alpha_cutoff: DEFAULT_ALPHA_CUTOFF,
         }
     }
 }
@@ -117,6 +136,13 @@ impl Model {
             images: Vec::new(),
             size: [1.0; 3],
         }
+    }
+
+    /// Есть ли у модели часть `BLEND`: её рисуют отдельно от сплошных частей, по порядку от дальнего к ближнему.
+    pub fn has_blend(&self) -> bool {
+        self.parts
+            .iter()
+            .any(|part| self.materials[part.material].alpha_mode == AlphaMode::Blend)
     }
 
     /// Во сколько раз модель увеличена объектом с `height`: без него одна единица файла — одна клетка.

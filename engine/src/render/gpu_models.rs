@@ -1,16 +1,17 @@
 //! «Трёхмерная сцена» → «Модели и движения»: модели игры на видеокарте. Сетки частей, картинки материалов
 //! со ступенями уменьшения и буфер экземпляров, в котором объекты каждой модели лежат подряд: каждая часть
-//! модели рисуется одной командой на все объекты своей модели. Картинки моделей в атлас игры не идут: у
-//! моделей свои текстуры.
+//! модели рисуется одной командой на все объекты своей модели. Части с `BLEND` рисуются отдельно, по одному
+//! объекту, в порядке кадра; куски дорог и узлы — тем же способом, что объекты, но из своих списков. Картинки
+//! моделей в атлас игры не идут: у моделей свои текстуры.
 
 use std::collections::HashMap;
 
 use wgpu::util::{DeviceExt, TextureDataOrder};
 
-use crate::core::model::{Image, Material, Model, ModelTable, Sampler, Texture, Wrap};
+use crate::core::model::{AlphaMode, Image, Material, Model, ModelTable, Sampler, Texture, Wrap};
 
 use super::gpu3d::MaterialOptions;
-use super::models::{ModelInstance, mip_chain};
+use super::models::{BlendedDraw, ModelInstance, mip_chain};
 
 /// Байт на вершину части: место, нормаль, точка карты, касательная и цвет.
 pub const VERTEX_STRIDE: u64 = 64;
@@ -60,17 +61,38 @@ pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     },
 ];
 
-/// Часть модели на видеокарте: сетка и привязка её материала.
+/// Часть модели на видеокарте: сетка, привязка её материала и режим прозрачности материала.
 struct PartGpu {
     vertices: wgpu::Buffer,
     indices: wgpu::Buffer,
     index_count: u32,
     material: wgpu::BindGroup,
+    alpha: AlphaMode,
 }
 
 struct ModelGpu {
     parts: Vec<PartGpu>,
 }
+
+/// Что рисовать из списка кадра: объекты моделей, куски дорог или узлы.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Group {
+    Objects,
+    Pieces,
+    Nodes,
+}
+
+/// Объекты кадра, как они приходят на видеокарту: по моделям — объекты, куски дорог и узлы, и порядок объектов
+/// с частью `BLEND`.
+pub struct ModelsFrame<'a> {
+    pub objects: &'a [Vec<ModelInstance>],
+    pub pieces: &'a [Vec<ModelInstance>],
+    pub nodes: &'a [Vec<ModelInstance>],
+    pub blended: &'a [BlendedDraw],
+}
+
+/// Где в буфере экземпляров лежат объекты одной модели: номер первого и сколько их.
+type Span = (u32, u32);
 
 /// Все модели игры на видеокарте и буфер экземпляров кадра.
 pub struct ModelsGpu {
@@ -78,8 +100,12 @@ pub struct ModelsGpu {
     models: Vec<ModelGpu>,
     instances: wgpu::Buffer,
     capacity: usize,
-    /// Сколько объектов каждой модели лежит в `instances`, подряд по моделям.
-    counts: Vec<u32>,
+    /// Где лежат объекты каждой модели в `instances`: объекты, куски дорог и узлы подряд, по моделям.
+    objects: Vec<Span>,
+    pieces: Vec<Span>,
+    nodes: Vec<Span>,
+    /// Объекты с частью `BLEND` от дальнего к ближнему.
+    blended: Vec<BlendedDraw>,
     scratch: Vec<u8>,
 }
 
@@ -275,6 +301,7 @@ impl ModelBuilder<'_> {
                         }),
                     index_count: part.indices.len() as u32,
                     material: materials[part.material].clone(),
+                    alpha: model.materials[part.material].alpha_mode,
                 }
             })
             .collect();
@@ -330,6 +357,14 @@ impl ModelBuilder<'_> {
                     material.roughness,
                     normal_scale,
                     occlusion_strength,
+                    match material.alpha_mode {
+                        AlphaMode::Opaque => 0.0,
+                        AlphaMode::Mask => 1.0,
+                        AlphaMode::Blend => 2.0,
+                    },
+                    material.alpha_cutoff,
+                    0.0,
+                    0.0,
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -388,10 +423,13 @@ impl ModelsGpu {
         let models: Vec<ModelGpu> = table.iter().map(|model| builder.model(model)).collect();
         let capacity = 256;
         ModelsGpu {
-            counts: vec![0; models.len()],
             models,
             instances: instance_buffer(device, capacity),
             capacity,
+            objects: Vec::new(),
+            pieces: Vec::new(),
+            nodes: Vec::new(),
+            blended: Vec::new(),
             scratch: Vec::new(),
             material_layout: layout,
         }
@@ -401,52 +439,121 @@ impl ModelsGpu {
         &self.material_layout
     }
 
-    /// Пишет объекты кадра в буфер: объекты каждой модели подряд, по порядку моделей.
-    pub fn upload(
-        &mut self,
-        device: &wgpu::Device,
-        queue: &wgpu::Queue,
-        instances: &[Vec<ModelInstance>],
-    ) {
-        let lists = instances.iter().take(self.models.len());
-        let total: usize = lists.clone().map(Vec::len).sum();
+    /// Пишет объекты кадра в буфер: объекты, куски дорог и узлы, в каждой группе — объекты каждой модели
+    /// подряд, по порядку моделей.
+    pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &ModelsFrame<'_>) {
+        let groups = [frame.objects, frame.pieces, frame.nodes];
+        let total: usize = groups
+            .iter()
+            .flat_map(|lists| lists.iter().take(self.models.len()))
+            .map(Vec::len)
+            .sum();
         if total > self.capacity {
             self.capacity = total.next_power_of_two();
             self.instances = instance_buffer(device, self.capacity);
         }
         self.scratch.clear();
-        self.counts.fill(0);
-        for (count, list) in self.counts.iter_mut().zip(lists) {
-            *count = list.len() as u32;
-            for instance in list {
-                for value in instance.placement.into_iter().chain(instance.base) {
-                    self.scratch.extend(value.to_le_bytes());
+        let mut next = 0u32;
+        for (spans, lists) in [&mut self.objects, &mut self.pieces, &mut self.nodes]
+            .into_iter()
+            .zip(groups)
+        {
+            spans.clear();
+            for list in lists.iter().take(self.models.len()) {
+                spans.push((next, list.len() as u32));
+                next += list.len() as u32;
+                for instance in list {
+                    for value in instance.placement.into_iter().chain(instance.base) {
+                        self.scratch.extend(value.to_le_bytes());
+                    }
                 }
             }
         }
+        self.blended.clear();
+        self.blended.extend_from_slice(frame.blended);
         if !self.scratch.is_empty() {
             queue.write_buffer(&self.instances, 0, &self.scratch);
         }
     }
 
-    /// Рисует каждую часть каждой модели одной командой на все объекты модели; `materials` — привязывать ли
-    /// материалы частей (в проходе теней их нет).
-    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, materials: bool) {
-        let mut first_byte = 0u64;
-        for (model, &count) in self.models.iter().zip(&self.counts) {
-            let bytes = u64::from(count) * INSTANCE_STRIDE;
-            if count > 0 {
-                for part in &model.parts {
-                    pass.set_vertex_buffer(0, part.vertices.slice(..));
-                    pass.set_vertex_buffer(1, self.instances.slice(first_byte..first_byte + bytes));
-                    pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
-                    if materials {
-                        pass.set_bind_group(1, &part.material, &[]);
-                    }
-                    pass.draw_indexed(0..part.index_count, 0, 0..count);
-                }
+    fn span_bytes(first: u32, count: u32) -> std::ops::Range<u64> {
+        let start = u64::from(first) * INSTANCE_STRIDE;
+        start..start + u64::from(count) * INSTANCE_STRIDE
+    }
+
+    /// Рисует части моделей, годные `wanted`, из группы `group`: каждую одной командой на все объекты
+    /// модели; `materials` — привязывать ли материалы частей (в проходе теней сплошных их нет).
+    fn draw_group(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        group: Group,
+        wanted: impl Fn(AlphaMode) -> bool,
+        materials: bool,
+    ) {
+        let spans = match group {
+            Group::Objects => &self.objects,
+            Group::Pieces => &self.pieces,
+            Group::Nodes => &self.nodes,
+        };
+        for (model, &(first, count)) in self.models.iter().zip(spans) {
+            if count == 0 {
+                continue;
             }
-            first_byte += bytes;
+            for part in model.parts.iter().filter(|part| wanted(part.alpha)) {
+                pass.set_vertex_buffer(0, part.vertices.slice(..));
+                pass.set_vertex_buffer(
+                    1,
+                    self.instances.slice(ModelsGpu::span_bytes(first, count)),
+                );
+                pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
+                if materials {
+                    pass.set_bind_group(1, &part.material, &[]);
+                }
+                pass.draw_indexed(0..part.index_count, 0, 0..count);
+            }
+        }
+    }
+
+    /// Рисует части объектов с прозрачностью `alpha` (`OPAQUE` или `MASK`); `materials` — привязывать ли
+    /// материалы частей.
+    pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode, materials: bool) {
+        self.draw_group(pass, Group::Objects, |mode| mode == alpha, materials);
+    }
+
+    /// Рисует части `BLEND` объектов кадра по одному объекту в порядке кадра, от дальнего к ближнему.
+    pub fn draw_blended(&self, pass: &mut wgpu::RenderPass<'_>) {
+        for draw in &self.blended {
+            let Some(model) = self.models.get(draw.model as usize) else {
+                continue;
+            };
+            let Some(&(first, count)) = self.objects.get(draw.model as usize) else {
+                continue;
+            };
+            if draw.index >= count {
+                continue;
+            }
+            for part in model
+                .parts
+                .iter()
+                .filter(|part| part.alpha == AlphaMode::Blend)
+            {
+                pass.set_vertex_buffer(0, part.vertices.slice(..));
+                pass.set_vertex_buffer(
+                    1,
+                    self.instances
+                        .slice(ModelsGpu::span_bytes(first + draw.index, 1)),
+                );
+                pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_bind_group(1, &part.material, &[]);
+                pass.draw_indexed(0..part.index_count, 0, 0..1);
+            }
+        }
+    }
+
+    /// Рисует куски дорог, затем узлы: части любой прозрачности, с материалами.
+    pub fn draw_roads(&self, pass: &mut wgpu::RenderPass<'_>) {
+        for group in [Group::Pieces, Group::Nodes] {
+            self.draw_group(pass, group, |_| true, true);
         }
     }
 }

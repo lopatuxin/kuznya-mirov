@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { inflateSync } from "node:zlib";
-import { buildingKind, buildCity, straightPieces, streetForm, zoneKind } from "./city.mjs";
+import { buildingKind, buildCity, signSpeed, straightPieces, streetForm, zoneKind } from "./city.mjs";
 import { area, clipSegment, inside, orientedBox, projector, rectRecord } from "./geo.mjs";
 import { encodePng } from "./png.mjs";
 import { createRaster, drawLine, fillPolygon, floodFill, sample } from "./raster.mjs";
@@ -43,9 +43,24 @@ test("обрезка отрезка рамкой сцены", () => {
 });
 
 test("прямые куски: почти прямая ломаная сливается, излом остаётся", () => {
-  const pieces = straightPieces([[0, 0], [5, 0.1], [10, 0], [10, 6]], 0.05);
+  const pieces = straightPieces([[0, 0], [5, 0.04], [10, 0], [10, 6]], 0.05);
   assert.equal(pieces.length, 2);
   assert.deepEqual(pieces[0], [[0, 0], [10, 0]]);
+});
+
+test("прямые куски: плавная дуга не сливается в одну хорду в стороне от неё", () => {
+  // Дуга радиусом 400 по 1° на шаг: каждый излом меньше 5°, а хорда всей дуги отошла бы от неё на 3,9.
+  const arc = [];
+  for (let k = 0; k <= 16; k++) {
+    const f = (k * Math.PI) / 180;
+    arc.push([400 * Math.sin(f), 400 - 400 * Math.cos(f)]);
+  }
+  const pieces = straightPieces(arc, 0.05);
+  assert.ok(pieces.length > 1, "дуга слилась в одну хорду");
+  for (const [a, b] of pieces) {
+    const mid = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
+    assert.ok(Math.abs(Math.hypot(mid[0], mid[1] - 400) - 400) <= 0.05, "кусок отошёл от дуги");
+  }
 });
 
 test("заливка от затравки не перешагивает берег, проведённый наискосок", () => {
@@ -90,6 +105,9 @@ test("имя улицы для «на …»", () => {
   assert.equal(streetForm("улица Сеченова"), "улице Сеченова");
   assert.equal(streetForm("Комсомольская улица"), "Комсомольской улице");
   assert.equal(streetForm("Волжский бульвар"), "Волжском бульваре");
+  assert.equal(streetForm("Глухой переулок"), "Глухом переулке");
+  assert.equal(streetForm("Кинешемский тракт"), "Кинешемском тракте");
+  assert.equal(streetForm("Костромской тракт"), "Костромском тракте");
   assert.equal(streetForm(""), "");
 });
 
@@ -120,4 +138,98 @@ test("маленький город: улица с признаком road, до
   assert.ok(Math.abs(home.stop_y - road.position[1] - road.size[1] / 2) < 0.05, "остановка на оси улицы");
   assert.ok(city.stats.waterPoints > 0, "озеро залито");
   assert.ok(city.objects.every((o) => o.map), "все объекты карты помечены");
+});
+
+test("вид улицы: улица вида рисуется кусками — у неё вид вместо цвета", () => {
+  const g = (pts) => pts.map(([lat, lon]) => ({ lat, lon }));
+  const osm = { elements: [{ type: "way", id: 1, tags: { highway: "residential", name: "улица Тестовая" }, geometry: g([[57.005, 42.001], [57.005, 42.019]]) }] };
+  const config = {
+    bbox: [57.0, 42.0, 57.01, 42.02], cell: 20, minute_seconds: 3, seed: 1, background: "#808080",
+    roads: { residential: { width: 7, color: "#777777", layer: 3, speed: 25, kind: "street" } }, unpaved_color: "#888888", unpaved_speed: 15,
+    deck_thickness: 1.5, deck_color: "#999999", rail: { width: 4, color: "#555555" },
+    water: { per: 4, seeds: [], depth: -0.3, level: -0.08, color: "#336699" },
+    buildings: {}, trees: { crown: 7, height: 9, colors: ["#336633"], spacing: {}, yard_chance: 0 }, places: [],
+  };
+  const road = buildCity(osm, config).objects.find((o) => o.road);
+  assert.equal(road.road_kind, "street");
+  assert.equal(road.color, undefined);
+});
+
+test("предел скорости: знак из maxspeed сильнее вида улицы, российские обозначения — в км/ч", () => {
+  assert.equal(signSpeed("40"), 40);
+  assert.equal(signSpeed("RU:urban"), 60);
+  assert.equal(signSpeed("RU:rural"), 90);
+  assert.equal(signSpeed("RU:living_street"), 20);
+  assert.equal(signSpeed(undefined), undefined);
+  assert.equal(signSpeed("none"), undefined);
+  const g = (pts) => pts.map(([lat, lon]) => ({ lat, lon }));
+  const osm = {
+    elements: [
+      { type: "way", id: 1, tags: { highway: "residential", name: "улица Школьная", maxspeed: "40" }, geometry: g([[57.005, 42.001], [57.005, 42.019]]) },
+      { type: "way", id: 2, tags: { building: "house" }, geometry: g([[57.0056, 42.005], [57.0056, 42.0052], [57.0058, 42.0052], [57.0058, 42.005], [57.0056, 42.005]]) },
+      { type: "way", id: 4, tags: { highway: "residential", name: "улица Грунтовая", maxspeed: "60", surface: "dirt" }, geometry: g([[57.008, 42.001], [57.008, 42.019]]) },
+      { type: "way", id: 5, tags: { highway: "living_street", name: "Дворовый проезд" }, geometry: g([[57.002, 42.001], [57.002, 42.019]]) },
+      { type: "node", id: 7, lat: 57.0053, lon: 42.0052, tags: { amenity: "fuel" } },
+    ],
+  };
+  const config = {
+    bbox: [57.0, 42.0, 57.01, 42.02], cell: 20, minute_seconds: 3, seed: 1, background: "#808080",
+    roads: {
+      residential: { width: 7, color: "#777777", layer: 3, speed: 60 },
+      living_street: { width: 6, color: "#777777", layer: 3, speed: 20 },
+    },
+    unpaved_color: "#888888", unpaved_speed: 40,
+    deck_thickness: 1.5, deck_color: "#999999", rail: { width: 4, color: "#555555" },
+    water: { per: 4, seeds: [], depth: -0.3, level: -0.08, color: "#336699" },
+    buildings: { house: { height: 6, colors: ["#aa8866"] } },
+    trees: { crown: 7, height: 9, colors: ["#336633"], spacing: {}, yard_chance: 0 },
+    places: [{ id: "fuel_test", name: "АЗС на {street}", osm: "n7", pad: [30, 20], color: "#8d959c" }],
+  };
+  const city = buildCity(osm, config);
+  const kmh = (name) => (city.objects.find((o) => o.road && o.name === name).road_speed * 60 * 20 * 3) / 1000;
+  assert.ok(Math.abs(kmh("улица Школьная") - 40) < 0.01, "знак 40 вместо 60 по виду улицы");
+  assert.ok(Math.abs(kmh("улица Грунтовая") - 40) < 0.01, "на грунтовке знак 60 не быстрее покрытия");
+  assert.ok(Math.abs(kmh("Дворовый проезд") - 20) < 0.01, "без знака — по виду улицы");
+  const fuel = city.objects.find((o) => o.place === "fuel_test");
+  assert.equal(fuel.name, "АЗС на улице Школьная");
+  assert.ok(Math.abs(fuel.size[0] - 1.5) < 1e-6 && Math.abs(fuel.size[1] - 1) < 1e-6, "площадка 30 × 20 м");
+  const houses = city.objects.filter((o) => o.height && !o.road);
+  assert.ok(houses.length > 0 && houses.every((h) => h.place === undefined), "точка заправки у дома не делает дом заправкой");
+});
+
+test("территория места: модель на своей точке и повороте, дом карты внутри убран, заезд — дорогой без цвета", () => {
+  const g = (pts) => pts.map(([lat, lon]) => ({ lat, lon }));
+  const osm = {
+    elements: [
+      { type: "way", id: 1, tags: { highway: "residential", name: "улица Тестовая" }, geometry: g([[57.005, 42.001], [57.005, 42.019]]) },
+      { type: "way", id: 2, tags: { building: "house" }, geometry: g([[57.0056, 42.005], [57.0056, 42.0052], [57.0058, 42.0052], [57.0058, 42.005], [57.0056, 42.005]]) },
+    ],
+  };
+  const config = {
+    bbox: [57.0, 42.0, 57.01, 42.02], cell: 20, minute_seconds: 3, seed: 1, background: "#808080",
+    roads: { residential: { width: 7, color: "#777777", layer: 3, speed: 60 } }, unpaved_color: "#888888", unpaved_speed: 40,
+    deck_thickness: 1.5, deck_color: "#999999", rail: { width: 4, color: "#555555" },
+    water: { per: 4, seeds: [], depth: -0.3, level: -0.08, color: "#336699" },
+    buildings: { house: { height: 6, colors: ["#aa8866"] } },
+    trees: { crown: 7, height: 9, colors: ["#336633"], spacing: {}, yard_chance: 0 },
+    places: [{
+      id: "plant", name: "Завод", lat: 57.0057, lon: 42.0051,
+      territory: { rotation: 90, clear: [[-30, -30], [30, -30], [30, 30], [-30, 30]], roads: [{ path: [[0, 0], [90, 0]], width: 6, speed: 10, hidden: true }], stop: [5, 0] },
+    }],
+    models: { places: { plant: { name: "plant", size: [40, 20], center: [10, 4], height: 12 } } },
+  };
+  const city = buildCity(osm, config);
+  const [ox, oy] = projector(config.bbox, 20).toCell(57.0057, 42.0051);
+  const plant = city.objects.find((o) => o.place === "plant");
+  assert.equal(plant.model, "plant");
+  assert.equal(plant.name, "Завод");
+  assert.equal(plant.rotation, 90);
+  assert.ok(Math.abs(plant.position[0] + plant.size[0] / 2 - (ox + 0.2)) < 0.01 && Math.abs(plant.position[1] + plant.size[1] / 2 - (oy + 0.5)) < 0.01,
+    "при повороте 90° ось X модели — на юг, ось Y — на восток");
+  assert.deepEqual([plant.size, plant.height], [[2, 1], 0.6]);
+  assert.ok(Math.abs(plant.stop_x - ox) < 0.01 && Math.abs(plant.stop_y - (oy + 0.25)) < 0.01);
+  assert.ok(!city.objects.some((o) => o.height && !o.place), "дом внутри территории убран");
+  const drive = city.objects.find((o) => o.road && !o.name);
+  assert.equal(drive.color, undefined, "проезд территории без цвета");
+  assert.ok(Math.abs((drive.road_speed * 60 * 20 * 3) / 1000 - 10) < 0.01);
 });

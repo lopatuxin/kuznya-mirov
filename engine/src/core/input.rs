@@ -12,6 +12,10 @@ pub enum KeyAction {
 pub struct KeyEvent {
     pub code: String,
     pub action: KeyAction,
+    /// «Надписи, полоски и картинки в мире», требование 6: объект, по которому щёлкнули через его
+    /// картинку в мире, — `on_click` срабатывает у него, а не у объекта под курсором. У остальных
+    /// нажатий `None`.
+    pub target: Option<u32>,
 }
 
 /// What a single step sees: every press/release queued since the previous step, still in arrival
@@ -62,12 +66,18 @@ impl InputQueue {
     /// took the original press. Suppressed here, in the engine, rather than relying on the page to
     /// filter `event.repeat` — the engine has to stay correct however the page behaves.
     pub fn press(&mut self, code: &str) {
+        self.press_on(code, None);
+    }
+
+    /// То же для нажатия, нацеленного на объект `target` — `KeyEvent::target`.
+    pub fn press_on(&mut self, code: &str, target: Option<u32>) {
         if !self.held.insert(code.to_string()) {
             return;
         }
         self.pending.push(KeyEvent {
             code: code.to_string(),
             action: KeyAction::Press,
+            target,
         });
     }
 
@@ -80,6 +90,7 @@ impl InputQueue {
         self.pending.push(KeyEvent {
             code: code.to_string(),
             action: KeyAction::Release,
+            target: None,
         });
     }
 
@@ -114,7 +125,9 @@ impl InputQueue {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MouseEvent {
     Move([f32; 2]),
-    Down,
+    /// Нажатие левой кнопки; объект — тот, чья картинка в мире стояла под курсором, — «Надписи,
+    /// полоски и картинки в мире», требование 6.
+    Down(Option<u32>),
     Up,
 }
 
@@ -149,7 +162,14 @@ impl UiQueue {
     }
 
     pub fn push_mouse_down(&mut self) {
-        self.pending.push(UiEvent::Mouse(MouseEvent::Down));
+        self.pending.push(UiEvent::Mouse(MouseEvent::Down(None)));
+    }
+
+    /// Нажатие над картинкой в мире объекта `object`: страница знает, что стоит под курсором в
+    /// кадре, который видит игрок.
+    pub fn push_mouse_down_on(&mut self, object: u32) {
+        self.pending
+            .push(UiEvent::Mouse(MouseEvent::Down(Some(object))));
     }
 
     pub fn push_mouse_up(&mut self) {
@@ -219,19 +239,37 @@ mod tests {
             vec![
                 KeyEvent {
                     code: "ArrowUp".to_string(),
-                    action: KeyAction::Press
+                    action: KeyAction::Press,
+                    target: None,
                 },
                 KeyEvent {
                     code: "ArrowDown".to_string(),
-                    action: KeyAction::Press
+                    action: KeyAction::Press,
+                    target: None,
                 },
                 KeyEvent {
                     code: "ArrowDown".to_string(),
-                    action: KeyAction::Release
+                    action: KeyAction::Release,
+                    target: None,
                 },
             ]
         );
         assert!(queue.take_snapshot().is_empty());
+    }
+
+    /// Фаза 44, требование 6: нажатие, нацеленное на объект, несёт его номер до шага.
+    #[test]
+    fn a_press_aimed_at_an_object_keeps_its_target_in_the_snapshot() {
+        let mut queue = InputQueue::new();
+        queue.press_on("MouseLeft", Some(5));
+        queue.release("MouseLeft");
+        let targets: Vec<Option<u32>> = queue
+            .take_snapshot()
+            .events
+            .iter()
+            .map(|event| event.target)
+            .collect();
+        assert_eq!(targets, [Some(5), None]);
     }
 
     /// «Исполнение игры»: a release whose press never reached the queue must not reach it either
@@ -260,11 +298,13 @@ mod tests {
             vec![
                 KeyEvent {
                     code: "KeyA".to_string(),
-                    action: KeyAction::Release
+                    action: KeyAction::Release,
+                    target: None,
                 },
                 KeyEvent {
                     code: "KeyA".to_string(),
-                    action: KeyAction::Press
+                    action: KeyAction::Press,
+                    target: None,
                 },
             ]
         );

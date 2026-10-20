@@ -4,6 +4,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::keys::{KeyEdit, KeyTable};
 use super::model::{Model, ModelTable};
 use super::property::{self, PropertyId, PropertyTable};
+use super::road_kinds::{LayoutRoad, RoadKindTable};
 use super::roads::RoadShape;
 use super::run_jump::JumpState;
 use super::surface;
@@ -145,6 +146,9 @@ pub struct World {
     /// «Трёхмерная сцена» → «Модели и движения»: модели игры; объект называет свою свойством `model`.
     /// Берутся из таблицы свойств.
     models: Arc<ModelTable>,
+    /// «Трёхмерная сцена» → «Вид дороги»: виды дорог игры; дорога называет свой свойством `road_kind`. Берутся
+    /// из таблицы свойств.
+    road_kinds: Arc<RoadKindTable>,
     /// «Рельеф»: высота основания `z` каждого объекта — третье число `position` живого мира.
     base_z: Vec<f64>,
     /// «Рельеф»: третье число `walk_to`, если оно задано.
@@ -183,6 +187,7 @@ impl World {
             three_d: properties.three_d(),
             terrain: properties.terrain().cloned(),
             models: Arc::clone(properties.models()),
+            road_kinds: Arc::clone(properties.road_kinds()),
             base_z: Vec::new(),
             walk_to_z: Vec::new(),
             jump: Vec::new(),
@@ -247,6 +252,11 @@ impl World {
         &self.models
     }
 
+    /// Виды дорог игры.
+    pub fn road_kinds(&self) -> &RoadKindTable {
+        &self.road_kinds
+    }
+
     /// Модель, которую рисует объект `id`: названная в его `model`; `None` без `model` и если такой модели
     /// нет.
     pub fn model_of(&self, id: u32) -> Option<&Model> {
@@ -274,32 +284,48 @@ impl World {
         self.note_deck_moved(id);
     }
 
+    /// «Езда по дорогам»: дорога `id` — живой объект с признаком `road`, `position` и `size`.
+    fn road_shape(&self, id: u32) -> Option<RoadShape> {
+        if !self.flag(id, property::ROAD) {
+            return None;
+        }
+        Some(RoadShape {
+            id,
+            position: self.vec2(id, property::POSITION)?,
+            size: self.vec2(id, property::SIZE)?,
+            sin_cos: self
+                .rotation(id, property::ROTATION)
+                .map_or((0.0, 1.0), Rotation::sin_cos),
+            z: self.base_z(id),
+        })
+    }
+
     /// «Езда по дорогам»: дороги мира — живые объекты с признаком `road`, `position` и `size`, по
     /// возрастанию номера, — и предельная скорость каждой; `NaN` в `road_speed` считается закрытой.
     pub fn collect_roads(&self, shapes: &mut Vec<RoadShape>, speeds: &mut Vec<Option<f64>>) {
         shapes.clear();
         speeds.clear();
-        for id in self.ids().filter(|&id| self.flag(id, property::ROAD)) {
-            let (Some(position), Some(size)) = (
-                self.vec2(id, property::POSITION),
-                self.vec2(id, property::SIZE),
-            ) else {
-                continue;
-            };
-            shapes.push(RoadShape {
-                id,
-                position,
-                size,
-                sin_cos: self
-                    .rotation(id, property::ROTATION)
-                    .map_or((0.0, 1.0), Rotation::sin_cos),
-                z: self.base_z(id),
-            });
+        for (id, shape) in self.ids().filter_map(|id| Some((id, self.road_shape(id)?))) {
+            shapes.push(shape);
             speeds.push(
                 self.number_like(id, property::ROAD_SPEED)
                     .map(|speed| if speed.is_nan() { 0.0 } else { speed }),
             );
         }
+    }
+
+    /// «Вид дороги»: все дороги мира для раскладки видов — вместе с закрытыми и без вида, они нужны связям, —
+    /// по возрастанию номера, и вид каждой.
+    pub fn collect_layout_roads(&self, roads: &mut Vec<LayoutRoad>) {
+        roads.clear();
+        roads.extend(self.ids().filter_map(|id| {
+            Some(LayoutRoad {
+                shape: self.road_shape(id)?,
+                kind: self
+                    .text(id, property::ROAD_KIND)
+                    .and_then(|name| self.road_kinds.index_of(name)),
+            })
+        }));
     }
 
     pub fn jump_state(&self, id: u32) -> JumpState {

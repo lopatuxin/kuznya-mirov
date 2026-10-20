@@ -20,7 +20,7 @@ import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
 import { parseSceneWind } from "./sceneWind";
 import { readTerrainCovers, readTerrainImprints, readTerrainTint, readTerrainWater } from "./terrainFile";
-import { parseProjectCellPixels, parseProjectCloudImageNames, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames } from "./projectFiles";
+import { parseProjectCellPixels, parseProjectCloudImageNames, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames, parseProjectRoadKindNames } from "./projectFiles";
 import { buildImageTiles, createImageObject, createParticlesObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
@@ -143,6 +143,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   // Модели знает движок после загрузки: каждая загрузка даёт новый `result`, и список читается заново.
   const projectModels = useMemo(() => readModelSizes(engine?.model_sizes()), [engine, result]);
   const modelNames = useMemo(() => projectModels.map(({ name }) => name), [projectModels]);
+  const roadKindNames = useMemo(() => parseProjectRoadKindNames(gameJsonText), [gameJsonText]);
   const declaredProperties = useMemo(() => parsePropertyDeclarations(propertiesText), [propertiesText]);
   const terrainWater = useMemo(() => readTerrainWater(terrainText), [terrainText]);
   const imprints = useMemo(() => readTerrainImprints(terrainText), [terrainText]);
@@ -577,6 +578,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
             canEdit={displayedCanEdit}
             imageNames={imageNames}
             modelNames={modelNames}
+            roadKindNames={roadKindNames}
             declaredProperties={declaredProperties}
             isThreeDimensionalScene={isThreeDimensionalScene}
             cloudImages={{ tiles: imageTiles, cloudNames: cloudImageNames }}

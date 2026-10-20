@@ -25,7 +25,7 @@ pub enum Kind {
     Deck,
     /// Объём: фигура и объект без `shape`, `image` и `color`.
     Volume,
-    /// Плоский объект: `image` или `color` без `shape`.
+    /// Плоский объект: `image` или `color` без `shape`; дорога с видом (`road_kind`) лежит на земле так же.
     Flat,
 }
 
@@ -34,7 +34,7 @@ pub fn kind(world: &World, id: u32) -> Kind {
         Kind::Deck
     } else if world.has(id, property::SHAPE) {
         Kind::Volume
-    } else if world.has(id, property::IMAGE) || world.has(id, property::COLOR) {
+    } else if !world.has_none(id, &[property::IMAGE, property::COLOR, property::ROAD_KIND]) {
         Kind::Flat
     } else {
         Kind::Volume

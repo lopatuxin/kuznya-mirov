@@ -3,6 +3,7 @@
 //! only a screen's name, whether the world runs on it, and its list of elements.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use super::game::Game;
 use super::input::{ButtonKey, MouseEvent, MouseState, UiEvent, UiQueue};
@@ -427,6 +428,31 @@ pub enum WorldColor {
     },
 }
 
+/// «Надписи, полоски и картинки в мире», требование 1: какую картинку рисует `image` — названную в
+/// `files.images` сразу или ту, чьё имя хранит свойство самого объекта (`{свойство}`).
+#[derive(Debug, Clone)]
+pub enum ImageRef {
+    Fixed(ImageId),
+    /// `names` — имена `files.images` в порядке `ImageId`: имя из свойства ищется среди них.
+    Own {
+        property: PropertyId,
+        names: Arc<[String]>,
+    },
+}
+
+impl ImageRef {
+    /// Требование 3: у объекта нет свойства, оно пустое или называет картинку, которой нет, — `None`.
+    pub fn resolve(&self, world: &World, id: u32, properties: &PropertyTable) -> Option<ImageId> {
+        match self {
+            ImageRef::Fixed(image) => Some(*image),
+            ImageRef::Own { property, names } => {
+                let name = format_property(world, id, *property, properties);
+                names.iter().position(|declared| *declared == name)
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub enum WorldElementKind {
     Label {
@@ -440,6 +466,9 @@ pub enum WorldElementKind {
         max: MaxSpec,
         back_color: Option<[f32; 4]>,
     },
+    Image {
+        image: ImageRef,
+    },
 }
 
 /// «Надписи и полоски в мире», требования 1–17: one entry of `screens.json`'s `world_elements`
@@ -451,6 +480,7 @@ pub enum WorldElementKind {
 pub struct WorldElement {
     pub for_: Selector,
     pub placement: Placement,
+    /// У `image` не читается: картинка цвета не имеет.
     pub color: WorldColor,
     pub kind: WorldElementKind,
 }
@@ -847,7 +877,8 @@ pub fn scroll_wheel(
 enum MouseOutcome {
     None,
     Command(ButtonCommand, Option<u32>),
-    WorldPress,
+    /// Нажатие дошло до мира; объект — тот, чья картинка в мире стояла под курсором.
+    WorldPress(Option<u32>),
     WorldRelease,
 }
 
@@ -872,7 +903,7 @@ fn handle_mouse_event(
             }
             MouseOutcome::None
         }
-        MouseEvent::Down => match topmost_interface_hit(parts, mouse.position) {
+        MouseEvent::Down(image_object) => match topmost_interface_hit(parts, mouse.position) {
             Some(InterfaceHit::Button(key)) => {
                 mouse.captured = Some(key);
                 MouseOutcome::None
@@ -881,7 +912,7 @@ fn handle_mouse_event(
             None => {
                 if world_accepts {
                     mouse.world_captured = true;
-                    MouseOutcome::WorldPress
+                    MouseOutcome::WorldPress(image_object)
                 } else {
                     MouseOutcome::None
                 }
@@ -926,6 +957,9 @@ fn handle_mouse_event(
 pub enum RecordedEvent {
     WorldKeyDown(String),
     WorldKeyUp(String),
+    /// «Надписи, полоски и картинки в мире», требование 7: нажатие левой кнопки по картинке в мире —
+    /// номер объекта, чья она; повтор щёлкает по тому же объекту.
+    WorldClick(u32),
     /// Команда и объект кнопки — строки списка или элемента с `for`, если он был.
     Command(ButtonCommand, Option<u32>),
 }
@@ -983,14 +1017,18 @@ pub fn process_ui_queue_recording(
                     // «Мышь в мире», требование 21: тем же путём, что клавиша экрана без
                     // команды — этап 2 шага (очередь) или сразу (`apply_now`, партия/повтор в
                     // редакторе), а не своей отдельной очередью.
-                    MouseOutcome::WorldPress => {
-                        if apply_now {
-                            game.press_key("MouseLeft");
-                        } else {
-                            game.key_down("MouseLeft");
+                    MouseOutcome::WorldPress(image_object) => {
+                        match (image_object, apply_now) {
+                            (Some(object), true) => game.press_key_on("MouseLeft", object),
+                            (Some(object), false) => game.key_down_on("MouseLeft", object),
+                            (None, true) => game.press_key("MouseLeft"),
+                            (None, false) => game.key_down("MouseLeft"),
                         }
                         if let Some(events) = events.as_deref_mut() {
-                            events.push(RecordedEvent::WorldKeyDown("MouseLeft".to_string()));
+                            events.push(match image_object {
+                                Some(object) => RecordedEvent::WorldClick(object),
+                                None => RecordedEvent::WorldKeyDown("MouseLeft".to_string()),
+                            });
                         }
                     }
                     MouseOutcome::WorldRelease => {

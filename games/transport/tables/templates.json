@@ -8,7 +8,7 @@
     ],
     "model": "gazel",
     "height": 0.26,
-    "drive_speed": 8.33,
+    "drive_speed": 16.67,
     "capacity": 1.5,
     "load": 0,
     "state": "idle",

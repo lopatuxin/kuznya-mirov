@@ -603,6 +603,7 @@ pub fn editor_target_ray(
                 || world.has(id, property::MODEL)
                 || world.image(id, property::IMAGE).is_some()
                 || world.color(id, property::COLOR).is_some()
+                || world.has(id, property::ROAD_KIND)
         },
     )
 }

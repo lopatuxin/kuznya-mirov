@@ -1,4 +1,5 @@
 {
+  "name": "Кинешма",
   "osm": "tools/city/.cache/kineshma.json",
   "bbox": [
     57.4303,
@@ -15,45 +16,51 @@
     "primary": {
       "width": 14,
       "color": "#66696d",
-      "layer": 5
+      "layer": 5,
+      "speed": 60,
+      "main": true
     },
     "secondary": {
       "width": 12,
       "color": "#6a6d71",
-      "layer": 5
+      "layer": 5,
+      "speed": 60,
+      "main": true
     },
     "tertiary": {
       "width": 10,
       "color": "#6e7175",
-      "layer": 4
+      "layer": 4,
+      "speed": 60,
+      "main": true
     },
     "unclassified": {
       "width": 8,
       "color": "#76787b",
       "layer": 3,
-      "speed": 25
+      "speed": 60
     },
     "residential": {
       "width": 7,
       "color": "#76787b",
       "layer": 3,
-      "speed": 25
+      "speed": 60
     },
     "living_street": {
       "width": 6,
       "color": "#7a7c7f",
       "layer": 3,
-      "speed": 15
+      "speed": 20
     },
     "service": {
       "width": 4.5,
       "color": "#7c7e80",
       "layer": 2,
-      "speed": 12
+      "speed": 20
     }
   },
   "unpaved_color": "#93846b",
-  "unpaved_speed": 15,
+  "unpaved_speed": 40,
   "deck_thickness": 1.5,
   "deck_color": "#9b9a95",
   "rail": {
@@ -234,9 +241,22 @@
     },
     {
       "id": "bakery",
-      "name": "Хлебозавод на {street}",
-      "lat": 57.4426,
-      "lon": 42.139
+      "name": "Хлебозавод на 2-й Львовской улице",
+      "lat": 57.447795,
+      "lon": 42.126127,
+      "territory": {
+        "rotation": 28,
+        "clear": [
+          [-44.5, -31], [-44.5, 54.5], [-17.5, 54.5], [-17.5, 84.5], [47.5, 84.5], [47.5, 35.5], [56.5, 15],
+          [56.5, -20.5], [16.5, -20.5], [16.5, -48.5], [-1.5, -48.5], [-1.5, -68.5], [-27, -68.5], [-27, -75],
+          [-40.5, -75], [-40.5, -31]
+        ],
+        "roads": [
+          { "path": [[-50, 30], [13, 30]], "width": 6, "speed": 10, "hidden": true },
+          { "path": [[-17, -104], [1.5, -72], [0, -56]], "width": 5, "speed": 20 }
+        ],
+        "stop": [11, 30]
+      }
     },
     {
       "id": "wholesale",
@@ -315,6 +335,66 @@
       "id": "shop_metal",
       "name": "Продукты на {street}",
       "osm": "n4675114902"
+    },
+    {
+      "id": "fuel_vichuga",
+      "name": "АЗС на {street}, 136Б",
+      "osm": "n4601735832",
+      "pad": [
+        30,
+        22
+      ],
+      "color": "#8d959c"
+    },
+    {
+      "id": "fuel_west",
+      "name": "АЗС на {street}",
+      "osm": "n6302255585",
+      "pad": [
+        30,
+        22
+      ],
+      "color": "#8d959c"
+    },
+    {
+      "id": "fuel_far_west",
+      "name": "АЗС на {street}",
+      "osm": "n1119145615",
+      "pad": [
+        30,
+        22
+      ],
+      "color": "#8d959c"
+    },
+    {
+      "id": "fuel_east",
+      "name": "АЗС на {street}",
+      "osm": "n4911672129",
+      "pad": [
+        30,
+        22
+      ],
+      "color": "#8d959c"
+    },
+    {
+      "id": "service_west",
+      "name": "Автосервис на {street}",
+      "osm": "n1671544755",
+      "pad": [
+        26,
+        18
+      ],
+      "color": "#9c9182"
+    },
+    {
+      "id": "service_east",
+      "name": "Автосервис на {street}",
+      "osm": "n8938908284",
+      "pad": [
+        26,
+        18
+      ],
+      "color": "#9c9182"
     }
   ],
   "use_models": true,
@@ -497,11 +577,14 @@
       "bakery": {
         "name": "bakery",
         "size": [
-          24,
-          14
+          100.72,
+          158.67
         ],
-        "long": "x",
-        "height": 22.5
+        "center": [
+          5.77,
+          4.795
+        ],
+        "height": 26
       },
       "market": {
         "name": "market",

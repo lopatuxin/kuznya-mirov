@@ -1,6 +1,6 @@
-//! «Надписи и полоски в мире», требование 17: computes every world element's place, fill, color
-//! and text — in scene cells, in drawing order (требование 14) — from the world, its properties
-//! and the resolved `screens.json` list. Pure function of its three inputs: no browser, no GPU, so
+//! «Надписи, полоски и картинки в мире», требование 17: computes every world element's place, fill,
+//! color, text and image — in scene cells, in drawing order (требование 14) — from the world, its
+//! properties and the resolved `screens.json` list. Pure function of its three inputs: no browser, no GPU, so
 //! it is tested without a videocard. `wasm::mod` only converts these cells to pixels and draws.
 
 use super::camera::Camera3d;
@@ -11,7 +11,7 @@ use super::screens::{
 };
 use super::shapes::Body;
 use super::step::selector_matches;
-use super::value::Vec2;
+use super::value::{ImageId, Vec2};
 use super::world::World;
 
 /// One colored rectangle in scene cells — a bar's backing or fill.
@@ -30,6 +30,8 @@ pub struct WorldRect {
 pub struct BarDraw {
     pub back: Option<WorldRect>,
     pub fill: WorldRect,
+    /// Номер элемента в `world_elements`, как у `LabelDraw`.
+    pub element: usize,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -41,6 +43,95 @@ pub struct LabelDraw {
     pub font_size: f32,
     pub align: Align,
     pub color: [f32; 4],
+    /// Номер элемента в `world_elements`: общий порядок надписей и картинок — порядок списка.
+    pub element: usize,
+}
+
+/// «Надписи, полоски и картинки в мире», требования 1–5: картинка над объектом `object` — какая
+/// (`image`) и где (`position`, `size`; клетки сцены или точки окна, как у надписи).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ImageDraw {
+    pub object: u32,
+    pub image: ImageId,
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+    /// Номер элемента в `world_elements`, как у `LabelDraw`.
+    pub element: usize,
+}
+
+impl ImageDraw {
+    /// Левый и верхний края входят, правый и нижний нет — как у прямоугольника объекта.
+    fn contains(&self, point: [f32; 2]) -> bool {
+        point[0] >= self.position[0]
+            && point[0] < self.position[0] + self.size[0]
+            && point[1] >= self.position[1]
+            && point[1] < self.position[1] + self.size[1]
+    }
+}
+
+/// Полоски, надписи и картинки мира: каждый список уже в порядке рисования.
+pub type WorldDraws = (Vec<BarDraw>, Vec<LabelDraw>, Vec<ImageDraw>);
+
+/// «Надписи, полоски и картинки в мире», требование 6: объект, чья картинка стоит под точкой `point`
+/// (в тех же единицах, что `ImageDraw`). Из нескольких — верхняя по порядку рисования, то есть
+/// последняя в списке.
+pub fn image_object_at(images: &[ImageDraw], point: [f32; 2]) -> Option<u32> {
+    images
+        .iter()
+        .rev()
+        .find(|draw| draw.contains(point))
+        .map(|draw| draw.object)
+}
+
+/// Подряд идущие полоски, надписи или картинки слоя мира: сколько их, считая с того места, где
+/// кончился прошлый отрезок того же списка.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayRun {
+    Bars(usize),
+    Labels(usize),
+    Images(usize),
+}
+
+/// «Надписи, полоски и картинки в мире», требование 5: полоски, надписи и картинки идут между собой
+/// в порядке списка `world_elements` — отрезки всех трёх видов, чередуясь, в порядке рисования, —
+/// кроме одного: текст поверх полосок. Полоска, стоящая в списке после первой надписи, ложится
+/// прямо под неё. Три списка уже в порядке элементов, так что это слияние по `element`.
+pub fn overlay_runs(
+    bars: &[BarDraw],
+    labels: &[LabelDraw],
+    images: &[ImageDraw],
+) -> Vec<OverlayRun> {
+    let first_label = labels.first().map_or(usize::MAX, |label| label.element);
+    let mut runs: Vec<OverlayRun> = Vec::new();
+    let (mut next_bar, mut next_label, mut next_image) = (0, 0, 0);
+    loop {
+        // (место в порядке рисования, 0 у полоски и 1 у остальных — полоска впереди надписи).
+        let candidates = [
+            bars.get(next_bar)
+                .map(|bar| ((bar.element.min(first_label), 0), OverlayRun::Bars(1))),
+            labels
+                .get(next_label)
+                .map(|label| ((label.element, 1), OverlayRun::Labels(1))),
+            images
+                .get(next_image)
+                .map(|image| ((image.element, 1), OverlayRun::Images(1))),
+        ];
+        let Some((_, next)) = candidates.into_iter().flatten().min_by_key(|(key, _)| *key) else {
+            break;
+        };
+        match (runs.last_mut(), next) {
+            (Some(OverlayRun::Bars(count)), OverlayRun::Bars(_))
+            | (Some(OverlayRun::Labels(count)), OverlayRun::Labels(_))
+            | (Some(OverlayRun::Images(count)), OverlayRun::Images(_)) => *count += 1,
+            _ => runs.push(next),
+        }
+        match next {
+            OverlayRun::Bars(_) => next_bar += 1,
+            OverlayRun::Labels(_) => next_label += 1,
+            OverlayRun::Images(_) => next_image += 1,
+        }
+    }
+    runs
 }
 
 fn resolve_world_color(color: &WorldColor, world: &World, id: u32) -> Option<[f32; 4]> {
@@ -108,9 +199,9 @@ fn resolve_max(max: &MaxSpec, world: &World, id: u32) -> Option<f64> {
 
 /// «Надписи и полоски в мире», требование 17: `elements` в порядке `screens.json` → «Отрисовка»,
 /// требование 14 — между собой элементы идут в порядке списка, а над разными объектами одного
-/// элемента — в порядке их рисования (`scene::draw_order`). Возвращает полоски и надписи отдельными
-/// списками, каждый уже в этом самом порядке: вызывающий кладёт все полоски мира раньше всего
-/// текста в мире и получает верный порядок без дополнительной сортировки. «Слои глубины»,
+/// элемента — в порядке их рисования (`scene::draw_order`). Возвращает полоски, надписи и картинки
+/// отдельными списками, каждый уже в этом самом порядке; общий порядок трёх видов между собой даёт
+/// `overlay_runs` по `element`. «Слои глубины»,
 /// требование 18: над объектом слоя — над местом, где он нарисован, с тем же сдвигом, и один раз,
 /// без копий `repeat_x`.
 pub fn compute_world_draws(
@@ -119,7 +210,7 @@ pub fn compute_world_draws(
     properties: &PropertyTable,
     elements: &[WorldElement],
     layers: &LayerView,
-) -> (Vec<BarDraw>, Vec<LabelDraw>) {
+) -> WorldDraws {
     compute_draws(world, scene, properties, elements, None, layers, 1.0)
 }
 
@@ -132,7 +223,7 @@ pub fn compute_world_draws_scaled(
     elements: &[WorldElement],
     layers: &LayerView,
     cell: f64,
-) -> (Vec<BarDraw>, Vec<LabelDraw>) {
+) -> WorldDraws {
     compute_draws(world, scene, properties, elements, None, layers, cell)
 }
 
@@ -147,7 +238,7 @@ pub fn compute_world_draws_3d(
     properties: &PropertyTable,
     elements: &[WorldElement],
     camera: &Camera3d,
-) -> (Vec<BarDraw>, Vec<LabelDraw>) {
+) -> WorldDraws {
     compute_draws(
         world,
         scene,
@@ -201,10 +292,11 @@ fn compute_draws(
     camera: Option<&Camera3d>,
     layers: &LayerView,
     flat_cell: f64,
-) -> (Vec<BarDraw>, Vec<LabelDraw>) {
+) -> WorldDraws {
     let mut bars = Vec::new();
     let mut labels = Vec::new();
-    for element in elements {
+    let mut images = Vec::new();
+    for (index, element) in elements.iter().enumerate() {
         let mut ids: Vec<u32> = world
             .ids()
             .filter(|&id| selector_matches(&element.for_, world, id))
@@ -277,6 +369,7 @@ fn compute_draws(
                             size: [size[0] * fraction, size[1]],
                             color,
                         },
+                        element: index,
                     });
                 }
                 WorldElementKind::Label {
@@ -293,23 +386,37 @@ fn compute_draws(
                         font_size: *font_size * cell,
                         align: *align,
                         color,
+                        element: index,
+                    });
+                }
+                WorldElementKind::Image { image } => {
+                    let Some(image) = image.resolve(world, id, properties) else {
+                        continue;
+                    };
+                    images.push(ImageDraw {
+                        object: id,
+                        image,
+                        position: top_left,
+                        size: placement_size,
+                        element: index,
                     });
                 }
             }
         }
     }
-    (bars, labels)
+    (bars, labels, images)
 }
 
 #[cfg(test)]
 mod tests {
     use std::hint::black_box;
+    use std::sync::Arc;
     use std::time::Instant;
 
     use super::*;
     use crate::core::property::PropertyId;
     use crate::core::rules::Selector;
-    use crate::core::screens::Placement;
+    use crate::core::screens::{ImageRef, Placement};
     use crate::core::value::PropKind;
 
     fn scene_config() -> SceneConfig {
@@ -400,7 +507,7 @@ mod tests {
         let scene = scene_config();
         let mut element = bar_element(hp, MaxSpec::Const(1.0), None);
         element.placement = placement(Anchor::Top, [0.0, 0.0], [2.0, 0.4]);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -429,7 +536,7 @@ mod tests {
         };
         let mut element = bar_element(hp, MaxSpec::Const(1.0), None);
         element.placement = placement(Anchor::TopLeft, [0.0, 0.0], [2.0, 0.5]);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element], &layers);
+        let (bars, _, _) = compute_world_draws(&world, &scene, &properties, &[element], &layers);
         assert_eq!(bars.len(), 2);
         // Середина полоски — в углу объекта, левый верхний угол полоски на полразмера левее и выше.
         assert_eq!(bars[0].fill.position, [24.0, 14.25], "сдвиг 15 и 4,5");
@@ -456,7 +563,7 @@ mod tests {
             window_cells: 20.0,
         };
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let (bars, _) = compute_world_draws(&world, &scene, &properties, &[element], &layers);
+        let (bars, _, _) = compute_world_draws(&world, &scene, &properties, &[element], &layers);
         assert_eq!(bars.len(), 1);
     }
 
@@ -469,7 +576,7 @@ mod tests {
         world.set_number(obj, hp, 1.0);
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let (bars, labels) = compute_world_draws(
+        let (bars, labels, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -490,7 +597,7 @@ mod tests {
         world.set_number(obj, hp, 1.0);
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -511,7 +618,7 @@ mod tests {
 
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(10.0), None);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -529,7 +636,7 @@ mod tests {
         let scene = scene_config();
         let element = bar_element(hp, MaxSpec::Const(10.0), None);
 
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -540,7 +647,7 @@ mod tests {
 
         let id = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
         world.set_number(id, hp, 5.0);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -550,7 +657,7 @@ mod tests {
         assert_eq!(bars.len(), 1, "объект создан — элемент появился");
 
         world.delete(id);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -573,7 +680,7 @@ mod tests {
         world.set_number(obj, hp, 45.0);
         world.set_number(obj, max_hp, 30.0);
         let element = bar_element(hp, MaxSpec::Property(max_hp), None);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -596,7 +703,7 @@ mod tests {
         world.set_number(obj, hp, -5.0);
         world.set_number(obj, max_hp, 30.0);
         let element = bar_element(hp, MaxSpec::Property(max_hp), None);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -615,7 +722,7 @@ mod tests {
         let obj = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
         world.set_number(obj, hp, 5.0);
         let element = bar_element(hp, MaxSpec::Const(10.0), None);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -639,7 +746,7 @@ mod tests {
         world.set_number(obj, max_hp, 0.0);
         let back = [0.0, 0.0, 0.0, 0.5];
         let element = bar_element(hp, MaxSpec::Property(max_hp), Some(back));
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -662,7 +769,7 @@ mod tests {
         object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]); // neither hp nor max_hp set
         let mut element = bar_element(hp, MaxSpec::Property(max_hp), Some([0.0; 4]));
         element.for_ = Selector::default();
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -681,7 +788,7 @@ mod tests {
         let obj = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
         world.set_number(obj, hp, 1.0);
         let element = bar_element(hp, MaxSpec::Const(1.0), Some([0.0, 0.0, 0.0, 0.5]));
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -732,7 +839,7 @@ mod tests {
                 by: danger,
             });
             element.for_ = selector_has(&[danger]);
-            let (_, labels) = compute_world_draws(
+            let (_, labels, _) = compute_world_draws(
                 &world,
                 &scene,
                 &properties,
@@ -756,7 +863,7 @@ mod tests {
             colors: vec![[1.0, 1.0, 1.0, 1.0]],
             by: danger,
         });
-        let (bars, labels) = compute_world_draws(
+        let (bars, labels, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -808,7 +915,7 @@ mod tests {
                 align: Align::Center,
             },
         };
-        let (_, labels) = compute_world_draws(
+        let (_, labels, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -841,7 +948,7 @@ mod tests {
         world.set_number(upper, hp, 1.0);
 
         let element = bar_element(hp, MaxSpec::Const(1.0), None);
-        let (bars, _) = compute_world_draws(
+        let (bars, _, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -879,7 +986,7 @@ mod tests {
                 align: Align::Left,
             },
         };
-        let (bars, labels) = compute_world_draws(
+        let (bars, labels, _) = compute_world_draws(
             &world,
             &scene,
             &properties,
@@ -910,6 +1017,231 @@ mod tests {
         assert_eq!(format!("{world:?}"), before);
     }
 
+    fn image_element(for_: Selector, placement: Placement, image: ImageRef) -> WorldElement {
+        WorldElement {
+            for_,
+            placement,
+            color: WorldColor::Solid([1.0; 4]),
+            kind: WorldElementKind::Image { image },
+        }
+    }
+
+    fn label_over(for_: Selector) -> WorldElement {
+        WorldElement {
+            for_,
+            ..label_element_with_color(WorldColor::Solid([1.0; 4]))
+        }
+    }
+
+    fn icon_names() -> Arc<[String]> {
+        ["food", "bakery"].map(String::from).into_iter().collect()
+    }
+
+    /// Фаза 44, требования 1–4: картинка по `{icon}` — названная картинка над своим объектом в
+    /// прямоугольнике `size` с серединой в точке `anchor` со сдвигом `offset`; у объекта без свойства,
+    /// с пустым и с неизвестным именем картинки нет, и ошибки нет.
+    #[test]
+    fn an_image_by_substitution_is_drawn_only_for_a_known_name() {
+        let mut properties = PropertyTable::new();
+        let icon = properties.declare_author("icon", PropKind::Text).unwrap();
+        let place = properties.declare_author("place", PropKind::Flag).unwrap();
+        let mut world = World::new(&properties);
+        let bakery = object_with_rect(&mut world, [10.0, 10.0], [4.0, 2.0]);
+        let house = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
+        let blank = object_with_rect(&mut world, [2.0, 0.0], [1.0, 1.0]);
+        let stranger = object_with_rect(&mut world, [4.0, 0.0], [1.0, 1.0]);
+        for id in [bakery, house, blank, stranger] {
+            world.set_flag(id, place, true);
+        }
+        world.set_text(bakery, icon, "bakery".to_string());
+        world.set_text(blank, icon, String::new());
+        world.set_text(stranger, icon, "nothing".to_string());
+        let element = image_element(
+            selector_has(&[place]),
+            placement(Anchor::Top, [0.0, -0.6], [0.8, 0.8]),
+            ImageRef::Own {
+                property: icon,
+                names: icon_names(),
+            },
+        );
+
+        let (bars, labels, images) = compute_world_draws(
+            &world,
+            &scene_config(),
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
+
+        assert!(bars.is_empty() && labels.is_empty());
+        assert_eq!(images.len(), 1, "{images:?}");
+        let draw = images[0];
+        assert_eq!(
+            (draw.object, draw.image, draw.size),
+            (bakery, 1, [0.8, 0.8])
+        );
+        assert!((draw.position[0] - 11.6).abs() < 1e-4, "{draw:?}");
+        assert!((draw.position[1] - 9.0).abs() < 1e-4, "{draw:?}");
+    }
+
+    /// Фаза 44, требования 1, 4: картинка без подстановки — у всех объектов отбора.
+    #[test]
+    fn a_fixed_image_is_drawn_over_every_object_of_the_selection() {
+        let mut properties = PropertyTable::new();
+        let place = properties.declare_author("place", PropKind::Flag).unwrap();
+        let mut world = World::new(&properties);
+        for x in 0..3 {
+            let id = object_with_rect(&mut world, [x as f64 * 2.0, 0.0], [1.0, 1.0]);
+            world.set_flag(id, place, true);
+        }
+        object_with_rect(&mut world, [9.0, 9.0], [1.0, 1.0]);
+        let element = image_element(
+            selector_has(&[place]),
+            placement(Anchor::Center, [0.0, 0.0], [1.0, 1.0]),
+            ImageRef::Fixed(0),
+        );
+
+        let (_, _, images) = compute_world_draws(
+            &world,
+            &scene_config(),
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
+
+        let objects: Vec<u32> = images.iter().map(|draw| draw.object).collect();
+        assert_eq!(objects, [0, 1, 2]);
+        assert!(images.iter().all(|draw| draw.image == 0));
+    }
+
+    /// Фаза 44, «Крайние случаи»: код сменил `icon` — сменился значок; объект создан с `icon` —
+    /// значок при следующем расчёте.
+    #[test]
+    fn a_changed_or_created_icon_changes_the_drawn_image() {
+        let mut properties = PropertyTable::new();
+        let icon = properties.declare_author("icon", PropKind::Text).unwrap();
+        let mut world = World::new(&properties);
+        let scene = scene_config();
+        let element = image_element(
+            selector_has(&[icon]),
+            placement(Anchor::Center, [0.0, 0.0], [1.0, 1.0]),
+            ImageRef::Own {
+                property: icon,
+                names: icon_names(),
+            },
+        );
+        let draw_images = |world: &World| {
+            compute_world_draws(
+                world,
+                &scene,
+                &properties,
+                std::slice::from_ref(&element),
+                &LayerView::default(),
+            )
+            .2
+        };
+        assert!(draw_images(&world).is_empty());
+
+        let first = object_with_rect(&mut world, [0.0, 0.0], [1.0, 1.0]);
+        world.set_text(first, icon, "food".to_string());
+        assert_eq!(draw_images(&world)[0].image, 0);
+
+        world.set_text(first, icon, "bakery".to_string());
+        assert_eq!(draw_images(&world)[0].image, 1, "код сменил icon");
+    }
+
+    /// Фаза 44, требование 5: надписи и картинки между собой — в порядке списка `world_elements`,
+    /// отрезки тех и других чередуются; картинки одного элемента идут подряд.
+    #[test]
+    fn labels_and_images_alternate_in_the_order_of_the_element_list() {
+        let mut properties = PropertyTable::new();
+        let place = properties.declare_author("place", PropKind::Flag).unwrap();
+        let mut world = World::new(&properties);
+        for x in 0..2 {
+            let id = object_with_rect(&mut world, [x as f64 * 3.0, 0.0], [1.0, 1.0]);
+            world.set_flag(id, place, true);
+        }
+        let label = label_over(selector_has(&[place]));
+        let image = image_element(
+            selector_has(&[place]),
+            placement(Anchor::Center, [0.0, 0.0], [1.0, 1.0]),
+            ImageRef::Fixed(0),
+        );
+        let runs = |elements: &[WorldElement]| {
+            let (bars, labels, images) = compute_world_draws(
+                &world,
+                &scene_config(),
+                &properties,
+                elements,
+                &LayerView::default(),
+            );
+            overlay_runs(&bars, &labels, &images)
+        };
+
+        assert_eq!(
+            runs(&[label.clone(), image.clone(), label.clone()]),
+            [
+                OverlayRun::Labels(2),
+                OverlayRun::Images(2),
+                OverlayRun::Labels(2)
+            ]
+        );
+        assert_eq!(
+            runs(&[image.clone(), label.clone()]),
+            [OverlayRun::Images(2), OverlayRun::Labels(2)]
+        );
+        assert_eq!(runs(&[image.clone(), image]), [OverlayRun::Images(4)]);
+        assert_eq!(runs(&[]), []);
+    }
+
+    /// Фаза 44, требование 6, «Крайние случаи»: под точкой — объект картинки; из двух внахлёст верхняя —
+    /// нарисованная позже; левый и верхний края картинки входят, правый и нижний нет.
+    #[test]
+    fn a_point_belongs_to_the_topmost_image_under_it() {
+        let mut properties = PropertyTable::new();
+        let place = properties.declare_author("place", PropKind::Flag).unwrap();
+        let mut world = World::new(&properties);
+        let lower = object_with_rect(&mut world, [0.0, 0.0], [2.0, 2.0]);
+        let upper = object_with_rect(&mut world, [1.0, 0.0], [2.0, 2.0]);
+        world.set_flag(lower, place, true);
+        world.set_flag(upper, place, true);
+        let element = image_element(
+            selector_has(&[place]),
+            placement(Anchor::Center, [0.0, 0.0], [2.0, 2.0]),
+            ImageRef::Fixed(0),
+        );
+        let (_, _, images) = compute_world_draws(
+            &world,
+            &scene_config(),
+            &properties,
+            &[element],
+            &LayerView::default(),
+        );
+
+        assert_eq!(image_object_at(&images, [0.5, 1.0]), Some(lower));
+        assert_eq!(
+            image_object_at(&images, [1.5, 1.0]),
+            Some(upper),
+            "внахлёст"
+        );
+        assert_eq!(
+            image_object_at(&images, [0.0, 0.0]),
+            Some(lower),
+            "левый верхний угол"
+        );
+        assert_eq!(
+            image_object_at(&images, [3.0, 1.0]),
+            None,
+            "правый край не входит"
+        );
+        assert_eq!(
+            image_object_at(&images, [1.0, 2.0]),
+            None,
+            "нижний край не входит"
+        );
+        assert_eq!(image_object_at(&[], [1.0, 1.0]), None);
+    }
+
     /// Нефункциональное требование: 200 объектов с одной полоской и одной надписью каждый — не
     /// дольше 1 мс в `cargo test --release`.
     #[test]
@@ -935,7 +1267,7 @@ mod tests {
             },
         };
         let elements = [bar, label];
-        let (bars, labels) = compute_world_draws(
+        let (bars, labels, _) = compute_world_draws(
             &world,
             &scene,
             &properties,

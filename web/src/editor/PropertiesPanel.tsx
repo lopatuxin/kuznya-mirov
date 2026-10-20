@@ -22,6 +22,8 @@ type PropertiesPanelProps = {
   imageNames: readonly string[];
   /** Имена моделей игры: набор выпадающего списка `model` («Редактор», требование 24 фазы 25). */
   modelNames: readonly string[];
+  /** Виды дорог игры: набор выпадающего списка `road_kind` («Редактор», требование 24 фазы 43). */
+  roadKindNames: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
   /** Сцена трёхмерная — `rotation` там любое число, а не выбор из четырёх значений. */
   isThreeDimensionalScene: boolean;
@@ -150,14 +152,15 @@ type PropertyValueControlProps = {
   canEdit: boolean;
   imageNames: readonly string[];
   modelNames: readonly string[];
+  roadKindNames: readonly string[];
   declaredProperties: Readonly<Record<string, PropertyKind>>;
   isThreeDimensionalScene: boolean;
   onSetValue: (value: unknown) => void;
 };
 
 /** Вид поля по свойству — «Редактор», требование 11. */
-function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNames, modelNames, declaredProperties, isThreeDimensionalScene, onSetValue }: PropertyValueControlProps): React.JSX.Element {
-  const kind = propertyFieldKind(propertyKey, value, declaredProperties, imageNames, isThreeDimensionalScene, modelNames);
+function PropertyValueControl({ propertyKey, value, valueText, canEdit, imageNames, modelNames, roadKindNames, declaredProperties, isThreeDimensionalScene, onSetValue }: PropertyValueControlProps): React.JSX.Element {
+  const kind = propertyFieldKind(propertyKey, value, declaredProperties, imageNames, isThreeDimensionalScene, modelNames, roadKindNames);
 
   if (kind.kind === "checkbox") {
     return (
@@ -340,6 +343,7 @@ export function PropertiesPanel({
   canEdit,
   imageNames,
   modelNames,
+  roadKindNames,
   declaredProperties,
   isThreeDimensionalScene,
   cloudImages,
@@ -408,6 +412,7 @@ export function PropertiesPanel({
                       canEdit={canEdit}
                       imageNames={imageNames}
                       modelNames={modelNames}
+                      roadKindNames={roadKindNames}
                       declaredProperties={declaredProperties}
                       isThreeDimensionalScene={isThreeDimensionalScene}
                       onSetValue={(value) => onSetValue(property.key, value)}

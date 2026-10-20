@@ -399,7 +399,10 @@ fn a_list_without_rows_gives_the_wheel_and_the_camera_buttons_back_to_the_world(
         ui.game.world.delete(id);
     }
     assert!(visible_rows(&ui, 0).is_empty());
-    assert!(!ui.wheel(20.0, 20.0, 100.0), "прокручивать нечего — колесо у камеры");
+    assert!(
+        !ui.wheel(20.0, 20.0, 100.0),
+        "прокручивать нечего — колесо у камеры"
+    );
     assert!(
         !engine::core::screens::over_interface(
             &ui.config,
