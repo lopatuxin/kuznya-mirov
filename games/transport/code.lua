@@ -11,13 +11,13 @@ local DAY_START = 7 * 60
 local DAY_END = 19 * 60
 local CELL_M = 20                -- метров в клетке карты
 local FULL_LOAD_SLOWDOWN = 1 / 6 -- насколько медленнее едет машина с полным кузовом: 60 км/ч → 50 км/ч
-local TANK_L = 64                -- бак ГАЗели Бизнес, литров
-local FUEL_EMPTY_L100 = 14       -- расход пустой, литров на 100 км
-local FUEL_FULL_L100 = 17        -- расход с полным кузовом
+local TANK_L = 40                -- бак ГАЗ-АА, литров
+local FUEL_EMPTY_L100 = 18.6     -- расход пустой, литров на 100 км: 40 литров на 215 км запаса хода
+local FUEL_FULL_L100 = 20.5     -- расход с полным кузовом: норма ГАЗ-ММ
 local FUEL_PRICE = 62            -- рублей за литр
-local FUEL_RESERVE_L = 12        -- меньше — водитель перед поездкой заезжает на заправку
+local FUEL_RESERVE_L = 8         -- меньше — водитель перед поездкой заезжает на заправку
 local REFUEL_MINUTES = 10
-local TO_INTERVAL_KM = 15000     -- ТО ГАЗели Бизнес
+local TO_INTERVAL_KM = 750       -- ТО ГАЗ-АА: смена масла в моторе по инструкции
 local TO_MINUTES = 90
 local TO_COST = 6000
 local TO_WEAR_DROP = 15          -- на сколько процентных пунктов ТО снижает износ
@@ -27,7 +27,7 @@ local OVERDUE_WEAR = 3           -- во сколько раз быстрее и
 local LOAN_PAYMENT = 2500        -- платёж по кредиту в конце дня
 local OFFICE_RENT = 1500         -- аренда конторы за день
 local CAR_PRICE = 90000
-local SECOND_CAR = { odo = 154000, wear = 30, fuel = 30, to_at = 160000 }  -- подержанная вторая ГАЗель
+local SECOND_CAR = { odo = 21000, wear = 30, fuel = 20, to_at = 21300 }  -- подержанная вторая полуторка
 local DRIVER_FEE = 5000
 local DRIVER_WAGE = 2500
 local BANKRUPT_AT = -30000
@@ -318,7 +318,7 @@ local function refresh_money(bought)
     ", аренда конторы " .. fmt_money(OFFICE_RENT) ..
     (wages > 0 and (", зарплата водителя " .. fmt_money(wages)) or "") .. "."
   if count < 2 and not g.can_buy then
-    text = text .. "\nВторая ГАЗель — " .. fmt_money(CAR_PRICE) .. ": не хватает " .. fmt_money(CAR_PRICE - g.money) .. "."
+    text = text .. "\nВторая полуторка — " .. fmt_money(CAR_PRICE) .. ": не хватает " .. fmt_money(CAR_PRICE - g.money) .. "."
   elseif has_spare_car and not g.can_hire then
     text = text .. "\nВодитель — " .. fmt_money(DRIVER_FEE) .. ": не хватает " .. fmt_money(DRIVER_FEE - g.money) .. "."
   end
@@ -462,14 +462,14 @@ local function car_center(car)
   return { x = car.position.x + car.size.x / 2, y = car.position.y + car.size.y / 2 }
 end
 
--- Скорость машины с грузом `load`: пустая едет со скоростью из шаблона ГАЗели (60 км/ч), с полным
+-- Скорость машины с грузом `load`: пустая едет со скоростью из шаблона полуторки (60 км/ч), с полным
 -- кузовом — на шестую часть медленнее, 50 км/ч: гружёная медленнее разгоняется. Где предел улицы ниже,
 -- машина едет по пределу.
 local function speed_for(car, load)
-  return tables.templates.gazel.drive_speed * (1 - FULL_LOAD_SLOWDOWN * clamp(load / car.capacity, 0, 1))
+  return tables.templates.polutorka.drive_speed * (1 - FULL_LOAD_SLOWDOWN * clamp(load / car.capacity, 0, 1))
 end
 
--- Расход бензина с грузом `load`, литров на километр: от 14 пустой до 17 с полным кузовом на 100 км.
+-- Расход бензина с грузом `load`, литров на километр: от 18,6 пустой до 20,5 с полным кузовом на 100 км.
 local function fuel_per_km(car, load)
   local share = clamp(load / car.capacity, 0, 1)
   return (FUEL_EMPTY_L100 + (FUEL_FULL_L100 - FUEL_EMPTY_L100) * share) / 100
@@ -1326,9 +1326,9 @@ function buy_car()
   if g.money < CAR_PRICE or #cars() >= 2 then return end
   spend(CAR_PRICE)
   local office = place_point("office")
-  local size = tables.templates.gazel.size
-  create(tables.templates.gazel, {
-    name = "ГАЗель 2", model = "gazel_green", car_id = state.next_car, has_driver = false, driver = "нет водителя",
+  local size = tables.templates.polutorka.size
+  create(tables.templates.polutorka, {
+    name = "Полуторка 2", model = "gaz_aa", car_id = state.next_car, has_driver = false, driver = "нет водителя",
     position = { office.x + 1.2 - size[1] / 2, office.y - size[2] / 2 },
     odo = SECOND_CAR.odo, wear = SECOND_CAR.wear, fuel = SECOND_CAR.fuel, to_at = SECOND_CAR.to_at,
     state = "idle", state_text = "стоит у конторы — нужен водитель", row_o = g.win_orders, row_c = g.win_cars,
@@ -1337,7 +1337,7 @@ function buy_car()
   state.next_car = state.next_car + 1
   -- Новая машина появится только после этой функции: кнопку найма и окно «Фирма» считаем с ней.
   refresh_money(1)
-  say("Куплена вторая ГАЗель. Наймите водителя в окне «Фирма», чтобы она поехала")
+  say("Куплена вторая полуторка. Наймите водителя в окне «Фирма», чтобы она поехала")
 end
 
 function hire_driver()

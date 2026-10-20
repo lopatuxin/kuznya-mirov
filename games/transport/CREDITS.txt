@@ -20,6 +20,15 @@
   Источник: https://ambientcg.com
   Лицензия: CC0
 
+Материалы полуторок ГАЗ-АА (models/gaz_aa*.glb) — карты цвета, рельефа, шероховатости и затенения,
+  уменьшены до 512 точек (art/transport/textures): крашеное железо green_metal_rust
+  Источник: https://polyhaven.com/textures
+  Лицензия: CC0
+  Доски PaintedWood009C и Planks012, кожзаменитель Leather031, резина Rubber004, хром Metal049A — ambientCG;
+  карты затенения, шероховатости и металла сведены в одну картинку
+  Источник: https://ambientcg.com
+  Лицензия: CC0
+
 Куски грунтовых дорог (models/road_*.glb) — плоские модели программы проекта art/transport/models/roads.py;
   их карты рисует программа tools/art/roads.mjs поверх грунта ambientCG Ground103: колеи, островки травы,
   неровный край

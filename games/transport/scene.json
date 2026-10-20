@@ -5520,7 +5520,7 @@
     {"position":[135.24,61.996],"size":[0.293,0.293],"map":true,"model":"linden","height":0.393,"rotation":267.8},
     {"position":[138.27,62.33],"size":[0.284,0.284],"map":true,"model":"linden","height":0.382,"rotation":263.6},
     {"position":[140.7,62.478],"size":[0.345,0.345],"map":true,"model":"linden","height":0.464,"rotation":46.8},
-    {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":80000,"clock_text":"","money_text":"","debt_text":"","goal_text":"Цель: вторая ГАЗель (90 000 ₽) и водитель","summary_text":"","firm_text":"","show_help":true,"follow_on":true,"unread":0,"orders_text":"Заказы · 0","notes_text":"Сообщения","town":"Зубцов"},
-    {"name":"ГАЗель","car":true,"size":[0.21,0.55],"model":"gazel","height":0.26,"drive_speed":16.67,"capacity":1.5,"load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"position":[132.246,38.608],"selected":true,"odo":287000,"wear":45,"fuel":30,"to_at":287250,"card_text":"","selected_mark":"","follow_text":"Следить: да"}
+    {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":80000,"clock_text":"","money_text":"","debt_text":"","goal_text":"Цель: вторая полуторка (90 000 ₽) и водитель","summary_text":"","firm_text":"","show_help":true,"follow_on":true,"unread":0,"orders_text":"Заказы · 0","notes_text":"Сообщения","town":"Зубцов"},
+    {"name":"Полуторка","car":true,"size":[0.21,0.54],"model":"gaz_aa","height":0.2,"drive_speed":16.67,"capacity":1.5,"load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"position":[132.246,38.608],"selected":true,"odo":48000,"wear":45,"fuel":20,"to_at":48250,"card_text":"","selected_mark":"","follow_text":"Следить: да"}
   ]
 }

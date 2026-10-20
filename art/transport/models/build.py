@@ -1,4 +1,4 @@
-# Модели Транспортной компании: ГАЗель, частные дома, пятиэтажка секцией, дом старого центра, деревья,
+# Модели Транспортной компании: ГАЗель, полуторки ГАЗ-АА, частные дома, пятиэтажка секцией, дом старого центра, деревья,
 # контора, хлебозавод, магазин, рынок, стройка, пристань. Каждая модель — свой файл .glb в games/transport/models.
 # Запуск: "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python art/transport/models/build.py
 import os
@@ -7,6 +7,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bakery  # noqa: E402
+import gaz_aa  # noqa: E402
 import gazel  # noqa: E402
 import lib  # noqa: E402
 from lib import Model  # noqa: E402
@@ -345,6 +346,9 @@ def warehouse(name, wall, sign_text):
 def main():
     gazel.build("gazel", "#2f6aa3")
     gazel.build("gazel_green", "#3f7a4a")
+    gaz_aa.build("gaz_aa", "flatbed")
+    gaz_aa.build("gaz_aa_van", "van")
+    gaz_aa.build("gaz_aa_dump", "dump")
     izba("izba_brown_green", IZBA_COLORS["brown"], ROOFS["green"])
     izba("izba_green_red", IZBA_COLORS["green"], ROOFS["red"])
     izba("izba_blue_grey", IZBA_COLORS["blue"], ROOFS["grey"])

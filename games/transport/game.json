@@ -85,11 +85,8 @@
       "brick_house": {
         "path": "models/brick_house.glb"
       },
-      "gazel": {
-        "path": "models/gazel.glb"
-      },
-      "gazel_green": {
-        "path": "models/gazel_green.glb"
+      "gaz_aa": {
+        "path": "models/gaz_aa.glb"
       },
       "izba_blue_grey": {
         "path": "models/izba_blue_grey.glb"
