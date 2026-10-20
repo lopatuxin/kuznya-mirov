@@ -114,49 +114,72 @@ function leg(hip, p, far) {
   return { defs, body, lowest: Math.max(heel[1] + 2, toe[1] + 4, sole[1] + 2), knee, ankle };
 }
 
+/** Длина топорища; кулак держит его у конца, конец торчит из кулака на `GRIP` от его середины. */
+const HAFT = 60;
+const GRIP = 12;
+
+/**
+ * Топор в кулаке. Топорище идёт поперёк кулака, лезвие — со стороны большого пальца,
+ * куда показывает `axeAngle` от предплечья (плюс — к большому пальцу, он у Ильи впереди).
+ * Кулак рисуется поверх топорища: пальцы обхватывают его, топорище выходит из кулака с обеих сторон.
+ */
+function axeInFist(hand, foreDir, p) {
+  const hd = down(p.upper + p.elbow + p.axeAngle);
+  const butt = add(hand, hd, -GRIP);
+  const top = add(hand, hd, HAFT - GRIP);
+  const haft = limb(butt, top, 6.5, 5.5, C.haft, C.haftDark, false);
+  const side = [hd[1], -hd[0]]; // поперёк топорища, вперёд — лезвие
+  const s = p.axeFlip ? -1 : 1;
+  const b0 = add(top, hd, -14);
+  const blade = [
+    add(add(top, hd, 2), side, -s * 4),
+    add(add(top, hd, 6), side, s * 9),
+    add(add(top, hd, 12), side, s * 20),
+    add(add(top, hd, -4), side, s * 23),
+    add(add(top, hd, -20), side, s * 19),
+    add(add(b0, hd, -2), side, s * 8),
+    add(b0, side, -s * 4),
+  ];
+  let axe = haft.body + poly(blade, C.iron, { smooth: 0.35 });
+  const e0 = add(add(top, hd, 11), side, s * 19);
+  const e1 = add(add(top, hd, -19), side, s * 18);
+  axe += `<path d="M${num(e0[0])},${num(e0[1])}L${num(e1[0])},${num(e1[1])}" stroke="#e7eef2" stroke-width="2.4" stroke-linecap="round"/>`;
+  // Кулак вдоль топорища: тыльная сторона — к запястью, костяшки и пальцы — от него.
+  let f = [-hd[1], hd[0]];
+  if (f[0] * foreDir[0] + f[1] * foreDir[1] < 0) f = [-f[0], -f[1]];
+  const at = (u, v) => add(add(hand, hd, u), f, v);
+  const outline = [at(-8, -6), at(5, -6.5), at(9.5, -2), at(9.5, 4), at(6.5, 8), at(2, 8.5), at(-2.5, 8.5), at(-7, 8), at(-9.5, 4), at(-9.5, -2)];
+  let fist = poly(outline, C.skin, { smooth: 0.55 });
+  // Тень пальцев под костяшками и складки между ними; большой палец лежит сверху, у лезвия.
+  fist += `<path d="M${num(at(-7.5, 3)[0])},${num(at(-7.5, 3)[1])}L${num(at(7.5, 3)[0])},${num(at(7.5, 3)[1])}" stroke="${C.skinDark}" stroke-width="1.6" stroke-linecap="round"/>`;
+  for (const u of [-4.6, -0.3, 4]) {
+    fist += `<path d="M${num(at(u, 3.5)[0])},${num(at(u, 3.5)[1])}L${num(at(u, 8)[0])},${num(at(u, 8)[1])}" stroke="${C.outline}" stroke-width="1.5" stroke-linecap="round"/>`;
+  }
+  fist += `<path d="M${num(at(4, -6)[0])},${num(at(4, -6)[1])}Q${num(at(10, -3)[0])},${num(at(10, -3)[1])} ${num(at(8, 2.5)[0])},${num(at(8, 2.5)[1])}" stroke="${C.outline}" stroke-width="1.5" fill="none" stroke-linecap="round"/>`;
+  return { def: haft.def, axe, fist };
+}
+
 /** Рука: рукав рубахи с вышитым обшлагом, кулак; в ближней — топор. */
 function arm(shoulder, p, far, axe) {
   const elbow = add(shoulder, down(p.upper), L.upperArm);
   const foreDir = down(p.upper + p.elbow);
   const wrist = add(elbow, foreDir, L.foreArm);
   const hand = add(wrist, foreDir, 6);
-  let defs = "";
-  let body = "";
-  let axeBody = "";
-  if (axe) {
-    // Топорище поперёк кулака: от `axeAngle` относительно предплечья.
-    const hd = down(p.upper + p.elbow + p.axeAngle);
-    const butt = add(hand, hd, -16);
-    const top = add(hand, hd, 44);
-    const haft = limb(butt, top, 6.5, 5.5, C.haft, C.haftDark, false);
-    defs += haft.def;
-    const side = [hd[1], -hd[0]]; // поперёк топорища, вперёд — лезвие
-    const s = p.axeFlip ? -1 : 1;
-    const b0 = add(top, hd, -14);
-    const blade = [
-      add(add(top, hd, 2), side, -s * 4),
-      add(add(top, hd, 6), side, s * 9),
-      add(add(top, hd, 12), side, s * 20),
-      add(add(top, hd, -4), side, s * 23),
-      add(add(top, hd, -20), side, s * 19),
-      add(add(b0, hd, -2), side, s * 8),
-      add(b0, side, -s * 4),
-    ];
-    axeBody += haft.body + poly(blade, C.iron, { smooth: 0.35 });
-    const e0 = add(add(top, hd, 11), side, s * 19);
-    const e1 = add(add(top, hd, -19), side, s * 18);
-    axeBody += `<path d="M${num(e0[0])},${num(e0[1])}L${num(e1[0])},${num(e1[1])}" stroke="#e7eef2" stroke-width="2.4" stroke-linecap="round"/>`;
-  }
   const upper = limb(shoulder, elbow, 22, 18, C.shirt, C.shirtDark, far);
   const fore = limb(elbow, wrist, 18, 15, C.shirt, C.shirtDark, far);
-  defs += upper.def + fore.def;
-  body += upper.body + fore.body;
+  let defs = upper.def + fore.def;
+  let body = upper.body + fore.body;
   // Обшлаг с вышивкой.
   const c0 = add(wrist, foreDir, -5);
   const n = [-foreDir[1], foreDir[0]];
   body += `<path d="M${num(c0[0] + n[0] * 6.5)},${num(c0[1] + n[1] * 6.5)}L${num(c0[0] - n[0] * 6.5)},${num(c0[1] - n[1] * 6.5)}" stroke="${far ? shade(C.embroidery, -0.25) : C.embroidery}" stroke-width="3.5"/>`;
-  const fist = `<circle cx="${num(hand[0])}" cy="${num(hand[1])}" r="8.5" fill="${far ? shade(C.skin, -0.2) : C.skin}" stroke="${C.outline}" stroke-width="2.2"/>`;
-  return { defs, body: body + (axe ? fist + axeBody : fist), hand };
+  if (axe) {
+    // Топор позади руки, кулак поверх топорища.
+    const a = axeInFist(hand, foreDir, p);
+    return { defs: defs + a.def, body: a.axe + body + a.fist, hand };
+  }
+  body += `<circle cx="${num(hand[0])}" cy="${num(hand[1])}" r="8.5" fill="${far ? shade(C.skin, -0.2) : C.skin}" stroke="${C.outline}" stroke-width="2.2"/>`;
+  return { defs, body, hand };
 }
 
 /** Туловище: рубаха до середины бедра, кушак с кистями, вышивка у ворота и подола. */
@@ -243,7 +266,8 @@ function pose(p) {
 }
 
 const base = { lean: 3, breath: 0, sash: 0, headTilt: 0 };
-const nearArmIdle = { upper: 10, elbow: 25, axeAngle: -80, axeFlip: false };
+/** Рука опущена, топор держит за конец топорища: топор впереди у колена, лезвием вниз. */
+const nearArmIdle = { upper: 4, elbow: 18, axeAngle: 45, axeFlip: true };
 
 /** Стойка: 4 кадра дыхания. */
 const IDLE = [0, 1, 2, 1].map((b) => ({
@@ -251,7 +275,7 @@ const IDLE = [0, 1, 2, 1].map((b) => ({
   breath: b * 0.8,
   near: { thigh: 5, knee: 4, foot: 0 },
   far: { thigh: -6, knee: 4, foot: 0 },
-  nearArm: { ...nearArmIdle, upper: 10 - b, elbow: 28 + b * 2 },
+  nearArm: { ...nearArmIdle, upper: nearArmIdle.upper - b, elbow: nearArmIdle.elbow + b * 2 },
   farArm: { upper: -8 + b, elbow: 14 },
 }));
 
