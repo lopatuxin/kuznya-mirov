@@ -26,6 +26,10 @@ pub const MERGE_DISTANCE: f64 = 0.05;
 /// Два соседних рукава перекрёстка ближе этого друг к другу, в градусах, — модели у перекрёстка нет: такие дороги почти
 /// лежат друг на друге.
 const MIN_ARMS_APART_DEGREES: f64 = 30.0;
+/// Оси двух дорог сходятся под меньшим углом, в градусах, — точка их стыка берётся у самой связи, а не на
+/// пересечении осей: у почти параллельных осей пересечение уезжает от места, где дороги касаются, на поперечный
+/// сдвиг конца, делённый на синус угла, — 0,002 клетки округления `scene.json` при 0,8° дают 0,14 клетки.
+const NEAR_PARALLEL_DEGREES: f64 = 5.0;
 
 const EPS: f64 = 1e-9;
 
@@ -199,12 +203,13 @@ struct Cluster {
     roads: Vec<usize>,
 }
 
-/// Точка стыка пары дорог, к которой относится связь `first`: пересечение их осевых прямых, если оно не дальше
-/// ширины каждой дороги от её оси-отрезка; иначе — точка самой связи (на оси несущей дороги).
+/// Точка стыка пары дорог, к которой относится связь `first`: пересечение их осевых прямых, если оси сходятся не
+/// меньше чем под `NEAR_PARALLEL_DEGREES` и пересечение не дальше ширины каждой дороги от её оси-отрезка; иначе —
+/// точка самой связи (на оси несущей дороги).
 fn joint_of_pair(first: &Link, shapes: &[Road]) -> Vec2 {
     let (a, b) = (&shapes[first.a], &shapes[first.b]);
     let turn = cross(a.dir, b.dir);
-    if turn.abs() > EPS {
+    if turn.abs() >= NEAR_PARALLEL_DEGREES.to_radians().sin() {
         let point = add_scaled(
             a.end(0),
             a.dir,
@@ -802,6 +807,42 @@ mod tests {
             .iter()
             .map(|p| dot(sub(p.center, from), dir) - p.length / 2.0)
             .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Главная улица переходит в дорогу с изломом меньше градуса, в точке перехода сбоку подходит улица — одно
+    /// место стыка с тройником. Дороги заходят друг на друга на 0,02, начало второй сдвинуто поперёк на 0,002, как
+    /// после округления в `scene.json`: пересечение их осей отстоит от стыка на 0,002 / sin 0,8° ≈ 0,14 — дальше
+    /// `MERGE_DISTANCE`.
+    #[test]
+    fn a_main_road_going_on_under_a_degree_with_a_street_at_the_joint_is_one_tee() {
+        let (kinds, models) = world();
+        let (sin, cos) = 0.8_f64.to_radians().sin_cos();
+        let start = [19.99, 10.002];
+        let roads = [
+            segment(0, [0.0, 10.0], [20.01, 10.0], 1.5, MAIN),
+            segment(
+                1,
+                start,
+                [start[0] + 20.0 * cos, start[1] + 20.0 * sin],
+                1.5,
+                MAIN,
+            ),
+            segment(2, [20.0, 0.0], [20.0, 10.0], 1.0, STREET),
+        ];
+        let mut layout = RoadKindLayout::default();
+        layout.sync_with(&kinds, &models, |buffer| buffer.extend(roads));
+        assert_eq!(layout.bare_spots(), 0, "место без модели");
+        let (_, junctions) = lay_out(&roads, &kinds, &models);
+        let at_joint: Vec<&Junction> = junctions
+            .iter()
+            .filter(|junction| distance(junction.center, [20.0, 10.0]) < 0.5)
+            .collect();
+        assert_eq!(
+            at_joint.len(),
+            1,
+            "у стыка не один перекрёсток: {at_joint:?}"
+        );
+        assert_eq!(model_name(at_joint[0]), "tee_main_street");
     }
 
     /// Крест из двух улиц, пример 13: куски обрываются в 1 от точки стыка.

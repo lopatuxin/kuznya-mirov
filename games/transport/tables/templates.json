@@ -3,11 +3,11 @@
     "name": "Полуторка",
     "car": true,
     "size": [
-      0.21,
-      0.54
+      0.168,
+      0.427
     ],
     "model": "gaz_aa",
-    "height": 0.2,
+    "height": 0.158,
     "drive_speed": 16.67,
     "capacity": 1.5,
     "load": 0,

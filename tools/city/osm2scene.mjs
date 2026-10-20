@@ -76,6 +76,25 @@ export function terrainText(terrain) {
   return `{\n${head}  "heights": [\n${heights.map((r) => "    " + JSON.stringify(r)).join(",\n")}\n  ]\n}\n`;
 }
 
+/** Текст `game.json` с отступом в два пробела, но плоский объект в списке — одной строкой, как рукава перекрёстков. */
+export function gameText(value, indent = "") {
+  const inner = indent + "  ";
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "[]";
+    const item = (v) => (isFlat(v) ? `{ ${Object.entries(v).map(([k, x]) => `${JSON.stringify(k)}: ${JSON.stringify(x)}`).join(", ")} }` : gameText(v, inner));
+    return `[\n${value.map((v) => inner + item(v)).join(",\n")}\n${indent}]`;
+  }
+  if (isPlain(value)) {
+    const entries = Object.entries(value);
+    if (entries.length === 0) return "{}";
+    return `{\n${entries.map(([k, v]) => `${inner}${JSON.stringify(k)}: ${gameText(v, inner)}`).join(",\n")}\n${indent}}`;
+  }
+  return JSON.stringify(value);
+}
+
+const isPlain = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+const isFlat = (v) => isPlain(v) && Object.keys(v).length > 0 && Object.values(v).every((x) => x === null || typeof x !== "object");
+
 export async function run(configPath, root = process.cwd()) {
   const config = JSON.parse(await readFile(configPath, "utf8"));
   const osm = JSON.parse(await readFile(resolve(root, config.osm), "utf8"));
@@ -126,7 +145,7 @@ export async function writeCity(city, config, name, root = process.cwd()) {
 }
 
 /** Камера игрока — над конторой; виды дорог `roadKinds`, без них — никаких; модели — те, что названы в сцене,
- *  видах дорог, правилах, коде или таблицах, по алфавиту. */
+ *  видах дорог, перекрёстках `scene.road_junctions`, правилах, коде или таблицах, по алфавиту. */
 async function writeGameJson(out, objects, office, roadKinds) {
   const path = join(out, "game.json");
   const text = await readFile(path, "utf8");
@@ -137,13 +156,14 @@ async function writeGameJson(out, objects, office, roadKinds) {
   if (roadKinds) game.scene.road_kinds = roadKinds;
   else delete game.scene.road_kinds;
   const inScene = new Set(objects.map((o) => o.model).filter(Boolean));
-  const ofRoads = Object.values(roadKinds ?? {}).flatMap((k) => [k.piece, k.node].flat());
-  const used = new Set([...inScene, ...ofRoads, ...Object.keys(game.files.models).filter((m) => named.includes(`"${m}"`))]);
+  const ofRoads = Object.values(roadKinds ?? {}).flatMap((k) => k.piece);
+  const junctions = Object.keys(game.scene.road_junctions ?? {});
+  const used = new Set([...inScene, ...ofRoads, ...junctions, ...Object.keys(game.files.models).filter((m) => named.includes(`"${m}"`))]);
   game.files.models = Object.fromEntries(
     [...used].sort().map((m) => [m, game.files.models[m] ?? { path: `models/${m}.glb` }]),
   );
   const eol = text.includes("\r\n") ? "\r\n" : "\n";
-  await writeFile(path, (JSON.stringify(game, null, 2) + "\n").replace(/\n/g, eol));
+  await writeFile(path, (gameText(game) + "\n").replace(/\n/g, eol));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1]).href) {

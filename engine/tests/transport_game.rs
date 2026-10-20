@@ -185,7 +185,7 @@ fn every_place_and_address_is_reached_by_road_from_the_office() {
         .expect("в сцене нет конторы")
         .1;
     assert!(
-        targets.len() > 20,
+        targets.len() > 10,
         "мест и адресов слишком мало: {}",
         targets.len()
     );
@@ -297,7 +297,7 @@ fn width_of(kinds: &RoadKindTable, kind: usize) -> f64 {
 }
 
 /// Мест на карте Транспортной компании, где сходятся дороги видов: тупики, повороты, тройники, кресты.
-const JUNCTIONS_OF_THE_MAP: usize = 28;
+const JUNCTIONS_OF_THE_MAP: usize = 9;
 
 const MEETING: [f64; 2] = [30.0, 30.0];
 

@@ -24,11 +24,10 @@ test("зародыш: все места, откуда и куда возят к�
   const needed = new Set(["office"]);
   for (const client of Object.values(clients)) for (const job of client.jobs) for (const end of [job.from, job.to]) needed.add(end);
   for (const end of needed) {
-    if (end === "address") assert.ok(city.addresses.length >= 20, `адресов ${city.addresses.length}`);
+    if (end === "address") assert.ok(city.addresses.length >= 6, `адресов ${city.addresses.length}`);
     else if (end === "shops") assert.ok([...places.keys()].some((id) => id.startsWith("shop_")), "нет магазинов");
     else assert.ok(places.has(end), `нет места «${end}»`);
   }
-  for (const prefix of ["fuel_", "service_"]) assert.ok([...places.keys()].some((id) => id.startsWith(prefix)), `нет мест «${prefix}…»`);
   for (const p of places.values()) assert.ok(Number.isFinite(p.stop_x) && Number.isFinite(p.stop_y), `у «${p.place}» нет остановки`);
   // Над местом — значок его дела вместо подписи: у каждого места значок, он объявлен картинкой игры и файл есть.
   const images = JSON.parse(readFileSync(new URL("../../games/transport/game.json", import.meta.url), "utf8")).files.images ?? {};
@@ -43,8 +42,8 @@ test("зародыш: дома 1930-х — избы, деревянные и к�
   const models = new Set(city.objects.map((o) => o.model).filter(Boolean));
   assert.ok(!models.has("khrush_grey") && !models.has("khrush_sand"), "в зародыше пятиэтажка");
   assert.ok([...models].some((m) => m.startsWith("izba")), "в зародыше нет изб");
-  assert.ok(plan.stats.blocks === config.town.stage, `кварталов ${plan.stats.blocks}`);
-  assert.ok(config.town.names.some((n) => n.name === plan.name), plan.name);
+  assert.ok(plan.stats.blocks === config.town.blocks.length, `кварталов ${plan.stats.blocks}`);
+  assert.ok(config.town.names.includes(plan.name), plan.name);
 });
 
 test("зародыш: дома не налезают друг на друга и на улицы", () => {
@@ -93,29 +92,31 @@ test("зародыш: дома не налезают друг на друга и
 
 test("зародыш: любой номер случайности даёт другой городок, и он строится целиком", () => {
   // Перевод карты сам бросает ошибку, если место не нашлось или его остановка не на общей сети улиц; что
-  // остановка у самого места, а не на дальней улице, проверяется здесь. Номера 43 и 51 теряли Вокзальную улицу.
+  // остановка у самого места, а не на дальней улице, проверяется здесь.
   const proj = projector(config.bbox, config.cell);
-  const edge = 300 / config.cell;
+  const cells = (e) => e.geometry.map((g) => proj.toCell(g.lat, g.lon));
   const first = planTown(config).elements[0].geometry;
   for (let seed = 1; seed <= 60; seed++) {
     const { plan, city } = cityOf({ ...config, town: { ...config.town, seed } });
     if (seed !== config.town.seed) assert.notDeepEqual(plan.elements[0].geometry, first, `номер ${seed}`);
-    assert.ok(city.objects.some((o) => o.place === "bakery"), `номер ${seed}: нет хлебозавода`);
-    assert.ok(city.addresses.length >= 20, `номер ${seed}: адресов ${city.addresses.length}`);
+    assert.ok(city.addresses.length >= 6, `номер ${seed}: адресов ${city.addresses.length}`);
     for (const p of city.objects.filter((o) => o.place)) {
       const far = Math.hypot(p.position[0] + p.size[0] / 2 - p.stop_x, p.position[1] + p.size[1] / 2 - p.stop_y) * config.cell;
       assert.ok(far <= 100, `номер ${seed}: остановка «${p.place}» в ${Math.round(far)} м от него`);
     }
-    // Улицы 1930-х грунтовые и кончаются там, где кончается городок: не у края карты и не за путями.
-    const rail = plan.elements.find((e) => e.tags.railway === "rail").geometry.map((g) => proj.toCell(g.lat, g.lon));
-    const railY = (x) => rail.reduce((best, p) => (Math.abs(p[0] - x) < Math.abs(best[0] - x) ? p : best))[1];
-    for (const e of plan.elements.filter((w) => w.type === "way" && w.tags.highway)) {
-      assert.equal(e.tags.surface, "unpaved", `номер ${seed}: ${e.tags.name ?? e.tags.highway} не грунтовая`);
-      for (const g of e.geometry) {
-        const [x, y] = proj.toCell(g.lat, g.lon);
-        assert.ok(x > edge && y > edge && x < proj.width - edge && y < proj.height - edge, `номер ${seed}: ${e.tags.name} уходит к краю карты`);
-        assert.ok(y < railY(x), `номер ${seed}: ${e.tags.name} заходит за пути`);
+    // Городок — только кварталы: улицы 1930-х грунтовые, и ни улица, ни здание не выходят за кварталы дальше
+    // половины ширины главной улицы.
+    const town = plan.elements.filter((e) => e.tags.landuse === "residential" || e.tags.landuse === "retail").flatMap(cells);
+    assert.equal(town.length / 5, config.town.blocks.length + 1, `номер ${seed}: кварталов на земле`);
+    const reach = config.roads.secondary.width / config.cell / 2 + 1e-6;
+    const [x0, x1] = [Math.min(...town.map((p) => p[0])) - reach, Math.max(...town.map((p) => p[0])) + reach];
+    const [y0, y1] = [Math.min(...town.map((p) => p[1])) - reach, Math.max(...town.map((p) => p[1])) + reach];
+    for (const e of plan.elements.filter((w) => w.type === "way" && (w.tags.highway || w.tags.building))) {
+      if (e.tags.highway) assert.equal(e.tags.surface, "unpaved", `номер ${seed}: ${e.tags.name ?? e.tags.highway} не грунтовая`);
+      for (const [x, y] of cells(e)) {
+        assert.ok(x >= x0 && x <= x1 && y >= y0 && y <= y1, `номер ${seed}: ${e.tags.name ?? e.tags.building} за кварталами`);
       }
     }
+    assert.ok(!plan.elements.some((e) => e.tags.railway), `номер ${seed}: железная дорога`);
   }
 });

@@ -14,8 +14,8 @@
         170
       ],
       "start": [
-        132.4,
-        38.9
+        129.5,
+        36.3
       ]
     },
     "light": {
@@ -273,9 +273,6 @@
       "addresses": "tables/addresses.json"
     },
     "models": {
-      "bakery": {
-        "path": "models/bakery.glb"
-      },
       "birch": {
         "path": "models/birch.glb"
       },
@@ -303,9 +300,6 @@
       "market": {
         "path": "models/market.glb"
       },
-      "materials": {
-        "path": "models/materials.glb"
-      },
       "office": {
         "path": "models/office.glb"
       },
@@ -315,23 +309,8 @@
       "old_yellow": {
         "path": "models/old_yellow.glb"
       },
-      "pier": {
-        "path": "models/pier.glb"
-      },
       "pine": {
         "path": "models/pine.glb"
-      },
-      "road_drive_a": {
-        "path": "models/road_drive_a.glb"
-      },
-      "road_drive_b": {
-        "path": "models/road_drive_b.glb"
-      },
-      "road_main_a": {
-        "path": "models/road_main_a.glb"
-      },
-      "road_main_b": {
-        "path": "models/road_main_b.glb"
       },
       "road_bend_drive_drive": {
         "path": "models/road_bend_drive_drive.glb"
@@ -369,6 +348,12 @@
       "road_cross_street_street": {
         "path": "models/road_cross_street_street.glb"
       },
+      "road_drive_a": {
+        "path": "models/road_drive_a.glb"
+      },
+      "road_drive_b": {
+        "path": "models/road_drive_b.glb"
+      },
       "road_end_drive": {
         "path": "models/road_end_drive.glb"
       },
@@ -395,6 +380,18 @@
       },
       "road_line_street_street": {
         "path": "models/road_line_street_street.glb"
+      },
+      "road_main_a": {
+        "path": "models/road_main_a.glb"
+      },
+      "road_main_b": {
+        "path": "models/road_main_b.glb"
+      },
+      "road_street_a": {
+        "path": "models/road_street_a.glb"
+      },
+      "road_street_b": {
+        "path": "models/road_street_b.glb"
       },
       "road_tee_drive_drive": {
         "path": "models/road_tee_drive_drive.glb"
@@ -423,12 +420,6 @@
       "road_tee_street_street": {
         "path": "models/road_tee_street_street.glb"
       },
-      "road_street_a": {
-        "path": "models/road_street_a.glb"
-      },
-      "road_street_b": {
-        "path": "models/road_street_b.glb"
-      },
       "shop": {
         "path": "models/shop.glb"
       },
@@ -438,61 +429,22 @@
       "two_storey_blue": {
         "path": "models/two_storey_blue.glb"
       },
-      "two_storey_cream": {
-        "path": "models/two_storey_cream.glb"
-      },
       "white_house": {
         "path": "models/white_house.glb"
-      },
-      "wholesale": {
-        "path": "models/wholesale.glb"
       }
     },
     "images": {
-      "bakery": {
-        "path": "icons/bakery.png"
-      },
-      "fuel": {
-        "path": "icons/fuel.png"
-      },
-      "furniture": {
-        "path": "icons/furniture.png"
-      },
       "jewelry": {
         "path": "icons/jewelry.png"
       },
       "market": {
         "path": "icons/market.png"
       },
-      "materials": {
-        "path": "icons/materials.png"
-      },
       "office": {
         "path": "icons/office.png"
       },
-      "pier": {
-        "path": "icons/pier.png"
-      },
-      "plant": {
-        "path": "icons/plant.png"
-      },
-      "service": {
-        "path": "icons/service.png"
-      },
-      "sewing": {
-        "path": "icons/sewing.png"
-      },
       "shop": {
         "path": "icons/shop.png"
-      },
-      "site": {
-        "path": "icons/site.png"
-      },
-      "station": {
-        "path": "icons/station.png"
-      },
-      "wholesale": {
-        "path": "icons/wholesale.png"
       }
     }
   }

@@ -36,7 +36,10 @@ local REPAIR_MINUTES = 40
 local MESSAGES_KEPT = 30         -- записей в окне уведомлений
 local TOAST_SECONDS = 5          -- настоящих секунд, пока висит всплывающее уведомление
 local TOASTS_SHOWN = 3           -- всплывающих уведомлений на экране разом
-local WEEKDAYS = { "пн", "вт", "ср", "чт", "пт", "сб", "вс" }
+-- Первый день игры.
+local START_DATE = { year = 1930, month = 1, day = 1 }
+local MONTHS = { "января", "февраля", "марта", "апреля", "мая", "июня",
+  "июля", "августа", "сентября", "октября", "ноября", "декабря" }
 
 local WINDOWS = { "win_orders", "win_cars", "win_notes", "win_firm" }  -- окна над полосой, открыто не больше одного
 
@@ -341,13 +344,16 @@ end
 
 local function endpoint(kind, avoid)
   if kind == "address" then
+    if avoid == nil then return address_point() end
+    -- Не в соседний дом: дальше 10 клеток, а где в городке так далеко не найти — самый дальний из пяти.
+    local best, best_d = nil, -1
     for _ = 1, 5 do
       local p = address_point()
-      if avoid == nil or math.abs(p.x - avoid.x) + math.abs(p.y - avoid.y) > 10 then
-        return p
-      end
+      local d = math.abs(p.x - avoid.x) + math.abs(p.y - avoid.y)
+      if d > 10 then return p end
+      if d > best_d then best, best_d = p, d end
     end
-    return address_point()
+    return best
   end
   if kind == "shops" then
     local list = place_ids("shop_")
@@ -579,7 +585,7 @@ local function driving_text(car, stop)
   end
 end
 
--- Ближайшее по дорогам место из списка `ids` от точки `from`.
+-- Ближайшее по дорогам место из списка `ids` от точки `from`; список пуст — nil.
 local function nearest_place(ids, from, speed)
   local best, best_length = nil, nil
   for _, id in ipairs(ids) do
@@ -620,6 +626,7 @@ local function go_next(car)
   end
   -- Бензина мало — водитель сам заезжает на заправку, прежде чем ехать дальше. Заправка уже в плане,
   -- но игрок поднял над ней другие остановки — водитель возвращает её первой, а не ставит вторую.
+  -- Бензоколонки на карте нет — заехать некуда, и машина едет дальше.
   if car.fuel < FUEL_RESERVE_L and first.stop_kind ~= "fuel" then
     local planned = nil
     for _, s in ipairs(list) do
@@ -630,8 +637,10 @@ local function go_next(car)
       first = planned
     else
       local station = nearest_place(place_ids("fuel_"), car_center(car), car.drive_speed)
-      first = service_stop(car, "fuel", station, first.stop_seq - 1)
-      create(first)
+      if station ~= nil then
+        first = service_stop(car, "fuel", station, first.stop_seq - 1)
+        create(first)
+      end
     end
   end
   car.state = "driving"
@@ -942,14 +951,28 @@ end
 
 -- День ------------------------------------------------------------------------------------------
 
-local function day_text(g)
-  local day = math.floor(g.day)
-  return "День " .. string.format("%d", day) .. ", " .. WEEKDAYS[((day - 1) % 7) + 1]
+local function days_in_month(year, month)
+  if month == 2 then
+    local leap = (year % 4 == 0 and year % 100 ~= 0) or year % 400 == 0
+    return leap and 29 or 28
+  end
+  return (month == 4 or month == 6 or month == 9 or month == 11) and 30 or 31
+end
+
+-- Дата дня игры `day` (первый — START_DATE): «1 июня 1935».
+local function date_text(day)
+  local y, m, d = START_DATE.year, START_DATE.month, START_DATE.day + math.floor(day) - 1
+  while d > days_in_month(y, m) do
+    d = d - days_in_month(y, m)
+    m = m + 1
+    if m > 12 then m, y = 1, y + 1 end
+  end
+  return string.format("%d %s %d", d, MONTHS[m], y)
 end
 
 local function refresh_clock()
   local g = game()
-  g.clock_text = day_text(g) .. " · " .. fmt_time(g.minute)
+  g.clock_text = date_text(g.day) .. " · " .. fmt_time(g.minute)
 end
 
 local function check_goal()
@@ -977,7 +1000,7 @@ local function end_day()
     failed = failed + 1
     change_trust(o.client, -10)
   end
-  g.summary_text = day_text(g) .. " окончен.\n" ..
+  g.summary_text = "День " .. date_text(g.day) .. " года окончен.\n" ..
     "Доставлено заказов: " .. state.delivered .. ", из них с опозданием: " .. state.late .. ".\n" ..
     "Заработано: " .. fmt_money(state.earned) .. ". Бензин: " .. fmt_money(state.spent_fuel) ..
     (state.spent_repair > 0 and (". Ремонт и ТО: " .. fmt_money(state.spent_repair)) or "") .. ".\n" ..
@@ -1048,7 +1071,7 @@ local function first_step(g)
     if info ~= nil then
       text = info.about .. "\nДоверие: " .. trust_text(id)
     elseif string.sub(id, 1, 5) == "shop_" then
-      text = "Магазин: сюда возят хлеб и товар."
+      text = "Магазин."
     elseif string.sub(id, 1, 5) == "fuel_" then
       text = "Заправка: водитель сам заезжает сюда, когда в баке меньше " .. FUEL_RESERVE_L ..
         " литров. Бензин — " .. fmt_money(FUEL_PRICE) .. " за литр."
@@ -1291,8 +1314,12 @@ function service_car(car)
       return
     end
   end
-  local seq = (#list > 0) and (list[#list].stop_seq + 1) or 1
   local garage = nearest_place(place_ids("service_"), car_center(car), car.drive_speed)
+  if garage == nil then
+    say("Мастерской в городе нет — ТО пройти негде")
+    return
+  end
+  local seq = (#list > 0) and (list[#list].stop_seq + 1) or 1
   local stop = service_stop(car, "service", garage, seq)
   list[#list + 1] = stop
   eta_texts(car, list)

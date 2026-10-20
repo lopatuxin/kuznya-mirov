@@ -5,10 +5,10 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { buildCity } from "./city.mjs";
-import { writeCity } from "./osm2scene.mjs";
+import { gameText, writeCity } from "./osm2scene.mjs";
 import { planTown, readSeedConfig } from "./seed.mjs";
 
-test("запись карты в игру: машина у конторы, камера над ней, название города, виды дорог, модели по карте, видам и коду", async () => {
+test("запись карты в игру: машина у конторы, камера над ней, название города, виды дорог, модели по карте, видам, перекрёсткам и коду", async () => {
   const config = await readSeedConfig(fileURLToPath(new URL("../../art/transport/seed.json", import.meta.url)));
   const plan = planTown(config);
   const city = buildCity({ elements: plan.elements }, { ...config, places: plan.places });
@@ -17,7 +17,7 @@ test("запись карты в игру: машина у конторы, ка�
     const out = join(root, "game");
     await mkdir(join(out, "tables"), { recursive: true });
     const game = {
-      scene: { player_camera: { start: [0, 0] } },
+      scene: { player_camera: { start: [0, 0] }, road_junctions: { road_tee_main_street: { arms: [] } } },
       files: { rules: "rules.json", code: "code.lua", tables: { t: "tables/t.json" }, models: { khrush_grey: { path: "models/khrush_grey.glb" }, gazel: { path: "models/gazel.glb" } } },
     };
     await writeFile(join(out, "game.json"), (JSON.stringify(game, null, 2) + "\n").replace(/\n/g, "\r\n"));
@@ -39,8 +39,8 @@ test("запись карты в игру: машина у конторы, ка�
     assert.deepEqual(written.scene.player_camera.start, [Math.round(office.stop_x * 10) / 10, Math.round(office.stop_y * 10) / 10]);
     const models = Object.keys(written.files.models);
     assert.deepEqual(written.scene.road_kinds, config.road_kinds);
-    const ofRoads = Object.values(config.road_kinds).flatMap((k) => [k.piece, k.node].flat());
-    const expected = [...new Set([...scene.objects.map((o) => o.model).filter(Boolean), ...ofRoads])].sort();
+    const ofRoads = Object.values(config.road_kinds).flatMap((k) => k.piece);
+    const expected = [...new Set([...scene.objects.map((o) => o.model).filter(Boolean), ...ofRoads, "road_tee_main_street"])].sort();
     assert.ok(scene.objects.some((o) => o.road_kind === "main") && scene.objects.every((o) => !o.road_kind || !o.color), "улицы зародыша — без вида или с цветом");
     assert.ok(!models.includes("khrush_grey"), "модель прежней карты осталась");
     assert.ok(!models.includes("gazel_green"), "модель, которой нет среди объявленных, добавилась из кода");
@@ -49,4 +49,30 @@ test("запись карты в игру: машина у конторы, ка�
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("текст game.json: отступ в два пробела, плоский объект в списке — одной строкой", () => {
+  const game = { scene: { road_junctions: { road_end_main: { arms: [{ dir: 0, kind: "main", reach: 15, fade: 4 }] } } }, files: { models: {} }, keys: ["a", "b"] };
+  const expected = [
+    "{",
+    `  "scene": {`,
+    `    "road_junctions": {`,
+    `      "road_end_main": {`,
+    `        "arms": [`,
+    `          { "dir": 0, "kind": "main", "reach": 15, "fade": 4 }`,
+    "        ]",
+    "      }",
+    "    }",
+    "  },",
+    `  "files": {`,
+    `    "models": {}`,
+    "  },",
+    `  "keys": [`,
+    `    "a",`,
+    `    "b"`,
+    "  ]",
+    "}",
+  ].join("\n");
+  assert.equal(gameText(game), expected);
+  assert.deepEqual(JSON.parse(gameText(game)), game);
 });
