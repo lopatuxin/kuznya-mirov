@@ -1,16 +1,13 @@
-// Илья по частям: поза — углы суставов, кадр — поза, лист кадров — набор поз.
-// Смотрит вправо; ближние к зрителю рука и нога — левые, дальние темнее и позади.
-import { svg, capsule, smoothClosed, shade, num } from "./brush.mjs";
-
-/** Кадр 3 × 3 клетки по 96 точек; ступни стоят на нижней кромке. */
-const FRAME = 288;
-const GROUND = FRAME - 3;
-const CX = FRAME / 2;
+// Илья на общем скелете человека: рубаха с вышивкой и кушаком, порты, онучи, лапти, топор.
+// Поза — углы суставов, кадр — поза, лист кадров — набор поз.
+import { shade, num } from "./brush.mjs";
+import { add, down, uid, limb, poly, curve, fist, face, nose, earAndEye, sheet } from "./figure.mjs";
 
 const C = {
-  outline: "#2b1f17",
   shirt: "#efe6d2",
   shirtDark: "#c2b495",
+  sleeve: "#efe6d2",
+  sleeveDark: "#c2b495",
   embroidery: "#b2302b",
   belt: "#bb372d",
   beltDark: "#7a1f18",
@@ -32,88 +29,6 @@ const C = {
   haftDark: "#5e3a1b",
 };
 
-/** Длины частей в точках: рост около 186, семь с половиной голов. */
-const L = { torso: 58, neck: 5, upperArm: 33, foreArm: 29, thigh: 44, shin: 42, ankle: 8, foot: 31, heel: 8 };
-
-const rad = (d) => (d * Math.PI) / 180;
-/** Направление по углу от «прямо вниз», плюс — вперёд (вправо). */
-const down = (deg) => [Math.sin(rad(deg)), Math.cos(rad(deg))];
-const add = (p, v, k) => [p[0] + v[0] * k, p[1] + v[1] * k];
-
-let gid = 0;
-
-/** Часть тела палкой с переходом цвета поперёк: светлая сторона — к свету слева сверху. */
-function limb(a, b, wa, wb, light, dark, far) {
-  const id = `g${gid++}`;
-  const dx = b[0] - a[0];
-  const dy = b[1] - a[1];
-  const len = Math.hypot(dx, dy) || 1;
-  let nx = -dy / len;
-  let ny = dx / len;
-  if (nx + ny > 0) {
-    nx = -nx;
-    ny = -ny;
-  }
-  const m = [(a[0] + b[0]) / 2, (a[1] + b[1]) / 2];
-  const w = Math.max(wa, wb) / 2;
-  const l = far ? shade(light, -0.22) : light;
-  const d = far ? shade(dark, -0.22) : dark;
-  const def = `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${num(m[0] + nx * w)}" y1="${num(m[1] + ny * w)}" x2="${num(m[0] - nx * w)}" y2="${num(m[1] - ny * w)}"><stop offset="0" stop-color="${shade(l, 0.12)}"/><stop offset="0.45" stop-color="${l}"/><stop offset="1" stop-color="${d}"/></linearGradient>`;
-  return { def, body: `<path d="${capsule(a, b, wa, wb)}" fill="url(#${id})" stroke="${C.outline}" stroke-width="2.2" stroke-linejoin="round"/>` };
-}
-
-function poly(points, fill, { stroke = C.outline, width = 2.2, smooth = 0, opacity = 1 } = {}) {
-  const d = smooth ? smoothClosed(points, smooth) : `M${points.map(([x, y]) => `${num(x)},${num(y)}`).join("L")}Z`;
-  return `<path d="${d}" fill="${fill}" stroke="${stroke}" stroke-width="${width}" stroke-linejoin="round" opacity="${opacity}"/>`;
-}
-
-/** Нога: бедро в портах, голень в онучах с оборами, лапоть. */
-function leg(hip, p, far) {
-  const knee = add(hip, down(p.thigh), L.thigh);
-  const shinDir = down(p.thigh - p.knee);
-  const ankle = add(knee, shinDir, L.shin);
-  // Ступня: от пятки к носку под углом `foot` от горизонтали (плюс — носок вниз).
-  const fd = [Math.cos(rad(p.foot)), Math.sin(rad(p.foot))];
-  const sole = add(ankle, down(p.thigh - p.knee), L.ankle);
-  const heel = add(sole, fd, -L.heel);
-  const toe = add(sole, fd, L.foot - L.heel);
-  let defs = "";
-  let body = "";
-  const shin = limb(knee, ankle, 22, 16, C.wrap, C.wrapDark, far);
-  const thigh = limb(hip, knee, 33, 25, C.trousers, C.trousersDark, far);
-  defs += shin.def + thigh.def;
-  body += shin.body;
-  // Оборы крест-накрест по онучам.
-  const strapC = far ? shade(C.strap, -0.2) : C.strap;
-  for (let k = 0.18; k < 0.95; k += 0.2) {
-    const pa = add(knee, shinDir, L.shin * k);
-    const pb = add(knee, shinDir, L.shin * (k + 0.12));
-    const n = [-shinDir[1], shinDir[0]];
-    body += `<path d="M${num(pa[0] + n[0] * 7.5)},${num(pa[1] + n[1] * 7.5)}L${num(pb[0] - n[0] * 7)},${num(pb[1] - n[1] * 7)}" stroke="${strapC}" stroke-width="2.4" stroke-linecap="round"/>`;
-  }
-  // Лапоть: округлый, носок чуть вздёрнут, плетение полосками.
-  const up = [fd[1], -fd[0]];
-  const lap = [
-    add(heel, up, 2),
-    add(add(heel, fd, -2), up, 9),
-    add(add(sole, fd, 2), up, 14),
-    add(add(toe, fd, -6), up, 10),
-    add(toe, up, 4),
-    add(add(toe, fd, -3), up, -1),
-    add(add(sole, fd, 4), up, -2),
-    add(heel, up, -2),
-  ];
-  const lc = far ? shade(C.lapti, -0.22) : C.lapti;
-  body += poly(lap, lc, { smooth: 0.9 });
-  for (let k = 0.15; k < 0.95; k += 0.17) {
-    const p0 = add(add(heel, fd, L.foot * k), up, 0);
-    const p1 = add(add(heel, fd, L.foot * k + 3), up, 10);
-    body += `<path d="M${num(p0[0])},${num(p0[1])}L${num(p1[0])},${num(p1[1])}" stroke="${far ? shade(C.laptiDark, -0.2) : C.laptiDark}" stroke-width="1.6"/>`;
-  }
-  body += thigh.body;
-  return { defs, body, lowest: Math.max(heel[1] + 2, toe[1] + 4, sole[1] + 2), knee, ankle };
-}
-
 /** Длина топорища; кулак держит его у конца, конец торчит из кулака на `GRIP` от его середины. */
 const HAFT = 60;
 const GRIP = 12;
@@ -123,7 +38,7 @@ const GRIP = 12;
  * куда показывает `axeAngle` от предплечья (плюс — к большому пальцу, он у Ильи впереди).
  * Кулак рисуется поверх топорища: пальцы обхватывают его, топорище выходит из кулака с обеих сторон.
  */
-function axeInFist(hand, foreDir, p) {
+function axe(hand, foreDir, p) {
   const hd = down(p.upper + p.elbow + p.axeAngle);
   const butt = add(hand, hd, -GRIP);
   const top = add(hand, hd, HAFT - GRIP);
@@ -140,68 +55,35 @@ function axeInFist(hand, foreDir, p) {
     add(add(b0, hd, -2), side, s * 8),
     add(b0, side, -s * 4),
   ];
-  let axe = haft.body + poly(blade, C.iron, { smooth: 0.35 });
+  let behind = haft.body + poly(blade, C.iron, { smooth: 0.35 });
   const e0 = add(add(top, hd, 11), side, s * 19);
   const e1 = add(add(top, hd, -19), side, s * 18);
-  axe += `<path d="M${num(e0[0])},${num(e0[1])}L${num(e1[0])},${num(e1[1])}" stroke="#e7eef2" stroke-width="2.4" stroke-linecap="round"/>`;
-  // Кулак вдоль топорища: тыльная сторона — к запястью, костяшки и пальцы — от него.
-  let f = [-hd[1], hd[0]];
-  if (f[0] * foreDir[0] + f[1] * foreDir[1] < 0) f = [-f[0], -f[1]];
-  const at = (u, v) => add(add(hand, hd, u), f, v);
-  const outline = [at(-8, -6), at(5, -6.5), at(9.5, -2), at(9.5, 4), at(6.5, 8), at(2, 8.5), at(-2.5, 8.5), at(-7, 8), at(-9.5, 4), at(-9.5, -2)];
-  let fist = poly(outline, C.skin, { smooth: 0.55 });
-  // Тень пальцев под костяшками и складки между ними; большой палец лежит сверху, у лезвия.
-  fist += `<path d="M${num(at(-7.5, 3)[0])},${num(at(-7.5, 3)[1])}L${num(at(7.5, 3)[0])},${num(at(7.5, 3)[1])}" stroke="${C.skinDark}" stroke-width="1.6" stroke-linecap="round"/>`;
-  for (const u of [-4.6, -0.3, 4]) {
-    fist += `<path d="M${num(at(u, 3.5)[0])},${num(at(u, 3.5)[1])}L${num(at(u, 8)[0])},${num(at(u, 8)[1])}" stroke="${C.outline}" stroke-width="1.5" stroke-linecap="round"/>`;
-  }
-  fist += `<path d="M${num(at(4, -6)[0])},${num(at(4, -6)[1])}Q${num(at(10, -3)[0])},${num(at(10, -3)[1])} ${num(at(8, 2.5)[0])},${num(at(8, 2.5)[1])}" stroke="${C.outline}" stroke-width="1.5" fill="none" stroke-linecap="round"/>`;
-  return { def: haft.def, axe, fist };
+  behind += `<path d="M${num(e0[0])},${num(e0[1])}L${num(e1[0])},${num(e1[1])}" stroke="#e7eef2" stroke-width="2.4" stroke-linecap="round"/>`;
+  return { def: haft.def, behind, front: fist(hand, hd, foreDir, C) };
 }
 
-/** Рука: рукав рубахи с вышитым обшлагом, кулак; в ближней — топор. */
-function arm(shoulder, p, far, axe) {
-  const elbow = add(shoulder, down(p.upper), L.upperArm);
-  const foreDir = down(p.upper + p.elbow);
-  const wrist = add(elbow, foreDir, L.foreArm);
-  const hand = add(wrist, foreDir, 6);
-  const upper = limb(shoulder, elbow, 22, 18, C.shirt, C.shirtDark, far);
-  const fore = limb(elbow, wrist, 18, 15, C.shirt, C.shirtDark, far);
-  let defs = upper.def + fore.def;
-  let body = upper.body + fore.body;
-  // Обшлаг с вышивкой.
+/** Обшлаг рукава с вышивкой. */
+function cuff(wrist, foreDir, far) {
   const c0 = add(wrist, foreDir, -5);
   const n = [-foreDir[1], foreDir[0]];
-  body += `<path d="M${num(c0[0] + n[0] * 6.5)},${num(c0[1] + n[1] * 6.5)}L${num(c0[0] - n[0] * 6.5)},${num(c0[1] - n[1] * 6.5)}" stroke="${far ? shade(C.embroidery, -0.25) : C.embroidery}" stroke-width="3.5"/>`;
-  if (axe) {
-    // Топор позади руки, кулак поверх топорища.
-    const a = axeInFist(hand, foreDir, p);
-    return { defs: defs + a.def, body: a.axe + body + a.fist, hand };
-  }
-  body += `<circle cx="${num(hand[0])}" cy="${num(hand[1])}" r="8.5" fill="${far ? shade(C.skin, -0.2) : C.skin}" stroke="${C.outline}" stroke-width="2.2"/>`;
-  return { defs, body, hand };
+  return `<path d="M${num(c0[0] + n[0] * 6.5)},${num(c0[1] + n[1] * 6.5)}L${num(c0[0] - n[0] * 6.5)},${num(c0[1] - n[1] * 6.5)}" stroke="${far ? shade(C.embroidery, -0.25) : C.embroidery}" stroke-width="3.5"/>`;
 }
 
-/** Туловище: рубаха до середины бедра, кушак с кистями, вышивка у ворота и подола. */
-function torso(hip, p) {
-  const up = [Math.sin(rad(p.lean)), -Math.cos(rad(p.lean))];
-  const fwd = [-up[1], up[0]];
-  const at = (u, v) => [hip[0] + up[0] * u + fwd[0] * v, hip[1] + up[1] * u + fwd[1] * v];
+/** Рубаха до середины бедра, кушак с кистями, вышивка у ворота и подола. */
+function garment(at, p) {
   const breath = p.breath ?? 0;
-  const neck = at(L.torso + breath, 6);
-  const shoulder = at(L.torso - 10 + breath, -2);
   const shirt = [
     at(-22, -24), at(-6, -22), at(14, -23), at(34, -25), at(50 + breath, -22), at(58 + breath, -13),
     at(61 + breath, 2), at(58 + breath, 17), at(46 + breath, 27), at(30, 28), at(12, 26), at(-6, 26), at(-23, 27),
   ];
-  let defs = `<linearGradient id="shirt${gid}" gradientUnits="userSpaceOnUse" x1="${num(at(40, -20)[0])}" y1="${num(at(40, -20)[1])}" x2="${num(at(10, 22)[0])}" y2="${num(at(10, 22)[1])}"><stop offset="0" stop-color="${C.shirtDark}"/><stop offset="0.5" stop-color="${C.shirt}"/><stop offset="1" stop-color="${shade(C.shirt, -0.06)}"/></linearGradient>`;
-  let body = poly(shirt, `url(#shirt${gid})`, { smooth: 0.6 });
-  gid++;
+  const id = uid("shirt");
+  const defs = `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${num(at(40, -20)[0])}" y1="${num(at(40, -20)[1])}" x2="${num(at(10, 22)[0])}" y2="${num(at(10, 22)[1])}"><stop offset="0" stop-color="${C.shirtDark}"/><stop offset="0.5" stop-color="${C.shirt}"/><stop offset="1" stop-color="${shade(C.shirt, -0.06)}"/></linearGradient>`;
+  let body = poly(shirt, `url(#${id})`, { smooth: 0.6 });
   // Складки подола и вышивка по подолу.
-  body += `<path d="M${num(at(-21, -16)[0])},${num(at(-21, -16)[1])}Q${num(at(-23, 3)[0])},${num(at(-23, 3)[1])} ${num(at(-22, 20)[0])},${num(at(-22, 20)[1])}" stroke="${C.embroidery}" stroke-width="4" fill="none"/>`;
+  body += curve(at(-21, -16), at(-23, 3), at(-22, 20), C.embroidery, 4).replace(' stroke-linecap="round"', "");
   body += `<path d="M${num(at(-4, 6)[0])},${num(at(-4, 6)[1])}L${num(at(-19, 4)[0])},${num(at(-19, 4)[1])}" stroke="${C.shirtDark}" stroke-width="2" stroke-linecap="round"/>`;
   // Ворот с вышивкой.
-  body += `<path d="M${num(at(57 + breath, 5)[0])},${num(at(57 + breath, 5)[1])}Q${num(at(52 + breath, 14)[0])},${num(at(52 + breath, 14)[1])} ${num(at(44 + breath, 19)[0])},${num(at(44 + breath, 19)[1])}" stroke="${C.embroidery}" stroke-width="4" fill="none" stroke-linecap="round"/>`;
+  body += curve(at(57 + breath, 5), at(52 + breath, 14), at(44 + breath, 19), C.embroidery, 4);
   // Кушак и его концы, отстающие при беге.
   const belt = [at(4, -23), at(4, 25), at(-5, 26), at(-5, -23)];
   body += poly(belt, C.belt, { width: 2 });
@@ -212,58 +94,29 @@ function torso(hip, p) {
     body += `<path d="M${num(knot[0] - 3 + dl * 0.3)},${num(knot[1])}Q${num(knot[0] - 4 - sw * 0.3 + dl)},${num(knot[1] + len * 0.5)} ${num(end[0])},${num(end[1])}" stroke="${C.beltDark}" stroke-width="5" fill="none" stroke-linecap="round"/>`;
     body += `<path d="M${num(end[0] - 3)},${num(end[1])}L${num(end[0] + 2)},${num(end[1] + 7)}M${num(end[0])},${num(end[1])}L${num(end[0] + 4)},${num(end[1] + 5)}" stroke="${C.belt}" stroke-width="2"/>`;
   }
-  return { defs, body, neck, shoulder, up, fwd };
+  return { defs, body };
 }
 
-/** Голова в профиль: волосы, борода, усы, нос, глаз, бровь. */
-function head(neck, p, up, fwd) {
-  const tilt = p.headTilt ?? 0;
-  const hu = [Math.sin(rad(p.lean + tilt)), -Math.cos(rad(p.lean + tilt))];
-  const hf = [-hu[1], hu[0]];
-  const c = add(add(neck, hu, 17), hf, 2);
-  const at = (u, v) => [c[0] + hu[0] * u + hf[0] * v, c[1] + hu[1] * u + hf[1] * v];
-  let body = "";
-  // Шея.
-  body += poly([at(-20, -6), at(-6, -7), at(-6, 6), at(-20, 7)], C.skinDark, { width: 2 });
-  // Лицо и череп.
-  const face = [at(12, -11), at(15, 0), at(12, 9), at(6, 12), at(3, 13.5), at(0, 15.5), at(-2, 13), at(-6, 13), at(-12, 9), at(-14, 0), at(-10, -11), at(0, -14)];
-  body += poly(face, C.skin, { smooth: 0.7 });
+/** Голова: окладистая русая борода, усы, волосы до затылка. */
+function head(at) {
+  let body = face(at, C);
   // Борода окладистая: от уха до груди.
   const beard = [at(-1, -4), at(-3, 9), at(-6, 15), at(-13, 15), at(-20, 12), at(-24, 6), at(-23, -2), at(-17, -7), at(-8, -7)];
   body += poly(beard, C.hair, { smooth: 0.75 });
   body += `<path d="M${num(at(-10, 8)[0])},${num(at(-10, 8)[1])}Q${num(at(-17, 6)[0])},${num(at(-17, 6)[1])} ${num(at(-22, 4)[0])},${num(at(-22, 4)[1])}M${num(at(-8, 1)[0])},${num(at(-8, 1)[1])}Q${num(at(-15, -1)[0])},${num(at(-15, -1)[1])} ${num(at(-20, -2)[0])},${num(at(-20, -2)[1])}" stroke="${C.hairLight}" stroke-width="1.8" fill="none" stroke-linecap="round"/>`;
   // Усы.
   body += poly([at(-1, 7), at(-2, 14), at(-5, 15), at(-7, 10), at(-4, 5)], C.hairDark, { smooth: 0.8, width: 1.6 });
-  // Нос.
-  body += `<path d="M${num(at(4, 13)[0])},${num(at(4, 13)[1])}Q${num(at(1, 18.5)[0])},${num(at(1, 18.5)[1])} ${num(at(-1, 14)[0])},${num(at(-1, 14)[1])}" stroke="${C.outline}" stroke-width="1.6" fill="${C.skin}"/>`;
+  body += nose(at, C);
   // Волосы: шапка до затылка, прядь у виска.
   const hair = [at(-3, -15), at(6, -16), at(13, -12), at(17, -2), at(16, 8), at(12, 12), at(10, 9), at(11, 3), at(7, -2), at(3, -5), at(1, -9), at(-4, -12), at(-5, -16)];
   body += poly(hair, C.hair, { smooth: 0.7 });
-  body += `<path d="M${num(at(12, -9)[0])},${num(at(12, -9)[1])}Q${num(at(8, -3)[0])},${num(at(8, -3)[1])} ${num(at(-6, -12)[0])},${num(at(-6, -12)[1])}" stroke="${C.hairLight}" stroke-width="2" fill="none" stroke-linecap="round"/>`;
-  // Ухо, глаз, бровь.
-  body += `<ellipse cx="${num(at(0, -5)[0])}" cy="${num(at(0, -5)[1])}" rx="3.2" ry="4.6" fill="${C.skinDark}" stroke="${C.outline}" stroke-width="1.6"/>`;
-  body += `<ellipse cx="${num(at(5, 9)[0])}" cy="${num(at(5, 9)[1])}" rx="1.7" ry="2.1" fill="${C.outline}"/>`;
+  body += curve(at(12, -9), at(8, -3), at(-6, -12), C.hairLight, 2);
+  body += earAndEye(at, C);
   body += `<path d="M${num(at(8.5, 6)[0])},${num(at(8.5, 6)[1])}L${num(at(8.5, 12)[0])},${num(at(8.5, 12)[1])}" stroke="${C.hairDark}" stroke-width="2.8" stroke-linecap="round"/>`;
   return body;
 }
 
-/** Рисует одну позу; ступни у земли, середина таза — посередине кадра. */
-function pose(p) {
-  const hip0 = [CX + (p.dx ?? 0), 100];
-  const legNear0 = leg(hip0, p.near, false);
-  const legFar0 = leg(hip0, p.far, true);
-  const lowest = Math.max(legNear0.lowest, legFar0.lowest);
-  const hip = [hip0[0], hip0[1] + (GROUND - lowest) - (p.lift ?? 0)];
-  const legNear = leg(hip, p.near, false);
-  const legFar = leg(hip, p.far, true);
-  const t = torso(hip, p);
-  const armFar = arm(t.shoulder, p.farArm, true, false);
-  const armNear = arm(t.shoulder, p.nearArm, false, true);
-  const h = head(t.neck, p, t.up, t.fwd);
-  const defs = legFar.defs + legNear.defs + t.defs + armFar.defs + armNear.defs;
-  const body = armFar.body + legFar.body + legNear.body + t.body + h + armNear.body;
-  return { defs, body };
-}
+const ILYA = { C, garment, head, cuff, weapon: axe };
 
 const base = { lean: 3, breath: 0, sash: 0, headTilt: 0 };
 /** Рука опущена, топор держит за конец топорища: топор впереди у колена, лезвием вниз. */
@@ -318,21 +171,66 @@ const JUMP = [
     nearArm: { upper: 50, elbow: 40, axeAngle: 95, axeFlip: true }, farArm: { upper: -45, elbow: 30 } },
 ];
 
-/** Лист кадров: стойка 0–3, бег 4–11, прыжок 12–14; по 5 в строке. */
-const SHEET = [...IDLE, ...RUN, ...JUMP];
-const COLUMNS = 5;
+/** Ноги в прыжке у верхней точки: на них Илья рубит и защищается в воздухе. */
+const AIR_LEGS = { near: JUMP[1].near, far: JUMP[1].far };
+
+/** Ноги в бою на земле: ближняя впереди, дальняя позади. */
+const STANCE = { near: { thigh: 18, knee: 10, foot: 0 }, far: { thigh: -16, knee: 8, foot: 0 } };
+const LUNGE = { near: { thigh: 34, knee: 22, foot: -4 }, far: { thigh: -22, knee: 6, foot: 6 } };
+
+/**
+ * Удар с плеча: замах — топор за голову, лезвием назад вверх; удар — через верх вперёд вниз, лезвие
+ * к врагу; возврат. Радиус следа — от плеча до лезвия.
+ */
+const CHOP = [
+  { ...base, lean: -2, headTilt: -2, sash: 4, ...STANCE,
+    nearArm: { upper: 150, elbow: 70, axeAngle: 80, axeFlip: true }, farArm: { upper: 35, elbow: 40 } },
+  { ...base, lean: -7, headTilt: -4, sash: 6, ...STANCE,
+    nearArm: { upper: 172, elbow: 78, axeAngle: 82, axeFlip: true }, farArm: { upper: 50, elbow: 30 } },
+  { ...base, lean: 6, headTilt: 2, sash: -4, ...LUNGE, trail: { from: 250, to: 175, r: 128, width: 30 },
+    nearArm: { upper: 148, elbow: 12, axeAngle: 22, axeFlip: true }, farArm: { upper: 10, elbow: 30 } },
+  { ...base, lean: 15, headTilt: 6, sash: -10, ...LUNGE, trail: { from: 175, to: 92, r: 128, width: 34 },
+    nearArm: { upper: 78, elbow: 4, axeAngle: 16, axeFlip: true }, farArm: { upper: -30, elbow: 30 } },
+  { ...base, lean: 9, headTilt: 2, sash: -6, ...LUNGE,
+    nearArm: { upper: 45, elbow: 35, axeAngle: 60, axeFlip: true }, farArm: { upper: -12, elbow: 30 } },
+];
+
+/** Парирование: топорище наискось перед лицом встречает дубину, потом отводит её вперёд вниз. */
+const PARRY = [
+  { ...base, lean: -6, headTilt: -6, sash: 6, near: { thigh: 22, knee: 26, foot: 0 }, far: { thigh: -20, knee: 12, foot: 2 },
+    nearArm: { upper: 95, elbow: 70, axeAngle: -45, axeFlip: true }, farArm: { upper: 40, elbow: 95 } },
+  { ...base, lean: 4, headTilt: 0, sash: -2, ...LUNGE, trail: { from: 150, to: 95, r: 118, width: 22 },
+    nearArm: { upper: 70, elbow: 28, axeAngle: -8, axeFlip: true }, farArm: { upper: 20, elbow: 60 } },
+];
+
+/** Уклонение на месте: корпус отклоняется назад, вес на дальней ноге; рисунок чуть уходит назад. */
+const DODGE = [
+  { ...base, lean: -24, headTilt: 8, sash: 10, dx: -14, near: { thigh: 30, knee: 4, foot: -8 }, far: { thigh: -6, knee: 42, foot: 4 },
+    nearArm: { upper: 30, elbow: 72, axeAngle: 78, axeFlip: true }, farArm: { upper: -55, elbow: 20 } },
+  { ...base, lean: -11, headTilt: 3, sash: 6, dx: -6, near: { thigh: 24, knee: 8, foot: -4 }, far: { thigh: -10, knee: 24, foot: 2 },
+    nearArm: { upper: 20, elbow: 75, axeAngle: 85, axeFlip: true }, farArm: { upper: -30, elbow: 25 } },
+];
+
+/** Пропущенный удар: голова откинута, руки врозь, шаг назад. */
+const HURT = [
+  { ...base, lean: -20, headTilt: -22, sash: 14, dx: -12, lift: -4, near: { thigh: 14, knee: 44, foot: 8 }, far: { thigh: -24, knee: 30, foot: 6 },
+    nearArm: { upper: -50, elbow: 18, axeAngle: 70, axeFlip: true }, farArm: { upper: 85, elbow: 25 } },
+  { ...base, lean: -9, headTilt: -9, sash: 8, dx: -6, near: { thigh: 12, knee: 26, foot: 4 }, far: { thigh: -18, knee: 18, foot: 3 },
+    nearArm: { upper: -22, elbow: 28, axeAngle: 62, axeFlip: true }, farArm: { upper: 45, elbow: 40 } },
+];
+
+const inAir = (poses) => poses.map((p) => ({ ...p, ...AIR_LEGS, dx: 0 }));
+
+/**
+ * Лист кадров по 6 в строке: стойка 0–3, бег 4–11, прыжок 12–14, удар на земле 15–19 и в прыжке 20–24,
+ * парирование 25–26 и 27–28, уклонение 29–30 и 31–32, пропущенный удар 33–34 и 35–36.
+ */
+const SHEET = [...IDLE, ...RUN, ...JUMP, ...CHOP, ...inAir(CHOP), ...PARRY, ...inAir(PARRY), ...DODGE, ...inAir(DODGE), ...HURT, ...inAir(HURT)];
+const COLUMNS = 6;
+/** Кадр 3,5 × 3 клетки: топор в ударе уходит от середины на полторы клетки. */
+const FRAME = [336, 288];
 
 export function sheetSvg() {
-  const rows = Math.ceil(SHEET.length / COLUMNS);
-  let defs = "";
-  let body = "";
-  SHEET.forEach((p, i) => {
-    const { defs: d, body: b } = pose(p);
-    defs += d;
-    const x = (i % COLUMNS) * FRAME;
-    const y = Math.floor(i / COLUMNS) * FRAME;
-    body += `<g transform="translate(${x},${y})">${b}</g>`;
-  });
-  return svg(COLUMNS * FRAME, rows * FRAME, body, defs);
+  return sheet(SHEET, ILYA, FRAME, COLUMNS);
 }
 

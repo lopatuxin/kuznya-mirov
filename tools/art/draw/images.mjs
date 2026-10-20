@@ -8,6 +8,8 @@ import { bigSpruce, pine, weepingBirch } from "./trees.mjs";
 import { sky, cloud, mountains, forest, kremlin } from "./background.mjs";
 import { gorge, hangingLog, fallenLog, boulder, mushrooms, gate, foreground } from "./props.mjs";
 import { sheetSvg } from "./hero.mjs";
+import { robberSvg, robberFlashSvg, robberAuraSvg } from "./robber.mjs";
+import { clashSvg, impactSvg } from "./fx.mjs";
 
 const BOTTOM = 12.6;
 const LEDGE_TOP = 0.45;
@@ -49,6 +51,11 @@ export const IMAGES = {
   gate: { draw: () => gate(), cells: [4.6, 5.4] },
   foreground: { draw: () => foreground({ w: 30, h: 2.4, seed: 71 }), cells: [30, 2.4], ppc: 48 },
   hero: { draw: () => ({ svg: sheetSvg() }) },
+  robber: { draw: () => ({ svg: robberSvg() }) },
+  robber_flash: { draw: () => ({ svg: robberFlashSvg() }) },
+  robber_aura: { draw: () => ({ svg: robberAuraSvg() }) },
+  clash: { draw: () => ({ svg: clashSvg() }) },
+  impact: { draw: () => ({ svg: impactSvg() }) },
 };
 for (const l of LEDGES) {
   const from = l.from ?? l.x0 - (l.left ? PAD : 0);

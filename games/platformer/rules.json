@@ -1,7 +1,11 @@
 {
   "rules": [
-    { "kind": "run_jump", "for": { "has": ["hero"] }, "solid": { "has": ["ground"] }, "one_way": { "has": ["ledge"] } },
-    { "kind": "check", "for": { "has": ["hero"] }, "do": [["run", "animate"]] },
+    { "kind": "run_jump", "for": { "has": ["hero"], "without": ["held"] }, "solid": { "has": ["ground"] }, "one_way": { "has": ["ledge"] } },
+    { "kind": "run_jump", "for": { "has": ["robber"], "without": ["held"] }, "solid": { "has": ["ground"] }, "one_way": { "has": ["ledge"] } },
+    { "kind": "check", "for": { "has": ["hero"] }, "do": [["run", "fight_hero"]] },
+    { "kind": "check", "for": { "has": ["robber"] }, "do": [["run", "fight_robber"]] },
+    { "kind": "check", "for": { "has": ["robber_glow"] }, "do": [["run", "follow_robber"]] },
+    { "kind": "check", "for": { "has": ["fx"] }, "do": [["run", "animate_fx"]] },
     { "kind": "collide", "a": { "has": ["hero"] }, "b": { "has": ["pit"] }, "effects": { "a": [["run", "respawn"]] } },
     { "kind": "collide", "a": { "has": ["hero"] }, "b": { "has": ["finish"] }, "do": [["end_game", "win"]] }
   ]
