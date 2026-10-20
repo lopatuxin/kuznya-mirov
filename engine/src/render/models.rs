@@ -1,9 +1,12 @@
 //! «Трёхмерная сцена» → «Модели и движения», «Отрисовка»: где в кадре стоит каждый объект с `model`. Ни
 //! видеокарты, ни браузера: `wasm::mod` переводит это в данные для `render::gpu_models`.
 
+use std::rc::Rc;
+
 use crate::core::game::Game;
 use crate::core::model::Image;
 use crate::core::property;
+use crate::core::road_kinds::Junction;
 use crate::core::value::Rotation;
 
 use super::materials::{linear_to_srgb, srgb_to_linear};
@@ -50,47 +53,115 @@ impl ModelDraws {
     }
 }
 
-/// Куски и узлы видов дорог кадра по номеру модели: сначала рисуются все куски, потом все узлы.
+/// Куски видов дорог кадра по номеру модели и перекрёстки раскладки: сначала рисуются все куски, потом все
+/// перекрёстки. Список перекрёстков общий с раскладкой и новый при каждой её пересборке.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct RoadDraws {
     pub pieces: Vec<Vec<ModelInstance>>,
-    pub nodes: Vec<Vec<ModelInstance>>,
+    pub junctions: Rc<Vec<Junction>>,
 }
 
-/// «Вид дороги»: куски и узлы раскладки `game` по моделям.
+/// «Вид дороги»: куски раскладки `game` по моделям и её перекрёстки.
 pub fn road_draws(game: &Game) -> RoadDraws {
-    let count = game.world.models().len();
-    let mut draws = RoadDraws {
-        pieces: vec![Vec::new(); count],
-        nodes: vec![Vec::new(); count],
-    };
+    let mut pieces = vec![Vec::new(); game.world.models().len()];
     let layout = game.road_kind_layout();
-    let instance =
-        |center: [f64; 2], z: f64, cos: f64, sin: f64, scale: f64, stretch: f64| ModelInstance {
-            placement: [center[0] as f32, center[1] as f32, cos as f32, sin as f32],
-            base: [z as f32, scale as f32, stretch as f32, 0.0],
-        };
     for piece in layout.pieces() {
-        draws.pieces[piece.model].push(instance(
-            piece.center,
-            piece.z,
-            piece.cos,
-            piece.sin,
-            piece.scale,
-            piece.stretch,
-        ));
+        pieces[piece.model].push(ModelInstance {
+            placement: [
+                piece.center[0] as f32,
+                piece.center[1] as f32,
+                piece.cos as f32,
+                piece.sin as f32,
+            ],
+            base: [
+                piece.z as f32,
+                piece.scale as f32,
+                piece.stretch as f32,
+                0.0,
+            ],
+        });
     }
-    for node in layout.nodes() {
-        draws.nodes[node.model].push(instance(
-            node.center,
-            node.z,
-            node.cos,
-            node.sin,
-            node.scale,
-            1.0,
-        ));
+    RoadDraws {
+        pieces,
+        junctions: Rc::clone(layout.junctions()),
     }
-    draws
+}
+
+/// Части перекрёстков одной модели в общих буферах: номер модели, номер её части, первый индекс и число индексов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct JunctionRun {
+    pub model: usize,
+    pub part: usize,
+    pub first: u32,
+    pub count: u32,
+}
+
+/// Изогнутые копии частей всех перекрёстков в формате вершины модели (место, нормаль, точка картинки,
+/// касательная, цвет) уже в осях мира и индексы по общему списку вершин; части одной модели лежат подряд.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct JunctionMesh {
+    pub floats: Vec<f32>,
+    pub indices: Vec<u32>,
+    pub runs: Vec<JunctionRun>,
+}
+
+/// Числа на вершину в `JunctionMesh::floats`.
+const JUNCTION_VERTEX_FLOATS: usize = 16;
+
+/// «Вид дороги»: части `junctions` для видеокарты.
+pub fn junction_mesh(junctions: &[Junction]) -> JunctionMesh {
+    let mut order: Vec<&Junction> = junctions.iter().collect();
+    order.sort_by_key(|junction| junction.model);
+    let mut mesh = JunctionMesh::default();
+    let mut bases: Vec<Vec<u32>> = Vec::with_capacity(order.len());
+    for junction in &order {
+        let place = |local: f32, middle: f64| (f64::from(local) + middle) as f32;
+        let mut part_bases = Vec::with_capacity(junction.parts.len());
+        for part in &junction.parts {
+            part_bases.push((mesh.floats.len() / JUNCTION_VERTEX_FLOATS) as u32);
+            for vertex in &part.vertices {
+                mesh.floats.extend([
+                    place(vertex.position[0], junction.center[0]),
+                    place(vertex.position[1], junction.center[1]),
+                    place(vertex.position[2], junction.z),
+                ]);
+                mesh.floats.extend(vertex.normal);
+                mesh.floats.extend(vertex.uv);
+                mesh.floats.extend(vertex.tangent);
+                mesh.floats.extend(vertex.color);
+            }
+        }
+        bases.push(part_bases);
+    }
+    let mut start = 0;
+    while start < order.len() {
+        let model = order[start].model;
+        let end = start
+            + order[start..]
+                .iter()
+                .take_while(|junction| junction.model == model)
+                .count();
+        for part in 0..order[start].parts.len() {
+            let first = mesh.indices.len() as u32;
+            for (junction, part_bases) in order[start..end].iter().zip(&bases[start..end]) {
+                if let Some(source) = junction.parts.get(part) {
+                    mesh.indices
+                        .extend(source.indices.iter().map(|index| part_bases[part] + index));
+                }
+            }
+            let count = mesh.indices.len() as u32 - first;
+            if count > 0 {
+                mesh.runs.push(JunctionRun {
+                    model,
+                    part,
+                    first,
+                    count,
+                });
+            }
+        }
+        start = end;
+    }
+    mesh
 }
 
 /// Объекты мира с `model`, `position` и `size`, разложенные по моделям. Модель без частей не рисуется.
@@ -223,6 +294,7 @@ fn shrink(level: &MipLevel, srgb: bool) -> MipLevel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::{ModelVertex, Part};
 
     fn image(width: u32, height: u32, pixel: [u8; 4]) -> Image {
         Image {
@@ -230,6 +302,105 @@ mod tests {
             height,
             pixels: pixel.repeat((width * height) as usize),
         }
+    }
+
+    /// Перекрёсток модели `model` из двух частей: квадрат со стороной 1 и один треугольник; вершины лежат
+    /// относительно середины в `[at, 0]`.
+    fn junction(model: usize, z: f64, at: f64) -> Junction {
+        let vertex = |x: f32, y: f32| ModelVertex {
+            position: [x, y, 0.0],
+            normal: [0.0, 0.0, 1.0],
+            uv: [x / 2.0, y / 2.0],
+            tangent: [1.0, 0.0, 0.0, -1.0],
+            color: [1.0, 1.0, 1.0, 0.5],
+        };
+        let square = Part {
+            vertices: vec![
+                vertex(0.0, 0.0),
+                vertex(1.0, 0.0),
+                vertex(1.0, 1.0),
+                vertex(0.0, 1.0),
+            ],
+            indices: vec![0, 1, 2, 0, 2, 3],
+            material: 0,
+        };
+        let triangle = Part {
+            vertices: vec![vertex(0.0, 0.0), vertex(2.0, 0.0), vertex(0.0, 2.0)],
+            indices: vec![0, 1, 2],
+            material: 1,
+        };
+        Junction {
+            model,
+            center: [at, 3.0],
+            width: 1.0,
+            z,
+            scale: 1.0,
+            mirrored: false,
+            arms: Vec::new(),
+            parts: vec![square, triangle],
+        }
+    }
+
+    #[test]
+    fn junction_meshes_put_the_curved_vertices_in_the_world_and_keep_every_vertex_attribute() {
+        let mesh = junction_mesh(&[junction(3, 0.75, 4.0)]);
+        assert_eq!(mesh.floats.len(), 7 * JUNCTION_VERTEX_FLOATS);
+        let third = &mesh.floats[2 * JUNCTION_VERTEX_FLOATS..3 * JUNCTION_VERTEX_FLOATS];
+        assert_eq!(
+            third,
+            [
+                5.0, 4.0,
+                0.75, // место: середина перекрёстка и высота основания
+                0.0, 0.0, 1.0, // нормаль
+                0.5, 0.5, // точка картинки
+                1.0, 0.0, 0.0, -1.0, // касательная
+                1.0, 1.0, 1.0, 0.5, // цвет
+            ]
+        );
+        assert_eq!(mesh.indices, [0, 1, 2, 0, 2, 3, 4, 5, 6]);
+        assert_eq!(
+            mesh.runs,
+            [
+                JunctionRun {
+                    model: 3,
+                    part: 0,
+                    first: 0,
+                    count: 6
+                },
+                JunctionRun {
+                    model: 3,
+                    part: 1,
+                    first: 6,
+                    count: 3
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn junctions_of_one_model_lie_together_part_by_part_with_indices_into_the_shared_vertices() {
+        let mesh = junction_mesh(&[
+            junction(5, 0.0, 0.0),
+            junction(2, 0.0, 10.0),
+            junction(5, 0.0, 20.0),
+        ]);
+        let runs: Vec<(usize, usize, u32)> = mesh
+            .runs
+            .iter()
+            .map(|run| (run.model, run.part, run.count))
+            .collect();
+        assert_eq!(runs, [(2, 0, 6), (2, 1, 3), (5, 0, 12), (5, 1, 6)]);
+        assert_eq!(
+            &mesh.indices[9..12],
+            [7, 8, 9],
+            "вершины первого перекрёстка модели 5 идут за семью вершинами модели 2"
+        );
+        let second_part = &mesh.runs[3];
+        assert_eq!(
+            &mesh.indices[second_part.first as usize..],
+            [11, 12, 13, 18, 19, 20]
+        );
+        assert!(junction_mesh(&[]).indices.is_empty());
     }
 
     #[test]

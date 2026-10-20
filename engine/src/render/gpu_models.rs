@@ -1,17 +1,20 @@
 //! «Трёхмерная сцена» → «Модели и движения»: модели игры на видеокарте. Сетки частей, картинки материалов
 //! со ступенями уменьшения и буфер экземпляров, в котором объекты каждой модели лежат подряд: каждая часть
 //! модели рисуется одной командой на все объекты своей модели. Части с `BLEND` рисуются отдельно, по одному
-//! объекту, в порядке кадра; куски дорог и узлы — тем же способом, что объекты, но из своих списков. Картинки
-//! моделей в атлас игры не идут: у моделей свои текстуры.
+//! объекту, в порядке кадра; куски дорог — тем же способом, что объекты, но из своего списка, а перекрёстки —
+//! своими буферами изогнутых копий, что заливаются заново только вместе с новой раскладкой. Картинки моделей в атлас игры не
+//! идут: у моделей свои текстуры.
 
 use std::collections::HashMap;
+use std::rc::Rc;
 
 use wgpu::util::{DeviceExt, TextureDataOrder};
 
 use crate::core::model::{AlphaMode, Image, Material, Model, ModelTable, Sampler, Texture, Wrap};
+use crate::core::road_kinds::Junction;
 
 use super::gpu3d::MaterialOptions;
-use super::models::{BlendedDraw, ModelInstance, mip_chain};
+use super::models::{BlendedDraw, JunctionRun, ModelInstance, junction_mesh, mip_chain};
 
 /// Байт на вершину части: место, нормаль, точка карты, касательная и цвет.
 pub const VERTEX_STRIDE: u64 = 64;
@@ -74,25 +77,37 @@ struct ModelGpu {
     parts: Vec<PartGpu>,
 }
 
-/// Что рисовать из списка кадра: объекты моделей, куски дорог или узлы.
+/// Что рисовать из списка кадра: объекты моделей или куски дорог.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Group {
     Objects,
     Pieces,
-    Nodes,
 }
 
-/// Объекты кадра, как они приходят на видеокарту: по моделям — объекты, куски дорог и узлы, и порядок объектов
-/// с частью `BLEND`.
+/// Объекты кадра, как они приходят на видеокарту: по моделям — объекты и куски дорог, перекрёстки раскладки и
+/// порядок объектов с частью `BLEND`.
 pub struct ModelsFrame<'a> {
     pub objects: &'a [Vec<ModelInstance>],
     pub pieces: &'a [Vec<ModelInstance>],
-    pub nodes: &'a [Vec<ModelInstance>],
+    pub junctions: &'a Rc<Vec<Junction>>,
     pub blended: &'a [BlendedDraw],
 }
 
 /// Где в буфере экземпляров лежат объекты одной модели: номер первого и сколько их.
 type Span = (u32, u32);
+
+struct JunctionBuffers {
+    vertices: wgpu::Buffer,
+    indices: wgpu::Buffer,
+}
+
+/// Изогнутые копии перекрёстков на видеокарте и список перекрёстков, с которого они залиты.
+#[derive(Default)]
+struct JunctionsGpu {
+    source: Option<Rc<Vec<Junction>>>,
+    buffers: Option<JunctionBuffers>,
+    runs: Vec<JunctionRun>,
+}
 
 /// Все модели игры на видеокарте и буфер экземпляров кадра.
 pub struct ModelsGpu {
@@ -100,10 +115,10 @@ pub struct ModelsGpu {
     models: Vec<ModelGpu>,
     instances: wgpu::Buffer,
     capacity: usize,
-    /// Где лежат объекты каждой модели в `instances`: объекты, куски дорог и узлы подряд, по моделям.
+    /// Где лежат объекты каждой модели в `instances`: объекты и куски дорог подряд, по моделям.
     objects: Vec<Span>,
     pieces: Vec<Span>,
-    nodes: Vec<Span>,
+    junctions: JunctionsGpu,
     /// Объекты с частью `BLEND` от дальнего к ближнему.
     blended: Vec<BlendedDraw>,
     scratch: Vec<u8>,
@@ -428,7 +443,7 @@ impl ModelsGpu {
             capacity,
             objects: Vec::new(),
             pieces: Vec::new(),
-            nodes: Vec::new(),
+            junctions: JunctionsGpu::default(),
             blended: Vec::new(),
             scratch: Vec::new(),
             material_layout: layout,
@@ -439,10 +454,11 @@ impl ModelsGpu {
         &self.material_layout
     }
 
-    /// Пишет объекты кадра в буфер: объекты, куски дорог и узлы, в каждой группе — объекты каждой модели
-    /// подряд, по порядку моделей.
+    /// Пишет объекты кадра в буфер: объекты и куски дорог, в каждой группе — объекты каждой модели подряд, по
+    /// порядку моделей. Копии перекрёстков заливаются заново, только если пришёл другой список перекрёстков.
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &ModelsFrame<'_>) {
-        let groups = [frame.objects, frame.pieces, frame.nodes];
+        self.sync_junctions(device, frame.junctions);
+        let groups = [frame.objects, frame.pieces];
         let total: usize = groups
             .iter()
             .flat_map(|lists| lists.iter().take(self.models.len()))
@@ -454,7 +470,7 @@ impl ModelsGpu {
         }
         self.scratch.clear();
         let mut next = 0u32;
-        for (spans, lists) in [&mut self.objects, &mut self.pieces, &mut self.nodes]
+        for (spans, lists) in [&mut self.objects, &mut self.pieces]
             .into_iter()
             .zip(groups)
         {
@@ -476,6 +492,39 @@ impl ModelsGpu {
         }
     }
 
+    fn sync_junctions(&mut self, device: &wgpu::Device, source: &Rc<Vec<Junction>>) {
+        let held = self
+            .junctions
+            .source
+            .as_ref()
+            .is_some_and(|held| Rc::ptr_eq(held, source));
+        if held {
+            return;
+        }
+        let mesh = junction_mesh(source);
+        let buffers = (!mesh.indices.is_empty()).then(|| JunctionBuffers {
+            vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("junction_vertices"),
+                contents: &floats_to_bytes(&mesh.floats),
+                usage: wgpu::BufferUsages::VERTEX,
+            }),
+            indices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("junction_indices"),
+                contents: &mesh
+                    .indices
+                    .iter()
+                    .flat_map(|index| index.to_le_bytes())
+                    .collect::<Vec<u8>>(),
+                usage: wgpu::BufferUsages::INDEX,
+            }),
+        });
+        self.junctions = JunctionsGpu {
+            source: Some(Rc::clone(source)),
+            buffers,
+            runs: mesh.runs,
+        };
+    }
+
     fn span_bytes(first: u32, count: u32) -> std::ops::Range<u64> {
         let start = u64::from(first) * INSTANCE_STRIDE;
         start..start + u64::from(count) * INSTANCE_STRIDE
@@ -493,7 +542,6 @@ impl ModelsGpu {
         let spans = match group {
             Group::Objects => &self.objects,
             Group::Pieces => &self.pieces,
-            Group::Nodes => &self.nodes,
         };
         for (model, &(first, count)) in self.models.iter().zip(spans) {
             if count == 0 {
@@ -550,10 +598,28 @@ impl ModelsGpu {
         }
     }
 
-    /// Рисует куски дорог, затем узлы: части любой прозрачности, с материалами.
-    pub fn draw_roads(&self, pass: &mut wgpu::RenderPass<'_>) {
-        for group in [Group::Pieces, Group::Nodes] {
-            self.draw_group(pass, group, |_| true, true);
+    /// Рисует куски дорог: части любой прозрачности, с материалами.
+    pub fn draw_road_pieces(&self, pass: &mut wgpu::RenderPass<'_>) {
+        self.draw_group(pass, Group::Pieces, |_| true, true);
+    }
+
+    /// Рисует изогнутые копии частей перекрёстков с материалами этих частей.
+    pub fn draw_junctions(&self, pass: &mut wgpu::RenderPass<'_>) {
+        let Some(buffers) = &self.junctions.buffers else {
+            return;
+        };
+        pass.set_vertex_buffer(0, buffers.vertices.slice(..));
+        pass.set_index_buffer(buffers.indices.slice(..), wgpu::IndexFormat::Uint32);
+        for run in &self.junctions.runs {
+            let Some(part) = self
+                .models
+                .get(run.model)
+                .and_then(|model| model.parts.get(run.part))
+            else {
+                continue;
+            };
+            pass.set_bind_group(1, &part.material, &[]);
+            pass.draw_indexed(run.first..run.first + run.count, 0, 0..1);
         }
     }
 }

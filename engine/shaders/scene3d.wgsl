@@ -3,8 +3,8 @@
 // — рельеф; только глубина от солнца), затем рельеф (`vs_terrain`, `fs_terrain`), вода (`fs_water`),
 // фигуры (`vs_shape`, `fs_shape`), модели (`vs_model`; части с прозрачностью `OPAQUE` — `fs_model`, `MASK` —
 // `fs_model_mask`, `BLEND` и куски дорог — `fs_model_blend`; в тенях — `vs_shadow_model` и для `MASK`
-// `vs_shadow_model_mask` с `fs_shadow_model_mask`) и плитки с плоскими объектами (`vs_ground`, `fs_ground`),
-// которые лежат на рельефе и верху настилов.
+// `vs_shadow_model_mask` с `fs_shadow_model_mask`), перекрёстки дорог (изогнутые копии частей моделей:
+// `vs_junction` и `fs_model_blend`; в тени не рисуются) и плитки с плоскими объектами (`vs_ground`, `fs_ground`), которые лежат на рельефе и верху настилов.
 // Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным проходом без глубины.
 //
 // Свет считается в линейной яркости, кадр сводится к экрану кривой Khronos PBR Neutral и кодируется в
@@ -844,4 +844,19 @@ fn fs_model_blend(in: ModelOutput) -> @location(0) vec4<f32> {
         discard;
     }
     return vec4<f32>(point.rgb, select(1.0, point.a, mode > 1.5));
+}
+
+// --- Перекрёстки дорог ----------------------------------------------------------------------
+
+// Вершина изогнутой копии перекрёстка уже в осях сцены: экземпляров нет. Копия рисуется точкой входа `fs_model_blend`.
+@vertex
+fn vs_junction(vertex: ModelVertex) -> ModelOutput {
+    var out: ModelOutput;
+    out.clip_position = globals.view_proj * vec4<f32>(vertex.position, 1.0);
+    out.world = vertex.position;
+    out.normal = vertex.normal;
+    out.uv = vertex.uv;
+    out.tangent = vertex.tangent;
+    out.color = vertex.color;
+    return out;
 }

@@ -77,13 +77,15 @@ impl<'de> Deserialize<'de> for KeyOrder {
     }
 }
 
-/// Имена из таблиц `files.materials`, `files.stamps` и `files.models` в порядке записи в `game.json`; порядок —
-/// номер материала, штампа и модели. Пусто, если таблицы нет.
+/// Имена из таблиц `files.materials`, `files.stamps`, `files.models` и `scene.road_junctions` в порядке записи в
+/// `game.json`; порядок — номер материала, штампа и модели и первенство модели перекрёстка при равной цене. Пусто,
+/// если таблицы нет.
 #[derive(Debug, Default)]
 pub(super) struct DeclarationOrder {
     pub materials: Vec<String>,
     pub stamps: Vec<String>,
     pub models: Vec<String>,
+    pub road_junctions: Vec<String>,
 }
 
 pub(super) fn declaration_order(game_json: &str) -> DeclarationOrder {
@@ -94,19 +96,26 @@ pub(super) fn declaration_order(game_json: &str) -> DeclarationOrder {
         models: Option<KeyOrder>,
     }
     #[derive(Deserialize)]
+    struct Scene {
+        road_junctions: Option<KeyOrder>,
+    }
+    #[derive(Deserialize)]
     struct Root {
         files: Option<Files>,
+        scene: Option<Scene>,
     }
-    let Some(files) = serde_json::from_str::<Root>(game_json)
-        .ok()
-        .and_then(|root| root.files)
-    else {
+    let Ok(root) = serde_json::from_str::<Root>(game_json) else {
         return DeclarationOrder::default();
     };
+    let names = |order: Option<KeyOrder>| order.map(|order| order.0).unwrap_or_default();
+    let (materials, stamps, models) = root.files.map_or((None, None, None), |files| {
+        (files.materials, files.stamps, files.models)
+    });
     DeclarationOrder {
-        materials: files.materials.map(|order| order.0).unwrap_or_default(),
-        stamps: files.stamps.map(|order| order.0).unwrap_or_default(),
-        models: files.models.map(|order| order.0).unwrap_or_default(),
+        materials: names(materials),
+        stamps: names(stamps),
+        models: names(models),
+        road_junctions: names(root.scene.and_then(|scene| scene.road_junctions)),
     }
 }
 

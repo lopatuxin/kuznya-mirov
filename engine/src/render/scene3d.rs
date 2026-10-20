@@ -2,10 +2,13 @@
 //! земли и плоские объекты, разложенные по рельефу треугольниками, матрицы камеры и солнца. Ни
 //! видеокарты, ни браузера: `wasm::mod` переводит это в данные для `render::gpu`.
 
+use std::rc::Rc;
+
 use crate::core::camera::{Camera3d, FOV_Y_DEGREES};
 use crate::core::game::Game;
 use crate::core::math3::{self, Mat4, Vec3};
 use crate::core::property;
+use crate::core::road_kinds::Junction;
 use crate::core::scene::{CellRange, LayerView, LightConfig, SceneConfig};
 use crate::core::shapes::Body;
 use crate::core::value::Shape;
@@ -38,9 +41,9 @@ pub struct Frame3d {
     pub shapes: Vec<ShapeDraw>,
     /// Объекты каждой модели игры по номеру модели.
     pub models: Vec<Vec<ModelInstance>>,
-    /// «Вид дороги»: куски дорог и узлы по номеру модели; рисуются после моделей и до плоских объектов.
+    /// «Вид дороги»: куски дорог по номеру модели и перекрёстки; рисуются после моделей и до плоских объектов.
     pub road_pieces: Vec<Vec<ModelInstance>>,
-    pub road_nodes: Vec<Vec<ModelInstance>>,
+    pub road_junctions: Rc<Vec<Junction>>,
     /// «Свет и материалы», прозрачность: объекты с частью `BLEND` от дальнего к ближнему.
     pub blended: Vec<BlendedDraw>,
     /// Плитки земли, затем плоские объекты в порядке рисования.
@@ -306,7 +309,7 @@ pub fn compose_frame3d(
         shapes,
         models: model_draws.instances,
         road_pieces: road_draws.pieces,
-        road_nodes: road_draws.nodes,
+        road_junctions: road_draws.junctions,
         blended,
         ground,
         surface,

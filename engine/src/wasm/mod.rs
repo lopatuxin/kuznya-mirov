@@ -1493,7 +1493,7 @@ fn render_world(
                 models: ModelsFrame {
                     objects: &frame.models,
                     pieces: &frame.road_pieces,
-                    nodes: &frame.road_nodes,
+                    junctions: &frame.road_junctions,
                     blended: &frame.blended,
                 },
             };

@@ -445,6 +445,7 @@ impl<F: FnMut(usize) -> Result<Image, String>> Builder<'_, F> {
             materials: self.materials,
             images: self.images,
             size: std::array::from_fn(|axis| f64::from(high[axis] - low[axis])),
+            origin: [-shift[0], -shift[1]],
         })
     }
 }

@@ -50,9 +50,10 @@ use materials::{
 };
 pub use models::{ModelDecl, ModelFile};
 use models::{load_models, named_in_scene, parse_models_table, warn_unused_models};
-pub use road_kinds::RoadKindDecl;
+pub use road_kinds::{JunctionArmDecl, JunctionDecl, RoadKindDecl};
 use road_kinds::{
-    build_road_kinds, parse_road_kinds, validate_kind_models, warn_unused_road_kinds,
+    build_road_kinds, parse_road_junctions, parse_road_kinds, validate_junctions,
+    validate_kind_models, warn_unused_road_kinds,
 };
 pub use stamps::parse_edit_imprints;
 use stamps::{parse_imprints, parse_stamp_table, warn_unused_stamps};
@@ -2242,6 +2243,7 @@ struct SceneJsonConfig {
     cell_pixels: Option<f64>,
     player_camera: Option<PlayerCameraConfig>,
     road_kinds: Vec<RoadKindDecl>,
+    road_junctions: Vec<JunctionDecl>,
 }
 
 /// «Мир на экране» → «Камера игрока», требования 1–3, 23: `player_camera` — `zoom` из двух чисел,
@@ -2423,6 +2425,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
             "cell_pixels",
             "player_camera",
             "road_kinds",
+            "road_junctions",
         ],
         "game.json",
         "scene",
@@ -2523,6 +2526,10 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         None => Some(Vec::new()),
         Some(v) => parse_road_kinds(v, obj.contains_key("camera"), errors),
     };
+    let road_junctions = match obj.get("road_junctions") {
+        None => Some(Vec::new()),
+        Some(v) => parse_road_junctions(v, obj.contains_key("camera"), errors),
+    };
     Some(SceneJsonConfig {
         width: width?,
         height: height?,
@@ -2534,6 +2541,7 @@ fn parse_scene_config(value: &Json, errors: &mut ErrorSink) -> Option<SceneJsonC
         cell_pixels: cell_pixels?,
         player_camera: player_camera?,
         road_kinds: road_kinds?,
+        road_junctions: road_junctions?,
     })
 }
 
@@ -2718,6 +2726,8 @@ pub struct GameConfig {
     pub scene: SceneConfig,
     /// «Вид дороги»: `scene.road_kinds` — виды дорог игры; пусто, если не объявлены.
     pub road_kinds: Vec<RoadKindDecl>,
+    /// «Вид дороги»: `scene.road_junctions` — модели перекрёстков и их рукава; пусто, если не объявлены.
+    pub road_junctions: Vec<JunctionDecl>,
     pub random_seed: u64,
     pub max_objects: usize,
     pub files: FilePaths,
@@ -3027,7 +3037,14 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         .get("loss_screen")
         .and_then(|v| expect_string(v, "game.json", "loss_screen", errors));
 
-    let scene = scene?;
+    let mut scene = scene?;
+    // Модель перекрёстка при равной цене выбирается по порядку записи, а не по алфавиту `serde_json::Map`.
+    let junction_order = declaration_order(text).road_junctions;
+    scene.road_junctions.sort_by_key(|junction| {
+        junction_order
+            .iter()
+            .position(|name| name == &junction.name)
+    });
     let max_objects = max_objects?;
     let random_seed = random_seed?;
     let (
@@ -3079,6 +3096,12 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         models.as_deref().unwrap_or_default(),
         errors,
     );
+    validate_junctions(
+        &scene.road_junctions,
+        &scene.road_kinds,
+        models.as_deref().unwrap_or_default(),
+        errors,
+    );
     let (properties, scene_path, rules, screens, fonts) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
@@ -3096,6 +3119,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             player_camera: scene.player_camera,
         },
         road_kinds: scene.road_kinds,
+        road_junctions: scene.road_junctions,
         random_seed,
         max_objects: max_objects as usize,
         files: FilePaths {
@@ -10377,7 +10401,12 @@ pub fn load_rest_with_models(
         skip_media_validation,
         &mut errors,
     );
-    properties.set_road_kinds(build_road_kinds(&config.road_kinds, &models, &mut errors));
+    properties.set_road_kinds(build_road_kinds(
+        &config.road_kinds,
+        &config.road_junctions,
+        &models,
+        &mut errors,
+    ));
     properties.set_models(models);
 
     let ParsedSceneFile {
@@ -10673,12 +10702,18 @@ pub fn load_rest_with_models(
             .map_or(&[][..], |terrain| terrain.imprints());
         warn_unused_stamps(&config.files.stamps, imprints, &mut errors);
         let mut named_models = named_in_scene(&scene_objects, property::MODEL);
-        named_models.extend(config.road_kinds.iter().flat_map(|kind| {
-            kind.pieces
+        named_models.extend(
+            config
+                .road_kinds
                 .iter()
-                .chain(std::iter::once(&kind.node))
-                .cloned()
-        }));
+                .flat_map(|kind| kind.pieces.iter().cloned()),
+        );
+        named_models.extend(
+            config
+                .road_junctions
+                .iter()
+                .map(|junction| junction.name.clone()),
+        );
         warn_unused_models(
             &config.files.models,
             &named_models,

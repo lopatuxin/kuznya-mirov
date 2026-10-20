@@ -1,0 +1,590 @@
+{
+  "road_end_main": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 10,
+        "fade": 4
+      }
+    ]
+  },
+  "road_tee_main_main": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      },
+      {
+        "dir": 180,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      }
+    ]
+  },
+  "road_bend_main_main": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      }
+    ]
+  },
+  "road_cross_main_main": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      },
+      {
+        "dir": 180,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      },
+      {
+        "dir": 270,
+        "kind": "main",
+        "reach": 15,
+        "fade": 4
+      }
+    ]
+  },
+  "road_line_main_main": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 13,
+        "fade": 4
+      },
+      {
+        "dir": 180,
+        "kind": "main",
+        "reach": 13,
+        "fade": 4
+      }
+    ]
+  },
+  "road_tee_main_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 11.458,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "street",
+        "reach": 12.292,
+        "fade": 2.333
+      },
+      {
+        "dir": 180,
+        "kind": "main",
+        "reach": 11.458,
+        "fade": 4
+      }
+    ]
+  },
+  "road_bend_main_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 11.458,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "street",
+        "reach": 12.292,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_cross_main_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 11.458,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "street",
+        "reach": 12.292,
+        "fade": 2.333
+      },
+      {
+        "dir": 180,
+        "kind": "main",
+        "reach": 11.458,
+        "fade": 4
+      },
+      {
+        "dir": 270,
+        "kind": "street",
+        "reach": 12.292,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_line_main_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 13,
+        "fade": 4
+      },
+      {
+        "dir": 180,
+        "kind": "street",
+        "reach": 11.333,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_tee_main_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 9.688,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 10.938,
+        "fade": 1.5
+      },
+      {
+        "dir": 180,
+        "kind": "main",
+        "reach": 9.688,
+        "fade": 4
+      }
+    ]
+  },
+  "road_bend_main_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 9.688,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 10.938,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_cross_main_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 9.688,
+        "fade": 4
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 10.938,
+        "fade": 1.5
+      },
+      {
+        "dir": 180,
+        "kind": "main",
+        "reach": 9.688,
+        "fade": 4
+      },
+      {
+        "dir": 270,
+        "kind": "drive",
+        "reach": 10.938,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_line_main_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "main",
+        "reach": 13,
+        "fade": 4
+      },
+      {
+        "dir": 180,
+        "kind": "drive",
+        "reach": 10.5,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_end_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 5.833,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_tee_street_main": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 12.292,
+        "fade": 2.333
+      },
+      {
+        "dir": 90,
+        "kind": "main",
+        "reach": 11.458,
+        "fade": 4
+      },
+      {
+        "dir": 180,
+        "kind": "street",
+        "reach": 12.292,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_tee_street_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      },
+      {
+        "dir": 90,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      },
+      {
+        "dir": 180,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_bend_street_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      },
+      {
+        "dir": 90,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_cross_street_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      },
+      {
+        "dir": 90,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      },
+      {
+        "dir": 180,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      },
+      {
+        "dir": 270,
+        "kind": "street",
+        "reach": 8.75,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_line_street_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 7.583,
+        "fade": 2.333
+      },
+      {
+        "dir": 180,
+        "kind": "street",
+        "reach": 7.583,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_tee_street_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 6.979,
+        "fade": 2.333
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 7.396,
+        "fade": 1.5
+      },
+      {
+        "dir": 180,
+        "kind": "street",
+        "reach": 6.979,
+        "fade": 2.333
+      }
+    ]
+  },
+  "road_bend_street_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 6.979,
+        "fade": 2.333
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 7.396,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_cross_street_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 6.979,
+        "fade": 2.333
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 7.396,
+        "fade": 1.5
+      },
+      {
+        "dir": 180,
+        "kind": "street",
+        "reach": 6.979,
+        "fade": 2.333
+      },
+      {
+        "dir": 270,
+        "kind": "drive",
+        "reach": 7.396,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_line_street_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "street",
+        "reach": 7.583,
+        "fade": 2.333
+      },
+      {
+        "dir": 180,
+        "kind": "drive",
+        "reach": 6.75,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_end_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "drive",
+        "reach": 3.75,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_tee_drive_main": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "drive",
+        "reach": 10.938,
+        "fade": 1.5
+      },
+      {
+        "dir": 90,
+        "kind": "main",
+        "reach": 9.688,
+        "fade": 4
+      },
+      {
+        "dir": 180,
+        "kind": "drive",
+        "reach": 10.938,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_tee_drive_street": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "drive",
+        "reach": 7.396,
+        "fade": 1.5
+      },
+      {
+        "dir": 90,
+        "kind": "street",
+        "reach": 6.979,
+        "fade": 2.333
+      },
+      {
+        "dir": 180,
+        "kind": "drive",
+        "reach": 7.396,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_tee_drive_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      },
+      {
+        "dir": 180,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_bend_drive_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_cross_drive_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      },
+      {
+        "dir": 90,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      },
+      {
+        "dir": 180,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      },
+      {
+        "dir": 270,
+        "kind": "drive",
+        "reach": 5.625,
+        "fade": 1.5
+      }
+    ]
+  },
+  "road_line_drive_drive": {
+    "arms": [
+      {
+        "dir": 0,
+        "kind": "drive",
+        "reach": 4.875,
+        "fade": 1.5
+      },
+      {
+        "dir": 180,
+        "kind": "drive",
+        "reach": 4.875,
+        "fade": 1.5
+      }
+    ]
+  }
+}

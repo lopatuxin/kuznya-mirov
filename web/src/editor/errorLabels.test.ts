@@ -56,13 +56,25 @@ describe("withErrorLabels", () => {
     expect(labelled('свойство "road_kind" называет вид "street", которого нет среди "road_kinds"')).toBe(
       'свойство "вид дороги" называет вид "street", которого нет среди "вид дорог"',
     );
-    expect(labelled('у вида "street" нет "piece"; у вида "avenue" нет "node"')).toBe('у вида "street" нет "прямой кусок"; у вида "avenue" нет "узел"');
+    expect(labelled('у вида "street" нет "piece"')).toBe('у вида "street" нет "прямой кусок"');
     expect(labelled('свойство "alphaCutoff" должно быть от 0 до 1, получено 2')).toBe('свойство "порог прозрачности" должно быть от 0 до 1, получено 2');
   });
 
+  it("в ошибках набора перекрёстков ключи рукава — их подписи", () => {
+    const junction = (message: string) => withErrorLabels({ ...BASE, file: "game.json", path: "scene → road_junctions → road_tee_main_street → arms → 1", message }).message;
+    expect(junction('"fade" — ожидалось число от 0 до "reach", получено 20')).toBe('"гаснущая полоса" — ожидалось число от 0 до "устье рукава", получено 20');
+    expect(junction('у модели нет "arms"')).toBe('у модели нет "рукава"');
+    expect(labelled('модель "road_x" из "road_junctions" не объявлена')).toBe('модель "road_x" из "перекрёстки" не объявлена');
+  });
+
+  it("fade, reach и arms вне набора перекрёстков не подписаны: так могут зваться свойства самой игры", () => {
+    expect(labelled('свойство "fade" должно быть числом')).toBe('свойство "fade" должно быть числом');
+    expect(labelled('свойство "reach" должно быть числом; "arms" — список')).toBe('свойство "reach" должно быть числом; "arms" — список');
+  });
+
   it("подписи видов дорог не задевают прежние: \"road\", \"model\" и похожие слова", () => {
-    expect(labelled('"road_kind" вместе с "model" у объекта без "road"; "road_kinds_x", "pieces", "node_a", "my_piece"')).toBe(
-      '"вид дороги" вместе с "модель" у объекта без "дорога"; "road_kinds_x", "pieces", "node_a", "my_piece"',
+    expect(labelled('"road_kind" вместе с "model" у объекта без "road"; "road_kinds_x", "pieces", "road_junctions_x", "my_piece"')).toBe(
+      '"вид дороги" вместе с "модель" у объекта без "дорога"; "road_kinds_x", "pieces", "road_junctions_x", "my_piece"',
     );
   });
 
