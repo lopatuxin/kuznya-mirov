@@ -19,6 +19,20 @@ use super::models::{self, BlendedDraw, ModelInstance};
 use super::relief::{self, FlatShapes, SurfaceVertex};
 use super::wind::Motion;
 
+/// Сторона квадратной карты теней в точках — предел `downlevel_webgl2_defaults`.
+pub const SHADOW_MAP_SIZE: u32 = 2048;
+
+/// «Свет и тени»: на сколько точек карты теней точка сдвигается вдоль нормали, когда спрашивает тень,
+/// и меньше скольких клеток этот сдвиг не бывает. Выборка тени сравнивает глубину с четырьмя
+/// соседними точками карты — до точки карты по каждой оси, до 1,4 вкось, — а земля, повёрнутая от
+/// солнца на угол θ, уходит между ними вглубь на tg θ на клетку. Сдвиг на d вдоль нормали отодвигает
+/// точку от земли на d / cos θ по лучу солнца, и полтора размера точки карты перекрывают этот уход
+/// при любом θ.
+/// Иначе земля затеняет сама себя мелкой сеткой, которая на экране сливается в кольца, как только
+/// камера отдалена и одна точка карты покрывает заметную долю клетки.
+const SHADOW_OFFSET_TEXELS: f64 = 1.5;
+const MIN_SHADOW_OFFSET: f64 = 0.02;
+
 /// Одна фигура кадра: место, размеры, поворот и цвет — всё, что вершинному шейдеру нужно поверх
 /// сетки единичной фигуры.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -54,9 +68,11 @@ pub struct Frame3d {
     pub light_view_proj: Mat4,
     /// Направление от земли к солнцу и синус его высоты.
     pub sun: [f32; 4],
-    /// Насколько темна тень, и единица глубины карты теней на клетку сцены.
+    /// Насколько темна тень, единица глубины карты теней на клетку сцены и сдвиг точки вдоль нормали
+    /// при выборке тени, в клетках.
     pub shadow: f32,
     pub depth_per_cell: f32,
+    pub shadow_offset: f32,
     /// Место камеры: от него считается блик.
     pub eye: [f32; 3],
     /// Цвет и сила солнца и неба в линейной яркости.
@@ -200,13 +216,14 @@ fn visible_cells(scene: &SceneConfig, camera: &Camera3d, low: f64, high: f64) ->
 
 /// «Свет и тени»: прямоугольная проекция от солнца, охватывающая видимую землю (в пределах сцены)
 /// с высотами от `ground.0` до `ground.1` и всё, что над ней поднимает самая высокая точка мира
-/// `top` — фигуры и холмы. Возвращает матрицу и глубину, которую она покрывает.
+/// `top` — фигуры и холмы. Возвращает матрицу, глубину, которую она покрывает, и сколько клеток
+/// приходится на точку карты теней по большей стороне.
 fn sun_projection(
     scene: &SceneConfig,
     camera: &Camera3d,
     ground: (f64, f64),
     top: f64,
-) -> (Mat4, f64) {
+) -> (Mat4, f64, f64) {
     let toward_sun = scene.light.direction();
     let forward = math3::scale(toward_sun, -1.0);
     let right = math3::normalize(math3::cross(forward, [0.0, -1.0, 0.0]));
@@ -255,7 +272,18 @@ fn sun_projection(
         near,
         far,
     );
-    (math3::mul(&projection, &view), far - near)
+    let side = (high[0] - low[0]).max(high[1] - low[1]) + 2.0 * MARGIN;
+    (
+        math3::mul(&projection, &view),
+        far - near,
+        side / f64::from(SHADOW_MAP_SIZE),
+    )
+}
+
+/// Сдвиг точки вдоль нормали при выборке тени, в клетках, когда точка карты теней покрывает `texel`
+/// клеток.
+fn shadow_offset(texel: f64) -> f64 {
+    (SHADOW_OFFSET_TEXELS * texel).max(MIN_SHADOW_OFFSET)
 }
 
 /// Кадр трёхмерной сцены по миру `game` и камере `camera`. `motion` — часы движения, по ним
@@ -302,7 +330,7 @@ pub fn compose_frame3d(
     let surface = relief::surface_triangles(&game.world, &ground, flat_shapes);
 
     let toward_sun = game.scene.light.direction();
-    let (light_view_proj, depth) =
+    let (light_view_proj, depth, texel) =
         sun_projection(&game.scene, camera, (ground_low, ground_high), top);
     let (sun_light, sky_light) = light_colors(&game.scene.light);
     Frame3d {
@@ -323,6 +351,7 @@ pub fn compose_frame3d(
         ],
         shadow: game.scene.light.shadow as f32,
         depth_per_cell: (1.0 / depth.max(1e-6)) as f32,
+        shadow_offset: shadow_offset(texel) as f32,
         eye: camera.eye.map(|c| c as f32),
         sun_light,
         sky_light,
@@ -355,7 +384,7 @@ mod tests {
         let scene = scene();
         let camera = Camera3d::looking_at([16.0, 12.0], 55.0, 12.0, [1920.0, 1080.0]);
         let tallest = 4.2;
-        let (matrix, depth) = sun_projection(&scene, &camera, (0.0, 0.0), tallest);
+        let (matrix, depth, _) = sun_projection(&scene, &camera, (0.0, 0.0), tallest);
         assert!(depth > 0.0);
         let toward_sun = scene.light.direction();
         let range = visible_cells(&scene, &camera, 0.0, 0.0);
@@ -377,6 +406,106 @@ mod tests {
                     let (x, y, z) = (clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]);
                     assert!(x.abs() <= 1.0 && y.abs() <= 1.0, "{point:?} → {x} {y}");
                     assert!((0.0..=1.0).contains(&z), "{point:?} → глубина {z}");
+                }
+            }
+        }
+    }
+
+    /// «Свет и тени»: земля не затеняет сама себя ни вблизи, ни когда камера видит всю большую сцену.
+    /// Выборка тени сравнивает глубину точки, сдвинутой вдоль нормали, с четырьмя соседними точками
+    /// карты теней; земля под каждой из них не ближе к солнцу — на ровном месте и на склонах в 40° в
+    /// любую сторону, даже без сдвига глубины, который шейдер добавляет сверху.
+    #[test]
+    fn the_ground_does_not_shadow_itself_however_far_the_camera_is() {
+        let mut large = scene();
+        large.width = 400;
+        large.height = 400;
+        large.light = LightConfig {
+            sun_from: 35.0,
+            sun_height: 48.0,
+            ..LightConfig::default()
+        };
+        let cases = [
+            (
+                scene(),
+                Camera3d::looking_at([16.0, 12.0], 55.0, 12.0, [1920.0, 1080.0]),
+            ),
+            (
+                large,
+                Camera3d::looking_at([200.0, 200.0], 55.0, 400.0, [1280.0, 800.0]),
+            ),
+        ];
+        let tilt = 40f64.to_radians();
+        let size = f64::from(SHADOW_MAP_SIZE);
+        const STEPS: u32 = 20;
+        for (scene, camera) in cases {
+            // Склоны на четыре стороны, к солнцу и от него — самый скользящий случай.
+            let toward_sun = scene.light.direction();
+            let sun_azimuth = toward_sun[1].atan2(toward_sun[0]);
+            let mut normals = vec![[0.0, 0.0, 1.0]];
+            for azimuth in [0.0, 0.5, 1.0, 1.5]
+                .map(|turn| turn * std::f64::consts::PI)
+                .into_iter()
+                .chain([sun_azimuth, sun_azimuth + std::f64::consts::PI])
+            {
+                normals.push([
+                    tilt.sin() * azimuth.cos(),
+                    tilt.sin() * azimuth.sin(),
+                    tilt.cos(),
+                ]);
+            }
+            let (matrix, _, texel) = sun_projection(&scene, &camera, (0.0, 6.5), 6.5);
+            let offset = shadow_offset(texel);
+            let ndc = |point: Vec3| {
+                let clip = math3::transform_point(&matrix, point);
+                [clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]]
+            };
+            let range = visible_cells(&scene, &camera, 0.0, 6.5);
+            for &normal in &normals {
+                let along = math3::normalize(math3::cross([0.0, 1.0, 0.0], normal));
+                let across = math3::cross(normal, along);
+                for (i, j) in (1..STEPS).flat_map(|i| (1..STEPS).map(move |j| (i, j))) {
+                    let ground = [
+                        range.x0 as f64
+                            + (range.x1 - range.x0) as f64 * f64::from(i) / f64::from(STEPS),
+                        range.y0 as f64
+                            + (range.y1 - range.y0) as f64 * f64::from(j) / f64::from(STEPS),
+                        3.0,
+                    ];
+                    let moved = ndc(math3::add(ground, math3::scale(normal, offset)));
+                    let uv = [moved[0] * 0.5 + 0.5, 0.5 - moved[1] * 0.5];
+                    // Глубина земли в середине точки карты: проекция плоская, так что место на карте
+                    // и глубина меняются вдоль склона на постоянные доли.
+                    let origin = ndc(ground);
+                    let step = |axis: Vec3| {
+                        let shifted = ndc(math3::add(ground, axis));
+                        [
+                            shifted[0] - origin[0],
+                            shifted[1] - origin[1],
+                            shifted[2] - origin[2],
+                        ]
+                    };
+                    let (a, b) = (step(along), step(across));
+                    let det = a[0] * b[1] - a[1] * b[0];
+                    for corner in [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]] {
+                        let centre = [0, 1].map(|axis| {
+                            ((uv[axis] * size - 0.5).floor() + corner[axis] + 0.5) / size
+                        });
+                        let rest = [
+                            centre[0] * 2.0 - 1.0 - origin[0],
+                            1.0 - centre[1] * 2.0 - origin[1],
+                        ];
+                        let s = (rest[0] * b[1] - rest[1] * b[0]) / det;
+                        let t = (a[0] * rest[1] - a[1] * rest[0]) / det;
+                        let stored = origin[2] + s * a[2] + t * b[2];
+                        assert!(
+                            moved[2] <= stored,
+                            "{}×{}, земля {ground:?}, нормаль {normal:?}: глубина {} за землёй {stored}",
+                            scene.width,
+                            scene.height,
+                            moved[2],
+                        );
+                    }
                 }
             }
         }

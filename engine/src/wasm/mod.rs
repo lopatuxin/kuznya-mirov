@@ -1373,7 +1373,7 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundVertex>, [Vec<Shape
         view_proj: frame.view_proj,
         light_view_proj: frame.light_view_proj,
         sun: frame.sun,
-        shade: [frame.shadow, frame.depth_per_cell, 0.02, 0.0],
+        shade: [frame.shadow, frame.depth_per_cell, frame.shadow_offset, 0.0],
         eye: [frame.eye[0], frame.eye[1], frame.eye[2], 0.0],
         sun_light: [
             frame.sun_light[0],

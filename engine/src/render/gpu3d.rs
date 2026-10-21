@@ -16,9 +16,8 @@ use super::atlas::webgl2_safe_layer_count;
 use super::gpu_models::{self, ModelsFrame, ModelsGpu};
 use super::materials::{self, COVER_TABLE_LEN, Relief};
 use super::relief::TerrainMesh;
+use super::scene3d::SHADOW_MAP_SIZE;
 
-/// Карта теней — предел `downlevel_webgl2_defaults`.
-const SHADOW_SIZE: u32 = 2048;
 const DEPTH_FORMAT: wgpu::TextureFormat = wgpu::TextureFormat::Depth32Float;
 
 /// Общие данные кадра: камера, солнце, тень, место камеры, свет солнца и неба. Раскладка — как
@@ -567,7 +566,7 @@ impl Scene3d {
             source: wgpu::ShaderSource::Wgsl(include_str!("../../shaders/scene3d.wgsl").into()),
         });
 
-        let shadow_view = depth_texture_view(device, [SHADOW_SIZE; 2], "shadow_map", true);
+        let shadow_view = depth_texture_view(device, [SHADOW_MAP_SIZE; 2], "shadow_map", true);
         let depth_view = depth_texture_view(device, surface_size, "scene_depth", false);
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("shadow_sampler"),
