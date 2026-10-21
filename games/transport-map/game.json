@@ -1,0 +1,39 @@
+{
+  "name": "Транспортная компания: карта",
+  "max_objects": 100,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "terrain": "terrain.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "fonts": {}
+  },
+  "scene": {
+    "width": 400,
+    "height": 400,
+    "background": "#8a8b7f",
+    "view_height": 60,
+    "camera": {
+      "pitch": 55
+    },
+    "player_camera": {
+      "zoom": [
+        8,
+        400
+      ],
+      "start": [
+        120,
+        110
+      ]
+    },
+    "light": {
+      "sun_from": 35,
+      "sun_height": 48,
+      "shadow": 0,
+      "sun_color": "#fff3e0",
+      "sky_color": "#cfe0f2"
+    }
+  }
+}

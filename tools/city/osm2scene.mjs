@@ -38,7 +38,7 @@ export function tintImage(city, config) {
   return { width: raster.width, height: raster.height, png: encodePng(raster.width, raster.height, rgba) };
 }
 
-function hex(color) {
+export function hex(color) {
   const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(color);
   if (!m) throw new Error(`цвет «${color}» не #rrggbb`);
   return [1, 2, 3].map((i) => Number.parseInt(m[i], 16));

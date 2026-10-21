@@ -1,0 +1,74 @@
+{
+  "seed": 1930,
+  "out": "games/transport-map",
+  "size_m": [
+    8000,
+    8000
+  ],
+  "cell_m": 20,
+  "points_per_cell": 2,
+  "water": {
+    "color": "#5b8399"
+  },
+  "sea": {
+    "width_m": 1300,
+    "coast_wiggle_m": 650,
+    "depth_m": 14,
+    "shelf_m": 900
+  },
+  "hills": {
+    "min_m": 60,
+    "max_m": 150,
+    "inland_rise": 0.5,
+    "wall_m": 700,
+    "mid_m": 35,
+    "bumps_m": 7,
+    "flat_near_water_m": 300
+  },
+  "floodplain": {
+    "min_m": 70,
+    "max_m": 260,
+    "height_m": 1.2
+  },
+  "rivers": [
+    {
+      "mouth": 0.3,
+      "length": 0.85,
+      "width_m": [
+        55,
+        16
+      ],
+      "depth_m": 3.5,
+      "tributaries": [
+        {
+          "at": 0.45,
+          "side": 1,
+          "length": 0.45,
+          "width_m": [
+            26,
+            10
+          ]
+        }
+      ]
+    },
+    {
+      "mouth": 0.74,
+      "length": 0.62,
+      "width_m": [
+        36,
+        12
+      ],
+      "depth_m": 2.5,
+      "tributaries": []
+    }
+  ],
+  "background": "#8a8b7f",
+  "colors": {
+    "meadow": "#7f9a58",
+    "upland": "#8f9b5e",
+    "dry": "#a29f68",
+    "slope": "#7d7a52",
+    "sand": "#b9a982",
+    "silt": "#8c8562"
+  }
+}
