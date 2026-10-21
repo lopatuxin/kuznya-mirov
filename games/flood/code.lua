@@ -17,18 +17,34 @@ local DECK_H = 0.3
 local TOP_Z = BASE_Z + DECK_H   -- верх настила: на нём стоят парус, таран, сеть и рулевой
 local CELL = 0.96               -- сторона клетки: соседние клетки одного судна не налегают друг на друга
 
--- Ход. Скорость судна растёт от тяги и падает от веса: v = SPEED_K · тяга / (тяга + DRAG · вес).
--- Плот из четырёх досок без паруса: 8 · 1,5 / (1,5 + 0,6 · 4) = 3,1 клетки в секунду.
+-- Ход. Судно — одно твёрдое тело: куда смотрит нос и куда оно движется — разное. Вёсла и паруса толкают вдоль
+-- носа, к скорости v = SPEED_K · тяга / (тяга + DRAG · вес). Плот из четырёх досок без паруса:
+-- 8 · 1,5 / (1,5 + 0,6 · 4) = 3,1 клетки в секунду.
 local SPEED_K = 8
 local PADDLE = 1.5              -- тяга вёсел, которая есть у любого судна
 local DRAG = 0.6
 local REVERSE = 0.4             -- задним ходом — эта доля скорости
-local TURN_K = 100              -- градусов в секунду у невесомого судна
-local TURN_MASS = 6             -- вес, при котором поворот вдвое медленнее
 local ACCEL_TAU = 0.8           -- секунд на разгон у невесомого судна
 local ACCEL_TAU_MASS = 0.08     -- и прибавка за каждую единицу веса
-local COAST_TAU = 2.5           -- секунд, за которые судно без тяги заметно сбавляет ход
-local KNOCK_DECAY = 3           -- как быстро гаснет отброс после удара, в секунду
+-- Без тяги судно катится по инерции: плот (вес 4) сбавляет ход за 1,4 секунды, баржа (33,5) — за 5,8,
+-- и с хода 2,6 проходит ещё клеток 15.
+local COAST_TAU = 0.8
+local COAST_TAU_MASS = 0.15
+-- Вода поперёк корпуса держит сильно: боковой ход гаснет за SIDE_TAU, поэтому после поворота судно ещё немного
+-- скользит по-старому, а потом выравнивается.
+local SIDE_TAU = 0.25
+local SIDE_TAU_MASS = 0.01
+-- Руль поворачивает, только пока его обтекает вода. На полном руле судно идёт по кругу шириной TURN_CIRCLE своих
+-- длин, поэтому чем медленнее ход, тем медленнее поворот, а без хода судно не поворачивает. На полном руле судно
+-- теряет TURN_LOSS хода: плот длиной 2 идёт по кругу в 6 клеток на ходу 3,1 · 0,75 = 2,3 и поворачивает на
+-- 2,3 / 3 = 0,78 радиана, 44° в секунду; баржа длиной 6 на ходу 2,6 · 0,75 = 1,9 — на 12° в секунду.
+local TURN_CIRCLE = 3
+local TURN_LOSS = 0.25
+-- Поворот разгоняется и гаснет не сразу, тем дольше, чем больше у судна момент инерции клеток:
+-- у плота (2,7) — 0,27 секунды, у баржи (около 170) — 1,6.
+local ROT_TAU = 0.25
+local ROT_TAU_INERTIA = 0.008
+local SPIN = 0.5                -- такая доля удара не по середине судна закручивает его
 
 -- Удар. Урон клетке: DMG_K · скорость сближения · таран бьющей клетки · 2 · вес чужого / (оба веса) · стойкость.
 -- Налётчик (вес 10,5) таранит плот (вес 4) на сближении 3: 0,8 · 3 · 3 · 2 · 10,5 / 14,5 = 10,4 — настил (5)
@@ -64,6 +80,9 @@ local CHARGE_BOOST = 1.6        -- во столько раз быстрее о�
 local CHARGE_TIME = 1.8         -- секунд разгона
 local CHARGE_EVERY = 5          -- секунд между заходами
 local KEEP_CLEAR = 5            -- ближе этого суда обходят друг друга, если не охотятся
+local STUCK_SPEED = 0.3         -- медленнее этого вперёд дольше STUCK_TIME секунд плюс время разгона — застряло
+local STUCK_TIME = 1.5
+local BACK_TIME = 2             -- столько секунд плюс время разгона застрявшее судно отходит задним ходом
 local SPAWN_MIN, SPAWN_MAX = 30, 55
 local SPAWN_GAP = 12            -- секунд между появлениями судов одного вида
 -- Сколько судов каждого вида держит море с этой секунды партии.
@@ -242,8 +261,8 @@ local function create_cell_objects(v, rec)
   rec.drawn = false
 end
 
--- Середина веса, вес, тяга и из них — ход и поворот. Середина веса сдвинулась — середина судна на воде
--- сдвигается так, чтобы клетки остались на своих местах.
+-- Середина веса, вес, тяга, длина и момент инерции, а из них — ход и поворот. Середина веса сдвинулась —
+-- середина судна на воде сдвигается так, чтобы клетки остались на своих местах.
 local function restat(v)
   local mass, power, sx, sy = 0, PADDLE, 0, 0
   v.ram = false
@@ -266,11 +285,23 @@ local function restat(v)
     v.cy = v.cy + dx * s + dy * c
   end
   v.px, v.py = px, py
+  -- Момент инерции: каждая клетка — квадрат со стороной 1, у него свой момент m / 6 и ещё m · r² от середины веса.
+  local inertia, bow, stern = 0, math.huge, -math.huge
+  for _, rec in ipairs(v.cells) do
+    local m = part_of(rec).mass
+    local dx, dy = rec.gx - px, rec.gy - py
+    inertia = inertia + m * (dx * dx + dy * dy + 1 / 6)
+    bow, stern = math.min(bow, rec.gy), math.max(stern, rec.gy)
+  end
   v.mass = mass
   v.power = power
   v.vmax = SPEED_K * power / (power + DRAG * mass)
-  v.turn = TURN_K / (1 + mass / TURN_MASS)
+  v.inertia = inertia
+  v.radius = TURN_CIRCLE * (stern - bow + 1) / 2
   v.tau = ACCEL_TAU + ACCEL_TAU_MASS * mass
+  v.coast_tau = COAST_TAU + COAST_TAU_MASS * mass
+  v.side_tau = SIDE_TAU + SIDE_TAU_MASS * mass
+  v.rot_tau = ROT_TAU + ROT_TAU_INERTIA * inertia
   v.size = #v.cells
 end
 
@@ -304,7 +335,7 @@ end
 local function new_vessel(look_name, kind, x, y, h)
   local look = tables.vessels[look_name]
   local v = {
-    vid = state.next_vid, look = look_name, kind = kind, name = look.name, cx = x, cy = y, h = h, s = 0, kx = 0, ky = 0,
+    vid = state.next_vid, look = look_name, kind = kind, name = look.name, cx = x, cy = y, h = h, w = 0,
     vx = 0, vy = 0, thrust = 0, steer = 0, cells = {}, grid = {}, cargo = {}, alive = true,
     ai = { mode = "wander", think = state.next_vid % THINK_EVERY },
   }
@@ -653,7 +684,15 @@ local function contact_strength(rec)
   return rec and not rec.dead and (part_of(rec).ram or 1) or 0
 end
 
--- Удар двух судов: расходятся, отскакивают, и если сближались быстро — ломают друг другу клетки.
+-- Толчок в точке (x, y): меняет ход судна, а если пришёлся не в середину веса — ещё и закручивает его.
+local function push_vessel(v, dvx, dvy, x, y)
+  v.vx, v.vy = v.vx + dvx, v.vy + dvy
+  local rx, ry = x - v.cx, y - v.cy
+  v.w = v.w + SPIN * v.mass * (rx * dvy - ry * dvx) / v.inertia
+end
+
+-- Удар двух судов: расходятся, отскакивают, и если сближались быстро — ломают друг другу клетки. Толчок делится
+-- по весу: лёгкое судно отлетает дальше тяжёлого.
 local function hit(a, ra, b, rb)
   local ax, ay = cell_center(a, ra.gx, ra.gy)
   local bx, by = cell_center(b, rb.gx, rb.gy)
@@ -672,9 +711,9 @@ local function hit(a, ra, b, rb)
   local closing = (a.vx - b.vx) * nx + (a.vy - b.vy) * ny
   if closing <= 0 then return end
   local j = closing * 1.3
-  a.kx, a.ky = a.kx - nx * j * share_a, a.ky - ny * j * share_a
-  b.kx, b.ky = b.kx + nx * j * share_b, b.ky + ny * j * share_b
-  a.s, b.s = a.s * 0.5, b.s * 0.5
+  local mx, my = (ax + bx) / 2, (ay + by) / 2
+  push_vessel(a, -nx * j * share_a, -ny * j * share_a, mx, my)
+  push_vessel(b, nx * j * share_b, ny * j * share_b, mx, my)
   if closing < MIN_HIT then return end
   a.ai.charge_until, b.ai.charge_until = 0, 0
   local pair = math.min(a.vid, b.vid) .. ":" .. math.max(a.vid, b.vid)
@@ -738,6 +777,16 @@ local function set_hunting(v, on)
   if helm and helm.base and helm.base.hunting ~= on then helm.base.hunting = on end
 end
 
+-- Сколько судну нужно места у края моря, чтобы развернуться: край, запас и ширина круга разворота.
+local function edge_room(v)
+  return EDGE + 4 + 2 * v.radius
+end
+
+local function inside_room(v, x, y)
+  local room = edge_room(v)
+  return x >= room and x <= SEA - room and y >= room and y <= SEA - room
+end
+
 local function think(v)
   local ai = v.ai
   -- Сборщик боится любого, у кого таран; охотник — только тех, кто заметно тяжелее его.
@@ -772,9 +821,10 @@ local function think(v)
     end
   end
   set_hunting(v, false)
+  -- Обломок у самого края судно не ловит: развернуться там негде.
   local found, best = nil, SIGHT_DEBRIS
   for _, d in ipairs(state.debris) do
-    if not d.hooked then
+    if not d.hooked and inside_room(v, d.x, d.y) then
       local dd = dist(v.cx, v.cy, d.x, d.y)
       if dd < best then found, best = d, dd end
     end
@@ -787,12 +837,15 @@ local function think(v)
   if ai.mode ~= "wander" or ai.tx == nil or dist(v.cx, v.cy, ai.tx, ai.ty) < 4 then
     local a = math.random() * 2 * math.pi
     local r = 15 + math.random() * 25
-    ai.tx, ai.ty = v.cx + math.cos(a) * r, v.cy + math.sin(a) * r
+    local room = edge_room(v)
+    ai.tx = clamp(v.cx + math.cos(a) * r, room, SEA - room)
+    ai.ty = clamp(v.cy + math.sin(a) * r, room, SEA - room)
   end
   ai.mode = "wander"
 end
 
--- Руль и тяга к цели решения; у края сцены цель — середина моря.
+-- Руль и тяга к цели решения. Судну нужно место на разворот у края моря: цель ближе к краю придвигается
+-- внутрь, а судно, которое туда всё же идёт, правит к середине моря. Охотник в погоне идёт за добычей до края.
 local function steer_ai(v)
   local ai = v.ai
   ai.think = ai.think + 1
@@ -801,8 +854,14 @@ local function steer_ai(v)
     ai.think = 0
     think(v)
   end
-  local tx, ty = ai.tx or v.cx, ai.ty or v.cy
-  if v.cx < EDGE + 6 or v.cx > SEA - EDGE - 6 or v.cy < EDGE + 6 or v.cy > SEA - EDGE - 6 then
+  local room = edge_room(v)
+  local near_edge = (ai.mode == "chase") and EDGE + 2 or room
+  local tx = clamp(ai.tx or v.cx, near_edge, SEA - near_edge)
+  local ty = clamp(ai.ty or v.cy, near_edge, SEA - near_edge)
+  local fx, fy = forward(v)
+  local to_edge = (v.cx < room and fx < -0.3) or (v.cx > SEA - room and fx > 0.3)
+      or (v.cy < room and fy < -0.3) or (v.cy > SEA - room and fy > 0.3)
+  if to_edge and ai.mode ~= "chase" then
     tx, ty = SEA / 2, SEA / 2
   end
   -- Таран: подойдя к добыче, охотник разгоняется, бьёт и заходит снова.
@@ -826,14 +885,41 @@ local function steer_ai(v)
     dx, dy = dx + ax / alen * push, dy + ay / alen * push
   end
   local diff = angle_diff(v.h, heading_to(dx, dy))
-  v.steer = clamp(diff / 20, -1, 1)
-  local far = dist(v.cx, v.cy, tx, ty)
-  if math.abs(diff) > 100 then
-    v.thrust = 0.3
-  elseif ai.mode == "gather" and far < 3 then
+  -- Цель внутри круга разворота с той стороны, куда поворачивать: до неё не довернуть, судно ходило бы вокруг.
+  -- Тогда прямо, пока цель не выйдет из круга, а там уже разворот.
+  local side = diff >= 0 and 1 or -1
+  local ox, oy = v.cx - fy * side * v.radius, v.cy + fx * side * v.radius
+  if dist(ox, oy, tx, ty) < v.radius then
+    v.steer = 0
+  else
+    -- Курс доворачивается за 0,5 секунды плюс двойное запаздывание поворота: тяжёлое судно доворачивает плавнее
+    -- и не проскакивает курс. Быстрее, чем позволяет ход, не повернуть — тогда руль до упора. Судно ещё катится
+    -- назад — руль перекладывается в другую сторону, как на заднем ходу.
+    local u = v.vx * fx + v.vy * fy
+    if math.abs(u) < 0.3 then u = 0.3 end
+    local w_want = math.rad(diff) / (0.5 + 2 * v.rot_tau)
+    v.steer = clamp(w_want * v.radius / u, -1, 1)
+  end
+  if ai.mode == "gather" and dist(v.cx, v.cy, tx, ty) < 3 then
     v.thrust = 0.5
   else
     v.thrust = 1
+  end
+  -- Застряло носом в край моря или в другое судно: вперёд хода нет, а без хода не повернуть. Тогда задний ход
+  -- с рулём до упора в другую сторону — так нос отходит туда, куда надо, — и снова вперёд. Тяжёлое судно
+  -- отходит дольше: заднего хода оно набирает медленнее.
+  if state.t < (ai.back_until or 0) then
+    v.thrust, v.steer = -1, -side
+    return
+  end
+  if v.vx * fx + v.vy * fy < STUCK_SPEED then
+    ai.slow = (ai.slow or 0) + DT
+  else
+    ai.slow = 0
+  end
+  if ai.slow > STUCK_TIME + v.tau then
+    ai.slow = 0
+    ai.back_until = state.t + BACK_TIME + v.tau
   end
 end
 
@@ -883,29 +969,37 @@ end
 
 -- Ход ---------------------------------------------------------------------------------------------
 
+-- Шаг судна. Сначала поворот: руль тянет его к ходу вдоль носа, делённому на радиус круга разворота, — без хода
+-- к нулю, задним ходом в обратную сторону. Потом ход раскладывается по новому курсу: вдоль носа его ведут вёсла
+-- и паруса, поперёк гасит вода. Сам ход остаётся прежним по миру, поэтому в повороте судно скользит боком.
 local function move_vessel(v)
-  local turn_share = 0.6 + 0.4 * math.min(1, math.abs(v.s) / math.max(v.vmax, 0.1))
-  v.h = (v.h + v.steer * v.turn * turn_share * DT) % 360
+  local fx, fy = forward(v)
+  local w_target = v.steer * (v.vx * fx + v.vy * fy) / v.radius
+  v.w = v.w + (w_target - v.w) * math.min(1, DT / v.rot_tau)
+  v.h = (v.h + math.deg(v.w) * DT) % 360
+  fx, fy = forward(v)
+  local rx, ry = -fy, fx
+  local u = v.vx * fx + v.vy * fy
+  local side = v.vx * rx + v.vy * ry
   local target = 0
   if v.thrust > 0 then
     target = v.vmax * v.thrust * (v.boost or 1)
   elseif v.thrust < 0 then
     target = v.vmax * REVERSE * v.thrust
   end
-  local tau = (v.thrust ~= 0) and v.tau or COAST_TAU
-  v.s = v.s + (target - v.s) * math.min(1, DT / tau)
-  local fx, fy = forward(v)
-  v.vx, v.vy = fx * v.s + v.kx, fy * v.s + v.ky
+  target = target * (1 - TURN_LOSS * math.abs(v.steer))
+  local tau = (v.thrust ~= 0) and v.tau or v.coast_tau
+  u = u + (target - u) * math.min(1, DT / tau)
+  side = side * math.exp(-DT / v.side_tau)
+  v.vx, v.vy = fx * u + rx * side, fy * u + ry * side
   v.cx = v.cx + v.vx * DT
   v.cy = v.cy + v.vy * DT
   if v.cx < EDGE or v.cx > SEA - EDGE then
-    v.cx, v.kx, v.s = clamp(v.cx, EDGE, SEA - EDGE), 0, v.s * 0.9
+    v.cx, v.vx = clamp(v.cx, EDGE, SEA - EDGE), 0
   end
   if v.cy < EDGE or v.cy > SEA - EDGE then
-    v.cy, v.ky, v.s = clamp(v.cy, EDGE, SEA - EDGE), 0, v.s * 0.9
+    v.cy, v.vy = clamp(v.cy, EDGE, SEA - EDGE), 0
   end
-  local decay = math.exp(-KNOCK_DECAY * DT)
-  v.kx, v.ky = v.kx * decay, v.ky * decay
 end
 
 -- Места клеток судна для движка. Поворот пишется, только когда сменился, и раньше места: запись поворота
@@ -1176,7 +1270,7 @@ local function open_tuning()
   drop_rope()
   state.tuning = true
   g.tuning = true
-  p.s, p.kx, p.ky = 0, 0, 0
+  p.vx, p.vy, p.w = 0, 0, 0
   refresh_part_rows()
   make_ghosts()
   furl_sails(true)

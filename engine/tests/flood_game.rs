@@ -1,8 +1,9 @@
 //! Потоп (`games/flood`), «Фаза-01-прототип» игры: игра грузится целиком без ошибок, а из предупреждений —
 //! только то, что руль плота забрал у камеры игрока стрелки и W A S D: камеру в этой игре приближают
 //! колесом, а водит её плот. Пять минут партии с рулём проходят без ошибок кода, в море появляются
-//! налётчики, крюк подтягивает обломок к плоту и кладёт его в трюм, а стройка ставит к плоту новую клетку
-//! за доски и «Снять» убирает её, возвращая половину цены.
+//! налётчики, плот без хода не поворачивает, а без вёсел катится по инерции, крюк подтягивает обломок
+//! к плоту и кладёт его в трюм, а стройка ставит к плоту новую клетку за доски и «Снять» убирает её,
+//! возвращая половину цены.
 
 use std::fs;
 use std::path::PathBuf;
@@ -134,16 +135,63 @@ fn center(game: &Game, id: u32) -> [f64; 2] {
     [pos[0] + size[0] / 2.0, pos[1] + size[1] / 2.0]
 }
 
+fn helm_of_raft(game: &Game) -> u32 {
+    let part = game.properties.resolve("part").expect("part");
+    ids_with(game, "cell")
+        .into_iter()
+        .find(|&id| game.world.text(id, part) == Some("helm"))
+        .expect("у плота есть кормило")
+}
+
+// Нулевой поворот движок не хранит: плот в начале партии смотрит носом вверх, и поворота у клеток нет.
+fn rotation(game: &Game, id: u32) -> f64 {
+    game.world
+        .rotation(id, property::ROTATION)
+        .map_or(0.0, |r| r.angle())
+}
+
+#[test]
+fn the_raft_turns_only_under_way_and_coasts_when_the_oars_stop() {
+    let mut game = load();
+    game.new_game();
+    steps(&mut game, 3);
+    let helm = helm_of_raft(&game);
+    let start = rotation(&game, helm);
+    hold(&mut game, "KeyA", true);
+    steps(&mut game, 120);
+    hold(&mut game, "KeyA", false);
+    assert!(
+        (rotation(&game, helm) - start).abs() < 1e-6,
+        "плот без хода повернулся"
+    );
+
+    hold(&mut game, "KeyW", true);
+    steps(&mut game, 120);
+    hold(&mut game, "KeyD", true);
+    steps(&mut game, 60);
+    hold(&mut game, "KeyD", false);
+    let turned = (rotation(&game, helm) - start).rem_euclid(360.0);
+    assert!(
+        (20.0..90.0).contains(&turned),
+        "на ходу плот за секунду руля повернул на {turned}°"
+    );
+
+    hold(&mut game, "KeyW", false);
+    let at = center(&game, helm);
+    steps(&mut game, 30);
+    let now = center(&game, helm);
+    assert!(
+        (now[0] - at[0]).hypot(now[1] - at[1]) > 0.5,
+        "без вёсел плот встал сразу, а не покатился по инерции"
+    );
+}
+
 #[test]
 fn the_hook_pulls_a_nearby_plank_into_the_hold() {
     let mut game = load();
     game.new_game();
     steps(&mut game, 3);
-    let part = game.properties.resolve("part").expect("part");
-    let helm = ids_with(&game, "cell")
-        .into_iter()
-        .find(|&id| game.world.text(id, part) == Some("helm"))
-        .expect("у плота есть кормило");
+    let helm = helm_of_raft(&game);
     let at = center(&game, helm);
     let plank = ids_with(&game, "debris")
         .into_iter()

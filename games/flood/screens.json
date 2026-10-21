@@ -4,7 +4,7 @@
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [620, 360], "color": "#10232dee" },
       { "kind": "label", "anchor": "center", "offset": [0, -118], "size": [560, 56], "text": "Потоп", "font": "ui", "font_size": 44, "color": "#f1ede4", "align": "center" },
       { "kind": "label", "anchor": "center", "offset": [0, -36], "size": [540, 96], "wrap": true, "text": "Мир ушёл под воду. У тебя плот из четырёх досок. Вылавливай обломки, ставь на плот паруса, сеть и таран и не попадайся тем, кто крупнее. Потопленное судно — тоже добыча.", "font": "ui", "font_size": 17, "color": "#b9c7cf", "align": "center" },
-      { "kind": "label", "anchor": "center", "offset": [0, 44], "size": [540, 40], "wrap": true, "text": "W S — вперёд и назад, A D — поворот, щелчок по обломку — крюк, T — стройка, Esc — пауза", "font": "ui", "font_size": 14, "color": "#8fa3ad", "align": "center" },
+      { "kind": "label", "anchor": "center", "offset": [0, 44], "size": [540, 40], "wrap": true, "text": "W S — вперёд и назад, A D — руль: поворачивает только на ходу, щелчок по обломку — крюк, T — стройка, Esc — пауза", "font": "ui", "font_size": 14, "color": "#8fa3ad", "align": "center" },
       { "kind": "button", "anchor": "center", "offset": [0, 116], "size": [220, 52], "text": "Играть", "font": "ui", "font_size": 22, "text_color": "#ffffff", "color": "#2f7a55", "color_hover": "#3a9467", "color_pressed": "#255f43", "on_click": ["new_game", "game"] }
     ] },
 
@@ -18,7 +18,7 @@
       { "kind": "label", "anchor": "bottom", "offset": [0, 56], "size": [576, 44], "wrap": true, "text": "{notice_text}", "font": "ui", "font_size": 15, "color": "#f0c27a", "align": "center", "for": { "has": ["game", "notice"] } },
 
       { "kind": "panel", "anchor": "bottom", "offset": [0, 10], "size": [920, 32], "color": "#10232daa" },
-      { "kind": "label", "anchor": "bottom", "offset": [0, 14], "size": [900, 24], "text": "W S — вперёд и назад · A D — поворот · щелчок по обломку — крюк · T — стройка · колесо — ближе и дальше · Esc — пауза", "font": "ui", "font_size": 14, "color": "#d9e4ea", "align": "center" },
+      { "kind": "label", "anchor": "bottom", "offset": [0, 14], "size": [900, 24], "text": "W S — вперёд и назад · A D — руль на ходу · щелчок по обломку — крюк · T — стройка · колесо — ближе и дальше · Esc — пауза", "font": "ui", "font_size": 14, "color": "#d9e4ea", "align": "center" },
       { "kind": "button", "anchor": "bottom_right", "offset": [16, 52], "size": [190, 48], "text": "Стройка (T)", "font": "ui", "font_size": 18, "text_color": "#ffffff", "color": "#2f7a55", "color_hover": "#3a9467", "color_pressed": "#255f43", "on_click": ["run", "toggle_tuning"], "for": { "has": ["game"], "without": ["tuning", "sunk"] } },
 
       { "kind": "panel", "anchor": "right", "offset": [16, 0], "size": [440, 640], "color": "#10232df2", "for": { "has": ["game", "tuning"] } },
