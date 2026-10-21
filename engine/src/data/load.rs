@@ -25,7 +25,7 @@ use crate::core::screens::{
     RunCall, RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor,
     WorldElement, WorldElementKind, WorldTextPart,
 };
-use crate::core::terrain::{DENSITIES, Terrain, Water};
+use crate::core::terrain::{DENSITIES, Terrain};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
 use crate::core::value::{
     FollowAxis, GridSpec, ImageId, PropKind, Rotation, Value, Vec2, parse_color,
@@ -39,6 +39,7 @@ mod materials;
 mod models;
 mod road_kinds;
 mod stamps;
+mod water;
 
 pub use super::error::{GameError, LoadFailure};
 pub use materials::{
@@ -57,6 +58,7 @@ use road_kinds::{
 };
 pub use stamps::parse_edit_imprints;
 use stamps::{parse_imprints, parse_stamp_table, warn_unused_stamps};
+use water::{parse_edit_water, parse_water};
 
 fn join(base: &str, seg: &str) -> String {
     if base.is_empty() {
@@ -1969,7 +1971,7 @@ fn parse_ground_layer(
 }
 
 /// «Рельеф», требования 1, 38: `heights` — `d × высота + 1` строк по `d × ширина + 1` чисел; `water`
-/// необязательна, но с `level` и `color`; `covers` — слои покрытий из `materials`, их маски и карта
+/// необязательна — море, озёра и реки с `color` → «Вода»; `covers` — слои покрытий из `materials`, их маски и карта
 /// цвета `tint` проверены по ответу страницы `masks`, если он есть; `stamps` — отпечатки из штампов `stamps`.
 fn parse_terrain(
     text: &str,
@@ -1993,7 +1995,7 @@ fn parse_terrain(
         .and_then(|v| parse_heights(v, file, scene, errors));
     let water = match obj.get("water") {
         None => Some(None),
-        Some(v) => parse_water(v, file, errors).map(Some),
+        Some(v) => parse_water(v, file, scene, errors).map(Some),
     };
     let covers = match obj.get("covers") {
         None => Some(Vec::new()),
@@ -2010,7 +2012,11 @@ fn parse_terrain(
     let terrain = Terrain::from_rows([scene.width, scene.height], &rows?, water?)
         .map_err(|message| errors.push(file, "heights", message))
         .ok()?;
-    Some(terrain.with_covers(covers?, tint?).with_imprints(imprints?))
+    let terrain = terrain.with_covers(covers?, tint?).with_imprints(imprints?);
+    for warning in terrain.water_warnings() {
+        errors.push_warning(file, &warning.path, &warning.message);
+    }
+    Some(terrain)
 }
 
 fn parse_heights(
@@ -2068,35 +2074,12 @@ fn parse_heights(
     ok.then_some(rows)
 }
 
-fn parse_water(value: &Json, file: &str, errors: &mut ErrorSink) -> Option<Water> {
-    let obj = expect_object(value, file, "water", errors)?;
-    reject_unknown_keys(obj, &["level", "color"], file, "water", errors);
-    let level = require_field(obj, "level", file, "water", errors)
-        .and_then(|v| expect_number(v, file, "water → level", errors));
-    let color = require_field(obj, "color", file, "water", errors)
-        .and_then(|v| expect_string(v, file, "water → color", errors))
-        .and_then(|s| {
-            parse_hex_color(&s).or_else(|| {
-                errors.push(file, "water → color", not_a_water_color(&s));
-                None
-            })
-        });
-    Some(Water {
-        level: level?,
-        color: color?,
-    })
-}
-
-fn not_a_water_color(s: &str) -> String {
-    format!("цвет должен быть вида \"#rrggbb\", получено \"{s}\"")
-}
-
 /// «Редактор», `set_terrain`: рельеф сцены из `heights` — строки сетки подряд сверху вниз — и воды
-/// `(уровень, цвет)`. Проверка чисел и цвета — как у файла рельефа, тексты — в том же виде.
+/// `water` в виде записи файла рельефа. Проверка чисел и воды — как у файла рельефа, тексты — в том же виде.
 pub fn terrain_from_numbers(
     scene: &SceneConfig,
     heights: &[f64],
-    water: Option<(f64, &str)>,
+    water: Option<&Json>,
 ) -> Result<Terrain, String> {
     let points = |d: usize| (d * scene.height as usize + 1) * (d * scene.width as usize + 1);
     let Some(density) = DENSITIES.into_iter().find(|&d| points(d) == heights.len()) else {
@@ -2124,14 +2107,7 @@ pub fn terrain_from_numbers(
         ));
     }
     let water = water
-        .map(|(level, color)| {
-            if !level.is_finite() {
-                return Err(format!("water → level: ожидалось число, получено {level}"));
-            }
-            parse_hex_color(color)
-                .map(|color| Water { level, color })
-                .ok_or_else(|| format!("water → color: {}", not_a_water_color(color)))
-        })
+        .map(|value| parse_edit_water(value, scene))
         .transpose()?;
     let rows: Vec<Vec<f64>> = heights.chunks(want_columns).map(<[f64]>::to_vec).collect();
     Terrain::from_rows([scene.width, scene.height], &rows, water)

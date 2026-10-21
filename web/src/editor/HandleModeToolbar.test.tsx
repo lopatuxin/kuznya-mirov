@@ -229,18 +229,18 @@ describe("окошко «Материалы»", () => {
 });
 
 describe("окошко «Вода»", () => {
-  it("без воды галочка снята, уровень и цвет неактивны", () => {
+  it("без воды галочка снята, остальные поля неактивны", () => {
     const html = renderToStaticMarkup(<WaterFields water={null} onWaterChange={NOOP} />);
 
     expect(html).not.toMatch(/<input type="checkbox" checked=""/);
-    expect(html).toMatch(/Уровень<input[^>]*disabled=""/);
+    expect(html).toMatch(/Уровень моря<input[^>]*disabled=""/);
   });
 
   it("с водой — значения из рельефа", () => {
     const html = renderToStaticMarkup(<WaterFields water={{ level: -2.2, color: "#3f7fd0" }} onWaterChange={NOOP} />);
 
     expect(html).toMatch(/<input type="checkbox" checked=""/);
-    expect(html).toMatch(/Уровень<input[^>]*value="-2.2"/);
-    expect(html).not.toMatch(/Уровень<input[^>]*disabled=""/);
+    expect(html).toMatch(/Уровень моря<input[^>]*value="-2.2"/);
+    expect(html).not.toMatch(/Уровень моря<input[^>]*disabled=""/);
   });
 });

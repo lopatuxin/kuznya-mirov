@@ -8,7 +8,9 @@
   "cell_m": 20,
   "points_per_cell": 2,
   "water": {
-    "color": "#5b8399"
+    "color": "#36606e",
+    "clarity": 0.2,
+    "ripple": 0.6
   },
   "sea": {
     "width_m": 1300,
@@ -47,7 +49,16 @@
           "width_m": [
             26,
             10
-          ]
+          ],
+          "fall_m": 9
+        }
+      ],
+      "fall_m": 16,
+      "rapids": [
+        {
+          "at": 0.62,
+          "drop_m": 4,
+          "length_m": 100
         }
       ]
     },
@@ -59,7 +70,13 @@
         12
       ],
       "depth_m": 2.5,
-      "tributaries": []
+      "tributaries": [],
+      "fall_m": 12,
+      "lake": {
+        "at": 0.5,
+        "radius_m": 320,
+        "depth_m": 6
+      }
     }
   ],
   "background": "#8a8b7f",

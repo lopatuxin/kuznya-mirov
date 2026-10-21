@@ -13,6 +13,7 @@ use crate::core::scene::SceneConfig;
 use crate::core::surface;
 use crate::core::terrain::Terrain;
 use crate::core::value::{GridSpec, PropKind, Value};
+use crate::core::water::WaterSpec;
 use crate::core::world::World;
 
 use super::load::{
@@ -311,13 +312,13 @@ pub fn delete_object(world: &mut World, id: u32) {
 }
 
 /// «Редактор», «Вызовы движка», `set_terrain`: ставит рельеф в загруженной игре — `heights` строками
-/// сверху вниз, вода — уровень и цвет `#rrggbb`, отпечатки — `stamps` в виде файла рельефа. Ошибка —
-/// текстом, и ничего не меняется: чисел не столько, высота или уровень не число, цвет не цвет, отпечаток не
-/// проходит проверку, сцена плоская или идёт партия.
+/// сверху вниз, вода — таблица `water` в виде файла рельефа, отпечатки — `stamps` в виде файла рельефа.
+/// Ошибка — текстом, и ничего не меняется: чисел не столько, высота не число, вода или отпечаток не
+/// проходят проверку загрузки, сцена плоская или идёт партия.
 pub fn set_terrain(
     game: &mut Game,
     heights: &[f64],
-    water: Option<(f64, &str)>,
+    water: Option<&Json>,
     stamps: &[Json],
 ) -> Result<(), String> {
     if !game.scene.is_3d() {
@@ -347,7 +348,8 @@ pub struct TerrainHeights {
     pub heights: Vec<f64>,
     /// Итоговые высоты с отпечатками, той же сетки.
     pub effective: Vec<f64>,
-    pub water: Option<(f64, String)>,
+    /// `water` в виде файла рельефа, с теми полями, что записаны.
+    pub water: Option<Json>,
 }
 
 /// Нынешний рельеф; без файла — нули нужного размера, по две точки на клетку, и без воды. `None` в
@@ -380,10 +382,45 @@ fn readings_of(scene: &SceneConfig, terrain: &Terrain) -> TerrainHeights {
         rows,
         heights,
         effective,
-        water: terrain
-            .water()
-            .map(|water| (water.level, format_hex_color(water.color))),
+        water: terrain.water().map(water_to_json),
     }
+}
+
+/// Запись воды в виде файла рельефа: только те поля, что записаны, числа как есть.
+fn water_to_json(water: &WaterSpec) -> Json {
+    let number = |n: f64| {
+        serde_json::Number::from_f64(n)
+            .map(Json::Number)
+            .unwrap_or(Json::Null)
+    };
+    let mut table = serde_json::Map::new();
+    table.insert("color".into(), Json::String(format_hex_color(water.color)));
+    if let Some(clarity) = water.clarity {
+        table.insert("clarity".into(), number(clarity));
+    }
+    if let Some(ripple) = water.ripple {
+        table.insert("ripple".into(), number(ripple));
+    }
+    if let Some(level) = water.level {
+        table.insert("level".into(), number(level));
+    }
+    if !water.lakes.is_empty() {
+        let lakes = water.lakes.iter().map(|lake| {
+            serde_json::json!({ "at": [number(lake.at[0]), number(lake.at[1])], "level": number(lake.level) })
+        });
+        table.insert("lakes".into(), Json::Array(lakes.collect()));
+    }
+    if !water.rivers.is_empty() {
+        let rivers = water.rivers.iter().map(|river| {
+            let points = river
+                .points
+                .iter()
+                .map(|point| Json::Array(point.iter().map(|&n| number(n)).collect()));
+            serde_json::json!({ "points": Json::Array(points.collect()) })
+        });
+        table.insert("rivers".into(), Json::Array(rivers.collect()));
+    }
+    Json::Object(table)
 }
 
 /// «Редактор», «Вызовы движка», `terrain_readings`: то же, что `terrain_heights` после загрузки игры,

@@ -12,7 +12,7 @@ use engine::core::pathfind::WalkCaches;
 use engine::core::property;
 use engine::core::scene::{self, ObjectTransform};
 use engine::core::surface;
-use engine::core::terrain::{Terrain, Water};
+use engine::core::terrain::Terrain;
 use engine::core::value::Rotation;
 use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
 use engine::data::error::{GameError, LoadFailure};
@@ -723,13 +723,13 @@ fn rest_height_answers_for_the_object_at_a_new_place_with_and_without_a_previous
 fn the_water_of_the_file_reaches_the_world_with_its_level_and_color() {
     let game = load_terrain(&gorge_terrain(), &hero_json(2.7, 2.7), NO_RULES);
     let water = game.world.terrain().water().expect("вода из файла");
-    near(water.level, -2.3, "уровень");
+    near(water.level.expect("море"), -2.3, "уровень");
     assert_eq!(
         Some(water.color),
         engine::core::value::parse_color("#35607a")
     );
     let dry = load_terrain(&hill_terrain(), &hero_json(2.7, 2.7), NO_RULES);
-    assert_eq!(dry.world.terrain().water(), None::<Water>);
+    assert!(dry.world.terrain().water().is_none());
 }
 
 #[test]
@@ -3387,6 +3387,8 @@ fn the_terrain_shaders_validate_translate_to_glsl_es_300_and_light_the_ground_li
     for (stage, entry, bindings) in [
         (naga::ShaderStage::Vertex, "vs_shadow_terrain", &[0][..]),
         (naga::ShaderStage::Vertex, "vs_terrain", &[0][..]),
+        (naga::ShaderStage::Vertex, "vs_water", &[0][..]),
+        (naga::ShaderStage::Fragment, "fs_water", &all[..]),
         (naga::ShaderStage::Fragment, "fs_terrain", &all[..]),
         (naga::ShaderStage::Vertex, "vs_ground", &[0][..]),
         (naga::ShaderStage::Fragment, "fs_ground", &all[..]),

@@ -1,14 +1,15 @@
 // Генератор голой карты края: пологие холмы, море вдоль северного края и реки с притоками, впадающие в море.
-// Пишет рельеф `terrain.json`, карту цвета земли `terrain/tint.png` и размер сцены в `game.json` папки игры `out`;
-// одно зерно `seed` — та же карта. Вода в движке одна на сцену, поэтому реки лежат на уровне моря в широких
-// долинах, как равнинные реки: за несколько километров такая река падает на метр-два.
+// Пишет рельеф `terrain.json` с водой — морем, реками и озёрами записями движка, — карту цвета земли
+// `terrain/tint.png` и размер сцены в `game.json` папки игры `out`; одно зерно `seed` — та же карта. Гладь реки
+// поднимается от устья к истоку на `fall_m`, на перекате падает ступенькой, в озере стоит ровно; долина
+// повторяет гладь своей реки, поэтому пойма везде выше воды.
 // Запуск: node tools/city/land.mjs art/transport/land.json
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { random, round } from "./geo.mjs";
-import { gameText, hex, terrainText } from "./osm2scene.mjs";
+import { gameText, hex } from "./osm2scene.mjs";
 import { encodePng } from "./png.mjs";
 
 const TINT_SIZE = 1024;
@@ -20,6 +21,15 @@ const BEACH_M = 80;          // ширина пляжа у моря
 const NEAR_M = 700;          // полоса за поймой, где расстояние до неё считается точно
 const TRIBUTARY_TURN = 0.95; // угол притока к реке у слияния, радианы
 const ATTEMPTS = 40;
+const FALL_POWER = 1.3;      // гладь круче к истоку: высота над устьем — доля длины в этой степени
+const STRIP_MARGIN_M = 6;    // русло реки для движка шире берегов на столько с каждой стороны
+const EXACT_NEAR_M = 0;      // в пойме долина стоит на глади своей реки
+const BLEND_NEAR_M = 500;    // дальше этого от поймы — на сглаженной глади всех рек и моря
+const LAKE_SHORE_M = 40;     // берег озера от уреза до поймы
+const ESTUARY_M = 400;       // на столько выше впадения в море или озеро река мелеет до глубины их отмели
+const LAKE_SHELF = 0.35;     // на такой доле радиуса от уреза озеро набирает полную глубину: узкая мелкая кайма
+const TURN_BACK = 0.5;       // шаг русла, повернувший круче 60° от прежнего, обрывает его: так русла не поворачивают
+const VALLEY_SMOOTH_M = 300; // долина под перекатом поднимается к его верху плавно на столько вниз по течению
 
 /** Голая карта по настройкам: высоты точек в метрах над водой, расстояния до воды и русла рек. */
 export function buildLand(config) {
@@ -31,6 +41,8 @@ export function buildLand(config) {
   const coastWiggle = layer(noise, [2600, 1000, 380], 3.1);
   const coast = (x) => config.sea.width_m + config.sea.coast_wiggle_m * coastWiggle(x, 0);
   const rivers = layRivers(config, noise, coast);
+  assignSurfaces(rivers, noise);
+  const lakes = rivers.filter((r) => r.lake).map((r) => r.lake);
   const { hills, floodplain, sea } = config;
   // Пойма — полоса ровного луга вдоль реки: шире у больших рек и в низовьях, к истоку сходит на нет.
   const spread = layer(noise, [900, 350], 29.5);
@@ -47,12 +59,19 @@ export function buildLand(config) {
   const channel = new Float32Array(n).fill(Infinity); // от уреза ближайшей реки, внутри русла — меньше нуля
   const depth = new Float32Array(n);                  // глубина ближайшей реки
   const near = new Float32Array(n).fill(Infinity);    // от края поймы, точно — в полосе `NEAR_M` за ней
+  const surf = new Float32Array(n).fill(NaN);         // гладь ближайшей реки в её ближайшей точке
+  const valley = new Float32Array(n).fill(NaN);       // сглаженная вдоль реки гладь, на которой стоит её долина
   const source = new Uint8Array(n);                   // вода и пойма: от них растут склоны
   for (let r = 0; r < rows; r++) {
     for (let c = 0; c < cols; c++) if (r * spacing < coast(c * spacing)) source[r * cols + c] = 1;
   }
-  for (const river of rivers) rasterRiver(river, { cols, rows, spacing, channel, depth, near, source });
+  for (const river of rivers) rasterRiver(river, { cols, rows, spacing, channel, depth, near, source, surf, valley });
   for (let i = 0; i < n; i++) if (channel[i] <= 0) source[i] = 1;
+  for (const lake of lakes) {
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) if (lakeEdge(lake, c * spacing, r * spacing) < LAKE_SHORE_M) source[r * cols + c] = 1;
+    }
+  }
   // Вдали от рек хватает расстояния по сетке; у самой поймы оно ступенчатое, и склон пошёл бы рябью.
   const far = distanceField(source, cols, rows, spacing);
   const dist = new Float32Array(n);
@@ -63,6 +82,7 @@ export function buildLand(config) {
     }
   }
 
+  const base = waterBase({ cols, rows, spacing, widthM, rivers, lakes, coast, valley, near });
   const top = layer(noise, [2600, 1100, 450], 7.7);
   const mid = layer(noise, [1500, 650, 300], 41.2);
   const bumps = layer(noise, [420, 160, 70], 13.9);
@@ -76,7 +96,9 @@ export function buildLand(config) {
       const i = r * cols + c;
       const shore = coast(x);
       if (y < shore) {
-        heights[i] = -Math.min(sea.depth_m, 0.1 + sea.depth_m * ((shore - y) / sea.shelf_m));
+        // У самого берега дно на уровне моря, как и пляж: высота непрерывна, и кромка воды идёт по берегу, а не лесенкой
+        // посередине между точками сетки.
+        heights[i] = -Math.min(sea.depth_m, sea.depth_m * ((shore - y) / sea.shelf_m));
         continue;
       }
       const inland = clamp01((y - shore) / (heightM - shore));
@@ -93,14 +115,133 @@ export function buildLand(config) {
       h = Math.max(h, 0.4);
       // Пляж: к морю земля сходит полого, и кромка воды идёт ровной линией, а не лесенкой по точкам сетки.
       const beach = y - shore;
-      if (beach < BEACH_M) h = 0.1 + 0.02 * beach + (h - 0.1 - 0.02 * beach) * smoothstep(0, BEACH_M, beach);
+      if (beach < BEACH_M) h = 0.02 * beach + (h - 0.02 * beach) * smoothstep(0, BEACH_M, beach);
+      // Долина стоит на глади своей реки или озера, сглаженной вдоль реки; русло и берег — на самой глади, поэтому
+      // под перекатом река идёт в теснине, а не ступенькой поперёк всей долины.
+      let z = base[i] + h;
       const edge = channel[i];
-      if (edge < 0) h = -0.3 - depth[i] * Math.min(1, -edge / 14);
-      else if (edge < BANK_M) h = -0.3 + (h + 0.3) * smoothstep(0, BANK_M, edge);
-      heights[i] = h;
+      if (edge < BANK_M) {
+        const brim = surf[i] - 0.3;
+        // У моря и озера река мелеет до глубины их отмели, как у настоящего устья с наносами: иначе тёмная глубокая
+        // лента упиралась бы в светлую отмель, и место впадения было бы видно резкой границей цвета.
+        const still = Math.min(y - shore, ...lakes.map((lake) => lakeEdge(lake, x, y)));
+        const shoal = smoothstep(0, ESTUARY_M, Math.max(0, still));
+        if (edge < 0) z = brim - depth[i] * shoal * Math.min(1, -edge / 14);
+        else z = brim + (z - brim) * smoothstep(0, BANK_M, edge);
+      }
+      // Чаша озера: дно глубже к середине, берег от уреза поднимается к пойме.
+      for (const lake of lakes) {
+        const out = lakeEdge(lake, x, y);
+        const brim = lake.level - 0.3;
+        if (out < 0) z = Math.min(z, brim - lake.depth * smoothstep(0, LAKE_SHELF * lake.radius, -out));
+        else if (out < LAKE_SHORE_M) z = Math.min(z, brim + (z - brim) * smoothstep(0, LAKE_SHORE_M, out));
+      }
+      heights[i] = z;
     }
   }
-  return { cols, rows, spacing, widthM, heightM, heights, channel, rivers, coast };
+  return { cols, rows, spacing, widthM, heightM, heights, base, channel, rivers, lakes, coast };
+}
+
+/**
+ * Гладь по течению: от устья — или от глади реки у слияния — вверх к истоку на `fall_m`, круче к истоку; перекат —
+ * ступенька `drop_m` на длине `length_m`; в озере гладь ровная. Озеро — чаша вокруг точки реки `lake.at`.
+ */
+function assignSurfaces(rivers, noise) {
+  for (const river of rivers) {
+    const spec = river.spec;
+    const start = river.parent ? river.parent.points[river.joinIndex].s : 0;
+    const total = Math.max(river.length, 1);
+    for (const p of river.points) {
+      let s = start + (spec.fall_m ?? 0) * p.k ** FALL_POWER;
+      for (const rapid of spec.rapids ?? []) {
+        // Перекат не короче шага русла: ступенька нулевой длины дала бы деление на ноль.
+        const half = Math.max(rapid.length_m, RIVER_STEP_M) / 2 / total;
+        s += rapid.drop_m * smoothstep(rapid.at - half, rapid.at + half, p.k);
+      }
+      p.s = s;
+    }
+    if (spec.lake) river.lake = placeLake(river, spec.lake, noise);
+    smoothValley(river);
+  }
+}
+
+/** Гладь, на которой стоит долина: средняя по реке на `VALLEY_SMOOTH_M` в обе стороны, но не ниже самой глади. */
+function smoothValley(river) {
+  const pts = river.points;
+  const reach = Math.round(VALLEY_SMOOTH_M / RIVER_STEP_M);
+  for (let k = 0; k < pts.length; k++) {
+    let sum = 0, count = 0;
+    for (let j = Math.max(0, k - reach); j <= Math.min(pts.length - 1, k + reach); j++) {
+      sum += pts[j].s;
+      count++;
+    }
+    pts[k].v = Math.max(pts[k].s, sum / count);
+  }
+}
+
+/** Озеро на реке: гладь выравнивается по точке посередине на участке русла внутри чаши. */
+function placeLake(river, spec, noise) {
+  const pts = river.points;
+  const mid = pts.reduce((best, p) => (Math.abs(p.k - spec.at) < Math.abs(best.k - spec.at) ? p : best), pts[0]);
+  const at = pts.indexOf(mid);
+  const inside = (p) => Math.hypot(p.x - mid.x, p.y - mid.y) <= spec.radius_m;
+  let lo = at, hi = at;
+  while (lo > 0 && inside(pts[lo - 1])) lo--;
+  while (hi < pts.length - 1 && inside(pts[hi + 1])) hi++;
+  for (let k = lo; k <= hi; k++) pts[k].s = mid.s;
+  const next = pts[Math.min(at + 1, pts.length - 1)], prev = pts[Math.max(at - 1, 0)];
+  const len = Math.hypot(next.x - prev.x, next.y - prev.y) || 1;
+  const side = { x: -(next.y - prev.y) / len, y: (next.x - prev.x) / len };
+  const shore = (angle) => spec.radius_m * (0.78 + 0.16 * noise(Math.cos(angle) * 1.3 + 71.3, Math.sin(angle) * 1.3 + 5.9));
+  return {
+    x: mid.x, y: mid.y, level: mid.s, radius: spec.radius_m, depth: spec.depth_m, shore,
+    // Точки русла в чаше: `outlet` — ближняя к устью, `inlet` — ближняя к истоку.
+    outlet: lo, inlet: hi,
+    // Точка озера для движка — в стороне от русла: в русле главнее река.
+    at: { x: mid.x + side.x * 0.4 * spec.radius_m, y: mid.y + side.y * 0.4 * spec.radius_m },
+  };
+}
+
+/** Насколько точка дальше уреза озера, в метрах; внутри озера — меньше нуля. */
+function lakeEdge(lake, x, y) {
+  const dx = x - lake.x, dy = y - lake.y;
+  return Math.hypot(dx, dy) - lake.shore(Math.atan2(dy, dx));
+}
+
+/**
+ * Гладь, на которой стоит долина в каждой точке: в пойме — сглаженная вдоль реки гладь её ближайшей точки, вдали —
+ * гладь рек, озёр и моря, сглаженная по расстоянию. Вокруг озера ближайшая точка реки — на участке, выровненном по
+ * озеру, а сглаженная гладь не ниже самой глади, поэтому берег чаши не ниже уровня озера.
+ */
+function waterBase({ cols, rows, spacing, widthM, rivers, lakes, coast, valley, near }) {
+  const samples = [];
+  for (const river of rivers) for (let k = 0; k < river.points.length; k += 3) samples.push(river.points[k].x, river.points[k].y, river.points[k].v);
+  for (let x = 0; x <= widthM; x += 100) samples.push(x, coast(x), 0);
+  for (const lake of lakes) samples.push(lake.x, lake.y, lake.level);
+  const base = new Float32Array(cols * rows);
+  for (let r = 0; r < rows; r++) {
+    const y = r * spacing;
+    for (let c = 0; c < cols; c++) {
+      const x = c * spacing;
+      const i = r * cols + c;
+      const far = smoothstep(EXACT_NEAR_M, BLEND_NEAR_M, near[i]);
+      const exact = Number.isFinite(valley[i]);
+      let b = exact ? valley[i] : 0;
+      if (!exact || far > 0) {
+        let sw = 0, sv = 0;
+        for (let j = 0; j < samples.length; j += 3) {
+          const d2 = (x - samples[j]) ** 2 + (y - samples[j + 1]) ** 2 + 1;
+          const w = 1 / (d2 * Math.sqrt(d2));
+          sw += w;
+          sv += w * samples[j + 2];
+        }
+        const smooth = sv / sw;
+        b = exact ? b + (smooth - b) * far : smooth;
+      }
+      base[i] = b;
+    }
+  }
+  return base;
 }
 
 /** Русла рек и притоков: от устья у моря вверх по течению, извилисто, не ближе `RIVER_GAP_M` друг к другу. */
@@ -122,6 +263,7 @@ function layRivers(config, noise, coast) {
         ok = false;
         break;
       }
+      main.spec = spec;
       laid.push(main);
       for (const [t, trib] of spec.tributaries.entries()) {
         const at = main.points[Math.round(trib.at * (main.points.length - 1))];
@@ -136,6 +278,9 @@ function layRivers(config, noise, coast) {
           ok = false;
           break;
         }
+        branch.spec = trib;
+        branch.parent = main;
+        branch.joinIndex = main.points.indexOf(at);
         laid.push(branch);
       }
       if (!ok) break;
@@ -147,12 +292,15 @@ function layRivers(config, noise, coast) {
 
 /**
  * Одно русло от `start` в сторону `heading`: направление виляет по шуму, у краёв карты заворачивает внутрь.
- * Обрывается у края, у моря (приток) и там, где подошло бы к другому руслу ближе `RIVER_GAP_M`.
+ * Обрывается у края, у моря (приток), там, где подошло бы к другому руслу ближе `RIVER_GAP_M`, и там, где шаг
+ * повернул бы круче `TURN_BACK`: у края карты притяжение внутрь и извив уравновешиваются, и русло топталось бы на месте.
+ * `run` точки — путь по руслу от начала.
  */
 function traceRiver({ start, heading, length, widths, depth, estuary, wiggle, laid, parent, coast, widthM, heightM, narrowest }) {
-  const points = [{ x: start.x, y: start.y, s: 0 }];
+  const points = [{ x: start.x, y: start.y, run: 0 }];
   let { x, y } = start;
   let s = 0;
+  let back = null;
   const bend = heading + 0.3 * wiggle(-7.3);
   while (s < length) {
     // Три размера излучин: большие повороты долины, меандры и мелкие изгибы русла.
@@ -162,19 +310,21 @@ function traceRiver({ start, heading, length, widths, depth, estuary, wiggle, la
     dx += 1.5 * pull(x, 2 * EDGE_MARGIN_M, widthM - 2 * EDGE_MARGIN_M);
     dy += 1.5 * pull(y, 0, heightM - 2 * EDGE_MARGIN_M);
     const len = Math.hypot(dx, dy);
+    if (back && (dx / len) * back.x + (dy / len) * back.y < TURN_BACK) break;
+    back = { x: dx / len, y: dy / len };
     x += (dx / len) * RIVER_STEP_M;
     y += (dy / len) * RIVER_STEP_M;
     s += RIVER_STEP_M;
     if (x < EDGE_MARGIN_M || x > widthM - EDGE_MARGIN_M || y > heightM - EDGE_MARGIN_M) break;
     if (y < coast(x) + (parent ? 400 : 0) && s > 200) break;
     if (tooClose(x, y, laid, parent, s)) break;
-    points.push({ x, y, s });
+    points.push({ x, y, run: s });
   }
-  const total = points[points.length - 1].s;
+  const total = points[points.length - 1].run;
   for (const p of points) {
-    p.k = total > 0 ? p.s / total : 0;
+    p.k = total > 0 ? p.run / total : 0;
     const spring = p.k > 0.85 ? 1 - 0.7 * ((p.k - 0.85) / 0.15) : 1;
-    const width = (widths[0] + (widths[1] - widths[0]) * p.k) * spring * (estuary ? 1 + 1.6 * Math.exp(-p.s / 350) : 1);
+    const width = (widths[0] + (widths[1] - widths[0]) * p.k) * spring * (estuary ? 1 + 1.6 * Math.exp(-p.run / 350) : 1);
     p.width = Math.max(narrowest, width);
   }
   return { points, length: total, depth, main: parent === null };
@@ -190,7 +340,7 @@ function tooClose(x, y, laid, parent, s) {
 }
 
 /** Русло в поля карты: расстояние от уреза и от края поймы, глубина, пойма — источник склонов. */
-function rasterRiver(river, { cols, rows, spacing, channel, depth, near, source }) {
+function rasterRiver(river, { cols, rows, spacing, channel, depth, near, source, surf, valley }) {
   const pts = river.points;
   for (let k = 0; k + 1 < pts.length; k++) {
     const a = pts[k], b = pts[k + 1];
@@ -212,6 +362,8 @@ function rasterRiver(river, { cols, rows, spacing, channel, depth, near, source 
         if (edge < channel[i]) {
           channel[i] = edge;
           depth[i] = river.depth;
+          surf[i] = a.s + (b.s - a.s) * t;
+          valley[i] = a.v + (b.v - a.v) * t;
         }
         const out = d - (fa + (fb - fa) * t);
         if (out <= 0) source[i] = 1;
@@ -229,8 +381,47 @@ function landFiles(land, config) {
     for (let c = 0; c < land.cols; c++) row[c] = round(land.heights[r * land.cols + c] / config.cell_m, 4);
     heights.push(row);
   }
-  const terrain = terrainText({ water: { level: 0, color: config.water.color }, tint: "terrain/tint.png", heights });
-  return { terrain, tint: tintImage(land, config) };
+  return { terrain: terrainFileText(landWater(land, config), "terrain/tint.png", heights), tint: tintImage(land, config) };
+}
+
+/** Запись воды для движка в клетках: море на нуле, озёра, реки от истока к устью с шириной русла. */
+export function landWater(land, config) {
+  const cells = (m) => round(m / config.cell_m, 4);
+  // Русло для движка — от поймы до поймы: берег внутри него, вода не упрётся в край полосы.
+  const strip = (p) => p.width + 2 * (BANK_M + STRIP_MARGIN_M);
+  return {
+    color: config.water.color, clarity: config.water.clarity, ripple: config.water.ripple, level: 0,
+    lakes: land.lakes.map((lake) => ({ at: [cells(lake.at.x), cells(lake.at.y)], level: cells(lake.level) })),
+    // Точки русла легли от устья, у притока — от слияния. Русло кончается у берега: в море река не заходит, иначе
+    // там рябь бежала бы по течению, а вокруг её гнал бы ветер, и полоса реки была бы видна в море.
+    // Река с озером пишется двумя: верхняя кончается в озере, нижняя вытекает из него. Иначе течение тянулось бы
+    // полосой через стоячую воду озера.
+    rivers: land.rivers.flatMap((river) => {
+      const parts = river.lake
+        ? [river.points.slice(0, river.lake.outlet + 1), river.points.slice(river.lake.inlet)]
+        : [river.points];
+      return parts.map((part) => {
+        const kept = part.filter((p, k, all) => p.y >= land.coast(p.x) || (k + 1 < all.length && all[k + 1].y >= land.coast(all[k + 1].x)));
+        // Гладь отсчитана от точки русла далеко в море; обрезанная у берега река кончается на уровне моря, иначе
+        // вокруг устья её вода стояла бы дугой выше моря.
+        const reachesSea = kept[0] !== part[0];
+        return {
+          points: kept.toReversed().map((p, k, all) => [cells(p.x), cells(p.y), reachesSea && k === all.length - 1 ? 0 : cells(p.s), cells(strip(p))]),
+        };
+      });
+    }),
+  };
+}
+
+/** Файл рельефа: запись воды первой, озёра и реки — по водоёму на строку, высоты — строка сетки на строку. */
+function terrainFileText(water, tint, heights) {
+  const { lakes, rivers, ...head } = water;
+  const parts = [`    ${Object.entries(head).map(([k, v]) => `${JSON.stringify(k)}: ${JSON.stringify(v)}`).join(", ")}`];
+  const list = (name, items) => `    ${JSON.stringify(name)}: [\n${items.map((v) => `      ${JSON.stringify(v)}`).join(",\n")}\n    ]`;
+  if (lakes.length > 0) parts.push(list("lakes", lakes));
+  if (rivers.length > 0) parts.push(list("rivers", rivers));
+  const rowsText = heights.map((r) => `    ${JSON.stringify(r)}`).join(",\n");
+  return `{\n  "water": {\n${parts.join(",\n")}\n  },\n  "tint": ${JSON.stringify(tint)},\n  "heights": [\n${rowsText}\n  ]\n}\n`;
 }
 
 /**
@@ -252,7 +443,8 @@ function tintImage(land, config) {
       // Движок берёт карту цвета по серединам точек картинки, поэтому и цвет считается в середине точки.
       const x = ((px + 0.5) / w) * land.widthM, y = ((py + 0.5) / h) * land.heightM;
       const gx = x / land.spacing, gy = y / land.spacing;
-      const z = height(gx, gy);
+      // Луг и сухие места — по высоте над водой своей долины, а не над морем.
+      const z = height(gx, gy) - bilinear(land.base, land.cols, land.rows, gx, gy);
       const slope = Math.hypot(height(gx + 0.5, gy) - height(gx - 0.5, gy), height(gx, gy + 0.5) - height(gx, gy - 0.5)) / land.spacing;
       const p = patches(x, y);
       let col = mix(colors.meadow, colors.upland, smoothstep(2, 22, z));
@@ -262,7 +454,9 @@ function tintImage(land, config) {
       const fromSea = y - land.coast(x);
       const fromRiver = bilinear(channel, land.cols, land.rows, gx, gy);
       col = mix(col, colors.sand, 1 - smoothstep(0, 45, fromSea));
-      col = mix(col, colors.silt, 1 - smoothstep(0, 16, fromRiver));
+      // Ил реки — только на суше: линия русла заходит в море, и на мелком дне перед устьем ил был бы виден тёмной полосой.
+      col = mix(col, colors.silt, (1 - smoothstep(0, 16, fromRiver)) * smoothstep(0, 20, fromSea));
+      for (const lake of land.lakes) col = mix(col, colors.silt, 1 - smoothstep(0, 16, lakeEdge(lake, x, y)));
       const shade = 1 + 0.08 * p;
       const o = (py * w + px) * 4;
       for (let ch = 0; ch < 3; ch++) rgba[o + ch] = Math.max(0, Math.min(255, Math.round((128 * col[ch] * shade) / bg[ch])));

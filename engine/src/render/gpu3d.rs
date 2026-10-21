@@ -2,7 +2,8 @@
 //! кадра (`encode`): карта теней 2048 × 2048 от солнца (фигуры и рельеф), затем рельеф с водой,
 //! фигуры и плитки с плоскими объектами на земле — с буфером глубины и тенью. Надписи, полоски и
 //! интерфейс рисует прежний проход без глубины — его собирает `super::gpu`. Ресурсы создаются при
-//! первом кадре трёхмерной сцены, так что плоская игра их не платит вовсе.
+//! первом кадре трёхмерной сцены, так что плоская игра их не платит вовсе. Вода рисуется после всех
+//! сплошных частей и до частей `BLEND`: смешивается с тем, что под ней, и пишет глубину.
 
 use wgpu::util::DeviceExt;
 
@@ -32,6 +33,8 @@ pub struct Globals3d {
     pub eye: [f32; 4],
     pub sun_light: [f32; 4],
     pub sky_light: [f32; 4],
+    /// x — на какой глубине в клетках дна уже не видно, y — длина ряби в клетках, z — часы воды в секундах.
+    pub water: [f32; 4],
 }
 
 /// Одна фигура кадра: `placement` — середина на земле и косинус с синусом поворота, `dims` —
@@ -61,7 +64,7 @@ pub struct GroundVertex {
 }
 
 // Раскладки, которые читает `scene3d.wgsl`: уникальный размер в байтах и смещения атрибутов ниже.
-const _: () = assert!(std::mem::size_of::<Globals3d>() == 208);
+const _: () = assert!(std::mem::size_of::<Globals3d>() == 224);
 const _: () = assert!(std::mem::size_of::<ShapeInstance>() == 48);
 const _: () = assert!(std::mem::size_of::<GroundVertex>() == 76);
 
@@ -464,7 +467,7 @@ const SHAPE_INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     },
 ];
 
-const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
+const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x3,
         offset: 0,
@@ -480,10 +483,15 @@ const TERRAIN_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
         offset: 24,
         shader_location: 2,
     },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 36,
+        shader_location: 3,
+    },
 ];
 
-/// Байт на вершину сетки рельефа: место, нормаль и цвет.
-const TERRAIN_STRIDE: u64 = 36;
+/// Байт на вершину сетки рельефа: место, нормаль, цвет и четыре числа `extra`.
+const TERRAIN_STRIDE: u64 = 52;
 
 const GROUND_ATTRIBUTES: [wgpu::VertexAttribute; 7] = [
     wgpu::VertexAttribute {
@@ -856,31 +864,43 @@ impl Scene3d {
                 multiview_mask: None,
                 cache: None,
             });
-        let terrain_surface_pipeline = |label: &str, fragment_entry: &str| {
-            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
-                label: Some(label),
-                layout: Some(&main_pipeline_layout),
-                vertex: wgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs_terrain"),
-                    buffers: &terrain_buffers,
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                },
-                fragment: Some(wgpu::FragmentState {
-                    module: &shader,
-                    entry_point: Some(fragment_entry),
-                    targets: &shape_targets,
-                    compilation_options: wgpu::PipelineCompilationOptions::default(),
-                }),
-                primitive: wgpu::PrimitiveState::default(),
-                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
-                multisample: wgpu::MultisampleState::default(),
-                multiview_mask: None,
-                cache: None,
-            })
-        };
-        let terrain_pipeline = terrain_surface_pipeline("terrain_pipeline", "fs_terrain");
-        let water_pipeline = terrain_surface_pipeline("water_pipeline", "fs_water");
+        let terrain_surface_pipeline =
+            |label: &str,
+             vertex_entry: &str,
+             fragment_entry: &str,
+             targets: &[Option<wgpu::ColorTargetState>]| {
+                device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                    label: Some(label),
+                    layout: Some(&main_pipeline_layout),
+                    vertex: wgpu::VertexState {
+                        module: &shader,
+                        entry_point: Some(vertex_entry),
+                        buffers: &terrain_buffers,
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    },
+                    fragment: Some(wgpu::FragmentState {
+                        module: &shader,
+                        entry_point: Some(fragment_entry),
+                        targets,
+                        compilation_options: wgpu::PipelineCompilationOptions::default(),
+                    }),
+                    primitive: wgpu::PrimitiveState::default(),
+                    depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                    multisample: wgpu::MultisampleState::default(),
+                    multiview_mask: None,
+                    cache: None,
+                })
+            };
+        let terrain_pipeline = terrain_surface_pipeline(
+            "terrain_pipeline",
+            "vs_terrain",
+            "fs_terrain",
+            &shape_targets,
+        );
+        // Вода смешивается с тем, что под ней: фрагмент отдаёт цвет, уже умноженный на свою долю.
+        let water_targets = color_target(wgpu::BlendState::PREMULTIPLIED_ALPHA_BLENDING);
+        let water_pipeline =
+            terrain_surface_pipeline("water_pipeline", "vs_water", "fs_water", &water_targets);
         let shape_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
             label: Some("shape_pipeline"),
             layout: Some(&main_pipeline_layout),
@@ -1124,7 +1144,13 @@ impl Scene3d {
         let floats: Vec<f32> = mesh
             .vertices
             .iter()
-            .flat_map(|v| v.position.into_iter().chain(v.normal).chain(v.color))
+            .flat_map(|v| {
+                v.position
+                    .into_iter()
+                    .chain(v.normal)
+                    .chain(v.color)
+                    .chain(v.extra)
+            })
             .collect();
         let total = mesh.vertices.len() as u32;
         if let Some(held) = self.terrain.as_mut().filter(|held| held.total == total) {
@@ -1160,9 +1186,9 @@ impl Scene3d {
         }
     }
 
-    /// Проход теней (фигуры, модели и рельеф) и основной проход: рельеф с водой, фигуры, сплошные части
+    /// Проход теней (фигуры, модели и рельеф) и основной проход: рельеф, фигуры, сплошные части
     /// моделей, куски дорог с перекрёстками, затем плитки и плоские объекты — они лежат на поверхностях, которые уже
-    /// записали глубину, — и в конце части `BLEND` от дальней к ближней. Цвет очищается фоном сцены;
+    /// записали глубину, — затем вода и в конце части `BLEND` от дальней к ближней. Цвет очищается фоном сцены;
     /// следующий за ними проход интерфейса берёт цвет как есть.
     pub fn encode(
         &self,
@@ -1234,10 +1260,6 @@ impl Scene3d {
             pass.set_vertex_buffer(0, terrain.buffer.slice(..));
             pass.set_pipeline(&self.terrain_pipeline);
             pass.draw(0..terrain.land, 0..1);
-            if terrain.total > terrain.land {
-                pass.set_pipeline(&self.water_pipeline);
-                pass.draw(terrain.land..terrain.total, 0..1);
-            }
         }
         pass.set_pipeline(&self.shape_pipeline);
         self.draw_shapes(&mut pass);
@@ -1253,6 +1275,11 @@ impl Scene3d {
             pass.set_pipeline(&self.ground_pipeline);
             pass.set_vertex_buffer(0, self.ground_buffer.slice(..));
             pass.draw(0..self.ground_count, 0..1);
+        }
+        if let Some(terrain) = self.terrain.as_ref().filter(|t| t.total > t.land) {
+            pass.set_vertex_buffer(0, terrain.buffer.slice(..));
+            pass.set_pipeline(&self.water_pipeline);
+            pass.draw(terrain.land..terrain.total, 0..1);
         }
         pass.set_pipeline(&self.model_blend_pipeline);
         models.draw_blended(&mut pass);

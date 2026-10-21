@@ -182,7 +182,7 @@ fn set_terrain_puts_the_same_terrain_a_file_would() {
     let text = terrain_file(&heights, Some((-0.5, "#3f7fd0")));
     let from_file = load(true, Some(&text), "", NO_RULES);
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &heights, Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
+    set_terrain(&mut game, &heights, Some(&sea(-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
     assert_eq!(game.world.terrain(), from_file.world.terrain());
 }
 
@@ -251,15 +251,21 @@ fn set_terrain_builds_the_world_from_the_scene_again() {
 #[test]
 fn water_appears_and_goes_with_set_terrain() {
     let mut game = load_flat("", NO_RULES);
-    set_terrain(&mut game, &grid(hill), Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), Some(&sea(-0.5, "#3f7fd0")), &[])
+        .expect("рельеф поставлен");
     let water = game.world.terrain().water().expect("вода есть");
-    near(water.level, -0.5, "уровень воды");
+    near(water.level.expect("море"), -0.5, "уровень воды");
     assert_eq!(Some(water.color), parse_color("#3f7fd0"));
     set_terrain(&mut game, &grid(hill), None, &[]).expect("рельеф поставлен");
     assert_eq!(game.world.terrain().water(), None, "воды нет");
 }
 
-fn error_of(game: &mut Game, heights: &[f64], water: Option<(f64, &str)>) -> String {
+/// Вода-море в виде таблицы `water` файла рельефа.
+fn sea(level: f64, color: &str) -> serde_json::Value {
+    serde_json::json!({ "level": level, "color": color })
+}
+
+fn error_of(game: &mut Game, heights: &[f64], water: Option<&serde_json::Value>) -> String {
     set_terrain(game, heights, water, &[]).expect_err("рельеф должен не встать")
 }
 
@@ -292,7 +298,7 @@ fn a_height_that_is_not_a_number_is_an_error_naming_its_place() {
 fn a_color_that_is_not_a_color_is_an_error_with_the_text() {
     let mut game = load_flat("", NO_RULES);
     for color in ["blue", "#12345", ""] {
-        let message = error_of(&mut game, &grid(level), Some((-1.0, color)));
+        let message = error_of(&mut game, &grid(level), Some(&sea(-1.0, color)));
         assert!(
             message.contains("water → color") && message.contains("#rrggbb"),
             "{message}"
@@ -303,7 +309,7 @@ fn a_color_that_is_not_a_color_is_an_error_with_the_text() {
 #[test]
 fn a_level_that_is_not_a_number_is_an_error_with_the_text() {
     let mut game = load_flat("", NO_RULES);
-    let message = error_of(&mut game, &grid(level), Some((f64::NAN, "#3f7fd0")));
+    let message = error_of(&mut game, &grid(level), Some(&sea(f64::NAN, "#3f7fd0")));
     assert!(
         message.contains("water → level") && message.contains("ожидалось число"),
         "{message}"
@@ -446,7 +452,7 @@ fn terrain_heights_returns_the_terrain_of_the_file() {
     let snapshot = terrain_heights(&game).expect("сцена трёхмерная");
     assert_eq!((snapshot.columns, snapshot.rows), (41, 25));
     assert_eq!(snapshot.heights, heights);
-    assert_eq!(snapshot.water, Some((-0.5, "#3f7fd0".to_string())));
+    assert_eq!(snapshot.water, Some(sea(-0.5, "#3f7fd0")));
 }
 
 #[test]
@@ -462,10 +468,10 @@ fn terrain_heights_without_a_file_are_zeros_of_the_scene_size_and_no_water() {
 fn terrain_heights_hand_back_what_set_terrain_took() {
     let mut game = load_flat("", NO_RULES);
     let heights = grid(hill_and_pit);
-    set_terrain(&mut game, &heights, Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
+    set_terrain(&mut game, &heights, Some(&sea(-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
     let snapshot = terrain_heights(&game).expect("сцена трёхмерная");
     assert_eq!(snapshot.heights, heights);
-    assert_eq!(snapshot.water, Some((-0.5, "#3f7fd0".to_string())));
+    assert_eq!(snapshot.water, Some(sea(-0.5, "#3f7fd0")));
 }
 
 #[test]
@@ -640,7 +646,8 @@ fn the_terrain_mesh_after_set_terrain_holds_the_new_heights_in_the_same_number_o
 fn the_terrain_mesh_of_a_scene_without_a_file_appears_with_the_first_set_terrain() {
     let mut game = load_flat("", NO_RULES);
     assert!(TerrainMesh::build(game.world.terrain(), [0.0; 4]).is_none());
-    set_terrain(&mut game, &grid(hill), Some((-0.5, "#3f7fd0")), &[]).expect("рельеф поставлен");
+    set_terrain(&mut game, &grid(hill), Some(&sea(-0.5, "#3f7fd0")), &[])
+        .expect("рельеф поставлен");
     let mesh = TerrainMesh::build(game.world.terrain(), [0.0; 4]).expect("файл высот есть");
     assert!(mesh.land > 0);
 }

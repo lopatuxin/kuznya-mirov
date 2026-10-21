@@ -244,6 +244,16 @@ describe("отпечатки при щелчке", () => {
       return scene;
     }
 
+    it("вода из terrain_heights — со всеми полями, озёрами и реками — уходит в set_terrain таблицей как есть", () => {
+      const water = { color: "#35607a", clarity: 0.8, ripple: 0.6, level: 0, lakes: [{ at: [40, 9], level: 3.6 }], rivers: [{ points: [[38, 13, 3.6, 2], [26, 42, 0, 3]] }] };
+      const scene = hovering();
+      scene.state.water = water;
+      scene.controller.pointerMove(pointer(120, 100, { buttons: 0 }));
+      scene.controller.strokeFrame(32);
+
+      expect(scene.terrainSets.at(-1)?.water).toEqual(water);
+    });
+
     it("кадр с указателем над землёй ставит его поверх отпечатков файла; тот же указатель — не ставит заново", () => {
       const scene = hovering();
       scene.controller.strokeFrame(16);

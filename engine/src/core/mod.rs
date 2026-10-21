@@ -31,5 +31,6 @@ pub mod terrain;
 pub mod time;
 pub mod value;
 pub mod walk3d;
+pub mod water;
 pub mod world;
 pub mod world_elements;

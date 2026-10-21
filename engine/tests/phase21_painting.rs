@@ -666,7 +666,10 @@ fn terrain_readings_carry_the_water() {
     );
     let read = edit::terrain_readings(&setup.game_json(), Some(&terrain), &texts())
         .expect("рельеф читается");
-    assert_eq!(read.water, Some((-1.5, "#3f7fd0".to_string())));
+    assert_eq!(
+        read.water,
+        Some(serde_json::json!({ "level": -1.5, "color": "#3f7fd0" }))
+    );
 }
 
 #[test]

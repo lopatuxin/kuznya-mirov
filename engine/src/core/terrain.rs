@@ -9,18 +9,12 @@ use super::footprint::Footprint;
 use super::imprints::Imprint;
 use super::math3::{self, Vec3};
 use super::value::Vec2;
+use super::water::{Grid, WaterField, WaterSpec, WaterWarning, clip_wet};
 
 /// Тангенс самого крутого склона, по которому идут: 45°.
 pub const MAX_SLOPE: f64 = 1.0;
 
 const EPS: f64 = 1e-9;
-
-/// Вода: ровная гладь на высоте `level` над всей сценой.
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Water {
-    pub level: f64,
-    pub color: [f32; 4],
-}
 
 /// Выпуклый многоугольник на плоскости `x`, `y` против часовой стрелки (в математическом смысле).
 pub type Polygon = Vec<Vec2>;
@@ -61,12 +55,29 @@ pub struct Terrain {
     /// Высоты файла рельефа, без отпечатков.
     base: Vec<f64>,
     imprints: Vec<Imprint>,
-    water: Option<Water>,
+    water: Option<WaterState>,
     covers: Vec<Cover>,
     /// Есть ли карта цвета `tint`: она идёт после масок покрытий.
     tint: bool,
     flat: bool,
     blocked: OnceLock<Vec<Polygon>>,
+}
+
+/// Запись воды файла рельефа и гладь, посчитанная по ней над точками сетки.
+#[derive(Debug, Clone, PartialEq)]
+struct WaterState {
+    spec: WaterSpec,
+    field: WaterField,
+}
+
+/// Вершина куска воды: место на глади, нормаль глади, глубина, течение и пена.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct WaterVertex {
+    pub position: Vec3,
+    pub normal: Vec3,
+    pub depth: f64,
+    pub flow: Vec2,
+    pub foam: f64,
 }
 
 /// Ровная земля высоты 0 без воды — для сцены без файла рельефа.
@@ -110,7 +121,7 @@ impl Terrain {
     pub fn from_rows(
         scene: [u32; 2],
         rows: &[Vec<f64>],
-        water: Option<Water>,
+        water: Option<WaterSpec>,
     ) -> Result<Terrain, String> {
         let Some(density) = Terrain::density_for(rows.len(), scene[1]) else {
             return Err(format!(
@@ -130,18 +141,37 @@ impl Terrain {
             ));
         }
         let heights: Vec<f64> = rows.iter().flatten().copied().collect();
-        Ok(Terrain {
+        let terrain = Terrain {
             scene,
             density,
             flat: heights.iter().all(|&h| h == 0.0),
             base: heights.clone(),
             heights,
             imprints: Vec::new(),
-            water,
+            water: None,
             covers: Vec::new(),
             tint: false,
             blocked: OnceLock::new(),
-        })
+        };
+        Ok(terrain.with_water(water))
+    }
+
+    /// Тот же рельеф с записью воды `spec`; гладь, течение и пена считаются по его высотам.
+    fn with_water(mut self, spec: Option<WaterSpec>) -> Terrain {
+        let grid = self.grid();
+        self.water = spec.map(|spec| {
+            let field = WaterField::compute(&spec, &self.heights, grid);
+            WaterState { spec, field }
+        });
+        self
+    }
+
+    fn grid(&self) -> Grid {
+        Grid {
+            columns: self.columns(),
+            rows: self.rows(),
+            density: self.density,
+        }
     }
 
     /// Тот же рельеф под покрытиями `covers` и картой цвета, если `tint`: мазок кисти и правка воды
@@ -160,14 +190,20 @@ impl Terrain {
         for imprint in &imprints {
             self.press_under(imprint, &mut lift, &mut dig);
         }
-        self.heights = self
+        let heights: Vec<f64> = self
             .base
             .iter()
             .zip(lift.iter().zip(&dig))
             .map(|(h, (up, down))| h + up - down)
             .collect();
+        let changed = heights != self.heights;
+        self.heights = heights;
         self.flat = self.heights.iter().all(|&h| h == 0.0);
         self.imprints = imprints;
+        if changed {
+            let spec = self.water.take().map(|state| state.spec);
+            return self.with_water(spec);
+        }
         self
     }
 
@@ -258,8 +294,25 @@ impl Terrain {
             .unwrap_or(0.0)
     }
 
-    pub fn water(&self) -> Option<Water> {
-        self.water
+    /// Запись воды файла рельефа.
+    pub fn water(&self) -> Option<&WaterSpec> {
+        self.water.as_ref().map(|state| &state.spec)
+    }
+
+    /// Гладь, течение и пена над точками сетки; `None`, когда воды в файле нет.
+    pub fn water_field(&self) -> Option<&WaterField> {
+        self.water.as_ref().map(|state| &state.field)
+    }
+
+    /// Предупреждения воды, посчитанные вместе с гладью.
+    pub fn water_warnings(&self) -> &[WaterWarning] {
+        self.water_field().map_or(&[], WaterField::warnings)
+    }
+
+    /// Наименьшая и наибольшая гладь, которая рисуется, — у залитых точек и у кромки, где гладь сходит к
+    /// земле; `None`, когда ничего не залито.
+    pub fn water_range(&self) -> Option<(f64, f64)> {
+        self.water_field().and_then(WaterField::range)
     }
 
     /// Итоговые высоты точек сетки с отпечатками, строками сверху вниз; пусто у ровной земли без файла.
@@ -530,27 +583,23 @@ impl Terrain {
     }
 
     /// Куда по рельефу не пройти — выпуклые многоугольники: квадраты в `WALK_SQUARE` клетки, где есть
-    /// треугольник круче 45° или вся земля ниже воды; части треугольников ниже воды в остальных
+    /// треугольник круче 45° или все точки залиты водой; части треугольников под водой в остальных
     /// квадратах; площадки меньше `MIN_ISLAND` клеток, со всех сторон
     /// окружённые такими квадратами, — туда не дойти, а углы вокруг них раздули бы сеть обхода.
     /// Считаются один раз.
     pub fn walk_blocked(&self) -> &[Polygon] {
         self.blocked.get_or_init(|| {
-            let level = self.water.map(|w| w.level);
             let [columns, rows] = self.squares();
             let mut shut: Vec<bool> = (0..columns * rows)
-                .map(|at| self.square_shut(at % columns, at / columns, level))
+                .map(|at| self.square_shut(at % columns, at / columns))
                 .collect();
             self.widen_to_walk_squares(&mut shut, columns, rows);
             self.shut_islands(&mut shut, columns, rows);
             let mut pieces = Vec::new();
-            if let Some(level) = level {
+            if self.water.is_some() {
                 for (at, _) in shut.iter().enumerate().filter(|(_, shut)| !**shut) {
                     for which in 0..2 {
-                        let triangle = self.triangle(at % columns, at / columns, which);
-                        if let Some(piece) = clip_below(&triangle, level) {
-                            pieces.push(piece);
-                        }
+                        pieces.extend(self.wet_piece(at % columns, at / columns, which));
                     }
                 }
             }
@@ -559,12 +608,12 @@ impl Terrain {
         })
     }
 
-    /// Квадрат сетки закрыт для ходьбы: в нём есть треугольник круче 45° или вся земля ниже воды.
-    fn square_shut(&self, column: usize, row: usize, level: Option<f64>) -> bool {
-        let drowned = level.is_some_and(|level| {
+    /// Квадрат сетки закрыт для ходьбы: в нём есть треугольник круче 45° или все его точки залиты.
+    fn square_shut(&self, column: usize, row: usize) -> bool {
+        let drowned = self.water_field().is_some_and(|field| {
             [(0, 0), (1, 0), (0, 1), (1, 1)]
                 .iter()
-                .all(|&(dc, dr)| self.point_height(column + dc, row + dr) < level)
+                .all(|&(dc, dr)| field.is_flooded((row + dr) * self.columns() + column + dc))
         });
         drowned
             || (0..2)
@@ -697,13 +746,36 @@ impl Terrain {
 
     /// Расстояние вдоль луча `origin + t · direction` до первой точки рельефа в пределах сцены.
     pub fn ray_hit(&self, extent: [f64; 2], origin: Vec3, direction: Vec3) -> Option<f64> {
-        let [columns, rows] = self.squares();
-        if columns == 0 {
+        if self.squares()[0] == 0 {
             return plane_hit(origin, direction, 0.0, extent);
         }
-        let (lo, hi) = self.height_range();
-        let (t_enter, t_exit) = clip_ray_to_box(origin, direction, extent, lo, hi)?;
-        let mut best: Option<f64> = None;
+        self.march(
+            extent,
+            origin,
+            direction,
+            self.height_range(),
+            |column, row| {
+                (0..2)
+                    .filter_map(|which| {
+                        triangle_hit(&self.triangle(column, row, which), origin, direction)
+                    })
+                    .reduce(f64::min)
+            },
+        )
+    }
+
+    /// Идёт вдоль луча по квадратам сетки от ближнего к дальнему в коробке высот `range`; `visit` отдаёт
+    /// расстояние до первого попадания в квадрате, если оно есть, — по нему ход кончается.
+    fn march(
+        &self,
+        extent: [f64; 2],
+        origin: Vec3,
+        direction: Vec3,
+        range: (f64, f64),
+        mut visit: impl FnMut(usize, usize) -> Option<f64>,
+    ) -> Option<f64> {
+        let [columns, rows] = self.squares();
+        let (t_enter, t_exit) = clip_ray_to_box(origin, direction, extent, range.0, range.1)?;
         let start = [
             origin[0] + t_enter * direction[0],
             origin[1] + t_enter * direction[1],
@@ -730,14 +802,8 @@ impl Terrain {
             }
         }
         loop {
-            for which in 0..2 {
-                let triangle = self.triangle(cell[0] as usize, cell[1] as usize, which);
-                if let Some(t) = triangle_hit(&triangle, origin, direction) {
-                    best = Some(best.map_or(t, |b: f64| b.min(t)));
-                }
-            }
-            if best.is_some() {
-                return best;
+            if let Some(t) = visit(cell[0] as usize, cell[1] as usize) {
+                return Some(t);
             }
             let axis = if t_max[0] < t_max[1] { 0 } else { 1 };
             if t_max[axis] > t_exit {
@@ -751,16 +817,163 @@ impl Terrain {
         }
     }
 
-    /// Расстояние вдоль луча до глади воды там, где вода видна: над землёй ниже её уровня и в
-    /// пределах сцены.
+    /// Расстояние вдоль луча до глади воды там, где вода есть: над землёй, по частям треугольников
+    /// глади, у которых гладь выше земли, и в пределах сцены.
     pub fn water_hit(&self, origin: Vec3, direction: Vec3) -> Option<f64> {
-        let water = self.water?;
+        let range = self.water_range()?;
         let extent = [self.scene[0] as f64, self.scene[1] as f64];
-        let t = plane_hit(origin, direction, water.level, extent)?;
-        let x = origin[0] + t * direction[0];
-        let y = origin[1] + t * direction[1];
-        (self.height_at(x, y) < water.level).then_some(t)
+        self.march(extent, origin, direction, range, |column, row| {
+            (0..2)
+                .filter_map(|which| self.wet_triangle_hit(column, row, which, origin, direction))
+                .reduce(f64::min)
+        })
     }
+
+    /// Расстояние до глади в треугольнике `which` квадрата `(column, row)`, если луч встретил её там,
+    /// где гладь выше земли.
+    fn wet_triangle_hit(
+        &self,
+        column: usize,
+        row: usize,
+        which: usize,
+        origin: Vec3,
+        direction: Vec3,
+    ) -> Option<f64> {
+        let depth = self.wet_depths(column, row, which)?;
+        let mut surface = self.triangle(column, row, which);
+        for (corner, depth) in surface.iter_mut().zip(depth) {
+            corner[2] += depth;
+        }
+        let t = triangle_hit(&surface, origin, direction)?;
+        let weights = barycentric(
+            &surface,
+            origin[0] + t * direction[0],
+            origin[1] + t * direction[1],
+        );
+        let wet: f64 = weights.iter().zip(depth).map(|(w, depth)| w * depth).sum();
+        (wet > 0.0).then_some(t)
+    }
+
+    /// Глубина воды — гладь минус земля — в трёх точках треугольника `which` квадрата `(column, row)`;
+    /// `None`, если гладь есть не у всех трёх.
+    fn wet_depths(&self, column: usize, row: usize, which: usize) -> Option<[f64; 3]> {
+        let field = self.water_field()?;
+        let points = self.triangle_points(column, row, which);
+        let mut depth = [0.0; 3];
+        for (slot, point) in depth.iter_mut().zip(points) {
+            *slot = field.surface(point)? - self.heights[point];
+        }
+        Some(depth)
+    }
+
+    /// Номера в `heights` трёх точек треугольника в порядке `triangle`.
+    fn triangle_points(&self, column: usize, row: usize, which: usize) -> [usize; 3] {
+        let columns = self.columns();
+        Terrain::corner_offsets(which).map(|(dc, dr)| (row + dr) * columns + column + dc)
+    }
+
+    /// Гладь над тремя точками треугольника в порядке `triangle`; `None` у точки вдали от воды.
+    pub fn triangle_surfaces(&self, column: usize, row: usize, which: usize) -> [Option<f64>; 3] {
+        let field = self.water_field();
+        self.triangle_points(column, row, which)
+            .map(|point| field.and_then(|field| field.surface(point)))
+    }
+
+    /// Часть треугольника под водой — выпуклый многоугольник на плоскости `x`, `y`; одна и та же для
+    /// хода и для рисования.
+    fn wet_piece(&self, column: usize, row: usize, which: usize) -> Option<Polygon> {
+        let corners = self.triangle(column, row, which);
+        let place = corners.map(|c| [c[0], c[1]]);
+        let polygon: Polygon = clip_wet(self.wet_depths(column, row, which)?)?
+            .iter()
+            .map(|weights| weighted(weights, &place))
+            .collect();
+        (polygon_area(&polygon) > EPS).then(|| ccw(polygon))
+    }
+
+    /// Куски воды всей сцены для рисования: многоугольники глади над землёй, в каждой вершине место на
+    /// глади, её нормаль, глубина, течение и пена.
+    pub fn water_polygons(&self) -> Vec<Vec<WaterVertex>> {
+        let Some(field) = self.water_field() else {
+            return Vec::new();
+        };
+        let grid = self.grid();
+        let [columns, rows] = self.squares();
+        let mut polygons = Vec::new();
+        for row in 0..rows {
+            for column in 0..columns {
+                for which in 0..2 {
+                    let Some(depth) = self.wet_depths(column, row, which) else {
+                        continue;
+                    };
+                    let Some(weights) = clip_wet(depth) else {
+                        continue;
+                    };
+                    let place = self.triangle(column, row, which).map(|c| [c[0], c[1]]);
+                    let flat: Polygon = weights.iter().map(|w| weighted(w, &place)).collect();
+                    if polygon_area(&flat) <= EPS {
+                        continue;
+                    }
+                    let points = self.triangle_points(column, row, which);
+                    let corner = WaterCorners {
+                        place,
+                        depth,
+                        surface: points.map(|p| field.surface(p).unwrap_or(0.0)),
+                        normal: points.map(|p| field.normal(grid, p)),
+                        flow: points.map(|p| field.flow(p)),
+                        foam: points.map(|p| field.foam(p)),
+                    };
+                    let polygon: Vec<WaterVertex> =
+                        weights.iter().map(|w| corner.vertex(w)).collect();
+                    polygons.push(if signed_area(&flat) < 0.0 {
+                        polygon.into_iter().rev().collect()
+                    } else {
+                        polygon
+                    });
+                }
+            }
+        }
+        polygons
+    }
+}
+
+/// Всё, что вода знает о трёх точках треугольника.
+struct WaterCorners {
+    place: [Vec2; 3],
+    depth: [f64; 3],
+    surface: [f64; 3],
+    normal: [Vec3; 3],
+    flow: [Vec2; 3],
+    foam: [f64; 3],
+}
+
+impl WaterCorners {
+    /// Вершина с долями `weights` трёх точек.
+    fn vertex(&self, weights: &[f64; 3]) -> WaterVertex {
+        let blend = |values: [f64; 3]| (0..3).map(|i| weights[i] * values[i]).sum::<f64>();
+        let at = weighted(weights, &self.place);
+        WaterVertex {
+            position: [at[0], at[1], blend(self.surface)],
+            normal: math3::normalize([0, 1, 2].map(|axis| blend(self.normal.map(|n| n[axis])))),
+            depth: blend(self.depth),
+            flow: [0, 1].map(|axis| blend(self.flow.map(|f| f[axis]))),
+            foam: blend(self.foam),
+        }
+    }
+}
+
+/// Точка треугольника с вершинами `corners` и долями `weights`.
+fn weighted(weights: &[f64; 3], corners: &[Vec2; 3]) -> Vec2 {
+    [0, 1].map(|axis| (0..3).map(|i| weights[i] * corners[i][axis]).sum())
+}
+
+/// Доли трёх вершин треугольника в точке `(x, y)` его плоскости.
+fn barycentric(triangle: &[[f64; 3]; 3], x: f64, y: f64) -> [f64; 3] {
+    let (a, b, c) = (triangle[0], triangle[1], triangle[2]);
+    let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+    let first = ((b[1] - c[1]) * (x - c[0]) + (c[0] - b[0]) * (y - c[1])) / det;
+    let second = ((c[1] - a[1]) * (x - c[0]) + (a[0] - c[0]) * (y - c[1])) / det;
+    [first, second, 1.0 - first - second]
 }
 
 /// Внутри выпуклого четырёхугольника, границы включены.
@@ -802,25 +1015,23 @@ pub fn clip_below(triangle: &[[f64; 3]; 3], level: f64) -> Option<Polygon> {
     (polygon.len() >= 3 && polygon_area(&polygon) > EPS).then(|| ccw(polygon))
 }
 
-fn polygon_area(polygon: &[Vec2]) -> f64 {
-    let sum: f64 = (0..polygon.len())
+/// Удвоенная площадь многоугольника со знаком: положительная против часовой стрелки.
+fn signed_area(polygon: &[Vec2]) -> f64 {
+    (0..polygon.len())
         .map(|i| {
             let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
             a[0] * b[1] - b[0] * a[1]
         })
-        .sum();
-    sum.abs() / 2.0
+        .sum()
+}
+
+fn polygon_area(polygon: &[Vec2]) -> f64 {
+    signed_area(polygon).abs() / 2.0
 }
 
 /// Многоугольник против часовой стрелки.
 pub fn ccw(mut polygon: Polygon) -> Polygon {
-    let signed: f64 = (0..polygon.len())
-        .map(|i| {
-            let (a, b) = (polygon[i], polygon[(i + 1) % polygon.len()]);
-            a[0] * b[1] - b[0] * a[1]
-        })
-        .sum();
-    if signed < 0.0 {
+    if signed_area(&polygon) < 0.0 {
         polygon.reverse();
     }
     polygon

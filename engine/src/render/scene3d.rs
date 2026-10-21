@@ -12,6 +12,7 @@ use crate::core::road_kinds::Junction;
 use crate::core::scene::{CellRange, LayerView, LightConfig, SceneConfig};
 use crate::core::shapes::Body;
 use crate::core::value::Shape;
+use crate::core::water::{DEFAULT_CLARITY, DEFAULT_RIPPLE};
 use crate::data::load::ImageDecl;
 
 use super::atlas::{self, AtlasRect, RectPaint};
@@ -78,6 +79,9 @@ pub struct Frame3d {
     /// Цвет и сила солнца и неба в линейной яркости.
     pub sun_light: [f32; 3],
     pub sky_light: [f32; 3],
+    /// «Свет и материалы», «Вода»: на какой глубине дна уже не видно, длина ряби в клетках и часы воды в
+    /// секундах — те же, по которым идут кадры по времени.
+    pub water: [f32; 3],
 }
 
 /// Оттенок цвета данных `srgb`: цвет в линейной яркости, поделённый на свою яркость (Rec. 709), так что
@@ -300,9 +304,16 @@ pub fn compose_frame3d(
     let shapes = shape_draws(game);
     let terrain = game.world.terrain();
     let (land_low, land_high) = terrain.height_range();
-    let level = terrain.water().map(|water| water.level);
-    let ground_low = level.map_or(land_low, |level| land_low.min(level));
-    let ground_high = level.map_or(land_high, |level| land_high.max(level));
+    let (ground_low, ground_high) = terrain
+        .water_range()
+        .map_or((land_low, land_high), |(low, high)| {
+            (land_low.min(low), land_high.max(high))
+        });
+    let (clarity, ripple) = terrain
+        .water()
+        .map_or((DEFAULT_CLARITY, DEFAULT_RIPPLE), |water| {
+            (water.clarity(), water.ripple())
+        });
     let model_draws = models::model_draws(game);
     let road_draws = models::road_draws(game);
     let blended = model_draws.blended_far_to_near(camera.eye);
@@ -355,6 +366,11 @@ pub fn compose_frame3d(
         eye: camera.eye.map(|c| c as f32),
         sun_light,
         sky_light,
+        water: [
+            clarity as f32,
+            ripple as f32,
+            (motion.clock_steps() / 60.0) as f32,
+        ],
     }
 }
 

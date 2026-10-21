@@ -10,7 +10,7 @@ use crate::core::footprint::Footprint;
 use crate::core::math3::{self, Vec3};
 use crate::core::scene::ground_footprint;
 use crate::core::surface::{self, Lies};
-use crate::core::terrain::Terrain;
+use crate::core::terrain::{Terrain, WaterVertex};
 use crate::core::value::Vec2;
 use crate::core::world::World;
 
@@ -20,16 +20,21 @@ static NEXT_MESH: AtomicU64 = AtomicU64::new(1);
 
 const UP: Vec3 = [0.0, 0.0, 1.0];
 
-/// Вершина поверхности рельефа или воды: место, нормаль освещения и цвет.
+/// Гладь над точкой земли в сцене без воды: шейдер рельефа не мочит такую землю.
+pub const NO_SURFACE: f32 = -1000.0;
+
+/// Вершина поверхности рельефа или воды: место, нормаль освещения, цвет и четыре числа `extra`. У земли
+/// `extra` — гладь над точкой (вдали от воды — на `clarity` ниже земли, без воды — `NO_SURFACE`) и три нуля; у воды — глубина, течение по осям сцены и пена.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct TerrainVertex {
     pub position: [f32; 3],
     pub normal: [f32; 3],
     pub color: [f32; 3],
+    pub extra: [f32; 4],
 }
 
 /// Сетка рельефа: треугольники земли, залитые фоном сцены, затем, если в файле есть вода, её гладь
-/// только над землёй ниже уровня воды: под землёй воды нет, иначе она просвечивает под краем
+/// только над землёй ниже глади: под землёй воды нет, иначе она просвечивает под краем
 /// сцены, у которой нет боковой стенки. Вершины у каждого треугольника свои; у земли нормаль — своей
 /// точки сетки, одна у всех треугольников в этой точке, так что свет по склону идёт плавно.
 #[derive(Debug, Clone)]
@@ -53,33 +58,53 @@ impl TerrainMesh {
             return None;
         }
         let color = [background[0], background[1], background[2]];
+        // Точке вдали от воды гладь ставится на `clarity` ниже её земли: мокрая полоса там уже кончилась, а в
+        // треугольнике с точкой у воды полоса гаснет ровно, а не обрывается по его рёбрам.
+        let below = terrain.water().map(|water| water.clarity());
         let mut vertices = Vec::with_capacity(columns * rows * 6 + 6);
         for row in 0..rows {
             for column in 0..columns {
                 for which in 0..2 {
                     let triangle = terrain.triangle(column, row, which);
                     let normals = terrain.triangle_normals(column, row, which);
-                    vertices.extend(triangle.into_iter().zip(normals).map(|(corner, normal)| {
-                        TerrainVertex {
-                            position: to_f32(corner),
-                            normal: to_f32(normal),
-                            color,
-                        }
-                    }));
+                    let surfaces = terrain.triangle_surfaces(column, row, which);
+                    vertices.extend(triangle.into_iter().zip(normals).zip(surfaces).map(
+                        |((corner, normal), surface)| {
+                            TerrainVertex {
+                                position: to_f32(corner),
+                                normal: to_f32(normal),
+                                color,
+                                extra: [
+                                    surface
+                                        .or(below.map(|below| corner[2] - below))
+                                        .map_or(NO_SURFACE, |s| s as f32),
+                                    0.0,
+                                    0.0,
+                                    0.0,
+                                ],
+                            }
+                        },
+                    ));
                 }
             }
         }
         let land = vertices.len();
         if let Some(water) = terrain.water() {
-            let corner = |point: Vec2| TerrainVertex {
-                position: to_f32([point[0], point[1], water.level]),
-                normal: to_f32(UP),
-                color: [water.color[0], water.color[1], water.color[2]],
+            let color = [water.color[0], water.color[1], water.color[2]];
+            let corner = |vertex: &WaterVertex| TerrainVertex {
+                position: to_f32(vertex.position),
+                normal: to_f32(vertex.normal),
+                color,
+                extra: [
+                    vertex.depth as f32,
+                    vertex.flow[0] as f32,
+                    vertex.flow[1] as f32,
+                    vertex.foam as f32,
+                ],
             };
-            let scene = terrain.point_place(columns, rows);
-            for piece in terrain.pieces_below(water.level, [[0.0, 0.0], scene]) {
+            for piece in terrain.water_polygons() {
                 for at in 1..piece.len() - 1 {
-                    vertices.extend([corner(piece[0]), corner(piece[at]), corner(piece[at + 1])]);
+                    vertices.extend([&piece[0], &piece[at], &piece[at + 1]].map(corner));
                 }
             }
         }

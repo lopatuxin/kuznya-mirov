@@ -1742,6 +1742,7 @@ fn the_three_dimensional_shaders_validate_and_translate_to_glsl_es_300() {
         (naga::ShaderStage::Vertex, "vs_shadow", &[0][..]),
         (naga::ShaderStage::Vertex, "vs_shadow_terrain", &[0][..]),
         (naga::ShaderStage::Vertex, "vs_terrain", &[0][..]),
+        (naga::ShaderStage::Vertex, "vs_water", &[0][..]),
         (naga::ShaderStage::Fragment, "fs_terrain", &all[..]),
         (naga::ShaderStage::Fragment, "fs_water", &all[..]),
         (naga::ShaderStage::Vertex, "vs_shape", &[0][..]),

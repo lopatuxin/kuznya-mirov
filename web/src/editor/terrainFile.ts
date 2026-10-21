@@ -1,7 +1,16 @@
 import type { SceneSize } from "./sceneObjects";
 
-/** Уровень и цвет воды, как их пишет `water` в файле рельефа. */
-export type TerrainWater = { level: number; color: string };
+/** Озеро из `lakes` файла рельефа: точка в чаше и высота глади. */
+export type WaterLake = { at: [number, number]; level: number };
+
+/** Река из `rivers` файла рельефа: точки `[x, y, h, w]` от истока к устью. */
+export type WaterRiver = { points: [number, number, number, number][] };
+
+/**
+ * Вода, как её пишет `water` в файле рельефа — «Рельеф», «Вода»: цвет, море `level`, озёра, реки, прозрачность и рябь.
+ * Поля, которых в файле нет, не заполняются: `clarity` и `ripple` пишутся, только когда автор их правил.
+ */
+export type TerrainWater = { color: string; level?: number; lakes?: WaterLake[]; rivers?: WaterRiver[]; clarity?: number; ripple?: number };
 
 /** Сетка высот сцены строками сверху вниз: точки через равные доли клетки, по две — четыре на клетку. */
 export type TerrainGrid = { columns: number; rows: number; heights: Float64Array };
@@ -24,12 +33,34 @@ export type TerrainContent = TerrainGrid & {
 };
 
 /** «Рельеф», требование 23: вода, которую включает галочка, — земля высоты 0 остаётся сушей. */
-export const DEFAULT_WATER: TerrainWater = { level: -0.5, color: "#3f7fd0" };
+export const DEFAULT_WATER = { level: -0.5, color: "#3f7fd0" } satisfies TerrainWater;
 
 const HUNDREDTHS = 100;
 
 export function roundToHundredths(value: number): number {
   return Math.round(value * HUNDREDTHS) / HUNDREDTHS;
+}
+
+/** Море в воде; воды нет — моря нет. */
+export function hasSea(water: TerrainWater | null): boolean {
+  return water?.level !== undefined;
+}
+
+/** Галочка «Море»: без воды включает море на уровне по умолчанию, со снятой — возвращает его; снятая убирает только `level`, а вода без моря, озёр и рек уходит целиком. */
+export function waterWithSea(water: TerrainWater | null, isSea: boolean): TerrainWater | null {
+  if (isSea) return water === null ? DEFAULT_WATER : { ...water, level: water.level ?? DEFAULT_WATER.level };
+  if (water === null) return null;
+  const withoutSea = { ...water };
+  delete withoutSea.level;
+  return (withoutSea.lakes?.length ?? 0) > 0 || (withoutSea.rivers?.length ?? 0) > 0 ? withoutSea : null;
+}
+
+/** Прозрачность или рябь после правки автора; `null` убирает ключ из файла — значение по умолчанию. */
+export function waterWithOption(water: TerrainWater, key: "clarity" | "ripple", value: number | null): TerrainWater {
+  const changed = { ...water };
+  if (value === null) delete changed[key];
+  else changed[key] = value;
+  return changed;
 }
 
 /** Число в файле: до сотых без лишних нулей, `-0` — `0`. */
@@ -60,6 +91,42 @@ function lineBreakOf(text: string | null): string {
   return text !== null && text.includes("\r\n") ? "\r\n" : "\n";
 }
 
+/** Число воды в файле как есть: озёра, реки, прозрачность и рябь редактор не округляет, `-0` — `0`. */
+function formatWaterNumber(value: number): string {
+  return String(value === 0 ? 0 : value);
+}
+
+function formatWaterNumbers(values: readonly number[]): string {
+  return `[${values.map(formatWaterNumber).join(", ")}]`;
+}
+
+/** Блок `water` в начале файла: без озёр и рек — строкой, как всегда, с ними — шапкой и по водоёму на строку. */
+function formatWater(water: TerrainWater): string[] {
+  const { level, lakes = [], rivers = [], clarity, ripple } = water;
+  const colorFields = [`"color": ${JSON.stringify(water.color)}`];
+  if (clarity !== undefined) colorFields.push(`"clarity": ${formatWaterNumber(clarity)}`);
+  if (ripple !== undefined) colorFields.push(`"ripple": ${formatWaterNumber(ripple)}`);
+  if (lakes.length === 0 && rivers.length === 0) {
+    const seaField = level === undefined ? [] : [`"level": ${formatNumber(level)}`];
+    return [`  "water": { ${[...seaField, ...colorFields].join(", ")} },`];
+  }
+  if (level !== undefined) colorFields.push(`"level": ${formatNumber(level)}`);
+  const lines = ['  "water": {', `    ${colorFields.join(", ")},`];
+  const lakeLines = lakes.map(({ at, level: lakeLevel }) => `{ "at": ${formatWaterNumbers(at)}, "level": ${formatWaterNumber(lakeLevel)} }`);
+  const riverLines = rivers.map(({ points }) => `{ "points": [${points.map(formatWaterNumbers).join(", ")}] }`);
+  const blocks = [
+    ...(lakeLines.length > 0 ? [{ key: "lakes", entries: lakeLines }] : []),
+    ...(riverLines.length > 0 ? [{ key: "rivers", entries: riverLines }] : []),
+  ];
+  blocks.forEach(({ key, entries }, index) => {
+    lines.push(`    "${key}": [`);
+    entries.forEach((entry, entryIndex) => lines.push(`      ${entry}${entryIndex + 1 < entries.length ? "," : ""}`));
+    lines.push(`    ]${index + 1 < blocks.length ? "," : ""}`);
+  });
+  lines.push("  },");
+  return lines;
+}
+
 /**
  * Текст файла рельефа — «Кисти рельефа», требование 18, «Свет и материалы», требование 27, и «Лепка
  * рельефа», требование 33: `water` первой строкой, если вода есть, затем `covers` — по слою на строку,
@@ -67,9 +134,7 @@ function lineBreakOf(text: string | null): string {
  */
 export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): string {
   const lines: string[] = ["{"];
-  if (content.water !== null) {
-    lines.push(`  "water": { "level": ${formatNumber(content.water.level)}, "color": ${JSON.stringify(content.water.color)} },`);
-  }
+  if (content.water !== null) lines.push(...formatWater(content.water));
   const { covers } = content;
   if (covers !== null) {
     lines.push('  "covers": [');
@@ -97,10 +162,43 @@ export function formatTerrainText(content: TerrainContent, lineBreak = "\n"): st
   return lines.join(lineBreak) + lineBreak;
 }
 
-function isTerrainWater(value: unknown): value is TerrainWater {
-  if (value === null || typeof value !== "object") return false;
-  const water = value as { level?: unknown; color?: unknown };
-  return typeof water.level === "number" && typeof water.color === "string";
+function isFiniteNumbers(value: unknown, count: number): value is number[] {
+  return Array.isArray(value) && value.length === count && value.every((item) => typeof item === "number" && Number.isFinite(item));
+}
+
+/** Озёра и реки как они лежат в файле; не список — их нет, запись не нужной формы пропускается: проверять её — дело движка. */
+function parseWaterLakes(value: unknown): WaterLake[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: { at?: unknown; level?: unknown } | null) =>
+    item !== null && typeof item === "object" && isFiniteNumbers(item.at, 2) && typeof item.level === "number" ? [{ at: [item.at[0], item.at[1]] as [number, number], level: item.level }] : [],
+  );
+}
+
+function parseWaterRivers(value: unknown): WaterRiver[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item: { points?: unknown } | null) => {
+    const points = item !== null && typeof item === "object" ? item.points : undefined;
+    return Array.isArray(points) && points.every((point) => isFiniteNumbers(point, 4)) ? [{ points: points.map((point: number[]) => point.slice() as [number, number, number, number]) }] : [];
+  });
+}
+
+/** Вода из файла: нужен цвет и хоть одно из моря, озёр и рек; иначе воды нет, как и раньше. */
+function parseWater(value: unknown): TerrainWater | null {
+  if (value === null || typeof value !== "object") return null;
+  const water = value as { color?: unknown; level?: unknown; lakes?: unknown; rivers?: unknown; clarity?: unknown; ripple?: unknown };
+  if (typeof water.color !== "string") return null;
+  const lakes = parseWaterLakes(water.lakes);
+  const rivers = parseWaterRivers(water.rivers);
+  const hasLevel = typeof water.level === "number";
+  if (!hasLevel && lakes.length === 0 && rivers.length === 0) return null;
+  return {
+    color: water.color,
+    ...(hasLevel ? { level: water.level as number } : {}),
+    ...(lakes.length > 0 ? { lakes } : {}),
+    ...(rivers.length > 0 ? { rivers } : {}),
+    ...(typeof water.clarity === "number" ? { clarity: water.clarity } : {}),
+    ...(typeof water.ripple === "number" ? { ripple: water.ripple } : {}),
+  };
 }
 
 function isCoverLayer(value: unknown): value is TerrainCoverLayer {
@@ -141,12 +239,11 @@ export function parseTerrainText(text: string): TerrainContent | null {
   const rows = file?.heights;
   if (!Array.isArray(rows) || rows.length === 0 || !rows.every((row) => Array.isArray(row) && row.length === rows[0].length)) return null;
   if (!rows.every((row: unknown[]) => row.every((height) => typeof height === "number"))) return null;
-  const water = isTerrainWater(file?.water) ? file.water : null;
   return {
     columns: rows[0].length,
     rows: rows.length,
     heights: Float64Array.from((rows as number[][]).flat()),
-    water: water === null ? null : { level: water.level, color: water.color },
+    water: parseWater(file?.water),
     covers: parseCovers(file?.covers),
     tint: typeof file?.tint === "string" ? file.tint : null,
     stamps: parseImprints(file?.stamps),

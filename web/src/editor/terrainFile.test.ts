@@ -5,6 +5,7 @@ import {
   differsInHundredths,
   flatTerrainGrid,
   formatTerrainText,
+  hasSea,
   parseTerrainText,
   readTerrainCovers,
   readTerrainImprints,
@@ -13,9 +14,13 @@ import {
   terrainTextWithHeights,
   terrainTextWithImprints,
   terrainTextWithWater,
+  waterWithOption,
+  waterWithSea,
   type ImprintEntry,
   type TerrainCoverLayer,
   type TerrainGrid,
+  type TerrainWater,
+  type WaterLake,
 } from "./terrainFile";
 
 const RPG_TERRAIN = readFileSync(new URL("../../../games/rpg/terrain.json", import.meta.url), "utf8");
@@ -339,5 +344,158 @@ describe("покраска — текст рельефа со слоями («П
     expect(readTerrainCovers(formatTerrainText({ ...grid([[0]]), water: null, covers: null }))).toBeNull();
     expect(readTerrainCovers("{")).toBeNull();
     expect(readTerrainCovers(null)).toBeNull();
+  });
+});
+
+describe("вода: озёра, реки, прозрачность и рябь («Рельеф», «Вода»)", () => {
+  const SIZE = { width: 1, height: 1 };
+  const FULL_WATER: TerrainWater = {
+    color: "#35607a",
+    clarity: 0.8,
+    ripple: 0.6,
+    level: 0,
+    lakes: [{ at: [40.5, 10], level: 3.6 }, { at: [12, 9.125], level: 2 }],
+    rivers: [{ points: [[38, 13, 3.6, 2], [33.5, 18, 3.45, 2], [26, 42, 0, 3]] }, { points: [[55.5, 18.5, 2.75, 1], [32.3, 26.6, 0.85, 1.5]] }],
+  };
+  const FULL_TEXT = formatTerrainText({ ...grid([[0, 1], [2, 3]]), water: FULL_WATER, covers: null });
+
+  it("water — шапкой, затем озёра и реки по водоёму на строку; числа водоёмов без округления", () => {
+    expect(FULL_TEXT).toBe(
+      [
+        "{",
+        '  "water": {',
+        '    "color": "#35607a", "clarity": 0.8, "ripple": 0.6, "level": 0,',
+        '    "lakes": [',
+        '      { "at": [40.5, 10], "level": 3.6 },',
+        '      { "at": [12, 9.125], "level": 2 }',
+        "    ],",
+        '    "rivers": [',
+        '      { "points": [[38, 13, 3.6, 2], [33.5, 18, 3.45, 2], [26, 42, 0, 3]] },',
+        '      { "points": [[55.5, 18.5, 2.75, 1], [32.3, 26.6, 0.85, 1.5]] }',
+        "    ]",
+        "  },",
+        '  "heights": [',
+        "    [0, 1],",
+        "    [2, 3]",
+        "  ]",
+        "}",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("разбор возвращает всё, что записано: море, озёра, реки, прозрачность и рябь", () => {
+    expect(parseTerrainText(FULL_TEXT)?.water).toEqual(FULL_WATER);
+  });
+
+  it("только реки — моря нет; ключи, которых в файле нет, не появляются", () => {
+    const water: TerrainWater = { color: "#112233", rivers: [{ points: [[1, 1, 2, 1], [3, 3, 0, 1]] }] };
+    const text = formatTerrainText({ ...grid([[0]]), water, covers: null });
+
+    expect(text).not.toContain('"level"');
+    expect(text).not.toContain("clarity");
+    expect(text).not.toContain("lakes");
+    const parsed = parseTerrainText(text)?.water;
+    expect(parsed).toEqual(water);
+    expect(Object.keys(parsed ?? {})).toEqual(["color", "rivers"]);
+  });
+
+  it("море с прозрачностью и рябью, но без водоёмов, — одной строкой", () => {
+    const text = formatTerrainText({ ...grid([[0]]), water: { level: -1, color: "#112233", clarity: 1.5, ripple: 0.4 }, covers: null });
+
+    expect(text).toContain('  "water": { "level": -1, "color": "#112233", "clarity": 1.5, "ripple": 0.4 },');
+  });
+
+  it("вода без моря, озёр и рек — воды нет, как и вода без цвета", () => {
+    const withoutBodies = JSON.stringify({ water: { color: "#112233", clarity: 2 }, heights: [[0]] });
+    const withoutColor = JSON.stringify({ water: { level: 0 }, heights: [[0]] });
+
+    expect(parseTerrainText(withoutBodies)?.water).toBeNull();
+    expect(parseTerrainText(withoutColor)?.water).toBeNull();
+  });
+
+  it("правка рельефа — мазок, отпечатки, покраска — оставляет озёра, реки, прозрачность и рябь как есть", () => {
+    const painted = terrainTextWithHeights(FULL_TEXT, grid([[5, 5], [5, 5]]));
+    const imprinted = terrainTextWithImprints(FULL_TEXT, SIZE, [{ stamp: "beluha", position: [0, 0], size: [2, 2], height: 1 }]);
+    const covered = terrainTextWithCovers(FULL_TEXT, SIZE, [{ material: "grass" }]);
+
+    expect(painted).toBe(formatTerrainText({ ...grid([[5, 5], [5, 5]]), water: FULL_WATER, covers: null }));
+    for (const text of [painted, imprinted, covered]) {
+      expect(parseTerrainText(text ?? "")?.water).toEqual(FULL_WATER);
+    }
+  });
+
+  it("правка воды в окошке оставляет озёра и реки; перенос строки файла сохраняется", () => {
+    const crlf = formatTerrainText({ ...grid([[0, 1], [2, 3]]), water: FULL_WATER, covers: null }, "\r\n");
+    const recolored = terrainTextWithWater(crlf, SIZE, { ...FULL_WATER, color: "#000000", clarity: 2 });
+
+    expect(recolored?.replaceAll("\r\n", "")).not.toContain("\n");
+    expect(recolored?.includes("\r\n")).toBe(true);
+    expect(parseTerrainText(recolored ?? "")?.water).toEqual({ ...FULL_WATER, color: "#000000", clarity: 2 });
+  });
+
+  it("файл, набранный рукой, — числа озёр и прозрачности без округления до сотых даже после правки другого поля", () => {
+    const handWritten = JSON.stringify({ water: { color: "#112233", clarity: 0.125, level: 0.5, lakes: [{ at: [1.234, 2], level: 0.005 }] }, heights: [[0, 0]] });
+
+    const recolored = terrainTextWithWater(handWritten, SIZE, { ...(parseTerrainText(handWritten)?.water as TerrainWater), color: "#000000" });
+
+    expect(parseTerrainText(recolored ?? "")?.water?.clarity).toBe(0.125);
+    expect(parseTerrainText(recolored ?? "")?.water?.lakes).toEqual([{ at: [1.234, 2], level: 0.005 }]);
+  });
+});
+
+describe("галочка «Море» и поля воды", () => {
+  const LAKE: WaterLake = { at: [4, 5], level: 2 };
+
+  it("без воды галочка даёт море уровня −0,5 цвета по умолчанию", () => {
+    expect(waterWithSea(null, true)).toEqual(DEFAULT_WATER);
+  });
+
+  it("со снятым морем и водоёмами галочка возвращает море, цвет и водоёмы остаются", () => {
+    const lakeOnly: TerrainWater = { color: "#112233", lakes: [LAKE], clarity: 3 };
+
+    expect(waterWithSea(lakeOnly, true)).toEqual({ ...lakeOnly, level: -0.5 });
+  });
+
+  it("галочка снимает только level: озёра, реки, прозрачность и рябь остаются", () => {
+    const water: TerrainWater = { color: "#112233", level: 1, lakes: [LAKE], rivers: [{ points: [[1, 1, 1, 1], [2, 2, 0, 1]] }], clarity: 2, ripple: 3 };
+
+    const withoutSea = waterWithSea(water, false);
+
+    expect(withoutSea).toEqual({ color: "#112233", lakes: [LAKE], rivers: water.rivers, clarity: 2, ripple: 3 });
+    expect(hasSea(withoutSea)).toBe(false);
+    expect(water.level).toBe(1);
+  });
+
+  it("не осталось ни моря, ни озёр, ни рек — water уходит из файла целиком, вместе с прозрачностью и рябью", () => {
+    const seaOnly: TerrainWater = { color: "#112233", level: 1, clarity: 2, ripple: 3 };
+    const text = formatTerrainText({ ...grid([[0]]), water: seaOnly, covers: null });
+
+    const withoutSea = waterWithSea(seaOnly, false);
+
+    expect(withoutSea).toBeNull();
+    expect(terrainTextWithWater(text, { width: 1, height: 1 }, withoutSea)).toBe(formatTerrainText({ ...grid([[0]]), water: null, covers: null }));
+    expect(waterWithSea(null, false)).toBeNull();
+  });
+
+  it("снятая галочка при озёрах: в файле нет level, озёра на месте", () => {
+    const text = formatTerrainText({ ...grid([[0]]), water: { color: "#112233", level: 1, lakes: [LAKE] }, covers: null });
+
+    const edited = terrainTextWithWater(text, { width: 1, height: 1 }, waterWithSea(parseTerrainText(text)?.water ?? null, false));
+
+    expect(edited).not.toMatch(/"level": 1\b/);
+    expect(parseTerrainText(edited ?? "")?.water).toEqual({ color: "#112233", lakes: [LAKE] });
+  });
+
+  it("прозрачность и рябь пишутся после правки; null убирает ключ — значение по умолчанию", () => {
+    const sea: TerrainWater = { level: -1, color: "#112233" };
+
+    const clear = waterWithOption(sea, "clarity", 2.5);
+    const rippled = waterWithOption(clear, "ripple", 0.5);
+
+    expect(rippled).toEqual({ level: -1, color: "#112233", clarity: 2.5, ripple: 0.5 });
+    expect(waterWithOption(rippled, "clarity", null)).toEqual({ level: -1, color: "#112233", ripple: 0.5 });
+    expect(Object.keys(waterWithOption(rippled, "ripple", null))).not.toContain("ripple");
+    expect(Object.keys(sea)).toEqual(["level", "color"]);
   });
 });

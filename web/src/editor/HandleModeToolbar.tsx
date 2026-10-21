@@ -258,7 +258,7 @@ export function HandleModeToolbar({
               />
             )}
           </ToolMenu>
-          <ToolMenu label="Вода" caption="Вода" icon="water" title="Вода рельефа: есть ли она, уровень и цвет">
+          <ToolMenu label="Вода" caption="Вода" icon="water" title="Вода рельефа: море, цвет, прозрачность и рябь">
             <WaterFields water={water} onWaterChange={onWaterChange} />
           </ToolMenu>
         </>

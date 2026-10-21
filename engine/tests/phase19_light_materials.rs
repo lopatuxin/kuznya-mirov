@@ -803,7 +803,13 @@ fn a_brush_stroke_changes_the_heights_and_the_water_and_keeps_the_covers() {
     assert_eq!(covers.len(), 2);
     let mut heights = vec![0.0; 25];
     heights[12] = 1.5;
-    edit::set_terrain(&mut game, &heights, Some((-1.0, "#3f7fd0")), &[]).expect("правка рельефа");
+    edit::set_terrain(
+        &mut game,
+        &heights,
+        Some(&serde_json::json!({ "level": -1.0, "color": "#3f7fd0" })),
+        &[],
+    )
+    .expect("правка рельефа");
     let terrain = game.world.terrain();
     assert_eq!(terrain.covers(), covers);
     assert_eq!(terrain.heights()[12], 1.5);

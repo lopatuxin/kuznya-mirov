@@ -3,23 +3,34 @@ import { BRUSH_SIZE_LIMITS, BRUSH_STRENGTH_LIMITS, clampToLimits, parseNumberFie
 
 type BrushNumberFieldProps = {
   label: string;
-  value: number;
+  /** `null` — поле пусто и показывает `placeholder`: значения нет, действует значение по умолчанию. */
+  value: number | null;
   isDisabled?: boolean;
   /** Подсказка поля при наведении. */
   hint?: string;
+  /** Значение по умолчанию, видимое в пустом поле. */
+  placeholder?: string;
   /** Что становится значением набранного числа: прижатое к пределам или округлённое до сотых. */
   normalize: (typed: number) => number;
   onCommit: (value: number) => void;
+  /** Что делать, когда стёрли значение и оставили поле пустым; без него пустое поле возвращает прежнее. */
+  onClear?: () => void;
 };
 
 /** Число правится, как текстовое значение свойства: Enter или уход из поля принимает, Esc и не число возвращают прежнее. */
-export function BrushNumberField({ label, value, isDisabled = false, hint, normalize, onCommit }: BrushNumberFieldProps): React.JSX.Element {
+export function BrushNumberField({ label, value, isDisabled = false, hint, placeholder, normalize, onCommit, onClear }: BrushNumberFieldProps): React.JSX.Element {
   const [draft, setDraft] = useState<string | null>(null);
+  const shownValue = value === null ? "" : String(value);
 
   function commit(): void {
-    const typed = draft === null ? null : parseNumberField(draft);
+    const text = draft;
     setDraft(null);
-    if (typed === null) return;
+    if (text === null) return;
+    const typed = parseNumberField(text);
+    if (typed === null) {
+      if (text.trim() === "" && value !== null) onClear?.();
+      return;
+    }
     const next = normalize(typed);
     if (next !== value) onCommit(next);
   }
@@ -31,10 +42,11 @@ export function BrushNumberField({ label, value, isDisabled = false, hint, norma
         type="text"
         inputMode="decimal"
         className="tool-menu__field-input"
-        value={draft ?? String(value)}
+        value={draft ?? shownValue}
+        placeholder={placeholder}
         disabled={isDisabled}
         onFocus={(event) => {
-          setDraft(String(value));
+          setDraft(shownValue);
           event.currentTarget.select();
         }}
         onChange={(event) => setDraft(event.target.value)}

@@ -904,21 +904,19 @@ fn parse_flat_editor_camera(c: &JsValue) -> Option<FlatEditorCamera> {
     })
 }
 
-/// `set_terrain`'s `water`: `{level, color}` или `undefined`. Уровень не число и цвет не строка
-/// доходят до ядра как `NaN` и пустая строка — ядро отвечает на них ошибкой.
-fn parse_water(water: &JsValue) -> Option<(f64, String)> {
+/// `set_terrain`'s `water`: таблица вида `water` файла рельефа или `undefined`. Что не разбирается как
+/// JSON, доходит до ядра как `null` — оно отвечает на это ошибкой.
+fn parse_water(water: &JsValue) -> Option<serde_json::Value> {
     if water.is_undefined() || water.is_null() {
         return None;
     }
-    let level = Reflect::get(water, &JsValue::from_str("level"))
-        .ok()
-        .and_then(|v| v.as_f64())
-        .unwrap_or(f64::NAN);
-    let color = Reflect::get(water, &JsValue::from_str("color"))
-        .ok()
-        .and_then(|v| v.as_string())
-        .unwrap_or_default();
-    Some((level, color))
+    Some(
+        JSON::stringify(water)
+            .ok()
+            .and_then(|text| text.as_string())
+            .and_then(|text| serde_json::from_str(&text).ok())
+            .unwrap_or(serde_json::Value::Null),
+    )
 }
 
 fn draw_rect(paint: &RectPaint) -> DrawRect {
@@ -1387,6 +1385,7 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundVertex>, [Vec<Shape
             frame.sky_light[2],
             0.0,
         ],
+        water: [frame.water[0], frame.water[1], frame.water[2], 0.0],
     };
     let ground = frame
         .surface
@@ -1538,15 +1537,9 @@ fn js_terrain_readings(terrain: &edit::TerrainHeights) -> JsValue {
         "effective",
         &Float64Array::from(terrain.effective.as_slice()),
     );
-    let water = terrain
-        .water
-        .as_ref()
-        .map_or(JsValue::NULL, |(level, color)| {
-            let water = Object::new();
-            set(&water, "level", &JsValue::from_f64(*level));
-            set(&water, "color", &JsValue::from_str(color));
-            water.into()
-        });
+    let water = terrain.water.as_ref().map_or(JsValue::NULL, |water| {
+        JSON::parse(&water.to_string()).unwrap_or(JsValue::NULL)
+    });
     set(&obj, "water", &water);
     obj.into()
 }
@@ -2389,12 +2382,12 @@ impl Engine {
         Some(camera.target_z)
     }
 
-    /// «Редактор», «Вызовы движка»: ставит рельеф — `heights` строками сверху вниз, вода `{level, color}`
-    /// или `undefined` и отпечатки `stamps` `[{stamp, position, size, height, rotation?}]` в виде файла
+    /// «Редактор», «Вызовы движка»: ставит рельеф — `heights` строками сверху вниз, вода — таблица вида
+    /// `water` файла рельефа `{color, level?, lakes?, rivers?, clarity?, ripple?}` или `undefined`, и отпечатки `stamps` `[{stamp, position, size, height, rotation?}]` в виде файла
     /// рельефа — так, будто он прочитан из файла, собирает мир из сцены заново и перестраивает сетку
     /// рельефа для отрисовки. Сети поиска пути и камера редактора не меняются. `undefined` — поставлен;
-    /// иначе текст ошибки, и ничего не меняется: чисел не столько, высота или уровень не число, цвет не
-    /// цвет, отпечаток не проходит проверку, сцена плоская, идёт партия.
+    /// иначе текст ошибки, и ничего не меняется: чисел не столько, высота не число, вода или
+    /// отпечаток не проходят проверку загрузки, сцена плоская, идёт партия.
     pub fn set_terrain(
         &mut self,
         heights: &[f64],
@@ -2405,11 +2398,8 @@ impl Engine {
             return Some("игра не загружена".to_string());
         };
         let water = parse_water(&water);
-        let water = water
-            .as_ref()
-            .map(|(level, color)| (*level, color.as_str()));
         let stamps = parse_stamps_list(&stamps);
-        if let Err(message) = edit::set_terrain(game, heights, water, &stamps) {
+        if let Err(message) = edit::set_terrain(game, heights, water.as_ref(), &stamps) {
             return Some(message);
         }
         self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
@@ -2450,7 +2440,7 @@ impl Engine {
     /// «Редактор», «Вызовы движка»: нынешний рельеф `{density, columns, rows, heights, effective, water}` —
     /// `density` — точек высот на клетку, `heights` (`Float64Array`) строками сверху вниз, как в
     /// `set_terrain`, — высоты файла без отпечатков, `effective` — итоговые высоты с отпечатками той же сетки, `water` —
-    /// `{level, color}` или `null`. Без файла рельефа — нули нужного размера. `undefined` в плоской сцене.
+    /// таблица вида `water` файла рельефа, с теми полями, что записаны, или `null`. Без файла рельефа — нули нужного размера. `undefined` в плоской сцене.
     pub fn terrain_heights(&self) -> JsValue {
         let Some(terrain) = self.game.as_ref().and_then(edit::terrain_heights) else {
             return JsValue::UNDEFINED;

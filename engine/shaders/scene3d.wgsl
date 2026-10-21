@@ -1,10 +1,12 @@
-// «Трёхмерная сцена», «Свет и материалы»: рельеф с водой и покрытиями, фигуры, плитки и плоские
-// объекты на земле и карта теней от солнца. Проходы: тени (`vs_shadow` — фигуры, `vs_shadow_terrain`
-// — рельеф; только глубина от солнца), затем рельеф (`vs_terrain`, `fs_terrain`), вода (`fs_water`),
+// «Трёхмерная сцена», «Свет и материалы»: рельеф с покрытиями и мокрым берегом, вода, фигуры, плитки и
+// плоские объекты на земле и карта теней от солнца. Проходы: тени (`vs_shadow` — фигуры,
+// `vs_shadow_terrain` — рельеф; только глубина от солнца), затем рельеф (`vs_terrain`, `fs_terrain`),
 // фигуры (`vs_shape`, `fs_shape`), модели (`vs_model`; части с прозрачностью `OPAQUE` — `fs_model`, `MASK` —
 // `fs_model_mask`, `BLEND` и куски дорог — `fs_model_blend`; в тенях — `vs_shadow_model` и для `MASK`
 // `vs_shadow_model_mask` с `fs_shadow_model_mask`), перекрёстки дорог (изогнутые копии частей моделей:
-// `vs_junction` и `fs_model_blend`; в тени не рисуются) и плитки с плоскими объектами (`vs_ground`, `fs_ground`), которые лежат на рельефе и верху настилов.
+// `vs_junction` и `fs_model_blend`; в тени не рисуются), плитки с плоскими объектами (`vs_ground`, `fs_ground`),
+// которые лежат на рельефе и верху настилов, и после них вода (`vs_water`, `fs_water`): она смешивается с
+// нарисованным и пишет глубину.
 // Надписи, полоски и интерфейс рисует `rect.wgsl` отдельным проходом без глубины.
 //
 // Свет считается в линейной яркости, кадр сводится к экрану кривой Khronos PBR Neutral и кодируется в
@@ -28,6 +30,8 @@ struct Globals3d {
     // Цвет и сила солнца и неба в линейной яркости.
     sun_light: vec4<f32>,
     sky_light: vec4<f32>,
+    // Вода: x — на какой глубине в клетках дна уже не видно, y — длина ряби в клетках, z — часы воды в секундах.
+    water: vec4<f32>,
 };
 
 struct Covers {
@@ -50,6 +54,71 @@ const COVER_BAND: f32 = 0.25;
 const MIN_PROJECTION: f32 = 0.03;
 // На сколько градусов круче порога `slope` слой набирает силу от 0 до 1.
 const SLOPE_BAND: f32 = 5.0;
+
+// Вода: числа вида, их подбирают на глаз.
+// Толща пропускает `exp(−WATER_ABSORPTION × глубина / clarity)` света дна.
+const WATER_ABSORPTION: f32 = 3.0;
+// Отсвет неба по Шлику при взгляде по нормали и шероховатость блика солнца.
+const WATER_SKY_F0: f32 = 0.02;
+const WATER_ROUGHNESS: f32 = 0.08;
+// Небо в отсвете: у горизонта светлее своего цвета, к зениту гуще; доля ряби в свете толщи.
+const WATER_SKY_HORIZON: f32 = 1.5;
+const WATER_SKY_ZENITH: f32 = 0.8;
+const WATER_BODY_RIPPLE: f32 = 0.5;
+// Мелкий слой ряби короче крупного в стольких раз; рябь гаснет, когда точка экрана больше этой доли её длины.
+const RIPPLE_FINE: f32 = 0.43;
+const RIPPLE_FADE_FROM: f32 = 0.25;
+const RIPPLE_FADE_TO: f32 = 0.5;
+// Уклон поверхности на единицу шума и секунд на цикл фазы течения (карта течения Valve).
+const RIPPLE_SLOPE: f32 = 0.3;
+const FLOW_CYCLE: f32 = 1.6;
+// Рябь стоячей воды гонит ветер: куда и как быстро, в длинах слоя в секунду; слои идут накрест, чтобы узор не
+// повторялся. Скорость течения, ниже которой вода стоячая.
+const WIND_COARSE: vec2<f32> = vec2<f32>(0.32, 0.18);
+const WIND_FINE: vec2<f32> = vec2<f32>(-0.24, 0.36);
+const WIND_SWELL: vec2<f32> = vec2<f32>(-0.03, -0.11);
+const STILL_SPEED: f32 = 0.2;
+// Крупная пологая волна: во столько раз длиннее ряби и с такой долей её уклона; её видно и с высоты, где мелкая
+// рябь уже погасла, и вода не замирает.
+const SWELL_LENGTH: f32 = 4.0;
+const SWELL_SLOPE: f32 = 0.7;
+// Среднее двух выборок вдоль течения тише одной: на столько оно усиливается, чтобы рябь реки была той же силы, что
+// рябь моря и озера, и река не отличалась от них цветом и бликами.
+const STREAM_GAIN: f32 = 1.29;
+// То же для значения шума — по нему рисуется пена: соседние выборки по значению похожи сильнее, чем по уклону.
+const STREAM_VALUE_GAIN: f32 = 1.14;
+// На сколько длин шума в обе стороны по течению разнесены выборки ряби и пены на реке: так узор вытянут вдоль течения.
+const FLOW_STRETCH: f32 = 0.3;
+// Пена: полоса у кромки глубиной долю `clarity`, пятно в долях длины ряби, дыхание в радианах в секунду, цвет.
+const FOAM_EDGE_DEPTH: f32 = 0.05;
+const FOAM_SCALE: f32 = 0.6;
+const FOAM_BREATH: f32 = 0.9;
+// Толщина нитей пены течения: насколько далеко от середины шума нить ещё светлая.
+const FOAM_LACE: f32 = 0.06;
+// Узор пены гаснет, когда точка экрана — от первой до второй доли длины пятна; вдали пена ровная, густотой
+// `FOAM_FAR_BASE + FOAM_FAR_PER_FOAM × сила пены` — так в среднем густ узор вблизи.
+const FOAM_FADE_FROM: f32 = 0.1;
+const FOAM_FADE_TO: f32 = 0.3;
+const FOAM_FAR_BASE: f32 = 0.05;
+const FOAM_FAR_PER_FOAM: f32 = 0.25;
+const FOAM_COLOR: vec3<f32> = vec3<f32>(0.92, 0.95, 0.96);
+// Наибольшая плотность пены у кромки и пены течения.
+const FOAM_EDGE_STRENGTH: f32 = 0.35;
+const FOAM_FLOW_STRENGTH: f32 = 0.8;
+// Падающая вода между струями — такая доля пены.
+const FALL_FOAM_BASE: f32 = 0.75;
+// Падающая вода тоньше такой доли `clarity` сходит на нет: тонкий край, облепивший скалу, не белеет.
+const FALL_EDGE: f32 = 0.08;
+// Падающая вода: от этого уклона глади вода начинает падать, на столько круче — падает целиком (середина — 45°);
+// полос на клетку поперёк и вдоль.
+const FALL_SLOPE: f32 = 0.6;
+const FALL_BAND: f32 = 0.8;
+const FALL_STREAKS_ACROSS: f32 = 4.0;
+const FALL_STREAKS_ALONG: f32 = 0.7;
+// Мокрый берег: высота полосы над кромкой в долях `clarity`, во сколько раз темнее и во сколько раз глаже у кромки.
+const WET_BAND: f32 = 0.12;
+const WET_DARKEN: f32 = 0.6;
+const WET_ROUGHNESS: f32 = 0.5;
 
 @group(0) @binding(0)
 var<uniform> globals: Globals3d;
@@ -127,22 +196,17 @@ fn shadow_lit(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     return select(1.0, lit, inside);
 }
 
-// Поверхность цвета `albedo` (линейная яркость) в точке `world` с нормалью `normal`: свет солнца по
-// косинусу и по тени, свет неба сверху сильнее, чем сбоку, и только там, куда он доходит (`ao`),
-// блик солнца — модель GGX, геометрия Смита — Шлика, отражение по Шлику с F0 = 0,04.
-fn shade(
-    albedo: vec3<f32>,
-    world: vec3<f32>,
+// Блик солнца на поверхности с шероховатостью `roughness` и отражением `f0` при взгляде по нормали:
+// модель GGX, геометрия Смита — Шлика, отражение по Шлику.
+fn sun_glint(
     normal: vec3<f32>,
+    world: vec3<f32>,
     roughness: f32,
-    ao: f32,
+    f0: f32,
     visible: f32,
 ) -> vec3<f32> {
     let to_sun = globals.sun.xyz;
     let n_l = max(dot(normal, to_sun), 0.0);
-    let sun = globals.sun_light.rgb * (n_l * visible);
-    let sky = globals.sky_light.rgb * ((1.0 + normal.z) * 0.5 * ao);
-
     let to_eye = normalize(globals.eye.xyz - world);
     let half_way = normalize(to_sun + to_eye);
     let n_v = max(dot(normal, to_eye), 0.0);
@@ -154,12 +218,27 @@ fn shade(
     let distribution = alpha2 / (PI * denominator * denominator);
     let k = alpha * 0.5;
     let visibility = 0.25 / ((n_l * (1.0 - k) + k) * (n_v * (1.0 - k) + k));
-    let fresnel = 0.04 + 0.96 * pow(clamp(1.0 - v_h, 0.0, 1.0), 5.0);
+    let fresnel = f0 + (1.0 - f0) * pow(clamp(1.0 - v_h, 0.0, 1.0), 5.0);
     // `sun_light` — освещённость, уже делённая на π (рассеянный свет — `albedo × sun` без 1/π), поэтому
     // блик GGX, как в glTF, умножается на π обратно.
-    let glint = globals.sun_light.rgb * (PI * distribution * visibility * fresnel * n_l * visible);
+    return globals.sun_light.rgb * (PI * distribution * visibility * fresnel * n_l * visible);
+}
 
-    return albedo * (sun + sky) + glint;
+// Поверхность цвета `albedo` (линейная яркость) в точке `world` с нормалью `normal`: свет солнца по
+// косинусу и по тени, свет неба сверху сильнее, чем сбоку, и только там, куда он доходит (`ao`),
+// блик солнца — `sun_glint` с F0 = 0,04.
+fn shade(
+    albedo: vec3<f32>,
+    world: vec3<f32>,
+    normal: vec3<f32>,
+    roughness: f32,
+    ao: f32,
+    visible: f32,
+) -> vec3<f32> {
+    let n_l = max(dot(normal, globals.sun.xyz), 0.0);
+    let sun = globals.sun_light.rgb * (n_l * visible);
+    let sky = globals.sky_light.rgb * ((1.0 + normal.z) * 0.5 * ao);
+    return albedo * (sun + sky) + sun_glint(normal, world, roughness, 0.04, visible);
 }
 
 // Ровная матовая поверхность: шероховатость 1, без карты мелкого рельефа.
@@ -428,10 +507,14 @@ fn cover_surface(world: vec3<f32>, n: vec3<f32>, ddx: vec3<f32>, ddy: vec3<f32>)
 
 // --- Рельеф и вода --------------------------------------------------------------------------
 
+// У земли `extra.x` — гладь воды над точкой (вдали от воды — ниже земли на `clarity`, в сцене без воды — около
+// −1000); у воды `extra` — глубина,
+// течение по осям сцены в клетках в секунду и пена.
 struct TerrainVertex {
     @location(0) position: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    @location(3) extra: vec4<f32>,
 };
 
 @vertex
@@ -444,6 +527,7 @@ struct TerrainOutput {
     @location(0) world: vec3<f32>,
     @location(1) normal: vec3<f32>,
     @location(2) color: vec3<f32>,
+    @location(3) surface: f32,
 };
 
 @vertex
@@ -453,7 +537,13 @@ fn vs_terrain(vertex: TerrainVertex) -> TerrainOutput {
     out.world = vertex.position;
     out.normal = vertex.normal;
     out.color = vertex.color;
+    out.surface = vertex.extra.x;
     return out;
+}
+
+// Мокрый берег: 1 у кромки и ниже глади, к верху полосы высотой `WET_BAND × clarity` над гладью — 0.
+fn wetness(height: f32, surface: f32) -> f32 {
+    return clamp(1.0 - (height - surface) / (WET_BAND * globals.water.x), 0.0, 1.0);
 }
 
 // Карта цвета рельефа в точке `world`: `rgb` — во сколько раз цвет земли светлее (0,5 — как есть,
@@ -467,7 +557,7 @@ fn terrain_tint(world: vec3<f32>) -> vec4<f32> {
 }
 
 // Земля: без покрытий залита цветом сцены и освещена как матовая поверхность. Карта цвета красит
-// землю и гасит свет неба там, куда он не доходит.
+// землю и гасит свет неба там, куда он не доходит. У воды земля темнее и глаже (`wetness`).
 @fragment
 fn fs_terrain(in: TerrainOutput) -> @location(0) vec4<f32> {
     let normal = normalize(in.normal);
@@ -475,21 +565,202 @@ fn fs_terrain(in: TerrainOutput) -> @location(0) vec4<f32> {
     let ddy = dpdy(in.world);
     let visible = shadow_lit(in.world, normal);
     let tint = terrain_tint(in.world);
+    let wet = wetness(in.world.z, in.surface);
+    let darken = mix(1.0, WET_DARKEN, wet);
     if (covers.head.x < 0.5) {
-        let albedo = srgb_to_linear(in.color) * tint.rgb * 2.0;
-        return vec4<f32>(finish(shade(albedo, in.world, normal, 1.0, tint.a, visible)), 1.0);
+        let albedo = srgb_to_linear(in.color) * tint.rgb * 2.0 * darken;
+        return vec4<f32>(finish(shade(albedo, in.world, normal, mix(1.0, WET_ROUGHNESS, wet), tint.a, visible)), 1.0);
     }
     let surface = cover_surface(in.world, normal, ddx, ddy);
-    let albedo = surface.albedo * tint.rgb * 2.0;
-    let color = shade(albedo, in.world, surface.normal, surface.roughness, surface.ao * tint.a, visible);
+    let albedo = surface.albedo * tint.rgb * 2.0 * darken;
+    let roughness = mix(surface.roughness, surface.roughness * WET_ROUGHNESS, wet);
+    let color = shade(albedo, in.world, surface.normal, roughness, surface.ao * tint.a, visible);
     return vec4<f32>(finish(color), 1.0);
 }
 
+// --- Вода -----------------------------------------------------------------------------------
+
+struct WaterOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) world: vec3<f32>,
+    @location(1) normal: vec3<f32>,
+    @location(2) color: vec3<f32>,
+    // Глубина, течение по осям сцены и пена.
+    @location(3) data: vec4<f32>,
+};
+
+@vertex
+fn vs_water(vertex: TerrainVertex) -> WaterOutput {
+    var out: WaterOutput;
+    out.clip_position = globals.view_proj * vec4<f32>(vertex.position, 1.0);
+    out.world = vertex.position;
+    out.normal = vertex.normal;
+    out.color = vertex.color;
+    out.data = vertex.extra;
+    return out;
+}
+
+fn cell_value(cell: vec2<i32>) -> f32 {
+    let a = hash_u32(bitcast<u32>(cell.x) + 0x9e3779b9u);
+    let b = hash_u32(a ^ bitcast<u32>(cell.y));
+    return f32(b >> 8u) / 16777216.0;
+}
+
+// Шум значения от 0 до 1 с производными: x — значение, yz — производные по осям точки.
+fn value_noise(p: vec2<f32>) -> vec3<f32> {
+    let i = vec2<i32>(floor(p));
+    let f = fract(p);
+    let u = f * f * f * (f * (f * 6.0 - 15.0) + 10.0);
+    let du = 30.0 * f * f * (f * (f - 2.0) + 1.0);
+    let a = cell_value(i);
+    let b = cell_value(i + vec2<i32>(1, 0));
+    let c = cell_value(i + vec2<i32>(0, 1));
+    let d = cell_value(i + vec2<i32>(1, 1));
+    let k = a - b - c + d;
+    let value = a + (b - a) * u.x + (c - a) * u.y + k * u.x * u.y;
+    let slope = du * vec2<f32>((b - a) + k * u.y, (c - a) + k * u.x);
+    return vec3<f32>(value, slope);
+}
+
+// Шум, который несёт течение `flow` (длин шума в секунду): две фазы, сдвинутые на половину цикла, с весом
+// треугольной волной — одна гаснет, когда сбрасывается, а другая в силе (Vlachos, «Water Flow in Portal 2»).
+fn flowing_noise(st: vec2<f32>, flow: vec2<f32>, seed: f32) -> vec3<f32> {
+    let cycle = globals.water.z / FLOW_CYCLE;
+    let cycle_b = cycle + 0.5;
+    let phase_a = fract(cycle);
+    let phase_b = fract(cycle_b);
+    let weight_a = 1.0 - abs(1.0 - 2.0 * phase_a);
+    let weight_b = 1.0 - abs(1.0 - 2.0 * phase_b);
+    let jump_a = vec2<f32>(floor(cycle) * 0.37 + seed, floor(cycle) * 0.91) * 5.0;
+    let jump_b = vec2<f32>(floor(cycle_b) * 0.37 + seed + 7.0, floor(cycle_b) * 0.91 + 3.0) * 5.0;
+    let a = value_noise(st - flow * (phase_a * FLOW_CYCLE) + jump_a);
+    let b = value_noise(st - flow * (phase_b * FLOW_CYCLE) + jump_b);
+    // Смесь двух независимых узоров тише каждого: делится на корень из суммы квадратов весов, чтобы сила ряби на реке
+    // не пульсировала с фазой и не была меньше, чем на стоячей воде.
+    let blended = a * weight_a + b * weight_b;
+    let gain = inverseSqrt(weight_a * weight_a + weight_b * weight_b);
+    return vec3<f32>(0.5 + (blended.x - 0.5) * gain, blended.yz * gain);
+}
+
+// Шум, который несёт течение `flow` (клеток в секунду), вытянутый вдоль течения: среднее двух выборок, разнесённых
+// по течению на `FLOW_STRETCH` длины шума в обе стороны, — на реке рябь и пена ложатся струями по течению. Сетка
+// шума не поворачивается за течением: поворот вокруг начала сцены дробил бы узор на изгибах реки тем мельче, чем
+// дальше река от начала. Шум длиной `length_cells` клеток; x — значение, yz — уклон на единицу шума, как у
+// `value_noise`.
+fn stream_noise(world: vec2<f32>, flow: vec2<f32>, length_cells: f32, seed: f32) -> vec3<f32> {
+    let speed = length(flow);
+    let along = select(vec2<f32>(1.0, 0.0), flow / max(speed, 0.00001), speed > 0.00001);
+    let st = world / length_cells;
+    let reach = along * FLOW_STRETCH;
+    let drift = flow / length_cells;
+    let mean = 0.5 * (flowing_noise(st + reach, drift, seed) + flowing_noise(st - reach, drift, seed));
+    return vec3<f32>(0.5 + (mean.x - 0.5) * STREAM_VALUE_GAIN, mean.yz * STREAM_GAIN);
+}
+
+// Слой ряби длиной `length_cells`: на стоячей воде узор гонит ветер `wind`, на реке — течение `flow`; `moving` — насколько
+// вода течёт. Уклон на единицу шума.
+fn ripple_layer(world: vec2<f32>, flow: vec2<f32>, moving: f32, length_cells: f32, wind: vec2<f32>, seed: f32) -> vec2<f32> {
+    let still = value_noise(world / length_cells - wind * globals.water.z + vec2<f32>(seed * 3.7, seed * 1.3));
+    let stream = stream_noise(world + vec2<f32>(seed * 1.9, seed * 2.6), flow, length_cells, seed);
+    // Смесь двух независимых узоров тише каждого — там, где течение гаснет у устья, рябь слабела бы полосой.
+    return mix(still.yz, stream.yz, moving) * blend_gain(moving);
+}
+
+// Во сколько раз усилить смесь двух независимых узоров с долей второго `share`, чтобы она была той же силы, что каждый.
+fn blend_gain(share: f32) -> f32 {
+    return inverseSqrt((1.0 - share) * (1.0 - share) + share * share);
+}
+
+// Уклон поверхности от ряби в точке `world` (в клетках) при течении `flow`: слои шума длиной `ripple`, `RIPPLE_FINE` от
+// неё и пологая волна в `SWELL_LENGTH` раз длиннее. Слой гаснет, когда точка экрана `footprint` (клеток) становится
+// больше половины его длины.
+fn ripple_slope(world: vec2<f32>, flow: vec2<f32>, footprint: f32) -> vec2<f32> {
+    let coarse_length = globals.water.y;
+    let fine_length = coarse_length * RIPPLE_FINE;
+    let swell_length = coarse_length * SWELL_LENGTH;
+    let moving = smoothstep(0.0, STILL_SPEED, length(flow));
+    let coarse = ripple_layer(world, flow, moving, coarse_length, WIND_COARSE, 0.0);
+    let fine = ripple_layer(world, flow, moving, fine_length, WIND_FINE, 3.0);
+    let swell = ripple_layer(world, flow, moving, swell_length, WIND_SWELL, 7.0);
+    let coarse_fade = 1.0 - smoothstep(RIPPLE_FADE_FROM * coarse_length, RIPPLE_FADE_TO * coarse_length, footprint);
+    let fine_fade = 1.0 - smoothstep(RIPPLE_FADE_FROM * fine_length, RIPPLE_FADE_TO * fine_length, footprint);
+    let swell_fade = 1.0 - smoothstep(RIPPLE_FADE_FROM * swell_length, RIPPLE_FADE_TO * swell_length, footprint);
+    return RIPPLE_SLOPE * (coarse * coarse_fade + fine * fine_fade + swell * (SWELL_SLOPE * swell_fade));
+}
+
+// Узор пены: на реке его несёт течение струями, на стоячей воде гонит ветер.
+fn foam_noise(world: vec2<f32>, flow: vec2<f32>) -> f32 {
+    let foam_length = globals.water.y * FOAM_SCALE;
+    let st = world / foam_length;
+    let moving = smoothstep(0.0, STILL_SPEED, length(flow));
+    let still = value_noise(st - WIND_COARSE * globals.water.z).x;
+    return 0.5 + (mix(still, stream_noise(world, flow, foam_length, 5.0).x, moving) - 0.5) * blend_gain(moving);
+}
+
+// Вода: сквозь неё видно дно на долю `exp(−WATER_ABSORPTION × глубина / clarity)`, остальное — цвет толщи,
+// освещённый как матовая поверхность, с тенью. Поверх — отсвет неба по Шлику и блик солнца по нормали с рябью,
+// пена у кромки, на перекатах и в падающей воде. Выход — цвет, уже умноженный на свою долю
+// (`PREMULTIPLIED_ALPHA_BLENDING`): `1 − clear × (1 − пена)` перекрывает дно, остальное просвечивает.
+// Производные — до всех ветвлений.
 @fragment
-fn fs_water(in: TerrainOutput) -> @location(0) vec4<f32> {
-    let normal = normalize(in.normal);
-    let visible = shadow_lit(in.world, normal);
-    return vec4<f32>(finish(shade_matte(srgb_to_linear(in.color), in.world, normal, visible)), 1.0);
+fn fs_water(in: WaterOutput) -> @location(0) vec4<f32> {
+    let footprint = max(length(dpdx(in.world.xy)), length(dpdy(in.world.xy)));
+    let base_normal = normalize(in.normal);
+    let visible = shadow_lit(in.world, base_normal);
+    let depth = max(in.data.x, 0.0);
+    let flow = in.data.yz;
+    let clarity = globals.water.x;
+    let clear = exp(-WATER_ABSORPTION * depth / clarity);
+
+    let steepness = length(base_normal.xy) / max(base_normal.z, 0.001);
+    let fall = smoothstep(FALL_SLOPE, FALL_SLOPE + FALL_BAND, steepness);
+    // Наклон глади свет учитывает только у падающей воды: гладь переката собрана из отрезков с разным уклоном, и
+    // узкий блик вспыхивал бы полосой на каждом их стыке.
+    let surface_normal = normalize(mix(vec3<f32>(0.0, 0.0, 1.0), base_normal, fall));
+    let tilt = ripple_slope(in.world.xy, flow, footprint);
+    let normal = normalize(surface_normal - vec3<f32>(tilt, 0.0));
+    // Толща освещена по нормали с ослабленной рябью: сверху рябь видна светом солнца на склонах волн, а не отсветом.
+    let body_normal = normalize(surface_normal - vec3<f32>(tilt * WATER_BODY_RIPPLE, 0.0));
+    let body = shade_matte(srgb_to_linear(in.color), in.world, body_normal, visible);
+    let to_eye = normalize(globals.eye.xyz - in.world);
+    let mirrored = reflect(-to_eye, normal);
+    let sky = globals.sky_light.rgb * mix(WATER_SKY_HORIZON, WATER_SKY_ZENITH, clamp(mirrored.z, 0.0, 1.0));
+    let sky_reflection = sky * (WATER_SKY_F0 + (1.0 - WATER_SKY_F0) * pow(1.0 - max(dot(normal, to_eye), 0.0), 5.0));
+    let glint = sun_glint(normal, in.world, WATER_ROUGHNESS, WATER_SKY_F0, visible);
+    let lit = finish(body);
+    let specular = max(finish(body + sky_reflection + glint) - lit, vec3<f32>(0.0));
+
+    let pattern = foam_noise(in.world.xy, flow);
+    // Вдали узор пены мельче точки экрана и мерцал бы: нити и пятна сменяются ровной пеной той же густоты.
+    let foam_length = globals.water.y * FOAM_SCALE;
+    let foam_far = smoothstep(FOAM_FADE_FROM * foam_length, FOAM_FADE_TO * foam_length, footprint);
+    let breath = 0.5 + 0.5 * sin(globals.water.z * FOAM_BREATH + pattern * 6.2831853);
+    let edge = 1.0 - smoothstep(0.0, FOAM_EDGE_DEPTH * clarity, depth);
+    // На самой падающей воде пену рисуют струи; полоса у кромки и пятна течения — только у её подножия и на перекатах.
+    let edge_foam = FOAM_EDGE_STRENGTH * edge * (1.0 - fall) * (0.5 + 0.5 * mix(smoothstep(0.3, 0.85, pattern * 0.6 + breath * 0.5), 0.5, foam_far));
+    // Пена течения — тонкие нити по линиям шума, как кружево на перекате; сплошные пятна — только где её больше всего.
+    let lace = 1.0 - smoothstep(0.0, FOAM_LACE * (0.5 + in.data.w), abs(pattern - 0.5));
+    let patches = smoothstep(0.62, 0.85, pattern) * in.data.w;
+    // Вдали — средняя густота узора при этой силе пены, чтобы бахрома ниже переката издали не светлела.
+    let woven = mix(max(lace, patches), FOAM_FAR_BASE + FOAM_FAR_PER_FOAM * in.data.w, foam_far);
+    let flow_foam = FOAM_FLOW_STRENGTH * in.data.w * (1.0 - fall) * woven;
+    // Струи — по течению: оно плавно меняется от точки к точке, а наклон глади скачет на каждом треугольнике уступа.
+    let fall_speed = length(flow);
+    let down = select(normalize(base_normal.xy + vec2<f32>(0.00001, 0.0)), flow / max(fall_speed, 0.00001), fall_speed > 0.01);
+    let across = vec2<f32>(-down.y, down.x);
+    let streak = value_noise(vec2<f32>(
+        dot(in.world.xy, across) * FALL_STREAKS_ACROSS,
+        (dot(in.world.xy, down) - length(flow) * globals.water.z) * FALL_STREAKS_ALONG,
+    )).x;
+    let fall_foam = fall * smoothstep(0.0, FALL_EDGE * clarity, depth) * mix(FALL_FOAM_BASE, 1.0, smoothstep(0.4, 0.8, streak));
+    let foam = clamp(max(edge_foam, max(flow_foam, fall_foam)), 0.0, 1.0);
+
+    // Пена падающей воды освещена как ровная: иначе каждый треугольник уступа светится по-своему.
+    let foam_normal = normalize(mix(base_normal, vec3<f32>(0.0, 0.0, 1.0), fall));
+    let foam_color = finish(shade_matte(FOAM_COLOR, in.world, foam_normal, visible));
+    // На падающей воде отсвета и блика нет: их грани уступа дробят на осколки.
+    let rgb = lit * ((1.0 - clear) * (1.0 - foam)) + foam_color * foam + specular * (1.0 - fall);
+    return vec4<f32>(rgb, 1.0 - clear * (1.0 - foam));
 }
 
 // --- Фигуры ---------------------------------------------------------------------------------
