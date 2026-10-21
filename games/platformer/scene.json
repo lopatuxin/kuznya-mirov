@@ -64,6 +64,14 @@
     { "name": "дно ущелья", "position": [50, 11.2], "size": [14, 1.5], "pit": true, "collides": true },
     { "name": "дно ущелья", "position": [112, 11.2], "size": [4.5, 1.5], "pit": true, "collides": true },
     { "name": "конец уровня", "position": [142, 5.5], "size": [1.5, 2.7], "finish": true, "collides": true },
+    { "name": "разбойник", "position": [14.6, 7.1], "size": [0.8, 1.9], "velocity": [0, 0], "image": "robber", "layer": 48, "robber": true, "robber_no": 1, "home_left": 9, "home_right": 21, "run_speed": 1.5, "jump_height": 1 },
+    { "name": "отсвет разбойника", "position": [14.6, 7.1], "size": [0.8, 1.9], "image": "robber_aura", "opacity": 0, "layer": 49, "robber_glow": true, "robber_no": 1 },
+    { "name": "разбойник", "position": [73.6, 6.1], "size": [0.8, 1.9], "velocity": [0, 0], "image": "robber", "layer": 48, "robber": true, "robber_no": 2, "home_left": 68, "home_right": 80, "run_speed": 1.5, "jump_height": 1 },
+    { "name": "отсвет разбойника", "position": [73.6, 6.1], "size": [0.8, 1.9], "image": "robber_aura", "opacity": 0, "layer": 49, "robber_glow": true, "robber_no": 2 },
+    { "name": "разбойник", "position": [123.6, 6.3], "size": [0.8, 1.9], "velocity": [0, 0], "image": "robber", "layer": 48, "robber": true, "robber_no": 3, "home_left": 119, "home_right": 138, "run_speed": 1.5, "jump_height": 1 },
+    { "name": "отсвет разбойника", "position": [123.6, 6.3], "size": [0.8, 1.9], "image": "robber_aura", "opacity": 0, "layer": 49, "robber_glow": true, "robber_no": 3 },
+    { "name": "разбойник", "position": [129.6, 6.3], "size": [0.8, 1.9], "velocity": [0, 0], "image": "robber", "layer": 48, "robber": true, "robber_no": 4, "home_left": 119, "home_right": 138, "run_speed": 1.5, "jump_height": 1 },
+    { "name": "отсвет разбойника", "position": [129.6, 6.3], "size": [0.8, 1.9], "image": "robber_aura", "opacity": 0, "layer": 49, "robber_glow": true, "robber_no": 4 },
     { "name": "Илья", "position": [3, 7.1], "size": [0.8, 1.9], "velocity": [0, 0], "image": "hero", "layer": 50, "hero": true, "collides": true, "camera_follows": true, "run_speed": 7, "jump_height": 3, "jump_time": 0.4, "hero_frame": 0, "idle_time": 0, "run_dist": 0,
       "keys": {
         "ArrowLeft": { "press": [["hold_left", true]], "release": [["hold_left", false]] },
@@ -72,7 +80,9 @@
         "KeyD": { "press": [["hold_right", true]], "release": [["hold_right", false]] },
         "Space": { "press": [["hold_jump", true]], "release": [["hold_jump", false]] },
         "ArrowUp": { "press": [["hold_jump", true]], "release": [["hold_jump", false]] },
-        "KeyW": { "press": [["hold_jump", true]], "release": [["hold_jump", false]] }
+        "KeyW": { "press": [["hold_jump", true]], "release": [["hold_jump", false]] },
+        "KeyJ": { "press": [["attack_key", true]] },
+        "KeyX": { "press": [["attack_key", true]] }
       } }
   ]
 }
