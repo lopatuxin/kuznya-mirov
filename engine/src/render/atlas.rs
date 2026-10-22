@@ -494,6 +494,175 @@ pub fn first_frame_paint(
     }
 }
 
+/// «Картинки» → «Растягивание рамки»: один из девяти кусков картинки на экране — где он стоит и какое
+/// место кадра берёт.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct SlicePiece {
+    pub position: [f32; 2],
+    pub size: [f32; 2],
+    /// `[x, y, ширина, высота]` в точках кадра.
+    pub source: [u32; 4],
+}
+
+/// Отрезок вдоль одной стороны: от `start` длиной `length` на экране, место `from` длиной `span` в кадре.
+#[derive(Debug, Clone, Copy)]
+struct Segment {
+    start: f32,
+    length: f32,
+    from: u32,
+    span: u32,
+}
+
+/// Одна сторона прямоугольника, разрезанная полями картинки: два угла, край повторами целым числом раз
+/// и середина одним куском.
+struct AxisCut {
+    first: Segment,
+    last: Segment,
+    repeats: Vec<Segment>,
+    middle: Segment,
+}
+
+/// Сторона длиной `length` на экране у картинки в `image` точек с полями `before` и `after`. Углы —
+/// своим размером, умноженным на `scale`; не помещаются вдвоём — сжаты в одной доле. Край между ними —
+/// `n = max(1, round(длина / длина куска))` повторов, каждый растянут до `длина / n`.
+fn axis_cut(start: f32, length: f32, image: u32, before: u32, after: u32, scale: f32) -> AxisCut {
+    let before = before.min(image);
+    let after = after.min(image - before);
+    let span = image - before - after;
+    let (mut head, mut tail) = (before as f32 * scale, after as f32 * scale);
+    if head + tail > length {
+        let shrink = length / (head + tail);
+        head *= shrink;
+        tail *= shrink;
+    }
+    let between = (length - head - tail).max(0.0);
+    let piece = span as f32 * scale;
+    let count = if piece > 0.0 {
+        ((between / piece).round() as u32).max(1)
+    } else {
+        1
+    };
+    let middle_start = start + head;
+    let repeats = (0..count)
+        .map(|i| {
+            let from = middle_start + between * i as f32 / count as f32;
+            let to = middle_start + between * (i + 1) as f32 / count as f32;
+            Segment {
+                start: from,
+                length: to - from,
+                from: before,
+                span,
+            }
+        })
+        .collect();
+    AxisCut {
+        first: Segment {
+            start,
+            length: head,
+            from: 0,
+            span: before,
+        },
+        last: Segment {
+            start: start + length - tail,
+            length: tail,
+            from: before + span,
+            span: after,
+        },
+        repeats,
+        middle: Segment {
+            start: middle_start,
+            length: between,
+            from: before,
+            span,
+        },
+    }
+}
+
+/// «Картинки» → «Растягивание рамки»: куски картинки кадра `frame` (ширина, высота) с полями `slice`
+/// (`[слева, сверху, справа, снизу]`) на прямоугольнике `rect` (`[x, y, ширина, высота]`) при толщине
+/// `scale`. Нулевое поле не даёт ни угла, ни края; кусок нулевого размера не рисуется.
+pub fn nine_slice(rect: [f32; 4], frame: [u32; 2], slice: [u32; 4], scale: f32) -> Vec<SlicePiece> {
+    let across = axis_cut(rect[0], rect[2], frame[0], slice[0], slice[2], scale);
+    let down = axis_cut(rect[1], rect[3], frame[1], slice[1], slice[3], scale);
+    let corners_x = [across.first, across.last];
+    let corners_y = [down.first, down.last];
+    let mut cells: Vec<(Segment, Segment)> = Vec::with_capacity(9);
+    for y in corners_y {
+        cells.extend(corners_x.iter().map(|&x| (x, y)));
+        cells.extend(across.repeats.iter().map(|&x| (x, y)));
+    }
+    for x in corners_x {
+        cells.extend(down.repeats.iter().map(|&y| (x, y)));
+    }
+    cells.push((across.middle, down.middle));
+    cells
+        .into_iter()
+        .filter(|(x, y)| x.length > 0.0 && y.length > 0.0 && x.span > 0 && y.span > 0)
+        .map(|(x, y)| SlicePiece {
+            position: [x.start, y.start],
+            size: [x.length, y.length],
+            source: [x.from, y.from, x.span, y.span],
+        })
+        .collect()
+}
+
+/// Прямоугольник интерфейса и кадр, к краю которого прижимается его выборка: у куска рамки сглаживание
+/// на стыке берёт точки соседнего места той же картинки, а не обрывается по краю куска.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiPaint {
+    pub paint: RectPaint,
+    pub frame: AtlasRect,
+}
+
+/// «Картинки» → «Растягивание рамки»: заливка элемента экрана на прямоугольнике `rect` — картинка с
+/// полями `slice` девятью кусками толщиной `image_scale`, без полей и заливка цветом — одним.
+pub fn ui_fill_paints(
+    fill: &Fill,
+    rect: [f32; 4],
+    image_scale: f32,
+    elapsed_steps: f64,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+    out: &mut Vec<UiPaint>,
+) {
+    let paint = fill_paint(fill, elapsed_steps, images, atlas_rects);
+    let frame = paint.atlas_rect;
+    let flat = |position, size, atlas_rect| UiPaint {
+        paint: RectPaint::flat(
+            position,
+            size,
+            paint.color,
+            atlas_rect,
+            paint.smooth,
+            paint.glow,
+        ),
+        frame,
+    };
+    let slice = match fill {
+        Fill::Image { image, .. } => images[*image].slice,
+        Fill::Color(_) => None,
+    };
+    let Some(slice) = slice else {
+        out.push(flat([rect[0], rect[1]], [rect[2], rect[3]], frame));
+        return;
+    };
+    out.extend(
+        nine_slice(rect, [frame.w, frame.h], slice, image_scale)
+            .into_iter()
+            .map(|piece| {
+                let [x, y, w, h] = piece.source;
+                let source = AtlasRect {
+                    x: frame.x + x,
+                    y: frame.y + y,
+                    w,
+                    h,
+                    sheet: frame.sheet,
+                };
+                flat(piece.position, piece.size, source)
+            }),
+    );
+}
+
 /// «Трёхмерная сцена», требование 19: поворот плоского прямоугольника на земле — вся заливка вместе
 /// с картинкой поворачивается вокруг середины объекта на угол `rotation`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -1703,6 +1872,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            slice: None,
         }
     }
 
@@ -2032,6 +2202,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            slice: None,
         }];
         let atlas_rects = vec![AtlasRect {
             x: 0,
@@ -2125,6 +2296,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            slice: None,
         }
     }
 
@@ -2328,6 +2500,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            slice: None,
         }
     }
 
@@ -2955,5 +3128,161 @@ mod tests {
             y1: 2,
         };
         assert!(compose_ground_paints(&ground, visible, &images, &atlas_rects).is_empty());
+    }
+
+    fn close(a: f32, b: f32) -> bool {
+        (a - b).abs() < 1e-3
+    }
+
+    /// Куски одной строки девяти кусков сверху вниз: те, что начинаются на высоте `y`, слева направо.
+    fn pieces_at_y(pieces: &[SlicePiece], y: f32) -> Vec<SlicePiece> {
+        let mut row: Vec<SlicePiece> = pieces
+            .iter()
+            .copied()
+            .filter(|piece| close(piece.position[1], y))
+            .collect();
+        row.sort_by(|a, b| a.position[0].total_cmp(&b.position[0]));
+        row
+    }
+
+    /// Фаза 47, требование 3: окно шириной 353 из `panel.png` 609 × 618 с полями 90 при толщине 0,38 —
+    /// углы 34,2, верхний край двумя повторами по 142,3, середина одним куском.
+    #[test]
+    fn the_window_frame_of_requirement_3_repeats_its_top_edge_twice() {
+        let pieces = nine_slice([10.0, 20.0, 353.0, 200.0], [609, 618], [90; 4], 0.38);
+        let top = pieces_at_y(&pieces, 20.0);
+        let widths: Vec<f32> = top.iter().map(|piece| piece.size[0]).collect();
+        assert_eq!(widths.len(), 4, "угол, два повтора края, угол: {widths:?}");
+        assert!(
+            close(widths[0], 34.2) && close(widths[3], 34.2),
+            "{widths:?}"
+        );
+        assert!(
+            close(widths[1], 142.3) && close(widths[2], 142.3),
+            "{widths:?}"
+        );
+        assert!(top.iter().all(|piece| close(piece.size[1], 34.2)));
+        assert_eq!(top[0].source, [0, 0, 90, 90]);
+        assert_eq!(top[1].source, [90, 0, 429, 90]);
+        assert_eq!(top[2].source, [90, 0, 429, 90]);
+        assert_eq!(top[3].source, [519, 0, 90, 90]);
+        assert!(close(top[3].position[0] + top[3].size[0], 363.0));
+
+        // По высоте между углами 200 − 68,4 = 131,6, кусок края 438 · 0,38 = 166,4: round(0,79) = 1.
+        let middle_row = pieces_at_y(&pieces, 20.0 + 34.2);
+        assert_eq!(middle_row.len(), 3, "левый край, середина, правый край");
+        let centre = middle_row[1];
+        assert_eq!(centre.source, [90, 90, 429, 438]);
+        assert!(close(centre.size[0], 284.6) && close(centre.size[1], 131.6));
+        assert_eq!(pieces.len(), 4 + 2 * 2 + 2 + 1);
+    }
+
+    /// Фаза 47, требование 5: кнопка 60 × 52 с полями 88 при толщине 0,35 — углы 30,8 не помещаются,
+    /// по ширине сжаты до 30, по высоте до 26; краёв и середины нет.
+    #[test]
+    fn corners_of_a_small_button_shrink_in_one_share_and_meet() {
+        let pieces = nine_slice([0.0, 0.0, 60.0, 52.0], [300, 300], [88; 4], 0.35);
+        assert_eq!(pieces.len(), 4, "{pieces:?}");
+        for piece in &pieces {
+            assert!(close(piece.size[0], 30.0), "{piece:?}");
+            assert!(close(piece.size[1], 26.0), "{piece:?}");
+        }
+    }
+
+    #[test]
+    fn a_zero_margin_gives_neither_corner_nor_edge_on_its_side() {
+        // Слева и справа полей нет: только верхний и нижний края во всю ширину и середина.
+        let pieces = nine_slice([0.0, 0.0, 100.0, 40.0], [20, 30], [0, 10, 0, 10], 1.0);
+        assert!(
+            pieces.iter().all(|piece| piece.source[2] == 20),
+            "{pieces:?}"
+        );
+        let top = pieces_at_y(&pieces, 0.0);
+        assert_eq!(top.len(), 5, "round(100 / 20) = 5 повторов верхнего края");
+        assert!(top.iter().all(|piece| close(piece.size[0], 20.0)));
+        assert_eq!(pieces_at_y(&pieces, 10.0).len(), 1, "только середина");
+    }
+
+    #[test]
+    fn edge_repeats_follow_round_with_at_least_one() {
+        let count = |width: f32| {
+            pieces_at_y(
+                &nine_slice([0.0, 0.0, width, 30.0], [30, 30], [10; 4], 1.0),
+                0.0,
+            )
+            .len()
+                - 2
+        };
+        // Между углами `width − 20`, кусок края 10.
+        assert_eq!(count(24.0), 1, "0,4 — всё равно один повтор");
+        assert_eq!(count(34.0), 1, "1,4 → 1");
+        assert_eq!(count(36.0), 2, "1,6 → 2");
+        assert_eq!(count(45.0), 3, "2,5 → 3");
+    }
+
+    /// Фаза 47, требование 7: кусок рамки прижимает выборку к краю всей картинки, а не своему.
+    #[test]
+    fn a_framed_panel_samples_every_piece_inside_the_whole_image() {
+        let images = vec![ImageDecl {
+            slice: Some([4, 4, 4, 4]),
+            smooth: true,
+            ..one_frame_image()
+        }];
+        let whole = AtlasRect {
+            x: 100,
+            y: 50,
+            w: 16,
+            h: 16,
+            sheet: 2,
+        };
+        let mut out = Vec::new();
+        let fill = Fill::Image {
+            image: 0,
+            opacity: 1.0,
+        };
+        ui_fill_paints(
+            &fill,
+            [0.0, 0.0, 64.0, 64.0],
+            1.0,
+            0.0,
+            &images,
+            &[whole],
+            &mut out,
+        );
+        assert_eq!(
+            out.len(),
+            4 + 7 * 4 + 1,
+            "четыре края по 56 / 8 = 7 повторов"
+        );
+        assert!(out.iter().all(|paint| paint.frame == whole));
+        assert!(out.iter().all(|paint| paint.paint.smooth));
+        let corner = out
+            .iter()
+            .find(|paint| paint.paint.position == [0.0, 0.0])
+            .expect("левый верхний угол");
+        assert_eq!(
+            corner.paint.atlas_rect,
+            AtlasRect {
+                x: 100,
+                y: 50,
+                w: 4,
+                h: 4,
+                sheet: 2
+            }
+        );
+
+        let plain = vec![one_frame_image()];
+        out.clear();
+        ui_fill_paints(
+            &fill,
+            [0.0, 0.0, 64.0, 64.0],
+            1.0,
+            0.0,
+            &plain,
+            &[whole],
+            &mut out,
+        );
+        assert_eq!(out.len(), 1, "картинка без полей тянется целиком");
+        assert_eq!(out[0].paint.atlas_rect, whole);
     }
 }

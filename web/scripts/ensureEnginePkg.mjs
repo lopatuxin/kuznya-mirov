@@ -10,7 +10,8 @@ const enginePkgManifest = resolve(engineDir, "pkg/package.json");
 // Только исходники движка, не весь `engine/` — иначе `engine/pkg` сам оказался бы под
 // наблюдением, и каждая пересборка тут же считалась бы новым изменением, требующим пересборки.
 // `luars` — своя копия библиотеки, от которой зависит `engine/Cargo.toml`: правка её исходников
-// тоже должна делать `pkg` устаревшим, как и правка самого движка.
+// тоже должна делать `pkg` устаревшим, как и правка самого движка. `cosmic-text` — такая же своя
+// копия библиотеки раскладки текста: её берёт `glyphon` через `[patch.crates-io]` в `engine/Cargo.toml`.
 const ENGINE_SOURCE_PATHS = [
   "src",
   "shaders",
@@ -19,6 +20,8 @@ const ENGINE_SOURCE_PATHS = [
   "../luars/src",
   "../luars/Cargo.toml",
   "../luars/Cargo.lock",
+  "../cosmic-text/src",
+  "../cosmic-text/Cargo.toml",
 ].map((entry) => resolve(engineDir, entry));
 
 /**

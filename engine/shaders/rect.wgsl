@@ -61,6 +61,10 @@ struct InstanceInput {
     // «Огонь»: сила (у углей — накал), зерно узора, целая и дробная части хода узора; нули у всего, кроме
     // пламени и углей.
     @location(14) fire: vec4<f32>,
+    // «Картинки» → «Растягивание рамки»: `[x, y, ширина, высота]` кадра в точках листа — выборка
+    // прижимается к его краю, а не к краю `atlas_pos`/`atlas_size`: у куска рамки сглаживание на стыке
+    // берёт точки соседнего места той же картинки. У всего, кроме кусков рамки, совпадает с ними.
+    @location(15) clamp_rect: vec4<f32>,
 };
 
 struct VertexOutput {
@@ -142,8 +146,8 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     // does too, not just the sampled texel.
     out.color = vec4<f32>(instance.color.rgb * instance.color.a, instance.color.a);
     out.uv_px = sample_px;
-    out.uv_min = instance.atlas_pos + vec2<f32>(0.5, 0.5);
-    out.uv_max = max(instance.atlas_pos + instance.atlas_size - vec2<f32>(0.5, 0.5), out.uv_min);
+    out.uv_min = instance.clamp_rect.xy + vec2<f32>(0.5, 0.5);
+    out.uv_max = max(instance.clamp_rect.xy + instance.clamp_rect.zw - vec2<f32>(0.5, 0.5), out.uv_min);
     out.atlas_layer = i32(instance.atlas_layer + 0.5);
     out.smooth_sample = instance.smooth_flag;
     out.glow = instance.glow_flag;

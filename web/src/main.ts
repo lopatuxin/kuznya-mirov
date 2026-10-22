@@ -180,6 +180,8 @@ function attachMouse(engine: Engine, canvas: HTMLCanvasElement): void {
   window.addEventListener("mouseup", (event) => {
     if (event.button === 0) engine.mouse_up();
   });
+  // «Подсказка»: курсор ушёл за край окна — подсказка и вид кнопки «под курсором» гаснут.
+  document.documentElement.addEventListener("mouseleave", () => engine.mouse_leave());
 }
 
 /**

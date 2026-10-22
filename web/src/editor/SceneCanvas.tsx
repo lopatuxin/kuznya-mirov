@@ -356,8 +356,16 @@ export function SceneCanvas({
       const bounds = overlayCanvas.getBoundingClientRect();
       activeEngine.mouse_move(event.clientX - bounds.left, event.clientY - bounds.top);
     }
+    // «Подсказка»: курсор ушёл за край окна — подсказка и вид кнопки «под курсором» гаснут, как на странице игры.
+    function handleWindowLeave(): void {
+      activeEngine.mouse_leave();
+    }
     window.addEventListener("pointermove", handlePointerMove);
-    return () => window.removeEventListener("pointermove", handlePointerMove);
+    document.documentElement.addEventListener("mouseleave", handleWindowLeave);
+    return () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      document.documentElement.removeEventListener("mouseleave", handleWindowLeave);
+    };
   }, [isGameInputActive, engine]);
 
   /**

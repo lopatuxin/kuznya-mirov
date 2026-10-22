@@ -4,7 +4,7 @@
 //! it is tested without a videocard. `wasm::mod` only converts these cells to pixels and draws.
 
 use super::camera::Camera3d;
-use super::property::{self, PropertyTable};
+use super::property::{self, PropertyId, PropertyTable};
 use super::scene::{self, LayerView, SceneConfig};
 use super::screens::{
     self, Align, Anchor, FontId, MaxSpec, WorldColor, WorldElement, WorldElementKind, WorldTextPart,
@@ -197,6 +197,23 @@ fn resolve_max(max: &MaxSpec, world: &World, id: u32) -> Option<f64> {
     }
 }
 
+/// Доля `value / max` объекта `id`, прижатая к отрезку от 0 до 1; `None`, когда у объекта нет `value` или
+/// `max` — полоска не рисуется. Общая для полоски в мире и шкалы на экране → «Интерфейс игры» → «Шкала».
+pub(crate) fn bar_fraction(
+    world: &World,
+    id: u32,
+    value: PropertyId,
+    max: &MaxSpec,
+) -> Option<f32> {
+    let value_n = world.number_like(id, value)?;
+    let max_n = resolve_max(max, world, id)?;
+    Some(if max_n <= 0.0 {
+        0.0
+    } else {
+        (value_n / max_n).clamp(0.0, 1.0) as f32
+    })
+}
+
 /// «Надписи и полоски в мире», требование 17: `elements` в порядке `screens.json` → «Отрисовка»,
 /// требование 14 — между собой элементы идут в порядке списка, а над разными объектами одного
 /// элемента — в порядке их рисования (`scene::draw_order`). Возвращает полоски, надписи и картинки
@@ -346,16 +363,8 @@ fn compute_draws(
                     max,
                     back_color,
                 } => {
-                    let Some(value_n) = world.number_like(id, *value) else {
+                    let Some(fraction) = bar_fraction(world, id, *value, max) else {
                         continue;
-                    };
-                    let Some(max_n) = resolve_max(max, world, id) else {
-                        continue;
-                    };
-                    let fraction = if max_n <= 0.0 {
-                        0.0
-                    } else {
-                        (value_n / max_n).clamp(0.0, 1.0) as f32
                     };
                     let size = placement_size;
                     bars.push(BarDraw {
