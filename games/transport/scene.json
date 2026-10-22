@@ -6101,7 +6101,7 @@
     {"position":[130.936,36.745],"size":[0.259,0.259],"map":true,"model":"pine","height":0.648,"rotation":182.3},
     {"position":[128.076,40.014],"size":[0.258,0.258],"map":true,"model":"pine","height":0.646,"rotation":324.4},
     {"position":[130.131,40.153],"size":[0.386,0.386],"map":true,"model":"linden","height":0.519,"rotation":180},
-    {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":80000,"clock_text":"","money_text":"","debt_text":"","goal_text":"Цель: вторая полуторка (90 000 ₽) и водитель","summary_text":"","firm_text":"","show_help":true,"follow_on":true,"unread":0,"orders_text":"Заказы · 0","notes_text":"Сообщения","town":"Зубцов"},
-    {"name":"Полуторка","car":true,"size":[0.168,0.427],"model":"gaz_aa","height":0.158,"drive_speed":16.67,"capacity":1.5,"load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"position":[129.413,36.074],"selected":true,"odo":48000,"wear":45,"fuel":20,"to_at":48250,"card_text":"","selected_mark":"","follow_text":"Следить: да"}
+    {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":80000,"clock_text":"","money_text":"","debt_text":"","goal_text":"Цель: второй ГАЗ-АА (90 000 ₽) и водитель","summary_text":"","firm_text":"","show_help":true,"follow_on":true,"unread":0,"unread_text":"0","orders_text":"Заказы · 0","town":"Зубцов"},
+    {"name":"ГАЗ-АА","car":true,"size":[0.168,0.427],"model":"gaz_aa","height":0.158,"drive_speed":16.67,"capacity":1.5,"body":"бортовая","load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"position":[129.413,36.074],"selected":true,"odo":48000,"wear":45,"fuel":20,"to_at":48250,"selected_mark":""}
   ]
 }

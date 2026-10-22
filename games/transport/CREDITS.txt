@@ -35,10 +35,16 @@
   Источник: https://ambientcg.com
   Лицензия: CC0
 
-Значки мест (art/transport/icons) нарисованы программой проекта tools/art/icons.mjs, чужого авторства в них нет
+Значки мест (art/transport/icons) нарисованы программой проекта tools/art/icons.mjs на эмалевом значке набора
+  интерфейса, чужого авторства в них нет
 
-Шрифт надписей — Rubik
-  Лицензия: SIL Open Font License 1.1 (fonts/OFL-Rubik.txt)
+Шрифт заголовков — Stalinist One, Алексей Маслов и Jovanny Lemonad
+  Лицензия: SIL Open Font License 1.1 с зарезервированным именем «Stalinist» (fonts/OFL-StalinistOne.txt)
+Шрифт надписей и чисел — Tektur, авторы проекта Tektur
+  Лицензия: SIL Open Font License 1.1 (fonts/OFL-Tektur.txt)
+
+Интерфейс — набор art/transport/ui/kit: детали нарисованы нейросетью по одной и вырезаны программами проекта,
+  значки и шкалы нарисованы программами проекта tools/art/ui-icons.mjs и tools/art/transport-ui.mjs
 
 Звуки — касса и сигнал уведомления — синтезированы программой проекта art/transport/sounds.mjs,
   чужого авторства в них нет

@@ -1,6 +1,8 @@
 // Значки мест Транспортной компании: над каждым местом — значок его дела вместо подписи с улицей. Знак светлый на
-// тёмной круглой плашке, ободок — по роду места: своё — золотой, клиенты — тёплый, магазины — зелёный, заправка и
-// мастерская — серо-голубой. Рисуются из SVG в PNG 128 × 128; лист для просмотра — `sheet.png` в той же папке.
+// круглом эмалевом значке набора интерфейса (`art/transport/ui/kit/badge-blue.png`). Род места (`ring`: своё,
+// клиенты, магазины, заправка и мастерская) покажет цвет эмали; пока цвета не выбраны, все значки синие, как на
+// образце экрана. Рисуются в PNG 72 × 72 — вдвое крупнее, чем над картой, чтобы не рябили при уменьшении; лист
+// для просмотра — `sheet.png` в той же папке.
 // Запуск из tools/art: node icons.mjs [папка]  — по умолчанию art/transport/icons.
 
 import { mkdir } from "node:fs/promises";
@@ -9,9 +11,13 @@ import { fileURLToPath } from "node:url";
 import sharp from "sharp";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
-const INK = "#f1ede4";
-const PLATE = "#1d242b";
-const RING = { own: "#e3c27a", client: "#d9895b", shop: "#7fb26a", car: "#8fa7b8" };
+// Знак рисуется маской: белое — знак, чёрное — вырез в нём; цвет знака — `GLYPH`, как у значков кнопок.
+const INK = "#ffffff";
+const PLATE = "#000000";
+const GLYPH = [0xef, 0xe9, 0xdc];
+const BADGE = resolve(HERE, "../../art/transport/ui/kit/badge-blue.png");
+const SIZE = 72;
+const GLYPH_SIZE = 40;  // знак 100 × 100 ложится в середину значка между заклёпками
 
 // Знаки в квадрате 100 × 100 с серединой в (50, 50): заливка — цвет знака, линии — `stroke` того же цвета.
 const line = (w = 6) => `fill="none" stroke="${INK}" stroke-width="${w}" stroke-linecap="round" stroke-linejoin="round"`;
@@ -60,15 +66,25 @@ function gear(cx, cy, outer, inner, teeth) {
   return `M${pts.join("L")}z`;
 }
 
-const badge = (icon) => `<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128">
-<circle cx="64" cy="64" r="58" fill="${PLATE}" stroke="${RING[icon.ring]}" stroke-width="7"/>
-<g transform="translate(22 22) scale(0.84)">${icon.svg}</g></svg>`;
+/** Знак `icon` цвета `GLYPH` на прозрачном: яркость маски становится непрозрачностью, так вырезы прозрачны. */
+async function glyph(icon) {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="400" viewBox="0 0 100 100">${icon.svg}</svg>`;
+  const { data, info } = await sharp(Buffer.from(svg)).resize(GLYPH_SIZE, GLYPH_SIZE, { kernel: "lanczos3" })
+    .ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+  for (let i = 0; i < data.length; i += 4) {
+    data[i + 3] = Math.round((data[i + 3] * data[i]) / 255);
+    [data[i], data[i + 1], data[i + 2]] = GLYPH;
+  }
+  return sharp(data, { raw: info }).png().toBuffer();
+}
 
+const base = await sharp(BADGE).resize(SIZE, SIZE, { kernel: "lanczos3" }).png().toBuffer();
 const out = resolve(process.argv[2] ?? resolve(HERE, "../../art/transport/icons"));
 await mkdir(out, { recursive: true });
 const tiles = [];
 for (const [id, icon] of Object.entries(ICONS)) {
-  const png = await sharp(Buffer.from(badge(icon))).png().toBuffer();
+  const corner = (SIZE - GLYPH_SIZE) / 2;
+  const png = await sharp(base).composite([{ input: await glyph(icon), left: corner, top: corner }]).png().toBuffer();
   await sharp(png).toFile(join(out, `${id}.png`));
   tiles.push({ id, icon, png });
 }

@@ -221,6 +221,11 @@ pub struct MouseState {
     /// as `MouseLeft` (not over a button or a panel) — decides where the matching release goes,
     /// wherever the cursor sits when it comes.
     pub world_captured: bool,
+    /// «Подсказка»: сколько раз нажата левая кнопка — нажатие прячет подсказку, пока курсор на элементе.
+    pub presses: u32,
+    /// «Подсказка»: сколько раз отпущена левая кнопка — кнопка, которую сменила команда отпускания, тот же
+    /// элемент для подсказки.
+    pub releases: u32,
 }
 
 #[cfg(test)]

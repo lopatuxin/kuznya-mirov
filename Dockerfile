@@ -35,6 +35,12 @@ COPY engine/shaders/ shaders/
 COPY luars/Cargo.toml /app/luars/Cargo.toml
 COPY luars/src/ /app/luars/src/
 
+# «Своя копия cosmic-text»: `[patch.crates-io]` в `engine/Cargo.toml` берёт её по пути
+# `../cosmic-text`, то есть `/app/cosmic-text`, — `glyphon` раскладывает текст ею, а не версией с
+# crates.io.
+COPY cosmic-text/Cargo.toml /app/cosmic-text/Cargo.toml
+COPY cosmic-text/src/ /app/cosmic-text/src/
+
 RUN wasm-pack build --target web --release -- --locked
 
 # --- Stage 2: собрать страницу (Vite) ---

@@ -20,7 +20,9 @@ mod gpu_models;
 #[cfg(target_arch = "wasm32")]
 mod video;
 #[cfg(target_arch = "wasm32")]
-pub use gpu::{DrawRect, GpuBackend, Renderer, TextDraw, WorldOverlay, WorldRun, WorldTextDraw};
+pub use gpu::{
+    DrawRect, GpuBackend, Renderer, TextDraw, UiLayers, WorldOverlay, WorldRun, WorldTextDraw,
+};
 #[cfg(target_arch = "wasm32")]
 pub use gpu_models::ModelsFrame;
 #[cfg(target_arch = "wasm32")]

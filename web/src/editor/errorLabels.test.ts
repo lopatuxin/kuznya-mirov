@@ -52,6 +52,32 @@ describe("withErrorLabels", () => {
     expect(labelled('свойство "sort_by" называет свойство другого вида')).toBe('свойство "порядок по" называет свойство другого вида');
   });
 
+  it("ключи рамок, шкал, подсказок, шрифтов и масштаба интерфейса в кавычках получают подписи", () => {
+    const at = (path: string, message: string) => withErrorLabels({ ...BASE, file: "game.json", path, message }).message;
+    expect(at("files → images → panel → slice", 'свойство "slice" — поля рамки [слева, сверху, справа, снизу], четыре целых числа от 0; получено [1,2]')).toBe(
+      'свойство "поля рамки" — поля рамки [слева, сверху, справа, снизу], четыре целых числа от 0; получено [1,2]',
+    );
+    expect(labelled('свойство "image_scale" должно быть больше нуля, получено 0')).toBe('свойство "толщина рамки" должно быть больше нуля, получено 0');
+    expect(labelled('заданы и "back_color", и "back_image"; у подложки шкалы не больше одного из двух')).toBe(
+      'заданы и "цвет подложки", и "картинка подложки"; у подложки шкалы не больше одного из двух',
+    );
+    expect(labelled('у элемента есть "tooltip", а блока "tooltip" с видом подсказок в screens.json нет')).toBe(
+      'у элемента есть "подсказка", а блока "подсказка" с видом подсказок в screens.json нет',
+    );
+    expect(at("tooltip → delay", 'свойство "delay" не может быть меньше нуля, получено -1')).toBe('свойство "задержка" не может быть меньше нуля, получено -1');
+    expect(at("files → fonts → ui → weight", 'свойство "weight" — толщина шрифта, целое число от 1 до 1000')).toBe('свойство "толщина" — толщина шрифта, целое число от 1 до 1000');
+    expect(labelled('свойство "ui_reference" — размер окна образца [ширина, высота]')).toBe('свойство "размер окна образца" — размер окна образца [ширина, высота]');
+  });
+
+  it("weight, width, gap, delay и slice вне шрифтов, подсказки и картинок не подписаны: так могут зваться свойства самой игры", () => {
+    const message = 'подстановка называет свойство "weight", которого нет; "width", "gap", "delay", "slice" и "font_size" — тоже';
+    expect(labelled(message)).toBe(message);
+    const elementTooltip = withErrorLabels({ ...BASE, file: "screens.json", path: "screens → 1 → elements → 3 → tooltip", message: 'неизвестное свойство "delay"' });
+    expect(elementTooltip.message).toBe('неизвестное свойство "delay"');
+    const fontsNamedScreen = withErrorLabels({ ...BASE, file: "screens.json", path: "screens → fonts_menu → elements → 0", message: 'свойство "weight" не объявлено' });
+    expect(fontsNamedScreen.message).toBe('свойство "weight" не объявлено');
+  });
+
   it("ключи видов дорог в кавычках — их подписи, «road_kinds» не получает подпись «road_kind»", () => {
     expect(labelled('свойство "road_kind" называет вид "street", которого нет среди "road_kinds"')).toBe(
       'свойство "вид дороги" называет вид "street", которого нет среди "вид дорог"',

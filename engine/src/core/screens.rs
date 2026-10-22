@@ -301,6 +301,10 @@ pub enum Element {
     Panel {
         placement: Placement,
         fill: Fill,
+        /// «Картинки» → «Растягивание рамки»: толщина рамки картинки с полями `slice` на экране.
+        image_scale: f32,
+        /// «Подсказка»: текст, всплывающий над элементом.
+        tooltip: Option<Vec<TextPart>>,
         for_: Option<Selector>,
     },
     Label {
@@ -323,7 +327,22 @@ pub enum Element {
         fill: Fill,
         fill_hover: Fill,
         fill_pressed: Fill,
+        /// Одна на все три вида кнопки.
+        image_scale: f32,
+        tooltip: Option<Vec<TextPart>>,
         on_click: ButtonCommand,
+        for_: Option<Selector>,
+    },
+    /// «Шкала»: подложка на весь прямоугольник и заливка от левого края на долю `value / max`
+    /// объекта элемента — объекта отбора `for_` или строки списка.
+    Bar {
+        placement: Placement,
+        value: PropertyId,
+        max: MaxSpec,
+        fill: Fill,
+        back: Option<Fill>,
+        image_scale: f32,
+        tooltip: Option<Vec<TextPart>>,
         for_: Option<Selector>,
     },
     /// «Список»: строка `row` на каждый живой объект отбора `for_`.
@@ -345,7 +364,18 @@ impl Element {
             Element::Panel { placement, .. }
             | Element::Label { placement, .. }
             | Element::Button { placement, .. }
+            | Element::Bar { placement, .. }
             | Element::List { placement, .. } => placement,
+        }
+    }
+
+    /// «Подсказка»: текст подсказки панели, кнопки или шкалы; у надписи и списка её нет.
+    pub fn tooltip(&self) -> Option<&[TextPart]> {
+        match self {
+            Element::Panel { tooltip, .. }
+            | Element::Button { tooltip, .. }
+            | Element::Bar { tooltip, .. } => tooltip.as_deref(),
+            Element::Label { .. } | Element::List { .. } => None,
         }
     }
 
@@ -363,7 +393,8 @@ impl Element {
         match self {
             Element::Panel { for_, .. }
             | Element::Label { for_, .. }
-            | Element::Button { for_, .. } => for_.as_ref(),
+            | Element::Button { for_, .. }
+            | Element::Bar { for_, .. } => for_.as_ref(),
             Element::List { .. } => None,
         }
     }
@@ -397,6 +428,55 @@ pub struct ScreensConfig {
     pub world_elements: Vec<WorldElement>,
     /// `["run", ...]` кнопок и клавиш экранов: `ButtonCommand::Run` называет вызов по номеру.
     pub runs: Vec<RunCall>,
+    /// «Подсказка»: вид подсказок, один на игру; `None`, когда блока `tooltip` в `screens.json` нет.
+    pub tooltip: Option<TooltipStyle>,
+    /// «Раскладка экрана»: размер окна, под который расставлены элементы экранов; `None` — точка в точку.
+    pub ui_reference: Option<[f32; 2]>,
+}
+
+/// «Подсказка»: блок `tooltip` в `screens.json`.
+#[derive(Debug, Clone, Copy)]
+pub struct TooltipStyle {
+    pub fill: Fill,
+    pub image_scale: f32,
+    pub font: FontId,
+    pub font_size: f32,
+    pub text_color: [f32; 4],
+    /// `[по бокам, сверху и снизу]`.
+    pub padding: [f32; 2],
+    /// Расстояние от элемента.
+    pub gap: f32,
+    /// Секунды времени окна до появления.
+    pub delay: f64,
+}
+
+/// «Раскладка экрана»: во сколько раз интерфейс экранов крупнее точек `screens.json` и какого размера
+/// окно в этих точках.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct UiFrame {
+    pub scale: f32,
+    pub viewport: [f32; 2],
+}
+
+impl UiFrame {
+    /// Точка окна в точках `screens.json`.
+    pub fn point(&self, window_point: [f32; 2]) -> [f32; 2] {
+        [window_point[0] / self.scale, window_point[1] / self.scale]
+    }
+}
+
+impl ScreensConfig {
+    /// Интерфейс окна `window` (в точках CSS): с `ui_reference` всё умножено на
+    /// `min(ширина окна / ширина, высота окна / высота)`, без него — как есть.
+    pub fn ui_frame(&self, window: [f32; 2]) -> UiFrame {
+        let scale = self
+            .ui_reference
+            .map_or(1.0, |[w, h]| (window[0] / w).min(window[1] / h));
+        UiFrame {
+            scale,
+            viewport: [window[0] / scale, window[1] / scale],
+        }
+    }
 }
 
 /// «Надписи и полоски в мире», требование 6: one `{property}` substitution over a world element's
@@ -794,42 +874,49 @@ pub fn handle_screen_key_up(
     }
 }
 
-/// «Мышь в мире», требование 13: что лежит самым верхним под точкой — кнопка (её ключ) или панель без кнопки (она забирает нажатие у мира и никому его не отдаёт). Надпись прозрачна
-/// для мыши и сюда не попадает.
+/// «Мышь в мире», требование 13: что под точкой — самая верхняя кнопка (её ключ) или, когда кнопки
+/// под точкой нет, панель (она забирает нажатие у мира и никому его не отдаёт). Панель поверх кнопки,
+/// как значок на табличке, нажатие у кнопки не отнимает. Надписи и шкалы прозрачны для мыши и сюда не
+/// попадают.
 enum InterfaceHit {
     Button(ButtonKey),
     Panel,
 }
 
 fn topmost_interface_hit(parts: &[Part<'_>], point: [f32; 2]) -> Option<InterfaceHit> {
-    parts.iter().rev().find_map(|part| {
+    let mut over_panel = false;
+    for part in parts.iter().rev() {
         let Part::Element(placed) = part else {
-            return None;
+            continue;
         };
         if !placed.contains(point) {
-            return None;
+            continue;
         }
         match placed.element {
-            Element::Button { .. } => Some(InterfaceHit::Button(placed.key)),
-            Element::Panel { .. } => Some(InterfaceHit::Panel),
-            _ => None,
+            Element::Button { .. } => return Some(InterfaceHit::Button(placed.key)),
+            Element::Panel { .. } => over_panel = true,
+            _ => {}
         }
-    })
+    }
+    over_panel.then_some(InterfaceHit::Panel)
 }
 
 /// «Интерфейс игры» → «Мышь»: стоит ли точка окна над кнопкой, панелью или списком со строками
-/// активного экрана. Колесо и правая и средняя кнопки над ними камеру игрока не трогают.
+/// активного экрана. Колесо и правая и средняя кнопки над ними камеру игрока не трогают. `window` и
+/// `point` — в точках окна, как их видит страница; масштаб интерфейса учтён здесь.
 pub fn over_interface(
     config: &ScreensConfig,
     state: &ScreenState,
     world: &World,
-    viewport: [f32; 2],
+    window: [f32; 2],
     point: [f32; 2],
 ) -> bool {
     let screen = &config.screens[state.active()];
-    interface::list_under(screen, world, viewport, point).is_some()
+    let frame = config.ui_frame(window);
+    let point = frame.point(point);
+    interface::list_under(screen, world, frame.viewport, point).is_some()
         || topmost_interface_hit(
-            &interface::layout(screen, state.active(), world, state, viewport),
+            &interface::layout(screen, state.active(), world, state, frame.viewport),
             point,
         )
         .is_some()
@@ -842,13 +929,15 @@ pub fn scroll_wheel(
     config: &ScreensConfig,
     state: &mut ScreenState,
     world: &World,
-    viewport: [f32; 2],
+    window: [f32; 2],
     point: [f32; 2],
     delta_y: f64,
 ) -> bool {
     let screen_id = state.active();
     let screen = &config.screens[screen_id];
-    let Some(index) = interface::list_under(screen, world, viewport, point) else {
+    let frame = config.ui_frame(window);
+    let Some(index) = interface::list_under(screen, world, frame.viewport, frame.point(point))
+    else {
         return false;
     };
     if let Element::List {
@@ -882,6 +971,27 @@ enum MouseOutcome {
     WorldRelease,
 }
 
+/// Нажатие левой кнопки: его забирает кнопка или панель под курсором, иначе на живом экране — мир.
+fn press_outcome(
+    mouse: &mut MouseState,
+    parts: &[Part<'_>],
+    world_accepts: bool,
+    image_object: Option<u32>,
+) -> MouseOutcome {
+    match topmost_interface_hit(parts, mouse.position) {
+        Some(InterfaceHit::Button(key)) => {
+            mouse.captured = Some(key);
+            MouseOutcome::None
+        }
+        Some(InterfaceHit::Panel) => MouseOutcome::None,
+        None if world_accepts => {
+            mouse.world_captured = true;
+            MouseOutcome::WorldPress(image_object)
+        }
+        None => MouseOutcome::None,
+    }
+}
+
 /// Applies one queued mouse event to `mouse`'s hover/capture state against `screen`'s elements —
 /// «Интерфейс игры» → «Мышь», «Мышь в мире», требования 13–16. A press over a button or panel
 /// never reaches the world; elsewhere, on a live screen, it does, as `MouseLeft` — and the
@@ -903,22 +1013,12 @@ fn handle_mouse_event(
             }
             MouseOutcome::None
         }
-        MouseEvent::Down(image_object) => match topmost_interface_hit(parts, mouse.position) {
-            Some(InterfaceHit::Button(key)) => {
-                mouse.captured = Some(key);
-                MouseOutcome::None
-            }
-            Some(InterfaceHit::Panel) => MouseOutcome::None,
-            None => {
-                if world_accepts {
-                    mouse.world_captured = true;
-                    MouseOutcome::WorldPress(image_object)
-                } else {
-                    MouseOutcome::None
-                }
-            }
-        },
+        MouseEvent::Down(image_object) => {
+            mouse.presses = mouse.presses.wrapping_add(1);
+            press_outcome(mouse, parts, world_accepts, image_object)
+        }
         MouseEvent::Up => {
+            mouse.releases = mouse.releases.wrapping_add(1);
             if mouse.world_captured {
                 mouse.world_captured = false;
                 return MouseOutcome::WorldRelease;
@@ -999,13 +1099,18 @@ pub fn process_ui_queue_recording(
         match event {
             UiEvent::Mouse(mouse_event) => {
                 let screen_id = state.active();
+                let frame = config.ui_frame(viewport);
                 let parts = interface::layout(
                     &config.screens[screen_id],
                     screen_id,
                     &game.world,
                     state,
-                    viewport,
+                    frame.viewport,
                 );
+                let mouse_event = match mouse_event {
+                    MouseEvent::Move(pos) => MouseEvent::Move(frame.point(pos)),
+                    other => other,
+                };
                 let accepts = world_accepts_input(game, config, state);
                 match handle_mouse_event(mouse, &parts, accepts, mouse_event) {
                     MouseOutcome::Command(cmd, object) => {

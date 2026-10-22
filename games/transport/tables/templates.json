@@ -1,6 +1,6 @@
 {
   "polutorka": {
-    "name": "Полуторка",
+    "name": "ГАЗ-АА",
     "car": true,
     "size": [
       0.168,
@@ -10,6 +10,7 @@
     "height": 0.158,
     "drive_speed": 16.67,
     "capacity": 1.5,
+    "body": "бортовая",
     "load": 0,
     "state": "idle",
     "state_text": "ждёт заказы",

@@ -4,11 +4,12 @@
 
 use std::cmp::Ordering;
 
-use super::input::ButtonKey;
-use super::property::PropertyId;
+use super::input::{ButtonKey, MouseState};
+use super::property::{PropertyId, PropertyTable};
 use super::rules::Selector;
-use super::screens::{Element, Screen, ScreenId, ScreenState};
+use super::screens::{Element, Screen, ScreenId, ScreenState, TooltipStyle, format_text_for};
 use super::world::World;
+use super::world_elements::bar_fraction;
 
 /// Сколько точек колеса сдвигают список на одну строку.
 pub(crate) const SCROLL_POINTS_PER_ROW: f64 = 100.0;
@@ -195,6 +196,135 @@ pub fn layout<'a>(
         }
     }
     parts
+}
+
+/// «Шкала»: доля заливки шкалы `element` у объекта `object`; `None` — не шкала, нет объекта или у него нет
+/// свойства `value` или `max`: шкала не рисуется.
+pub fn bar_share(element: &Element, object: Option<u32>, world: &World) -> Option<f32> {
+    let Element::Bar { value, max, .. } = element else {
+        return None;
+    };
+    bar_fraction(world, object?, *value, max)
+}
+
+/// «Шкала»: прямоугольник заливки — от левого края на долю `share`; при нуле заливки нет.
+pub fn bar_fill_rect(rect: [f32; 4], share: f32) -> Option<[f32; 4]> {
+    (share > 0.0).then(|| [rect[0], rect[1], rect[2] * share, rect[3]])
+}
+
+/// «Подсказка»: что показать — текст и прямоугольник элемента, над которым он всплывает.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TooltipShow {
+    pub text: String,
+    pub element_rect: [f32; 4],
+}
+
+/// «Подсказка»: над каким элементом курсор и с какого времени окна; нажатие прячет подсказку, пока
+/// курсор не уйдёт с элемента. Не входит в запись партии — это не ввод.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct TooltipHover {
+    target: Option<(ScreenId, ButtonKey)>,
+    /// Место элемента под курсором: кнопка, которую щелчок подменил другой на том же месте (синяя
+    /// табличка — кремовой), остаётся тем же элементом, и курсор с неё не уходил. Другой элемент на том же
+    /// месте без щелчка — строки списка прокрутили, табличку сменила клавиша — снова ждёт задержку.
+    rect: Option<[f32; 4]>,
+    since: f64,
+    presses: u32,
+    releases: u32,
+    hidden: bool,
+}
+
+impl TooltipHover {
+    /// Подсказка этого кадра. `pointer` — курсор в точках `screens.json` (`None`, пока мышь не
+    /// двигалась), `mouse` — счёт нажатий и отпусканий, `now` — секунды времени окна, которое идёт и на
+    /// паузе. Команда кнопки выполняется при отпускании в том же кадре, поэтому кнопка, которую она сменила,
+    /// встаёт на место в кадре, где счёт отпусканий изменился.
+    #[allow(clippy::too_many_arguments)]
+    pub fn show(
+        &mut self,
+        parts: &[Part<'_>],
+        screen: ScreenId,
+        pointer: Option<[f32; 2]>,
+        mouse: &MouseState,
+        now: f64,
+        style: &TooltipStyle,
+        world: &World,
+        properties: &PropertyTable,
+    ) -> Option<TooltipShow> {
+        let placed = pointer.and_then(|point| tooltip_under(parts, point, world));
+        let target = placed.map(|placed| (screen, placed.key));
+        let rect = placed.map(|placed| placed.rect);
+        let pressed = mouse.presses != self.presses;
+        let clicked = pressed || mouse.releases != self.releases;
+        let swapped_by_click = clicked && rect.is_some() && rect == self.rect;
+        if target != self.target && !swapped_by_click {
+            *self = TooltipHover {
+                target,
+                rect,
+                since: now,
+                presses: mouse.presses,
+                releases: mouse.releases,
+                hidden: false,
+            };
+        } else {
+            self.target = target;
+            self.rect = rect;
+            self.releases = mouse.releases;
+            if pressed {
+                self.presses = mouse.presses;
+                self.hidden = true;
+            }
+        }
+        let placed = placed?;
+        if self.hidden || now - self.since < style.delay {
+            return None;
+        }
+        let text = format_text_for(placed.element.tooltip()?, world, properties, placed.object);
+        (!text.is_empty()).then_some(TooltipShow {
+            text,
+            element_rect: placed.rect,
+        })
+    }
+}
+
+/// Элемент с подсказкой под точкой: верхний по порядку рисования из тех, у кого она есть, — значок без
+/// подсказки поверх кнопки её не заслоняет. Шкала, которую не рисуют (у объекта нет `value` или `max`),
+/// подсказки не даёт.
+fn tooltip_under<'a>(parts: &[Part<'a>], point: [f32; 2], world: &World) -> Option<Placed<'a>> {
+    parts.iter().rev().find_map(|part| match part {
+        Part::Element(placed)
+            if placed.element.tooltip().is_some()
+                && placed.contains(point)
+                && (!matches!(placed.element, Element::Bar { .. })
+                    || bar_share(placed.element, placed.object, world).is_some()) =>
+        {
+            Some(*placed)
+        }
+        _ => None,
+    })
+}
+
+/// «Подсказка»: плашка под текст шириной `text_width` и строкой высотой `line_height` — посередине над
+/// элементом, низом на `gap` выше его верха; сверху не помещается в окно `viewport` — под элементом на
+/// том же `gap`; по ширине прижата внутрь окна.
+pub fn tooltip_rect(
+    element: [f32; 4],
+    text_width: f32,
+    line_height: f32,
+    style: &TooltipStyle,
+    viewport: [f32; 2],
+) -> [f32; 4] {
+    let width = text_width + 2.0 * style.padding[0];
+    let height = line_height + 2.0 * style.padding[1];
+    let centered = element[0] + (element[2] - width) / 2.0;
+    let x = centered.min(viewport[0] - width).max(0.0);
+    let above = element[1] - style.gap - height;
+    let y = if above >= 0.0 {
+        above
+    } else {
+        element[1] + element[3] + style.gap
+    };
+    [x, y, width, height]
 }
 
 #[cfg(test)]

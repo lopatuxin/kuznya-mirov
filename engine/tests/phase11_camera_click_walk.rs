@@ -456,6 +456,42 @@ fn a_press_over_a_bare_panel_is_absorbed_and_never_reaches_the_world() {
     );
 }
 
+/// «Мышь в мире», требование 13: панель забирает нажатие, только когда под курсором нет кнопки, —
+/// значок-панель поверх таблички-кнопки нажатие у неё не отнимает.
+#[test]
+fn a_panel_lying_on_a_button_leaves_the_press_to_the_button() {
+    let game = game_json_with_font(10, 10);
+    let props = r#"{"properties":{}}"#;
+    let scene = r#"{"objects":[]}"#;
+    let screens_json = r##"{"screens":[{"name":"main","world_runs":true,"elements":[
+        {"kind":"button","anchor":"top_left","offset":[0,0],"size":[60,50],"text":"","font":"ui",
+         "color":"#203080","on_click":["toggle_sound"]},
+        {"kind":"panel","anchor":"top_left","offset":[10,10],"size":[40,30],"color":"#ffffff"}
+    ]}]}"##;
+    let (mut game, config) = load_world(&game, props, scene, r#"{"rules":[]}"#, screens_json);
+    let mut state = ScreenState::new(config.start_screen);
+    let mut runner = engine::core::runner::Runner::new();
+    let mut queue = UiQueue::new();
+    let mut mouse = MouseState::default();
+    queue.push_mouse_move(30.0, 25.0);
+    queue.push_mouse_down();
+    queue.push_mouse_up();
+    screens::engine_call(
+        &mut queue,
+        &mut mouse,
+        &mut runner,
+        &mut game,
+        &config,
+        &mut state,
+        VIEWPORT,
+        STEP_SECONDS,
+    );
+    assert!(
+        !state.sound_enabled(),
+        "нажатие над значком должно было достаться кнопке под ним"
+    );
+}
+
 // ------------------------------------------------------------------------------------------
 // Ходьба — требования 22–32
 // ------------------------------------------------------------------------------------------

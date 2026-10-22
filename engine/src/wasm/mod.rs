@@ -5,7 +5,7 @@ use web_sys::{HtmlCanvasElement, HtmlVideoElement};
 use crate::core::camera::{Camera3d, EditorCamera, FlatEditorCamera};
 use crate::core::game::Game;
 use crate::core::input::{MouseState, UiQueue};
-use crate::core::interface::{self, Part};
+use crate::core::interface::{self, Part, TooltipHover};
 use crate::core::math3::Vec3;
 use crate::core::model::ModelTable;
 use crate::core::property::{self, PropertyTable};
@@ -13,7 +13,7 @@ use crate::core::report::{DeleteCause, RuleFired, StepReport};
 use crate::core::roads::RoadLinks;
 use crate::core::rules::Outcome;
 use crate::core::run_jump::{self, OutlineKind};
-use crate::core::runner::{Runner, UiClock};
+use crate::core::runner::{Runner, STEP_SECONDS, UiClock};
 use crate::core::scene::{
     CellRange, GroundLayer, LayerView, ObjectTransform, pointer_hit, recorded_place, stamp_hit,
     terrain_hit, window_point,
@@ -29,15 +29,16 @@ use crate::data::load::{
 };
 use crate::data::session::{self, PlaySession};
 use crate::render::VideoSource;
-use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint};
+use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint, UiPaint};
 use crate::render::clouds::Camera;
 use crate::render::materials::Relief;
 use crate::render::relief::{FlatShapes, TerrainMesh};
 use crate::render::scene3d::{self, Frame3d};
+use crate::render::text_area;
 use crate::render::wind::Motion;
 use crate::render::{
     DrawRect, Globals3d, GroundVertex, ModelsFrame, Renderer, Scene3dFrame, ShapeInstance,
-    TextDraw, WorldOverlay, WorldRun, WorldTextDraw,
+    TextDraw, UiLayers, WorldOverlay, WorldRun, WorldTextDraw,
 };
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
@@ -936,6 +937,12 @@ fn draw_rect(paint: &RectPaint) -> DrawRect {
         angle: paint.angle,
         flame: paint.fire.map_or(0.0, |(kind, _)| kind.flag()),
         fire: paint.fire.map_or([0.0; 4], |(_, values)| values),
+        clamp_rect: [
+            atlas_rect.x as f32,
+            atlas_rect.y as f32,
+            atlas_rect.w as f32,
+            atlas_rect.h as f32,
+        ],
     }
 }
 
@@ -1104,7 +1111,7 @@ fn compose_ground_instances(
     ))
 }
 
-/// A panel's or button's rectangle in window pixels.
+/// A rectangle filled by `paint` — a world image over its object.
 fn fill_rect(position: [f32; 2], size: [f32; 2], paint: FillPaint) -> RectPaint {
     RectPaint::flat(
         position,
@@ -1116,36 +1123,92 @@ fn fill_rect(position: [f32; 2], size: [f32; 2], paint: FillPaint) -> RectPaint 
     )
 }
 
-/// Panels and buttons become `DrawRect`s in window pixels; labels and button captions become
-/// `TextDraw`s. «Интерфейс игры» → «Отрисовка»: elements draw in list order (panels can sit
+/// «Подсказка»: что нужно подсказке этого кадра — память о том, над чем курсор, сам курсор в точках окна
+/// (`None`, пока мышь не двигалась) и время окна в секундах.
+struct TooltipInput<'a> {
+    hover: &'a mut TooltipHover,
+    pointer: Option<[f32; 2]>,
+    now: f64,
+}
+
+/// Кусок интерфейса для видеокарты: выборка прижата к краю кадра `frame`, а не к краю куска.
+fn ui_draw_rect(paint: &UiPaint) -> DrawRect {
+    let frame = paint.frame;
+    DrawRect {
+        clamp_rect: [
+            frame.x as f32,
+            frame.y as f32,
+            frame.w as f32,
+            frame.h as f32,
+        ],
+        ..draw_rect(&paint.paint)
+    }
+}
+
+/// Заливка элемента экрана на `rect` — девятью кусками у картинки с полями — в конец `rects`.
+#[allow(clippy::too_many_arguments)]
+fn push_fill(
+    rects: &mut Vec<DrawRect>,
+    paints: &mut Vec<UiPaint>,
+    fill: &Fill,
+    rect: [f32; 4],
+    image_scale: f32,
+    ui_elapsed_steps: f64,
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+) {
+    paints.clear();
+    atlas::ui_fill_paints(
+        fill,
+        rect,
+        image_scale,
+        ui_elapsed_steps,
+        images,
+        atlas_rects,
+        paints,
+    );
+    rects.extend(paints.iter().map(ui_draw_rect));
+}
+
+/// Panels, buttons and bars become `DrawRect`s in `screens.json` points; labels and button captions
+/// become `TextDraw`s. «Интерфейс игры» → «Отрисовка»: elements draw in list order (panels can sit
 /// under buttons on the same screen), text always ends up on top of every rectangle because it
-/// is collected separately and drawn as its own pass, never interleaved with the rects. A list
-/// draws its visible rows and its scroll bar at its own place in the order — «Элемент при объекте»,
-/// «Список». «Картинки» → «Кадры»: `ui_elapsed_steps` is window time, already converted to steps —
-/// never frozen, unlike the world's own frame in `compose_instances`.
+/// is collected separately and drawn as its own pass, never interleaved with the rects; the tooltip
+/// is a layer of its own above all of it. A list draws its visible rows and its scroll bar at its own
+/// place in the order — «Элемент при объекте», «Список». «Картинки» → «Кадры»: `ui_elapsed_steps` is
+/// window time, already converted to steps — never frozen, unlike the world's own frame in
+/// `compose_instances`. «Раскладка экрана»: the renderer gets this window's interface scale here.
 #[allow(clippy::too_many_arguments)]
 fn compose_ui(
+    renderer: &mut Renderer,
     config: &ScreensConfig,
     state: &ScreenState,
     world: &World,
     properties: &PropertyTable,
     mouse: &MouseState,
-    viewport: [f32; 2],
+    tooltip: TooltipInput<'_>,
+    window: [f32; 2],
     images: &[ImageDecl],
     atlas_rects: &[AtlasRect],
     ui_elapsed_steps: f64,
-) -> (Vec<DrawRect>, Vec<TextDraw>) {
+) -> UiLayers {
+    let frame = config.ui_frame(window);
+    renderer.set_ui_scale(frame.scale);
     let screen_id = state.active();
     let screen = &config.screens[screen_id];
-    let mut rects = Vec::with_capacity(screen.elements.len());
-    let mut texts = Vec::new();
-    for part in interface::layout(screen, screen_id, world, state, viewport) {
+    let mut layers = UiLayers {
+        rects: Vec::with_capacity(screen.elements.len()),
+        ..UiLayers::default()
+    };
+    let mut paints = Vec::new();
+    let parts = interface::layout(screen, screen_id, world, state, frame.viewport);
+    for part in &parts {
         let placed = match part {
             Part::ScrollBar { rect, color } => {
-                rects.push(draw_rect(&RectPaint::flat(
+                layers.rects.push(draw_rect(&RectPaint::flat(
                     [rect[0], rect[1]],
                     [rect[2], rect[3]],
-                    color,
+                    *color,
                     atlas::WHITE_PIXEL,
                     false,
                     false,
@@ -1154,11 +1217,41 @@ fn compose_ui(
             }
             Part::Element(placed) => placed,
         };
-        let [x, y, width, height] = placed.rect;
+        let rect = placed.rect;
+        let mut fill = |fill: &Fill, rect: [f32; 4], image_scale: f32| {
+            push_fill(
+                &mut layers.rects,
+                &mut paints,
+                fill,
+                rect,
+                image_scale,
+                ui_elapsed_steps,
+                images,
+                atlas_rects,
+            );
+        };
         match placed.element {
-            screens::Element::Panel { fill, .. } => {
-                let paint = atlas::fill_paint(fill, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect(&fill_rect([x, y], [width, height], paint)));
+            screens::Element::Panel {
+                fill: panel_fill,
+                image_scale,
+                ..
+            } => fill(panel_fill, rect, *image_scale),
+            screens::Element::Bar {
+                fill: bar_fill,
+                back,
+                image_scale,
+                ..
+            } => {
+                // «Шкала»: нет у объекта свойства `value` или `max` — шкалы нет совсем.
+                let Some(share) = interface::bar_share(placed.element, placed.object, world) else {
+                    continue;
+                };
+                if let Some(back) = back {
+                    fill(back, rect, *image_scale);
+                }
+                if let Some(fill_rect) = interface::bar_fill_rect(rect, share) {
+                    fill(bar_fill, fill_rect, *image_scale);
+                }
             }
             screens::Element::Label {
                 text,
@@ -1169,14 +1262,14 @@ fn compose_ui(
                 wrap,
                 ..
             } => {
-                texts.push(TextDraw {
+                layers.texts.push(TextDraw {
                     text: screens::format_text_for(text, world, properties, placed.object),
                     font: *font,
                     font_size_px: *font_size,
                     color: *color,
                     align: *align,
                     wrap: *wrap,
-                    rect_px: [x, y, width, height],
+                    rect_px: rect,
                 });
             }
             screens::Element::Button {
@@ -1184,31 +1277,93 @@ fn compose_ui(
                 font,
                 font_size,
                 text_color,
-                fill,
+                fill: button_fill,
                 fill_hover,
                 fill_pressed,
+                image_scale,
                 ..
             } => {
                 let chosen =
-                    screens::button_fill(fill, fill_hover, fill_pressed, placed.key, mouse);
-                let paint = atlas::fill_paint(chosen, ui_elapsed_steps, images, atlas_rects);
-                rects.push(draw_rect(&fill_rect([x, y], [width, height], paint)));
+                    screens::button_fill(button_fill, fill_hover, fill_pressed, placed.key, mouse);
+                fill(chosen, rect, *image_scale);
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
-                texts.push(TextDraw {
+                layers.texts.push(TextDraw {
                     text: screens::format_text_for(text, world, properties, placed.object),
                     font: *font,
                     font_size_px: *font_size,
                     color: *text_color,
                     align: screens::Align::Center,
                     wrap: false,
-                    rect_px: [x, y, width, height],
+                    rect_px: rect,
                 });
             }
             screens::Element::List { .. } => {}
         }
     }
-    (rects, texts)
+    if let Some(style) = &config.tooltip {
+        let shown = tooltip.hover.show(
+            &parts,
+            screen_id,
+            tooltip.pointer.map(|pointer| frame.point(pointer)),
+            mouse,
+            tooltip.now,
+            style,
+            world,
+            properties,
+        );
+        if let Some(shown) = shown {
+            compose_tooltip(
+                renderer,
+                &mut layers,
+                &shown,
+                style,
+                frame.viewport,
+                images,
+                atlas_rects,
+                ui_elapsed_steps,
+            );
+        }
+    }
+    layers
+}
+
+/// «Подсказка»: плашка под шириной текста и сам текст в одну строку — в слой над всем интерфейсом.
+#[allow(clippy::too_many_arguments)]
+fn compose_tooltip(
+    renderer: &mut Renderer,
+    layers: &mut UiLayers,
+    shown: &interface::TooltipShow,
+    style: &screens::TooltipStyle,
+    viewport: [f32; 2],
+    images: &[ImageDecl],
+    atlas_rects: &[AtlasRect],
+    ui_elapsed_steps: f64,
+) {
+    let text_width = renderer.text_width(&shown.text, style.font, style.font_size);
+    let line_height = text_area::line_height(style.font_size, false);
+    let rect =
+        interface::tooltip_rect(shown.element_rect, text_width, line_height, style, viewport);
+    let mut paints = Vec::new();
+    push_fill(
+        &mut layers.tooltip_rects,
+        &mut paints,
+        &style.fill,
+        rect,
+        style.image_scale,
+        ui_elapsed_steps,
+        images,
+        atlas_rects,
+    );
+    layers.tooltip_texts.push(TextDraw {
+        text: shown.text.clone(),
+        font: style.font,
+        font_size_px: style.font_size,
+        color: style.text_color,
+        align: screens::Align::Center,
+        wrap: false,
+        rect_px: [rect[0], rect[1] + style.padding[1], rect[2], line_height],
+    });
 }
 
 /// «Надписи, полоски и картинки в мире», требование 17: полоски, надписи и картинки мира этого
@@ -1427,8 +1582,7 @@ fn render_world(
     flat_shapes: &mut FlatShapes,
     view: &View,
     viewport: [f32; 2],
-    ui_instances: &[DrawRect],
-    texts: &[TextDraw],
+    ui: &UiLayers,
 ) -> Result<(), String> {
     match view {
         View::Flat { scale, offset } => {
@@ -1463,7 +1617,7 @@ fn render_world(
                 }
                 None => WorldOverlay::of_rects(world_instances),
             };
-            renderer.render_frame(&overlay, ui_instances, texts)
+            renderer.render_frame(&overlay, ui)
         }
         View::Space(camera) => {
             // Полоски и надписи над фигурами посчитаны сразу в точках окна.
@@ -1496,7 +1650,7 @@ fn render_world(
                     blended: &frame.blended,
                 },
             };
-            renderer.render_frame_3d(&parts, &overlay, ui_instances, texts)
+            renderer.render_frame_3d(&parts, &overlay, ui)
         }
     }
 }
@@ -1583,6 +1737,8 @@ pub struct Engine {
     screen_state: Option<ScreenState>,
     runner: Runner,
     mouse: MouseState,
+    /// «Подсказка»: над каким элементом курсор и с какого времени окна — не ввод, в запись не идёт.
+    tooltip_hover: TooltipHover,
     ui_queue: UiQueue,
     pending_config: load::PendingConfig,
     /// «Картинки»: `files.images`, in `ImageId` order — kept here (not just inside `Game`) so
@@ -1646,6 +1802,7 @@ impl Engine {
             screen_state: None,
             runner: Runner::new(),
             mouse: MouseState::default(),
+            tooltip_hover: TooltipHover::default(),
             ui_queue: UiQueue::new(),
             pending_config: load::PendingConfig::default(),
             images: Vec::new(),
@@ -1777,7 +1934,8 @@ impl Engine {
         // `config` is about to move into `load_rest_with_tables` — the font/sound/music/image name
         // order it carries is what fixes each one's FontId/SoundId/MusicId/ImageId, so it has to be
         // captured before that happens.
-        let font_order: Vec<String> = config.files.fonts.iter().map(|(n, _)| n.clone()).collect();
+        let font_order = config.files.fonts.clone();
+        let font_settings = config.files.font_settings.clone();
         let rules_path = config.files.rules.clone();
         let image_table: Vec<(String, String)> = config
             .files
@@ -1928,13 +2086,21 @@ impl Engine {
                     .set_scene(game.scene.width, game.scene.height, game.scene.background);
                 // «Редактор», требование 20: повторный `load` не копит шрифты прошлой игры.
                 self.renderer.reset_fonts();
-                for name in &font_order {
-                    let bytes = font_bytes
-                        .iter()
-                        .find(|(n, _)| n == name)
-                        .and_then(|(_, b)| b.clone())
-                        .unwrap_or_default();
-                    self.renderer.load_font(bytes);
+                // «Текст»: файл, к которому ведут два имени, загружается один раз.
+                let mut families: Vec<(&str, String)> = Vec::new();
+                for ((_, path), settings) in font_order.iter().zip(&font_settings) {
+                    let family = match families.iter().find(|(known, _)| *known == path) {
+                        Some((_, family)) => family.clone(),
+                        None => {
+                            let bytes = load::font_file_bytes(&font_order, &font_bytes, path)
+                                .cloned()
+                                .unwrap_or_default();
+                            let family = self.renderer.load_font_file(bytes);
+                            families.push((path, family.clone()));
+                            family
+                        }
+                    };
+                    self.renderer.add_font(family, settings);
                 }
                 self.screen_state = Some(ScreenState::new(screens_config.start_screen));
                 self.screens_config = Some(screens_config);
@@ -1944,6 +2110,7 @@ impl Engine {
                 self.motion.world_rebuilt();
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
+                self.tooltip_hover = TooltipHover::default();
                 self.ui_queue = UiQueue::new();
                 // «Редактор», требование 27: запись живёт до «Запуска», открытия другой записи или
                 // закрытия проекта — а `load()` тут же перезагружает те же файлы (после «Стопа» или
@@ -2113,7 +2280,7 @@ impl Engine {
         if self.game.is_none() {
             let _ = self
                 .renderer
-                .render_frame(&WorldOverlay::default(), &[], &[]);
+                .render_frame(&WorldOverlay::default(), &UiLayers::default());
             return;
         }
         let view = self.frame().expect("checked above");
@@ -2132,26 +2299,29 @@ impl Engine {
         );
         self.renderer
             .set_videos_playing(self.motion.clock_running(dt));
-        let (ui_instances, texts) = match (
+        let ui = match (
             show_ui,
             self.screens_config.as_ref(),
             self.screen_state.as_ref(),
         ) {
-            (true, Some(config), Some(state)) => {
-                let viewport = self.renderer.window_size_css();
-                compose_ui(
-                    config,
-                    state,
-                    &game.world,
-                    &game.properties,
-                    &self.mouse,
-                    viewport,
-                    &self.images,
-                    &self.atlas_rects,
-                    self.last_ui_elapsed_steps,
-                )
-            }
-            _ => (Vec::new(), Vec::new()),
+            (true, Some(config), Some(state)) => compose_ui(
+                &mut self.renderer,
+                config,
+                state,
+                &game.world,
+                &game.properties,
+                &self.mouse,
+                TooltipInput {
+                    hover: &mut self.tooltip_hover,
+                    pointer: self.last_mouse_window_pos,
+                    now: self.last_ui_elapsed_steps * STEP_SECONDS,
+                },
+                viewport,
+                &self.images,
+                &self.atlas_rects,
+                self.last_ui_elapsed_steps,
+            ),
+            _ => UiLayers::default(),
         };
         if let Err(e) = render_world(
             &mut self.renderer,
@@ -2164,8 +2334,7 @@ impl Engine {
             &mut self.flat_shapes,
             &view,
             viewport,
-            &ui_instances,
-            &texts,
+            &ui,
         ) {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
@@ -2674,6 +2843,13 @@ impl Engine {
         self.ui_queue.push_mouse_up();
     }
 
+    /// «Подсказка»: курсор ушёл за край окна — подсказка гаснет и кнопка теряет вид «под курсором», как
+    /// при уходе с элемента. Точка мыши снова неизвестна; камеру и мир уход не трогает.
+    pub fn mouse_leave(&mut self) {
+        self.last_mouse_window_pos = None;
+        self.ui_queue.push_mouse_move(-1.0, -1.0);
+    }
+
     /// Called once per `requestAnimationFrame` with `performance.now()`. Runs `screens::engine_call`
     /// (queue, then steps, then the sound window — see its own doc comment for why in that order)
     /// and draws one frame on top: world, interface, text.
@@ -2696,7 +2872,7 @@ impl Engine {
             self.ui_queue = UiQueue::new();
             let _ = self
                 .renderer
-                .render_frame(&WorldOverlay::default(), &[], &[]);
+                .render_frame(&WorldOverlay::default(), &UiLayers::default());
             return js_running();
         };
 
@@ -2782,12 +2958,18 @@ impl Engine {
             self.renderer
                 .set_videos_playing(self.motion.clock_running(dt_seconds));
         }
-        let (ui_instances, texts) = compose_ui(
+        let ui = compose_ui(
+            &mut self.renderer,
             config,
             state,
             &game.world,
             &game.properties,
             &self.mouse,
+            TooltipInput {
+                hover: &mut self.tooltip_hover,
+                pointer: self.last_mouse_window_pos,
+                now: ui_clock_steps * STEP_SECONDS,
+            },
             viewport,
             &self.images,
             &self.atlas_rects,
@@ -2804,8 +2986,7 @@ impl Engine {
             &mut self.flat_shapes,
             &view,
             viewport,
-            &ui_instances,
-            &texts,
+            &ui,
         ) {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
@@ -2881,6 +3062,7 @@ impl Engine {
         self.motion.reset();
         self.runner = Runner::new();
         self.mouse = MouseState::default();
+        self.tooltip_hover = TooltipHover::default();
         self.ui_queue = UiQueue::new();
         self.ui_clock.reset();
         self.battle_view = true;
@@ -2990,6 +3172,7 @@ impl Engine {
         self.motion.reset();
         self.runner = Runner::new();
         self.mouse = MouseState::default();
+        self.tooltip_hover = TooltipHover::default();
         self.ui_queue = UiQueue::new();
         self.battle_view = false;
     }
@@ -3195,6 +3378,7 @@ impl Engine {
                 self.motion.reset();
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
+                self.tooltip_hover = TooltipHover::default();
                 self.ui_queue = UiQueue::new();
                 self.ui_clock.reset();
                 self.battle_view = true;

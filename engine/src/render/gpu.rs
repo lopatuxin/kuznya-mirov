@@ -11,7 +11,7 @@ use super::wind;
 use crate::core::model::ModelTable;
 use crate::core::screens::{Align, FontId};
 use crate::core::terrain::Cover;
-use crate::data::load::{CoverMask, MaterialDecl};
+use crate::data::load::{CoverMask, FontSettings, MaterialDecl};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
@@ -55,11 +55,61 @@ pub struct DrawRect {
     /// «Огонь»: `[сила (у углей — накал), зерно узора, целая часть хода узора, дробная часть]`; нули у
     /// всего, кроме пламени и углей.
     pub fire: [f32; 4],
+    /// «Картинки» → «Растягивание рамки»: `[x, y, ширина, высота]` кадра в точках листа, к краю которого
+    /// прижимается выборка; у всего, кроме кусков рамки, — тот же прямоугольник, что `atlas_pos`/`atlas_size`.
+    pub clamp_rect: [f32; 4],
+}
+
+/// Интерфейс кадра: прямоугольники и надписи элементов экрана, а над ними, поверх текста всех элементов, —
+/// слой подсказки → «Интерфейс игры» → «Отрисовка».
+#[derive(Default)]
+pub struct UiLayers {
+    pub rects: Vec<DrawRect>,
+    pub texts: Vec<TextDraw>,
+    pub tooltip_rects: Vec<DrawRect>,
+    pub tooltip_texts: Vec<TextDraw>,
+}
+
+/// Шрифт игры, как его просит раскладка текста: семейство из файла и настройки из `files.fonts`.
+struct FontFace {
+    family: String,
+    weight: glyphon::Weight,
+    stretch: glyphon::Stretch,
+    features: glyphon::cosmic_text::FontFeatures,
+}
+
+/// The text attributes `font` is shaped with; an unknown `FontId` falls back to the default face.
+fn font_attrs(fonts: &[FontFace], font: FontId) -> glyphon::Attrs<'_> {
+    match fonts.get(font) {
+        Some(face) => glyphon::Attrs::new()
+            .family(glyphon::Family::Name(&face.family))
+            .weight(face.weight)
+            .stretch(face.stretch)
+            .font_features(face.features.clone()),
+        None => glyphon::Attrs::new().family(glyphon::Family::Name("")),
+    }
+}
+
+/// «Текст»: ширина в процентах обычной — шаг CSS `font-stretch`, проверенный при загрузке.
+fn font_stretch(width: f32) -> glyphon::Stretch {
+    use glyphon::Stretch;
+    match width {
+        50.0 => Stretch::UltraCondensed,
+        62.5 => Stretch::ExtraCondensed,
+        75.0 => Stretch::Condensed,
+        87.5 => Stretch::SemiCondensed,
+        112.5 => Stretch::SemiExpanded,
+        125.0 => Stretch::Expanded,
+        150.0 => Stretch::ExtraExpanded,
+        200.0 => Stretch::UltraExpanded,
+        _ => Stretch::Normal,
+    }
 }
 
 /// One label or button caption to hand to `glyphon` this frame. `rect_px` is the element's
-/// placement rectangle in the same screen (CSS) pixels `core::screens::Placement` resolves —
-/// the renderer applies the device-pixel-ratio scale itself, the same as it does for `ui_rects`.
+/// placement rectangle in the same `screens.json` points `core::screens::Placement` resolves —
+/// the renderer applies the device-pixel-ratio and interface scale itself, the same as it does for
+/// `ui_rects`.
 pub struct TextDraw {
     pub text: String,
     pub font: FontId,
@@ -227,9 +277,12 @@ pub struct Renderer {
     /// which would just overwrite the interface's batch. «Картинки в мире», требование 5: по одному на
     /// каждый отрезок надписей кадра (`WorldRun::Texts`), растут по мере надобности.
     world_text_renderers: Vec<glyphon::TextRenderer>,
+    /// «Подсказка»: свой рендерер текста — подсказка рисуется поверх текста всех элементов экрана.
+    tooltip_text_renderer: glyphon::TextRenderer,
     /// `FontId` (index into this table) → the family name `cosmic-text` shaping needs, resolved
-    /// from the font file itself when it was loaded — see `load_font`.
-    fonts: Vec<String>,
+    /// from the font file itself when it was loaded — see `load_font_file` — and the font's own
+    /// width, weight and OpenType features from `files.fonts`.
+    fonts: Vec<FontFace>,
 
     background: [f32; 4],
     backend: GpuBackend,
@@ -243,6 +296,8 @@ pub struct Renderer {
     world_offset: [f32; 2],
     scene_cells: [f32; 2],
     device_pixel_ratio: f32,
+    /// «Раскладка экрана»: масштаб интерфейса от `ui_reference`; перемножается с плотностью экрана.
+    ui_scale: f32,
     /// «Трёхмерная сцена»: ресурсы создаются при первом её кадре; сброшены, когда атлас получил новую
     /// текстуру.
     scene3d: Option<gpu3d::Scene3d>,
@@ -536,6 +591,11 @@ impl Renderer {
                     offset: 80,
                     shader_location: 14,
                 },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 96,
+                    shader_location: 15,
+                },
             ],
         };
 
@@ -599,6 +659,12 @@ impl Renderer {
             wgpu::MultisampleState::default(),
             None,
         );
+        let tooltip_text_renderer = glyphon::TextRenderer::new(
+            &mut text_atlas,
+            &device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
         let materials = gpu3d::MaterialGpu::new(&device, &queue, material_options, None);
         let models = ModelsGpu::new(&device, &queue, material_options, &ModelTable::default());
 
@@ -629,6 +695,7 @@ impl Renderer {
             text_viewport,
             text_renderer,
             world_text_renderers: Vec::new(),
+            tooltip_text_renderer,
             fonts: Vec::new(),
             background,
             backend,
@@ -637,6 +704,7 @@ impl Renderer {
             world_offset,
             scene_cells,
             device_pixel_ratio: 1.0,
+            ui_scale: 1.0,
             scene3d: None,
             materials,
             material_options,
@@ -649,8 +717,8 @@ impl Renderer {
         self.backend
     }
 
-    /// The window size in CSS pixels — the unit `screens.json`'s `anchor`/`offset`/`size` are
-    /// written in, and what mouse hit-testing has to use as its viewport.
+    /// The window size in CSS pixels — the unit mouse positions arrive in; `ScreensConfig::ui_frame`
+    /// turns it into the `screens.json` points `anchor`/`offset`/`size` are written in.
     pub fn window_size_css(&self) -> [f32; 2] {
         [
             self.canvas_size_px[0] / self.device_pixel_ratio,
@@ -658,24 +726,60 @@ impl Renderer {
         ]
     }
 
-    /// Loads one font's bytes into `cosmic-text`'s shared database and returns the `FontId`
-    /// later `TextDraw`s reference. The family name shaping needs comes from the file itself —
-    /// the caller's name for it (from `files.fonts`) is not a font-internal name, so this reads
-    /// it back from the face `load_font_source` reports having just added.
-    pub fn load_font(&mut self, bytes: Vec<u8>) -> FontId {
+    /// Loads one font file's bytes into `cosmic-text`'s shared database and returns its family name.
+    /// The family name shaping needs comes from the file itself — the caller's name for it (from
+    /// `files.fonts`) is not a font-internal name, so this reads it back from the face
+    /// `load_font_source` reports having just added. «Текст»: a file two names lead to is loaded once.
+    pub fn load_font_file(&mut self, bytes: Vec<u8>) -> String {
         let ids = self
             .font_system
             .db_mut()
             .load_font_source(glyphon::fontdb::Source::Binary(std::sync::Arc::new(bytes)));
-        let family = ids
-            .first()
+        ids.first()
             .and_then(|&id| self.font_system.db().face(id))
             .and_then(|face| face.families.first())
             .map(|(name, _)| name.clone())
-            .unwrap_or_default();
-        let font_id = self.fonts.len();
-        self.fonts.push(family);
-        font_id
+            .unwrap_or_default()
+    }
+
+    /// Adds the next `FontId` later `TextDraw`s reference: a family `load_font_file` returned and
+    /// that name's own settings — «Интерфейс игры» → «Текст».
+    pub fn add_font(&mut self, family: String, settings: &FontSettings) -> FontId {
+        let mut features = glyphon::cosmic_text::FontFeatures::new();
+        for tag in &settings.features {
+            features.enable(glyphon::cosmic_text::FeatureTag::new(tag));
+        }
+        self.fonts.push(FontFace {
+            family,
+            weight: glyphon::Weight(settings.weight),
+            stretch: font_stretch(settings.width),
+            features,
+        });
+        self.fonts.len() - 1
+    }
+
+    /// «Подсказка»: ширина строки `text` шрифтом `font` размера `font_size` — в точках `screens.json`, как
+    /// и сам размер.
+    pub fn text_width(&mut self, text: &str, font: FontId, font_size: f32) -> f32 {
+        let scale = self.device_pixel_ratio * self.ui_scale;
+        let font_size_px = (font_size * scale).max(1.0);
+        let metrics =
+            glyphon::Metrics::new(font_size_px, text_area::line_height(font_size_px, false));
+        let mut buffer = glyphon::Buffer::new(&mut self.font_system, metrics);
+        buffer.set_wrap(&mut self.font_system, glyphon::cosmic_text::Wrap::None);
+        let attrs = font_attrs(&self.fonts, font);
+        buffer.set_text(
+            &mut self.font_system,
+            text,
+            &attrs,
+            glyphon::Shaping::Advanced,
+            None,
+        );
+        buffer.shape_until_scroll(&mut self.font_system, false);
+        let width = buffer
+            .layout_runs()
+            .fold(0.0f32, |width, run| width.max(run.line_w));
+        width / scale
     }
 
     /// «Редактор», требование 20: a repeated `load()` must not pile fonts up under the previous
@@ -890,6 +994,14 @@ impl Renderer {
         self.write_ui_globals();
     }
 
+    /// «Раскладка экрана»: масштаб интерфейса этого кадра от `ui_reference` — 1 без него.
+    pub fn set_ui_scale(&mut self, scale: f32) {
+        if scale != self.ui_scale {
+            self.ui_scale = scale;
+            self.write_ui_globals();
+        }
+    }
+
     fn write_world_globals(&mut self) {
         let globals = world_globals_data(self.canvas_size_px, self.world_scale, self.world_offset);
         self.queue
@@ -897,7 +1009,7 @@ impl Renderer {
     }
 
     fn write_ui_globals(&mut self) {
-        let globals = ui_globals_data(self.canvas_size_px, self.device_pixel_ratio);
+        let globals = ui_globals_data(self.canvas_size_px, self.device_pixel_ratio * self.ui_scale);
         self.queue
             .write_buffer(&self.ui_globals_buffer, 0, bytemuck::bytes_of(&globals));
     }
@@ -959,8 +1071,7 @@ impl Renderer {
         };
         buffer.set_wrap(&mut self.font_system, wrapping);
         buffer.set_size(&mut self.font_system, Some(width_px), None);
-        let family = self.fonts.get(font).map(String::as_str).unwrap_or("");
-        let attrs = glyphon::Attrs::new().family(glyphon::Family::Name(family));
+        let attrs = font_attrs(&self.fonts, font);
         buffer.set_text(
             &mut self.font_system,
             text,
@@ -971,10 +1082,10 @@ impl Renderer {
         buffer
     }
 
-    /// One `cosmic-text` buffer per `TextDraw` — «Интерфейс игры»: `rect_px` is in window (CSS)
-    /// pixels, scaled up here by the device pixel ratio, same as `ui_rects`.
+    /// One `cosmic-text` buffer per `TextDraw` — «Интерфейс игры»: `rect_px` is in `screens.json`
+    /// points, scaled up here by the device pixel ratio and the interface scale, same as `ui_rects`.
     fn build_text_buffers(&mut self, texts: &[TextDraw]) -> Vec<ShapedText> {
-        let dpr = self.device_pixel_ratio;
+        let dpr = self.device_pixel_ratio * self.ui_scale;
         texts
             .iter()
             .map(|t| {
@@ -1045,13 +1156,8 @@ impl Renderer {
     /// panel drawn after it can still cover it) interleaved with the images by `world.runs`, the
     /// interface's panels and buttons (`ui_instances`, window pixels), then the interface's text
     /// (`texts`) on top of everything.
-    pub fn render_frame(
-        &mut self,
-        world: &WorldOverlay,
-        ui_instances: &[DrawRect],
-        texts: &[TextDraw],
-    ) -> Result<(), String> {
-        let (world_text_counts, text_count) = self.upload_overlay(world, ui_instances, texts)?;
+    pub fn render_frame(&mut self, world: &WorldOverlay, ui: &UiLayers) -> Result<(), String> {
+        let (world_text_counts, ui_counts) = self.upload_overlay(world, ui)?;
         let Some(surface_texture) = self.acquire_frame()? else {
             return Ok(()); // occluded/timeout: skip this frame, try again next tick
         };
@@ -1085,12 +1191,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.draw_overlay(
-                &mut pass,
-                world,
-                &world_text_counts,
-                [ui_instances.len(), text_count],
-            )?;
+            self.draw_overlay(&mut pass, world, &world_text_counts, ui_counts)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
@@ -1105,10 +1206,9 @@ impl Renderer {
         &mut self,
         frame: &gpu3d::Scene3dFrame<'_>,
         world: &WorldOverlay,
-        ui_instances: &[DrawRect],
-        texts: &[TextDraw],
+        ui: &UiLayers,
     ) -> Result<(), String> {
-        let (world_text_counts, text_count) = self.upload_overlay(world, ui_instances, texts)?;
+        let (world_text_counts, ui_counts) = self.upload_overlay(world, ui)?;
         let size = [self.config.width, self.config.height];
         let atlas_view = self
             .atlas_texture
@@ -1161,12 +1261,7 @@ impl Renderer {
                 occlusion_query_set: None,
                 multiview_mask: None,
             });
-            self.draw_overlay(
-                &mut pass,
-                world,
-                &world_text_counts,
-                [ui_instances.len(), text_count],
-            )?;
+            self.draw_overlay(&mut pass, world, &world_text_counts, ui_counts)?;
         }
         self.queue.submit(std::iter::once(encoder.finish()));
         surface_texture.present();
@@ -1175,14 +1270,13 @@ impl Renderer {
 
     /// Записывает прямоугольники мира и интерфейса в буферы и готовит их тексты — общая часть кадра
     /// плоской и трёхмерной сцены. Отвечает, сколько надписей готово у каждого отрезка надписей мира
-    /// (по порядку `WorldRun::Texts`) и сколько у интерфейса: надпись целиком вне окна не готовится и
-    /// не считается.
+    /// (по порядку `WorldRun::Texts`) и сколько у интерфейса прямоугольников и надписей элементов и
+    /// подсказки: надпись целиком вне окна не готовится и не считается.
     fn upload_overlay(
         &mut self,
         world: &WorldOverlay,
-        ui_instances: &[DrawRect],
-        texts: &[TextDraw],
-    ) -> Result<(Vec<usize>, usize), String> {
+        ui: &UiLayers,
+    ) -> Result<(Vec<usize>, UiCounts), String> {
         self.grow_world_instances(world.instances.len());
         if !world.instances.is_empty() {
             self.queue.write_buffer(
@@ -1191,12 +1285,16 @@ impl Renderer {
                 bytemuck::cast_slice(&world.instances),
             );
         }
-        self.grow_ui_instances(ui_instances.len());
-        if !ui_instances.is_empty() {
+        self.grow_ui_instances(ui.rects.len() + ui.tooltip_rects.len());
+        if !ui.rects.is_empty() {
+            self.queue
+                .write_buffer(&self.ui_instance_buffer, 0, bytemuck::cast_slice(&ui.rects));
+        }
+        if !ui.tooltip_rects.is_empty() {
             self.queue.write_buffer(
                 &self.ui_instance_buffer,
-                0,
-                bytemuck::cast_slice(ui_instances),
+                (ui.rects.len() * std::mem::size_of::<DrawRect>()) as u64,
+                bytemuck::cast_slice(&ui.tooltip_rects),
             );
         }
 
@@ -1210,23 +1308,45 @@ impl Renderer {
             );
         }
 
+        let texts = self.prepare_ui_texts(&ui.texts, false)?;
+        let tooltip_texts = self.prepare_ui_texts(&ui.tooltip_texts, true)?;
+        Ok((
+            world_text_counts,
+            UiCounts {
+                rects: ui.rects.len(),
+                texts,
+                tooltip_rects: ui.tooltip_rects.len(),
+                tooltip_texts,
+            },
+        ))
+    }
+
+    /// Готовит надписи интерфейса рендерером элементов или, с `tooltip`, рендерером подсказки. Отвечает,
+    /// сколько надписей готово к рисованию.
+    fn prepare_ui_texts(&mut self, texts: &[TextDraw], tooltip: bool) -> Result<usize, String> {
         let buffers = self.build_text_buffers(texts);
         let text_areas = text_areas_from(&buffers, self.canvas_size_px);
-        let text_count = text_areas.len();
-        if !text_areas.is_empty() {
-            self.text_renderer
-                .prepare(
-                    &self.device,
-                    &self.queue,
-                    &mut self.font_system,
-                    &mut self.text_atlas,
-                    &self.text_viewport,
-                    text_areas,
-                    &mut self.swash_cache,
-                )
-                .map_err(|e| format!("не удалось подготовить текст: {e:?}"))?;
+        let count = text_areas.len();
+        if count == 0 {
+            return Ok(0);
         }
-        Ok((world_text_counts, text_count))
+        let renderer = if tooltip {
+            &mut self.tooltip_text_renderer
+        } else {
+            &mut self.text_renderer
+        };
+        renderer
+            .prepare(
+                &self.device,
+                &self.queue,
+                &mut self.font_system,
+                &mut self.text_atlas,
+                &self.text_viewport,
+                text_areas,
+                &mut self.swash_cache,
+            )
+            .map_err(|e| format!("не удалось подготовить текст: {e:?}"))?;
+        Ok(count)
     }
 
     /// Готовит надписи мира одного отрезка рендерером `index` — он заводится, когда отрезков в кадре
@@ -1264,16 +1384,15 @@ impl Renderer {
     }
 
     /// Рисует в открытом проходе слои по порядку: отрезки мира (прямоугольники и текст), прямоугольники
-    /// интерфейса, текст интерфейса; `world_text_counts` — сколько надписей подготовил каждый отрезок
-    /// текста, `ui_counts` — сколько прямоугольников и надписей интерфейса.
+    /// интерфейса, текст интерфейса, плашку и текст подсказки; `world_text_counts` — сколько надписей
+    /// подготовил каждый отрезок текста, `ui_counts` — сколько прямоугольников и надписей интерфейса.
     fn draw_overlay(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         world: &WorldOverlay,
         world_text_counts: &[usize],
-        ui_counts: [usize; 2],
+        ui_counts: UiCounts,
     ) -> Result<(), String> {
-        let [ui_instances, texts] = ui_counts;
         let mut text_runs = 0;
         for run in &world.runs {
             match run {
@@ -1302,20 +1421,46 @@ impl Renderer {
                 }
             }
         }
-        pass.set_pipeline(&self.rect_pipeline);
-        pass.set_vertex_buffer(0, self.strip_buffer.slice(..));
-        if ui_instances > 0 {
-            pass.set_bind_group(0, &self.ui_bind_group, &[]);
-            pass.set_vertex_buffer(1, self.ui_instance_buffer.slice(..));
-            pass.draw(0..wind::STRIP_VERTICES as u32, 0..ui_instances as u32);
-        }
-        if texts > 0 {
+        let tooltip_end = ui_counts.rects + ui_counts.tooltip_rects;
+        self.draw_ui_rects(pass, 0..ui_counts.rects);
+        if ui_counts.texts > 0 {
             self.text_renderer
                 .render(&self.text_atlas, &self.text_viewport, pass)
                 .map_err(|e| format!("не удалось нарисовать текст: {e:?}"))?;
         }
+        self.draw_ui_rects(pass, ui_counts.rects..tooltip_end);
+        if ui_counts.tooltip_texts > 0 {
+            self.tooltip_text_renderer
+                .render(&self.text_atlas, &self.text_viewport, pass)
+                .map_err(|e| format!("не удалось нарисовать подсказку: {e:?}"))?;
+        }
         Ok(())
     }
+
+    /// Прямоугольники интерфейса `range` его буфера; рендерер текста, рисовавший до них, переставил
+    /// конвейер и вершинный буфер — здесь они возвращаются.
+    fn draw_ui_rects(&self, pass: &mut wgpu::RenderPass<'_>, range: std::ops::Range<usize>) {
+        if range.is_empty() {
+            return;
+        }
+        pass.set_pipeline(&self.rect_pipeline);
+        pass.set_vertex_buffer(0, self.strip_buffer.slice(..));
+        pass.set_bind_group(0, &self.ui_bind_group, &[]);
+        pass.set_vertex_buffer(1, self.ui_instance_buffer.slice(..));
+        pass.draw(
+            0..wind::STRIP_VERTICES as u32,
+            range.start as u32..range.end as u32,
+        );
+    }
+}
+
+/// Сколько прямоугольников и надписей интерфейса кадра готово: элементов экрана и подсказки.
+#[derive(Debug, Clone, Copy)]
+struct UiCounts {
+    rects: usize,
+    texts: usize,
+    tooltip_rects: usize,
+    tooltip_texts: usize,
 }
 
 /// A shaped buffer with the rectangle it belongs to (device pixels), its color and whether it wraps.

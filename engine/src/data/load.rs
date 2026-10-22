@@ -22,8 +22,8 @@ use crate::core::scene::{
 };
 use crate::core::screens::{
     Align, Anchor, ButtonCommand, Element, Fill, FontId, ImageRef, MaxSpec, MusicId, Placement,
-    RunCall, RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, WorldColor,
-    WorldElement, WorldElementKind, WorldTextPart,
+    RunCall, RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle,
+    WorldColor, WorldElement, WorldElementKind, WorldTextPart,
 };
 use crate::core::terrain::{DENSITIES, Terrain};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
@@ -2554,6 +2554,8 @@ pub struct FilePaths {
     /// `(имя, путь)`, в порядке `files.fonts` из `game.json` — этот порядок и определяет
     /// `FontId`, на который ссылаются элементы `screens.json` (см. `resolve_font`).
     pub fonts: Vec<(String, String)>,
+    /// «Интерфейс игры» → «Текст»: настройки каждого шрифта `fonts`, в том же порядке.
+    pub font_settings: Vec<FontSettings>,
     /// `(имя, путь)`, в порядке `files.sounds` — этот порядок и определяет `SoundId`, на который
     /// ссылается `play_sound` (см. `resolve_sound`). Пусто, если `files.sounds` не объявлена.
     pub sounds: Vec<(String, String)>,
@@ -2630,6 +2632,9 @@ pub struct ImageDecl {
     /// «Картинки» → «Видео»: `path` на `.mp4` — видео двойной высоты (цвет сверху, маска снизу), а
     /// не картинка; кадров, столбцов и `frame_by` у него нет.
     pub video: bool,
+    /// «Картинки» → «Растягивание рамки»: поля `[слева, сверху, справа, снизу]` в точках картинки — у
+    /// панели, кнопки и шкалы экрана она тянется девятью кусками.
+    pub slice: Option<[u32; 4]>,
 }
 
 impl ImageDecl {
@@ -2678,6 +2683,30 @@ pub enum ImageVerdict {
     Missing,
     Rejected,
 }
+
+/// «Интерфейс игры» → «Текст»: ширина, толщина и признаки OpenType шрифта из `files.fonts`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FontSettings {
+    /// Ширина в процентах обычной — один из шагов CSS `font-stretch`, `FONT_WIDTHS`.
+    pub width: f32,
+    /// Толщина от 1 до 1000, 400 — обычная.
+    pub weight: u16,
+    /// Включённые признаки OpenType, по четыре знака.
+    pub features: Vec<[u8; 4]>,
+}
+
+impl Default for FontSettings {
+    fn default() -> Self {
+        FontSettings {
+            width: 100.0,
+            weight: 400,
+            features: Vec::new(),
+        }
+    }
+}
+
+/// Шаги CSS `font-stretch`, в процентах обычной ширины.
+pub const FONT_WIDTHS: [f32; 9] = [50.0, 62.5, 75.0, 87.5, 100.0, 112.5, 125.0, 150.0, 200.0];
 
 /// Список двоичных файлов, которые стоит прочитать в третьем заходе загрузки — «Звук»
 /// → «Загрузка: сначала лёгкое, потом тяжёлое»: шрифты, звуки и картинки читаются все, музыка —
@@ -2800,8 +2829,15 @@ pub fn read_texts(
         .filter(|(name, _)| referenced.contains(name.as_str()))
         .cloned()
         .collect();
+    // «Текст»: два имени на один файл — файл читается один раз, под первым из имён.
+    let mut fonts: Vec<(String, String)> = Vec::new();
+    for (name, path) in &config.files.fonts {
+        if !fonts.iter().any(|(_, known)| known == path) {
+            fonts.push((name.clone(), path.clone()));
+        }
+    }
     NeededMedia {
-        fonts: config.files.fonts.clone(),
+        fonts,
         sounds: config.files.sounds.clone(),
         music,
         // «Картинки» → «Загрузка и проверка»: все объявленные, whether or not anything
@@ -3078,7 +3114,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         models.as_deref().unwrap_or_default(),
         errors,
     );
-    let (properties, scene_path, rules, screens, fonts) =
+    let (properties, scene_path, rules, screens, (fonts, font_settings)) =
         (properties?, scene_path?, rules?, screens?, fonts?);
     let start_screen = start_screen?;
 
@@ -3104,6 +3140,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             rules,
             screens,
             fonts,
+            font_settings,
             sounds,
             music,
             images,
@@ -3146,22 +3183,134 @@ fn parse_named_paths(
     Some(tables)
 }
 
+/// `files.fonts` разобранная: `(имя, путь)` и настройки каждого шрифта, в одном порядке.
+type FontTable = (Vec<(String, String)>, Vec<FontSettings>);
+
 /// `files.fonts`: an object mapping a font's name (used by `screens.json`'s `font` field) to its
-/// path inside the game's folder. Order is preserved — it becomes the font's `FontId`.
+/// path inside the game's folder, or to `{path, width, weight, features}` — «Интерфейс игры» →
+/// «Текст». Order is preserved — it becomes the font's `FontId`.
 fn parse_font_table(
     value: &Json,
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
-) -> Option<Vec<(String, String)>> {
+) -> Option<FontTable> {
     let obj = expect_object(value, file, path, errors)?;
     let mut fonts = Vec::with_capacity(obj.len());
-    for (name, path_json) in obj {
-        if let Some(font_path) = expect_string(path_json, file, &join(path, name), errors) {
+    let mut settings = Vec::with_capacity(obj.len());
+    for (name, entry) in obj {
+        let entry_path = join(path, name);
+        let parsed = if entry.is_object() {
+            parse_font_object(entry, file, &entry_path, errors)
+        } else {
+            expect_string(entry, file, &entry_path, errors)
+                .map(|font_path| (font_path, FontSettings::default()))
+        };
+        if let Some((font_path, font_settings)) = parsed {
             fonts.push((name.clone(), font_path));
+            settings.push(font_settings);
         }
     }
-    Some(fonts)
+    Some((fonts, settings))
+}
+
+/// Шрифт объектом: `path` обязателен, `width` — шаг CSS `font-stretch`, `weight` — от 1 до 1000,
+/// `features` — список признаков OpenType из четырёх латинских букв или цифр.
+fn parse_font_object(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<(String, FontSettings)> {
+    let obj = expect_object(value, file, path, errors)?;
+    reject_unknown_keys(
+        obj,
+        &["path", "width", "weight", "features"],
+        file,
+        path,
+        errors,
+    );
+    let font_path = require_field(obj, "path", file, path, errors)
+        .and_then(|v| expect_string(v, file, &join(path, "path"), errors));
+    let width = match obj.get("width") {
+        None => Some(100.0),
+        Some(v) => expect_number(v, file, &join(path, "width"), errors).and_then(|n| {
+            let width = n as f32;
+            if FONT_WIDTHS.contains(&width) && f64::from(width) == n {
+                Some(width)
+            } else {
+                errors.push(
+                    file,
+                    &join(path, "width"),
+                    format!(
+                        "свойство \"width\" — ширина шрифта в процентах обычной, один из шагов 50, 62.5, 75, 87.5, 100, 112.5, 125, 150, 200; получено {n}"
+                    ),
+                );
+                None
+            }
+        }),
+    };
+    let weight = match obj.get("weight") {
+        None => Some(400),
+        Some(v) => expect_number(v, file, &join(path, "weight"), errors).and_then(|n| {
+            if (1.0..=1000.0).contains(&n) && n.fract() == 0.0 {
+                Some(n as u16)
+            } else {
+                errors.push(
+                    file,
+                    &join(path, "weight"),
+                    format!(
+                        "свойство \"weight\" — толщина шрифта, целое число от 1 до 1000 (400 — обычная, 700 — жирная); получено {n}"
+                    ),
+                );
+                None
+            }
+        }),
+    };
+    let features = match obj.get("features") {
+        None => Some(Vec::new()),
+        Some(v) => parse_font_features(v, file, &join(path, "features"), errors),
+    };
+    Some((
+        font_path?,
+        FontSettings {
+            width: width?,
+            weight: weight?,
+            features: features?,
+        },
+    ))
+}
+
+/// `features` шрифта: список строк из четырёх латинских букв или цифр — `"tnum"`, `"zero"`.
+fn parse_font_features(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Vec<[u8; 4]>> {
+    let items = expect_array(value, file, path, errors)?;
+    let mut features = Vec::with_capacity(items.len());
+    let mut ok = true;
+    for (i, item) in items.iter().enumerate() {
+        let tag = item.as_str().and_then(|s| {
+            let bytes: [u8; 4] = s.as_bytes().try_into().ok()?;
+            bytes.iter().all(u8::is_ascii_alphanumeric).then_some(bytes)
+        });
+        match tag {
+            Some(tag) => features.push(tag),
+            None => {
+                errors.push(
+                    file,
+                    &join(path, &format!("[{i}]")),
+                    format!(
+                        "свойство \"features\" — список признаков OpenType из четырёх латинских букв или цифр, как \"tnum\"; получено {item}"
+                    ),
+                );
+                ok = false;
+            }
+        }
+    }
+    ok.then_some(features)
 }
 
 /// The two ways `files.sounds`/`files.music` differ — everything else about the two tables is
@@ -3346,6 +3495,7 @@ fn parse_images_table(
                 "offset",
                 "smooth",
                 "glow",
+                "slice",
             ],
             file,
             &entry_path,
@@ -3368,6 +3518,9 @@ fn parse_images_table(
             );
             continue;
         }
+        let Some(slice) = parse_slice(decl_obj, video, file, &entry_path, errors) else {
+            continue;
+        };
         if video && reject_video_frame_keys(decl_obj, file, &entry_path, errors) {
             continue;
         }
@@ -3568,9 +3721,56 @@ fn parse_images_table(
                 .and_then(Json::as_f64)
                 .unwrap_or(0.0),
             video,
+            slice,
         });
     }
     Some(out)
+}
+
+/// «Картинки» → «Растягивание рамки»: `slice` — четыре целых от 0, только у картинки без `frames` и не у
+/// видео. Внешний `None` — ошибка уже названа.
+fn parse_slice(
+    decl_obj: &serde_json::Map<String, Json>,
+    video: bool,
+    file: &str,
+    entry_path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<[u32; 4]>> {
+    let Some(value) = decl_obj.get("slice") else {
+        return Some(None);
+    };
+    let path = join(entry_path, "slice");
+    if video || decl_obj.contains_key("frames") {
+        errors.push(
+            file,
+            &path,
+            "свойство \"slice\" — поля рамки одной картинки: у картинки с кадрами frames и у видео их не бывает",
+        );
+        return None;
+    }
+    let margins: Option<Vec<u32>> = value.as_array().and_then(|items| {
+        items
+            .iter()
+            .map(|item| {
+                item.as_f64()
+                    .filter(|n| *n >= 0.0 && n.fract() == 0.0 && *n <= f64::from(u32::MAX))
+                    .map(|n| n as u32)
+            })
+            .collect()
+    });
+    match margins.as_deref() {
+        Some(&[left, top, right, bottom]) => Some(Some([left, top, right, bottom])),
+        _ => {
+            errors.push(
+                file,
+                &path,
+                format!(
+                    "свойство \"slice\" — поля рамки [слева, сверху, справа, снизу], четыре целых числа от 0; получено {value}"
+                ),
+            );
+            None
+        }
+    }
 }
 
 /// «Картинки» → «Видео»: путь на такое окончание — видео, а не PNG.
@@ -6486,11 +6686,17 @@ fn mark_screen_elements_used(used: &mut std::collections::HashSet<PropertyId>, s
                 mark_selector_used(used, selector);
             }
             for leaf in element.leaves() {
+                if let Element::Bar { value, max, .. } = leaf {
+                    used.insert(*value);
+                    if let MaxSpec::Property(prop) = max {
+                        used.insert(*prop);
+                    }
+                }
                 let text = match leaf {
-                    Element::Label { text, .. } | Element::Button { text, .. } => text,
-                    Element::Panel { .. } | Element::List { .. } => continue,
+                    Element::Label { text, .. } | Element::Button { text, .. } => text.as_slice(),
+                    Element::Panel { .. } | Element::Bar { .. } | Element::List { .. } => &[],
                 };
-                for part in text {
+                for part in text.iter().chain(leaf.tooltip().unwrap_or_default()) {
                     if let TextPart::Value { prop, .. } | TextPart::Own(prop) = part {
                         used.insert(*prop);
                     }
@@ -7320,8 +7526,12 @@ enum ParsedElementData {
         color: Option<[f32; 4]>,
         image_name: Option<String>,
         opacity: Option<f32>,
+        image_scale: Option<f32>,
+        tooltip: Option<Vec<TextPart>>,
         for_: Option<Selector>,
     },
+    /// «Шкала»: в коробке, как кнопка, — вид элемента не раздувается.
+    Bar(Box<ParsedBar>),
     Label {
         placement: Placement,
         text: Vec<TextPart>,
@@ -7347,6 +7557,8 @@ enum ParsedElementData {
         image_hover_name: Option<String>,
         image_pressed_name: Option<String>,
         opacity: Option<f32>,
+        image_scale: Option<f32>,
+        tooltip: Option<Vec<TextPart>>,
         on_click: ParsedCommand,
         /// В коробке: кнопка — самый большой вид элемента.
         for_: Option<Box<Selector>>,
@@ -7375,7 +7587,31 @@ enum Scope {
 const DEFAULT_SCROLL_COLOR: [f32; 4] = [1.0, 1.0, 1.0, 0.4];
 
 const PANEL_KEYS: &[&str] = &[
-    "kind", "anchor", "offset", "size", "color", "image", "opacity", "for",
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "color",
+    "image",
+    "opacity",
+    "image_scale",
+    "tooltip",
+    "for",
+];
+const BAR_KEYS: &[&str] = &[
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "for",
+    "value",
+    "max",
+    "color",
+    "image",
+    "back_color",
+    "back_image",
+    "image_scale",
+    "tooltip",
 ];
 const LABEL_KEYS: &[&str] = &[
     "kind",
@@ -7406,6 +7642,8 @@ const BUTTON_KEYS: &[&str] = &[
     "image_hover",
     "image_pressed",
     "opacity",
+    "image_scale",
+    "tooltip",
     "on_click",
     "for",
 ];
@@ -7459,6 +7697,167 @@ fn parse_opacity(
             }
             Some(Some(n as f32))
         }
+    }
+}
+
+/// «Картинки» → «Растягивание рамки»: `image_scale` — число больше нуля, только у элемента с картинкой.
+/// Внешний `None` — ошибка уже названа.
+fn parse_image_scale(
+    obj: &serde_json::Map<String, Json>,
+    has_image: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<f32>> {
+    let Some(v) = obj.get("image_scale") else {
+        return Some(None);
+    };
+    let scale_path = join(path, "image_scale");
+    let n = expect_number(v, file, &scale_path, errors)?;
+    if n <= 0.0 {
+        errors.push(
+            file,
+            &scale_path,
+            format!("свойство \"image_scale\" должно быть больше нуля, получено {n}"),
+        );
+        return None;
+    }
+    if !has_image {
+        errors.push(
+            file,
+            &scale_path,
+            "свойство \"image_scale\" — толщина рамки картинки: у элемента без картинки его не бывает",
+        );
+        return None;
+    }
+    Some(Some(n as f32))
+}
+
+/// «Подсказка»: `tooltip` — текст с подстановками, как `text`; вид подсказок задаёт блок `tooltip` в
+/// `screens.json`, без него подсказка — ошибка. Внешний `None` — ошибка уже названа.
+fn parse_tooltip(
+    obj: &serde_json::Map<String, Json>,
+    context: ElementContext<'_>,
+    own: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<Vec<TextPart>>> {
+    let Some(v) = obj.get("tooltip") else {
+        return Some(None);
+    };
+    let tooltip_path = join(path, "tooltip");
+    let text = expect_string(v, file, &tooltip_path, errors)?;
+    if !context.tooltips {
+        errors.push(
+            file,
+            &tooltip_path,
+            "у элемента есть \"tooltip\", а блока \"tooltip\" с видом подсказок в screens.json нет",
+        );
+        return None;
+    }
+    parse_rich_text(&text, context.properties, own, file, &tooltip_path, errors).map(Some)
+}
+
+/// Что элементу экрана нужно знать о файле вокруг него: свойства игры и есть ли блок вида подсказок.
+#[derive(Clone, Copy)]
+struct ElementContext<'a> {
+    properties: &'a PropertyTable,
+    tooltips: bool,
+}
+
+/// «Шкала» после разбора, с картинками ещё по именам.
+#[derive(Debug, Clone)]
+struct ParsedBar {
+    placement: Placement,
+    for_: Option<Selector>,
+    value: PropertyId,
+    max: MaxSpec,
+    color: Option<[f32; 4]>,
+    image_name: Option<String>,
+    back_color: Option<[f32; 4]>,
+    back_image_name: Option<String>,
+    image_scale: Option<f32>,
+    tooltip: Option<Vec<TextPart>>,
+}
+
+fn parse_bar(
+    obj: &serde_json::Map<String, Json>,
+    scope: Scope,
+    context: ElementContext<'_>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedElementData> {
+    reject_unknown_keys(obj, BAR_KEYS, file, path, errors);
+    let properties = context.properties;
+    let (placement, for_) = parse_element_place(obj, scope, properties, file, path, errors)?;
+    if scope == Scope::Screen && for_.is_none() {
+        errors.push(
+            file,
+            path,
+            "у шкалы на экране нужен \"for\": value и max она берёт у объекта отбора",
+        );
+        return None;
+    }
+    let value_json = require_field(obj, "value", file, path, errors)?;
+    let value = resolve_number_source(value_json, "value", properties, file, path, errors)?;
+    let max_json = require_field(obj, "max", file, path, errors)?;
+    let max = parse_world_max(max_json, properties, file, &join(path, "max"), errors)?;
+    let color = parse_optional_ui_color(obj, "color", file, path, errors)?;
+    let image_name = parse_optional_string(obj, "image", file, path, errors)?;
+    validate_fill_choice(color.is_some(), image_name.is_some(), file, path, errors);
+    let back_color = parse_optional_ui_color(obj, "back_color", file, path, errors)?;
+    let back_image_name = parse_optional_string(obj, "back_image", file, path, errors)?;
+    if back_color.is_some() && back_image_name.is_some() {
+        errors.push(
+            file,
+            path,
+            "заданы и \"back_color\", и \"back_image\"; у подложки шкалы не больше одного из двух",
+        );
+    }
+    let has_image = image_name.is_some() || back_image_name.is_some();
+    let image_scale = parse_image_scale(obj, has_image, file, path, errors)?;
+    let tooltip = parse_tooltip(obj, context, true, file, path, errors)?;
+    Some(ParsedElementData::Bar(Box::new(ParsedBar {
+        placement,
+        for_,
+        value,
+        max,
+        color,
+        image_name,
+        back_color,
+        back_image_name,
+        image_scale,
+        tooltip,
+    })))
+}
+
+/// Необязательный цвет `key`: `Some(None)` — его нет, внешний `None` — ошибка уже названа.
+fn parse_optional_ui_color(
+    obj: &serde_json::Map<String, Json>,
+    key: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<[f32; 4]>> {
+    match obj.get(key) {
+        Some(v) => expect_ui_color(v, file, &join(path, key), errors).map(Some),
+        None => Some(None),
+    }
+}
+
+/// Необязательная строка `key`: `Some(None)` — её нет, внешний `None` — ошибка уже названа.
+fn parse_optional_string(
+    obj: &serde_json::Map<String, Json>,
+    key: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<String>> {
+    match obj.get(key) {
+        Some(v) => expect_string(v, file, &join(path, key), errors).map(Some),
+        None => Some(None),
     }
 }
 
@@ -7602,9 +8001,10 @@ fn parse_list(
     obj: &serde_json::Map<String, Json>,
     path: &str,
     file: &str,
-    properties: &PropertyTable,
+    context: ElementContext<'_>,
     errors: &mut ErrorSink,
 ) -> Option<ParsedElementData> {
+    let properties = context.properties;
     reject_unknown_keys(obj, LIST_KEYS, file, path, errors);
     let placement = parse_placement(obj, file, path, errors)?;
     let for_json = require_field(obj, "for", file, path, errors)?;
@@ -7667,7 +8067,7 @@ fn parse_list(
                 item,
                 &join(&row_path, &format!("[{i}]")),
                 file,
-                properties,
+                context,
                 Scope::Row,
                 errors,
             )
@@ -7689,10 +8089,11 @@ fn parse_element(
     value: &Json,
     path: &str,
     file: &str,
-    properties: &PropertyTable,
+    context: ElementContext<'_>,
     scope: Scope,
     errors: &mut ErrorSink,
 ) -> Option<ParsedElementData> {
+    let properties = context.properties;
     let obj = expect_object(value, file, path, errors)?;
     let kind_json = require_field(obj, "kind", file, path, errors)?;
     let kind = expect_string(kind_json, file, &join(path, "kind"), errors)?;
@@ -7712,11 +8113,16 @@ fn parse_element(
             validate_fill_choice(color.is_some(), image_name.is_some(), file, path, errors);
             let opacity = parse_opacity(obj, file, path, errors)?;
             validate_opacity_has_image(image_name.is_some(), opacity.is_some(), file, path, errors);
+            let image_scale = parse_image_scale(obj, image_name.is_some(), file, path, errors)?;
+            let own = scope == Scope::Row || for_.is_some();
+            let tooltip = parse_tooltip(obj, context, own, file, path, errors)?;
             Some(ParsedElementData::Panel {
                 placement,
                 color,
                 image_name,
                 opacity,
+                image_scale,
+                tooltip,
                 for_,
             })
         }
@@ -7860,6 +8266,8 @@ fn parse_element(
             }
             let opacity = parse_opacity(obj, file, path, errors)?;
             validate_opacity_has_image(image_name.is_some(), opacity.is_some(), file, path, errors);
+            let image_scale = parse_image_scale(obj, image_name.is_some(), file, path, errors)?;
+            let tooltip = parse_tooltip(obj, context, own, file, path, errors)?;
             let on_click_json = require_field(obj, "on_click", file, path, errors)?;
             let on_click = parse_button_command(
                 on_click_json,
@@ -7882,23 +8290,26 @@ fn parse_element(
                 image_hover_name,
                 image_pressed_name,
                 opacity,
+                image_scale,
+                tooltip,
                 on_click,
                 for_: for_.map(Box::new),
             })
         }
-        "list" if scope == Scope::Screen => parse_list(obj, path, file, properties, errors),
+        "bar" => parse_bar(obj, scope, context, file, path, errors),
+        "list" if scope == Scope::Screen => parse_list(obj, path, file, context, errors),
         "list" => {
             errors.push(
                 file,
                 &join(path, "kind"),
-                "в строке списка нет вложенных списков: ожидался panel, label или button",
+                "в строке списка нет вложенных списков: ожидался panel, label, button или bar",
             );
             None
         }
         other => {
             let expected = match scope {
-                Scope::Screen => "panel, label, button или list",
-                Scope::Row => "panel, label или button",
+                Scope::Screen => "panel, label, button, bar или list",
+                Scope::Row => "panel, label, button или bar",
             };
             errors.push(
                 file,
@@ -7954,7 +8365,7 @@ fn parse_screen(
     value: &Json,
     index: usize,
     file: &str,
-    properties: &PropertyTable,
+    context: ElementContext<'_>,
     errors: &mut ErrorSink,
 ) -> Option<ParsedScreen> {
     let path = format!("screens[{index}]");
@@ -7990,7 +8401,7 @@ fn parse_screen(
                         v,
                         &join(&elements_path, &format!("[{i}]")),
                         file,
-                        properties,
+                        context,
                         Scope::Screen,
                         errors,
                     )
@@ -8033,6 +8444,10 @@ fn parse_screen(
 struct ParsedScreensFile {
     screens: Vec<ParsedScreen>,
     world_elements: Vec<ParsedWorldElement>,
+    /// «Подсказка»: блок вида подсказок, со шрифтом и картинкой ещё по именам.
+    tooltip: Option<ParsedTooltipStyle>,
+    /// «Раскладка экрана»: размер окна, под который расставлены элементы.
+    ui_reference: Option<[f32; 2]>,
 }
 
 fn parse_screens_json(
@@ -8047,7 +8462,23 @@ fn parse_screens_json(
     let Some(obj) = expect_object(&root, file, "", errors) else {
         return ParsedScreensFile::default();
     };
-    reject_unknown_keys(obj, &["screens", "world_elements"], file, "", errors);
+    reject_unknown_keys(
+        obj,
+        &["screens", "world_elements", "tooltip", "ui_reference"],
+        file,
+        "",
+        errors,
+    );
+    let tooltip = obj
+        .get("tooltip")
+        .and_then(|v| parse_tooltip_style(v, file, errors));
+    let ui_reference = obj
+        .get("ui_reference")
+        .and_then(|v| parse_ui_reference(v, file, errors));
+    let context = ElementContext {
+        properties,
+        tooltips: obj.contains_key("tooltip"),
+    };
     let Some(screens_json) = obj.get("screens") else {
         errors.push(file, "", "отсутствует список экранов");
         return ParsedScreensFile::default();
@@ -8058,7 +8489,7 @@ fn parse_screens_json(
     let screens = arr
         .iter()
         .enumerate()
-        .filter_map(|(i, v)| parse_screen(v, i, file, properties, errors))
+        .filter_map(|(i, v)| parse_screen(v, i, file, context, errors))
         .collect();
     let world_elements = match obj.get("world_elements") {
         None => Vec::new(),
@@ -8082,7 +8513,151 @@ fn parse_screens_json(
     ParsedScreensFile {
         screens,
         world_elements,
+        tooltip,
+        ui_reference,
     }
+}
+
+/// «Подсказка» после разбора: шрифт и картинка ещё по именам.
+#[derive(Debug, Clone)]
+struct ParsedTooltipStyle {
+    color: Option<[f32; 4]>,
+    image_name: Option<String>,
+    image_scale: f32,
+    font_name: String,
+    font_size: f32,
+    text_color: [f32; 4],
+    padding: [f32; 2],
+    gap: f32,
+    delay: f64,
+}
+
+/// Подсказка ждёт курсор столько секунд, когда `delay` не задан.
+const DEFAULT_TOOLTIP_DELAY: f64 = 0.5;
+
+/// «Подсказка»: блок `tooltip` в `screens.json` — плашка `image` или `color`, `image_scale`, `font`,
+/// `font_size`, `text_color`, `padding`, `gap`, `delay`.
+fn parse_tooltip_style(
+    value: &Json,
+    file: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedTooltipStyle> {
+    let path = "tooltip";
+    let obj = expect_object(value, file, path, errors)?;
+    reject_unknown_keys(
+        obj,
+        &[
+            "image",
+            "color",
+            "image_scale",
+            "font",
+            "font_size",
+            "text_color",
+            "padding",
+            "gap",
+            "delay",
+        ],
+        file,
+        path,
+        errors,
+    );
+    let color = parse_optional_ui_color(obj, "color", file, path, errors);
+    let image_name = parse_optional_string(obj, "image", file, path, errors);
+    if let (Some(color), Some(image_name)) = (&color, &image_name) {
+        validate_fill_choice(color.is_some(), image_name.is_some(), file, path, errors);
+    }
+    let has_image = image_name.as_ref().is_some_and(Option::is_some);
+    let image_scale = parse_image_scale(obj, has_image, file, path, errors);
+    let font_name = require_field(obj, "font", file, path, errors)
+        .and_then(|v| expect_string(v, file, &join(path, "font"), errors));
+    let font_size = match obj.get("font_size") {
+        None => Some(16.0),
+        Some(v) => expect_number(v, file, &join(path, "font_size"), errors).filter(|n| {
+            let ok = *n > 0.0;
+            if !ok {
+                errors.push(
+                    file,
+                    &join(path, "font_size"),
+                    format!("свойство \"font_size\" должно быть больше нуля, получено {n}"),
+                );
+            }
+            ok
+        }),
+    };
+    let text_color = parse_optional_ui_color(obj, "text_color", file, path, errors)
+        .map(|c| c.unwrap_or([1.0, 1.0, 1.0, 1.0]));
+    let padding = match obj.get("padding") {
+        None => Some([0.0, 0.0]),
+        Some(v) => parse_vec2(v, file, &join(path, "padding"), errors).and_then(|p| {
+            if p[0] >= 0.0 && p[1] >= 0.0 {
+                Some([p[0] as f32, p[1] as f32])
+            } else {
+                errors.push(
+                    file,
+                    &join(path, "padding"),
+                    format!(
+                        "свойство \"padding\" — отступы [по бокам, сверху и снизу], два числа от 0; получено [{}, {}]",
+                        p[0], p[1]
+                    ),
+                );
+                None
+            }
+        }),
+    };
+    let gap = parse_not_negative(obj, "gap", 0.0, file, path, errors);
+    let delay = parse_not_negative(obj, "delay", DEFAULT_TOOLTIP_DELAY, file, path, errors);
+    Some(ParsedTooltipStyle {
+        color: color?,
+        image_name: image_name?,
+        image_scale: image_scale?.unwrap_or(1.0),
+        font_name: font_name?,
+        font_size: font_size? as f32,
+        text_color: text_color?,
+        padding: padding?,
+        gap: gap? as f32,
+        delay: delay?,
+    })
+}
+
+/// Необязательное число `key` от 0, `default` — когда его нет. `None` — ошибка уже названа.
+fn parse_not_negative(
+    obj: &serde_json::Map<String, Json>,
+    key: &str,
+    default: f64,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<f64> {
+    let Some(v) = obj.get(key) else {
+        return Some(default);
+    };
+    let n = expect_number(v, file, &join(path, key), errors)?;
+    if n < 0.0 {
+        errors.push(
+            file,
+            &join(path, key),
+            format!("свойство \"{key}\" не может быть меньше нуля, получено {n}"),
+        );
+        return None;
+    }
+    Some(n)
+}
+
+/// «Раскладка экрана»: `ui_reference` — пара чисел больше нуля.
+fn parse_ui_reference(value: &Json, file: &str, errors: &mut ErrorSink) -> Option<[f32; 2]> {
+    let size = parse_vec2(value, file, "ui_reference", errors)?;
+    if size[0] > 0.0 && size[1] > 0.0 {
+        return Some([size[0] as f32, size[1] as f32]);
+    }
+    errors.push(
+        file,
+        "ui_reference",
+        format!(
+            "свойство \"ui_reference\" — размер окна образца [ширина, высота], два числа больше нуля; получено [{}, {}]",
+            size[0], size[1]
+        ),
+    );
+    None
 }
 
 fn resolve_font(
@@ -8398,6 +8973,8 @@ fn resolve_element(
             color,
             image_name,
             opacity,
+            image_scale,
+            tooltip,
             for_,
         } => {
             let fill = resolve_fill(
@@ -8409,12 +8986,20 @@ fn resolve_element(
                 file,
                 &join(path, "image"),
                 errors,
-            )?;
-            Some(Element::Panel {
+            );
+            let tooltip_ok =
+                validate_tooltip_refs(tooltip, scene_names, file, scene_file, path, errors);
+            let fill = fill?;
+            tooltip_ok.then(|| Element::Panel {
                 placement: *placement,
                 fill,
+                image_scale: image_scale.unwrap_or(1.0),
+                tooltip: tooltip.clone(),
                 for_: for_.clone(),
             })
+        }
+        ParsedElementData::Bar(bar) => {
+            resolve_bar(bar, path, file, scene_file, images, scene_names, errors)
         }
         ParsedElementData::Label {
             placement,
@@ -8464,10 +9049,14 @@ fn resolve_element(
             image_hover_name,
             image_pressed_name,
             opacity,
+            image_scale,
+            tooltip,
             on_click,
             for_,
         } => {
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
+            let tooltip_ok =
+                validate_tooltip_refs(tooltip, scene_names, file, scene_file, path, errors);
             let text_ok = validate_text_refs(
                 text,
                 scene_names,
@@ -8523,7 +9112,7 @@ fn resolve_element(
                 errors,
             );
             let (fill_hover, fill_pressed) = (fill_hover?, fill_pressed?);
-            if !text_ok {
+            if !text_ok || !tooltip_ok {
                 return None;
             }
             Some(Element::Button {
@@ -8535,6 +9124,8 @@ fn resolve_element(
                 fill,
                 fill_hover,
                 fill_pressed,
+                image_scale: image_scale.unwrap_or(1.0),
+                tooltip: tooltip.clone(),
                 on_click,
                 for_: for_.as_deref().cloned(),
             })
@@ -8585,6 +9176,107 @@ fn resolve_element(
             })
         }
     }
+}
+
+/// «Подсказка»: подстановки `{имя объекта.свойство}` в подсказке называют объекты из сцены, как в `text`.
+fn validate_tooltip_refs(
+    tooltip: &Option<Vec<TextPart>>,
+    scene_names: &std::collections::HashSet<&str>,
+    file: &str,
+    scene_file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    tooltip.as_ref().is_none_or(|text| {
+        validate_text_refs(
+            text,
+            scene_names,
+            file,
+            scene_file,
+            &join(path, "tooltip"),
+            errors,
+        )
+    })
+}
+
+/// «Шкала»: заливка и подложка по именам картинок — как у панели.
+fn resolve_bar(
+    bar: &ParsedBar,
+    path: &str,
+    file: &str,
+    scene_file: &str,
+    images: &[ImageDecl],
+    scene_names: &std::collections::HashSet<&str>,
+    errors: &mut ErrorSink,
+) -> Option<Element> {
+    let fill = resolve_fill(
+        bar.color,
+        bar.image_name.as_deref(),
+        None,
+        None,
+        images,
+        file,
+        &join(path, "image"),
+        errors,
+    );
+    let back = match (bar.back_color, bar.back_image_name.as_deref()) {
+        (None, None) => Some(None),
+        (color, image) => resolve_fill(
+            color,
+            image,
+            None,
+            None,
+            images,
+            file,
+            &join(path, "back_image"),
+            errors,
+        )
+        .map(Some),
+    };
+    let tooltip_ok =
+        validate_tooltip_refs(&bar.tooltip, scene_names, file, scene_file, path, errors);
+    let (fill, back) = (fill?, back?);
+    tooltip_ok.then(|| Element::Bar {
+        placement: bar.placement,
+        value: bar.value,
+        max: bar.max,
+        fill,
+        back,
+        image_scale: bar.image_scale.unwrap_or(1.0),
+        tooltip: bar.tooltip.clone(),
+        for_: bar.for_.clone(),
+    })
+}
+
+/// «Подсказка»: вид подсказок со шрифтом и картинкой, найденными по именам.
+fn resolve_tooltip_style(
+    parsed: &ParsedTooltipStyle,
+    fonts: &[(String, String)],
+    images: &[ImageDecl],
+    file: &str,
+    errors: &mut ErrorSink,
+) -> Option<TooltipStyle> {
+    let font = resolve_font(&parsed.font_name, fonts, file, "tooltip → font", errors);
+    let fill = resolve_fill(
+        parsed.color,
+        parsed.image_name.as_deref(),
+        None,
+        None,
+        images,
+        file,
+        "tooltip → image",
+        errors,
+    );
+    Some(TooltipStyle {
+        fill: fill?,
+        image_scale: parsed.image_scale,
+        font: font?,
+        font_size: parsed.font_size,
+        text_color: parsed.text_color,
+        padding: parsed.padding,
+        gap: parsed.gap,
+        delay: parsed.delay,
+    })
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -9413,6 +10105,9 @@ fn resolve_screens(
         // cross-checks `resolve_screens` itself runs.
         world_elements: Vec::new(),
         runs: runs.calls,
+        // Как `world_elements`: вид подсказок и масштаб интерфейса ставит `load_rest_with_tables`.
+        tooltip: None,
+        ui_reference: None,
     })
 }
 
@@ -9430,16 +10125,26 @@ fn looks_like_font(bytes: &[u8]) -> bool {
 /// «Интерфейс игры»: a font declared in `files.fonts` but missing or unparseable is an error
 /// whether or not any element currently references it — the same way a scene object's own
 /// broken field is, not treated as merely unused.
+/// «Текст»: байты файла шрифта `path` — страница читает файл один раз, под первым именем, что ведёт на
+/// него, а годятся байты под любым из этих имён.
+pub fn font_file_bytes<'a>(
+    fonts: &[(String, String)],
+    font_bytes: &'a [(String, Option<Vec<u8>>)],
+    path: &str,
+) -> Option<&'a Vec<u8>> {
+    font_bytes
+        .iter()
+        .find(|(name, bytes)| bytes.is_some() && fonts.iter().any(|(n, p)| n == name && p == path))
+        .and_then(|(_, bytes)| bytes.as_ref())
+}
+
 fn validate_font_files(
     fonts: &[(String, String)],
     font_bytes: &[(String, Option<Vec<u8>>)],
     errors: &mut ErrorSink,
 ) {
     for (name, path) in fonts {
-        let bytes = font_bytes
-            .iter()
-            .find(|(n, _)| n == name)
-            .and_then(|(_, b)| b.as_ref());
+        let bytes = font_file_bytes(fonts, font_bytes, path);
         let field_path = format!("files → fonts → {name}");
         match bytes {
             None => errors.push(
@@ -9665,6 +10370,7 @@ fn validate_image_files(
                         }
                     }
                 }
+                validate_slice_fits(decl, *width, *height, &field_path, errors);
             }
             Some(ImageVerdict::Rejected) => errors.push(
                 "game.json",
@@ -9683,6 +10389,41 @@ fn validate_image_files(
                 ),
             ),
         }
+    }
+}
+
+/// «Картинки» → «Загрузка и проверка»: поля `slice` слева и справа в сумме меньше ширины файла, сверху и
+/// снизу — высоты: у краёв и середины остаются точки.
+fn validate_slice_fits(
+    decl: &ImageDecl,
+    width: u32,
+    height: u32,
+    field_path: &str,
+    errors: &mut ErrorSink,
+) {
+    let Some([left, top, right, bottom]) = decl.slice else {
+        return;
+    };
+    let path = join(field_path, "slice");
+    if u64::from(left) + u64::from(right) >= u64::from(width) {
+        errors.push(
+            "game.json",
+            &path,
+            format!(
+                "{} — поля \"slice\" слева и справа ({left} + {right}) должны быть меньше ширины картинки {width}",
+                decl.path
+            ),
+        );
+    }
+    if u64::from(top) + u64::from(bottom) >= u64::from(height) {
+        errors.push(
+            "game.json",
+            &path,
+            format!(
+                "{} — поля \"slice\" сверху и снизу ({top} + {bottom}) должны быть меньше высоты картинки {height}",
+                decl.path
+            ),
+        );
     }
 }
 
@@ -9915,6 +10656,12 @@ fn collect_used_images(
                     mark_fill_used(&mut used, fill_hover);
                     mark_fill_used(&mut used, fill_pressed);
                 }
+                Element::Bar { fill, back, .. } => {
+                    mark_fill_used(&mut used, fill);
+                    if let Some(back) = back {
+                        mark_fill_used(&mut used, back);
+                    }
+                }
                 Element::Label { .. } | Element::List { .. } => {}
             }
         }
@@ -9930,12 +10677,16 @@ fn validate_unused_images(
     scene: &[ParsedObject],
     rules: &RuleSet,
     screens: &[Screen],
+    tooltip: Option<&TooltipStyle>,
     world_elements: &[WorldElement],
     ground: &[GroundLayer],
     code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
-    let used = collect_used_images(scene, rules, screens, world_elements, ground, images);
+    let mut used = collect_used_images(scene, rules, screens, world_elements, ground, images);
+    if let Some(tooltip) = tooltip {
+        mark_fill_used(&mut used, &tooltip.fill);
+    }
     for (i, decl) in images.iter().enumerate() {
         if !used.contains(&i) && !code.is_some_and(|c| code_mentions_word(c, &decl.name)) {
             errors.push_warning(
@@ -10493,6 +11244,8 @@ pub fn load_rest_with_models(
     let ParsedScreensFile {
         screens: parsed_screens,
         world_elements: parsed_world_elements,
+        tooltip: parsed_tooltip,
+        ui_reference,
     } = match screens_json {
         Some(text) => parse_screens_json(text, &config.files.screens, &properties, &mut errors),
         None => {
@@ -10511,6 +11264,15 @@ pub fn load_rest_with_models(
         &config.files.screens,
         &mut errors,
     );
+    let tooltip = parsed_tooltip.as_ref().and_then(|parsed| {
+        resolve_tooltip_style(
+            parsed,
+            &config.files.fonts,
+            &config.files.images,
+            &config.files.screens,
+            &mut errors,
+        )
+    });
     // «Тесты по записанному вводу», требование 33: файлы картинок, шрифтов и звуков не читаются —
     // проверки, которым нужен сам файл, пропускаются; JSON и код игры проверяются как обычно.
     if !skip_media_validation {
@@ -10713,6 +11475,7 @@ pub fn load_rest_with_models(
                 &scene_objects,
                 &rules,
                 &sc.screens,
+                tooltip.as_ref(),
                 &world_elements,
                 &ground,
                 code_json,
@@ -10753,6 +11516,8 @@ pub fn load_rest_with_models(
     }
     let mut screens_config = screens_config.expect("no errors means screens.json resolved");
     screens_config.world_elements = world_elements;
+    screens_config.tooltip = tooltip;
+    screens_config.ui_reference = ui_reference;
 
     let scene_specs: Vec<ObjectSpec> = scene_objects
         .iter()

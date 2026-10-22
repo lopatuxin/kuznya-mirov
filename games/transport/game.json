@@ -258,7 +258,13 @@
     "screens": "screens.json",
     "code": "code.lua",
     "fonts": {
-      "ui": "fonts/Rubik.ttf"
+      "ui": {
+        "path": "fonts/Tektur.ttf",
+        "width": 87.5,
+        "weight": 500,
+        "features": ["tnum"]
+      },
+      "title": "fonts/StalinistOne-Regular.ttf"
     },
     "sounds": {
       "cash": "sounds/cash.wav",
@@ -435,16 +441,236 @@
     },
     "images": {
       "jewelry": {
-        "path": "icons/jewelry.png"
+        "path": "icons/jewelry.png",
+        "smooth": true
       },
       "market": {
-        "path": "icons/market.png"
+        "path": "icons/market.png",
+        "smooth": true
       },
       "office": {
-        "path": "icons/office.png"
+        "path": "icons/office.png",
+        "smooth": true
       },
       "shop": {
-        "path": "icons/shop.png"
+        "path": "icons/shop.png",
+        "smooth": true
+      },
+      "panel": {
+        "path": "ui/panel.png",
+        "slice": [34, 34, 34, 34],
+        "smooth": true
+      },
+      "window": {
+        "path": "ui/window.png",
+        "slice": [38, 81, 40, 54],
+        "smooth": true
+      },
+      "inset": {
+        "path": "ui/inset.png",
+        "slice": [22, 22, 22, 22],
+        "smooth": true
+      },
+      "inset_dark": {
+        "path": "ui/inset-dark.png",
+        "slice": [18, 18, 18, 18],
+        "smooth": true
+      },
+      "tooltip": {
+        "path": "ui/tooltip.png",
+        "slice": [6, 6, 6, 6],
+        "smooth": true
+      },
+      "toast": {
+        "path": "ui/toast.png",
+        "slice": [11, 11, 11, 11],
+        "smooth": true
+      },
+      "plaque_blue": {
+        "path": "ui/plaque-blue.png",
+        "slice": [9, 9, 9, 9],
+        "smooth": true
+      },
+      "plaque_wide_blue": {
+        "path": "ui/plaque-wide-blue.png",
+        "slice": [21, 21, 21, 21],
+        "smooth": true
+      },
+      "plaque_blue_hover": {
+        "path": "ui/plaque-blue-hover.png",
+        "slice": [9, 9, 9, 9],
+        "smooth": true
+      },
+      "plaque_wide_blue_hover": {
+        "path": "ui/plaque-wide-blue-hover.png",
+        "slice": [21, 21, 21, 21],
+        "smooth": true
+      },
+      "plaque_blue_pressed": {
+        "path": "ui/plaque-blue-pressed.png",
+        "slice": [9, 9, 9, 9],
+        "smooth": true
+      },
+      "plaque_wide_blue_pressed": {
+        "path": "ui/plaque-wide-blue-pressed.png",
+        "slice": [21, 21, 21, 21],
+        "smooth": true
+      },
+      "plaque_wide_blue_disabled": {
+        "path": "ui/plaque-wide-blue-disabled.png",
+        "slice": [21, 21, 21, 21],
+        "smooth": true
+      },
+      "plaque_cream": {
+        "path": "ui/plaque-cream.png",
+        "slice": [9, 9, 9, 9],
+        "smooth": true
+      },
+      "plaque_cream_hover": {
+        "path": "ui/plaque-cream-hover.png",
+        "slice": [9, 9, 9, 9],
+        "smooth": true
+      },
+      "plaque_cream_pressed": {
+        "path": "ui/plaque-cream-pressed.png",
+        "slice": [9, 9, 9, 9],
+        "smooth": true
+      },
+      "icon_calendar": {
+        "path": "ui/icons/calendar.png",
+        "smooth": true
+      },
+      "icon_coins": {
+        "path": "ui/icons/coins.png",
+        "smooth": true
+      },
+      "icon_pause": {
+        "path": "ui/icons/pause.png",
+        "smooth": true
+      },
+      "icon_pause_dark": {
+        "path": "ui/icons/pause-dark.png",
+        "smooth": true
+      },
+      "icon_play": {
+        "path": "ui/icons/play.png",
+        "smooth": true
+      },
+      "icon_play_dark": {
+        "path": "ui/icons/play-dark.png",
+        "smooth": true
+      },
+      "icon_fast": {
+        "path": "ui/icons/fast.png",
+        "smooth": true
+      },
+      "icon_fast_dark": {
+        "path": "ui/icons/fast-dark.png",
+        "smooth": true
+      },
+      "icon_faster": {
+        "path": "ui/icons/faster.png",
+        "smooth": true
+      },
+      "icon_faster_dark": {
+        "path": "ui/icons/faster-dark.png",
+        "smooth": true
+      },
+      "icon_truck": {
+        "path": "ui/icons/truck.png",
+        "smooth": true
+      },
+      "icon_truck_dark": {
+        "path": "ui/icons/truck-dark.png",
+        "smooth": true
+      },
+      "icon_contracts": {
+        "path": "ui/icons/contracts.png",
+        "smooth": true
+      },
+      "icon_contracts_dark": {
+        "path": "ui/icons/contracts-dark.png",
+        "smooth": true
+      },
+      "icon_firm": {
+        "path": "ui/icons/firm.png",
+        "smooth": true
+      },
+      "icon_firm_dark": {
+        "path": "ui/icons/firm-dark.png",
+        "smooth": true
+      },
+      "icon_mail": {
+        "path": "ui/icons/mail.png",
+        "smooth": true
+      },
+      "icon_mail_dark": {
+        "path": "ui/icons/mail-dark.png",
+        "smooth": true
+      },
+      "icon_settings": {
+        "path": "ui/icons/settings.png",
+        "smooth": true
+      },
+      "icon_settings_dark": {
+        "path": "ui/icons/settings-dark.png",
+        "smooth": true
+      },
+      "icon_truck_big": {
+        "path": "ui/icons/truck-big.png",
+        "smooth": true
+      },
+      "icon_scales": {
+        "path": "ui/icons/scales.png",
+        "smooth": true
+      },
+      "icon_fuel": {
+        "path": "ui/icons/fuel.png",
+        "smooth": true
+      },
+      "icon_engine": {
+        "path": "ui/icons/engine.png",
+        "smooth": true
+      },
+      "icon_wrench": {
+        "path": "ui/icons/wrench.png",
+        "smooth": true
+      },
+      "icon_eye": {
+        "path": "ui/icons/eye.png",
+        "smooth": true
+      },
+      "icon_route": {
+        "path": "ui/icons/route.png",
+        "smooth": true
+      },
+      "icon_service": {
+        "path": "ui/icons/service.png",
+        "smooth": true
+      },
+      "gauge": {
+        "path": "ui/gauge.png",
+        "slice": [6, 6, 6, 6],
+        "smooth": true
+      },
+      "gauge_blue": {
+        "path": "ui/gauge-blue.png",
+        "slice": [6, 6, 6, 6],
+        "smooth": true
+      },
+      "gauge_yellow": {
+        "path": "ui/gauge-yellow.png",
+        "slice": [6, 6, 6, 6],
+        "smooth": true
+      },
+      "gauge_cream": {
+        "path": "ui/gauge-cream.png",
+        "slice": [6, 6, 6, 6],
+        "smooth": true
+      },
+      "dot": {
+        "path": "ui/dot.png",
+        "smooth": true
       }
     }
   }

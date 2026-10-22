@@ -1,4 +1,4 @@
--- Транспортная компания: рабочий день, заказы клиентов, план машин, езда, загрузка и выгрузка, деньги,
+-- Транспортная компания: рабочий день, заказы клиентов, очередь машин, езда, загрузка и выгрузка, деньги,
 -- доверие клиентов, конкурент и события на дорогах («Фаза-02-первый-час» игры); бензин, износ и ТО машин
 -- («Фаза-03-машина»). Движок везёт машины
 -- правилом `drive`, считает время и путь по дорогам (`road_route`), рисует списки и кнопки; всё остальное
@@ -41,14 +41,13 @@ local START_DATE = { year = 1930, month = 1, day = 1 }
 local MONTHS = { "января", "февраля", "марта", "апреля", "мая", "июня",
   "июля", "августа", "сентября", "октября", "ноября", "декабря" }
 
-local WINDOWS = { "win_orders", "win_cars", "win_notes", "win_firm" }  -- окна над полосой, открыто не больше одного
+local WINDOWS = { "win_orders", "win_cars", "win_notes", "win_firm", "win_settings" }  -- окна над полосой, открыто не больше одного
 
 local state = {
   game = nil,
   places = nil,
   trust = {},
   last_pos = {},     -- машина → где была на прошлом шаге, для пробега
-  kmh = {},          -- машина → скорость на последнем шаге езды
   work_kind = {},    -- машина → «погрузка», «выгрузка», «заправка» или «ТО», пока она стоит на остановке
   pending = {},
   last_minute = -1,
@@ -108,6 +107,22 @@ end
 
 local function fmt_money(n)
   return fmt_int(n) .. NBSP .. "₽"
+end
+
+-- Прописные буквы для заголовка окна: шрифт заголовков пишет только ими, а `string.upper` не знает кириллицы.
+local function upper(text)
+  local out = {}
+  for _, c in utf8.codes(text) do
+    if c >= 0x430 and c <= 0x44F then
+      c = c - 0x20
+    elseif c == 0x451 then
+      c = 0x401
+    elseif c >= 0x61 and c <= 0x7A then
+      c = c - 0x20
+    end
+    out[#out + 1] = utf8.char(c)
+  end
+  return table.concat(out)
 end
 
 -- Объекты игры ---------------------------------------------------------------------------------
@@ -188,13 +203,11 @@ local function selected_car()
   return find({ has = { "car", "selected" } })[1]
 end
 
+-- Красный кружок с числом непрочитанных на конверте полосы.
 local function refresh_notes()
   local g = game()
-  if g.unread > 0 then
-    g.notes_text = "Сообщения · " .. math.floor(g.unread)
-  else
-    g.notes_text = "Сообщения"
-  end
+  g.unread_on = g.unread > 0
+  g.unread_text = string.format("%d", math.floor(g.unread))
 end
 
 -- Свободные заказы считает сам код: `find` не видит заказов, созданных в том же шаге, а первый шаг
@@ -314,6 +327,8 @@ local function refresh_money(bought)
   end
   g.can_buy = (g.money >= CAR_PRICE) and count < 2
   g.can_hire = has_spare_car and g.money >= DRIVER_FEE
+  g.buy_off = count < 2 and not g.can_buy
+  g.hire_off = has_spare_car and not g.can_hire
   g.firm_alert = g.can_buy or g.can_hire
   local wages = daily_wages()
   local text = "На счёте " .. fmt_money(g.money) .. ", долг по кредиту " .. fmt_money(g.debt) .. ".\n" ..
@@ -321,7 +336,7 @@ local function refresh_money(bought)
     ", аренда конторы " .. fmt_money(OFFICE_RENT) ..
     (wages > 0 and (", зарплата водителя " .. fmt_money(wages)) or "") .. "."
   if count < 2 and not g.can_buy then
-    text = text .. "\nВторая полуторка — " .. fmt_money(CAR_PRICE) .. ": не хватает " .. fmt_money(CAR_PRICE - g.money) .. "."
+    text = text .. "\nВторой ГАЗ-АА — " .. fmt_money(CAR_PRICE) .. ": не хватает " .. fmt_money(CAR_PRICE - g.money) .. "."
   elseif has_spare_car and not g.can_hire then
     text = text .. "\nВодитель — " .. fmt_money(DRIVER_FEE) .. ": не хватает " .. fmt_money(DRIVER_FEE - g.money) .. "."
   end
@@ -362,6 +377,63 @@ local function endpoint(kind, avoid)
   return place_point(kind)
 end
 
+-- Годится ли машина для заказа: есть водитель, кузов тот, что нужен, и груз влезает. Вторым значением —
+-- почему не годится.
+local function fits(car, order)
+  if not car.has_driver then
+    return false, "у " .. car.name .. " нет водителя"
+  end
+  if car.body ~= order.body then
+    return false, "нужна " .. order.body .. ", а " .. car.name .. " — " .. car.body
+  end
+  if order.weight > car.capacity then
+    return false, "в " .. car.name .. " не влезет " .. fmt_tons(order.weight)
+  end
+  return true
+end
+
+-- Какая машина нужна заказу: «бортовая, от 1,3 т».
+local function need_phrase(order)
+  return order.body .. ", от " .. fmt_tons(order.weight)
+end
+
+-- Машины, годные для заказа, по номеру.
+local function fitting_cars(order)
+  local list = {}
+  for _, c in ipairs(cars()) do
+    if fits(c, order) then list[#list + 1] = c end
+  end
+  table.sort(list, function(a, b) return a.car_id < b.car_id end)
+  return list
+end
+
+-- Машина для нового заказа: выбранная игроком, пока она годится, иначе годная с самой короткой очередью
+-- остановок. `order` — заказ или таблица нового заказа до `create`. `added` — машина → сколько остановок ей
+-- поставили в этом же шаге: `find` их ещё не видит, а на паузе следующего шага не будет до самого запуска
+-- времени.
+local function pick_for(order, added)
+  local chosen = order.pick_manual and car_by_id(order.pick_car) or nil
+  if chosen == nil or not fits(chosen, order) then
+    order.pick_manual = false
+    chosen = nil
+    local best_stops = nil
+    for _, c in ipairs(fitting_cars(order)) do
+      local n = #stops_of(c) + (added and added[c.car_id] or 0)
+      if best_stops == nil or n < best_stops then
+        chosen, best_stops = c, n
+      end
+    end
+  end
+  order.pick_car = chosen and chosen.car_id or 0
+  order.pick_text = chosen and chosen.name or "нет подходящей машины"
+end
+
+local function refresh_picks(added)
+  for _, o in ipairs(find({ has = { "order" }, without = { "taken", "done" } })) do
+    pick_for(o, added)
+  end
+end
+
 local TAG_TEXT = { urgent = "срочно", careful = "бережно", opening = "к открытию" }
 
 -- Создаёт заказ клиента. `announce` — показать уведомление: заказы начала дня
@@ -398,6 +470,9 @@ local function new_order(client, job, announce)
   local extra = #tags > 0 and (" · " .. table.concat(tags, ", ")) or ""
   fields.terms_text = "до " .. fmt_time(deadline) .. " · " .. fmt_money(price) .. " · " ..
     fmt_tons(job.weight) .. extra
+  fields.body = job.body
+  fields.need_text = "Нужна " .. need_phrase(fields)
+  pick_for(fields)
   fields.listed = game().win_orders
   state.next_order = state.next_order + 1
   create(fields)
@@ -481,52 +556,59 @@ local function fuel_per_km(car, load)
   return (FUEL_EMPTY_L100 + (FUEL_FULL_L100 - FUEL_EMPTY_L100) * share) / 100
 end
 
--- План выбранной машины виден, пока открыто окно «Заказы».
-local function mark_selected_stops()
-  local sel = selected_car()
-  local open = game().win_orders
-  for _, s in ipairs(find({ has = { "stop" } })) do
-    s.of_selected = open and sel ~= nil and s.stop_car == sel.car_id
+-- Строки машин в окне «Машины»: список движка нельзя спрятать целиком, поэтому строки
+-- закрытого окна прячет признак. Окно «Машины» под одну и под две карточки — разной высоты, у каждого свой
+-- признак строк. `bought` — машин, купленных в этом же шаге: `find` их ещё не видит; признаки для них
+-- возвращаются.
+local function mark_car_rows(bought)
+  local g = game()
+  local two = #cars() + (bought or 0) >= 2
+  g.two_cars = two
+  local flags = { row_c1 = g.win_cars and not two, row_c2 = g.win_cars and two }
+  for _, c in ipairs(cars()) do
+    for k, v in pairs(flags) do
+      c[k] = v
+    end
   end
+  return flags
 end
 
--- Строки машин в окнах «Заказы» и «Машины»: список движка нельзя спрятать целиком, поэтому строки
--- закрытого окна прячет признак.
-local function mark_car_rows()
-  local g = game()
-  for _, c in ipairs(cars()) do
-    c.row_o = g.win_orders
-    c.row_c = g.win_cars
+-- Стоит ли ТО в очереди машины.
+local function service_planned(car)
+  for _, s in ipairs(stops_of(car)) do
+    if s.stop_kind == "service" then return s end
   end
+  return nil
 end
 
 -- Когда ТО: через сколько километров или на сколько оно просрочено.
 local function to_text(car)
   local left = car.to_at - car.odo
   if left >= 0 then
-    return "ТО через " .. fmt_int(left) .. " км"
+    return fmt_int(left) .. " км"
   end
-  return "ТО просрочено на " .. fmt_int(-left) .. " км"
+  return "просрочено на " .. fmt_int(-left) .. " км"
 end
 
--- Карточка машины в окне «Машины»: груз, скорость, бензин, пробег, ТО, износ и подпись кнопки слежения.
+-- Карточка машины `c` в окне «Машины»: числа у шкал груза, бензина и износа и срок ТО. `c` — машина или
+-- таблица новой машины до `create`.
+local function fill_card(c)
+  c.tank = TANK_L
+  c.load_text = string.gsub(fmt_tons(c.load), " т$", "") .. " / " .. fmt_tons(c.capacity)
+  c.fuel_text = fmt_int(c.fuel) .. " / " .. TANK_L .. " л"
+  c.wear_text = fmt_int(c.wear) .. "%"
+  c.service_text = to_text(c) .. (service_planned(c) and " · ТО поставлено" or "")
+  c.selected_mark = c.selected and " · выбрана" or ""
+end
+
 local function refresh_cards()
-  local g = game()
   for _, c in ipairs(cars()) do
-    local speed = "стоит"
-    if c.state == "driving" then
-      speed = fmt_int(state.kmh[c.car_id] or 0) .. " км/ч"
-    end
-    c.card_text = "Груз: " .. fmt_tons(c.load) .. " из " .. fmt_tons(c.capacity) .. " · скорость: " .. speed .. "\n" ..
-      "Бензин: " .. fmt_int(c.fuel) .. " л из " .. TANK_L .. " · пробег: " .. fmt_int(c.odo) .. " км\n" ..
-      to_text(c) .. " · износ: " .. fmt_int(c.wear) .. "%"
-    c.selected_mark = c.selected and " · выбрана" or ""
-    c.follow_text = (c.selected and g.follow_on) and "Следить: да" or "Следить: нет"
+    fill_card(c)
   end
 end
 
--- Пробег, бензин, износ и скорость: путь машины — сумма её сдвигов за шаги, так он идёт по улицам,
--- а не по прямой. С просроченным ТО машина изнашивается втрое быстрее.
+-- Пробег, бензин и износ: путь машины — сумма её сдвигов за шаги, так он идёт по улицам, а не по
+-- прямой. С просроченным ТО машина изнашивается втрое быстрее.
 local function measure_drive(car)
   local here = car_center(car)
   local id = car.car_id
@@ -538,8 +620,6 @@ local function measure_drive(car)
   car.fuel = math.max(0, car.fuel - km * fuel_per_km(car, car.load))
   local rate = WEAR_PER_100KM * ((car.odo > car.to_at) and OVERDUE_WEAR or 1)
   car.wear = math.min(100, car.wear + km / 100 * rate)
-  -- Скорость в игровых км/ч: путь за шаг, умноженный на число шагов в игровом часе.
-  state.kmh[id] = km * STEPS_PER_MINUTE * 60
 end
 
 -- Работа на остановке — погрузка, выгрузка, заправка, ТО: полоска над машиной растёт от нуля до полной,
@@ -598,15 +678,11 @@ local function nearest_place(ids, from, speed)
   return best
 end
 
--- Запись остановки без заказа — заправки (`fuel`) или ТО (`service`) — в план машины под номером `seq`;
+-- Запись остановки без заказа — заправки (`fuel`) или ТО (`service`) — в очередь машины под номером `seq`;
 -- создаёт её вызывающий: `find` увидит остановку только со следующего шага.
 local function service_stop(car, kind, point, seq)
-  local sel = selected_car()
-  local title = kind == "fuel" and "Заправка" or "ТО"
   return { stop = true, stop_order = 0, stop_car = car.car_id, stop_seq = seq, stop_kind = kind,
-           stop_x = point.x, stop_y = point.y, place_name = point.name,
-           stop_text = title .. " · " .. point.name, eta_text = "",
-           of_selected = game().win_orders and sel ~= nil and sel.car_id == car.car_id }
+           stop_x = point.x, stop_y = point.y, place_name = point.name }
 end
 
 -- Вероятность поломки в поездке растёт с износом: при 45% — 2%, при 80% — 6%.
@@ -624,8 +700,8 @@ local function go_next(car)
     car.drive_to = nil
     return
   end
-  -- Бензина мало — водитель сам заезжает на заправку, прежде чем ехать дальше. Заправка уже в плане,
-  -- но игрок поднял над ней другие остановки — водитель возвращает её первой, а не ставит вторую.
+  -- Бензина мало — водитель сам заезжает на заправку, прежде чем ехать дальше. Заправка уже в очереди,
+  -- но не первой (после отказа от заказа её обогнала другая остановка) — водитель возвращает её первой.
   -- Бензоколонки на карте нет — заехать некуда, и машина едет дальше.
   if car.fuel < FUEL_RESERVE_L and first.stop_kind ~= "fuel" then
     local planned = nil
@@ -770,7 +846,7 @@ function car_tick(car)
   end
   if car.state == "broken" then
     if car.wait <= 0 then
-      -- После ремонта — к первой остановке плана, каким он стал за время ремонта.
+      -- После ремонта — к первой остановке очереди, какой она стала за время ремонта.
       go_next(car)
     end
   elseif car.state == "driving" then
@@ -791,16 +867,16 @@ function car_tick(car)
   end
 end
 
--- Сроки по плану выбранной машины: когда она будет на каждой остановке, если ехать по порядку.
--- Подписи сроков для списка остановок машины по порядку: и для живых остановок, и для записей, которые
--- кнопка только собирается создать, — так срок виден сразу, и на паузе тоже.
-local function eta_texts(car, list)
+-- Строка взятого заказа в окне «Заказы»: кто везёт, когда заберёт груз и когда привезёт — по очереди
+-- остановок машины `list` (в ней бывают и остановки, созданные в этом же шаге).
+local function order_texts(car, list)
   local t = now()
   if car.working or car.state == "broken" then
     t = t + math.max(0, car.wait) / MINUTE
   end
   local pos = car_center(car)
   local load = car.load
+  local load_at = {}
   for i, s in ipairs(list) do
     local order = order_by_id(s.stop_order)
     local busy = (i == 1 and car.working)
@@ -813,22 +889,21 @@ local function eta_texts(car, list)
       load = load + (s.stop_kind == "load" and order.weight or -order.weight)
     end
     pos = { x = s.stop_x, y = s.stop_y }
-    if s.stop_kind == "unload" and order ~= nil then
-      if t > order.deadline then
-        s.eta_text = "≈ " .. fmt_time(t) .. " — опоздает на " .. math.floor(t - order.deadline) .. " мин"
-      else
-        s.eta_text = "≈ " .. fmt_time(t) .. " — успевает к " .. fmt_time(order.deadline)
-      end
-    else
-      s.eta_text = "≈ " .. fmt_time(t)
+    if s.stop_kind == "load" then
+      load_at[s.stop_order] = t
+    elseif s.stop_kind == "unload" and order ~= nil then
+      local first = order.picked and "груз в кузове" or ("заберёт ≈ " .. fmt_time(load_at[s.stop_order] or t))
+      local verdict = t > order.deadline and ("опоздает на " .. math.floor(t - order.deadline) .. " мин")
+        or ("успевает к " .. fmt_time(order.deadline))
+      order.progress_text = car.name .. " · " .. first .. " · привезёт ≈ " .. fmt_time(t) .. ", " .. verdict
     end
   end
 end
 
-local function refresh_eta()
-  local car = selected_car()
-  if car == nil then return end
-  eta_texts(car, stops_of(car))
+local function refresh_orders()
+  for _, c in ipairs(cars()) do
+    order_texts(c, stops_of(c))
+  end
 end
 
 -- События дня ----------------------------------------------------------------------------------
@@ -904,7 +979,7 @@ end
 
 -- Окна над полосой: кнопка полосы открывает своё окно и закрывает открытое, повторный щелчок закрывает.
 -- Список движка нельзя спрятать целиком, поэтому строки закрытого окна прячут признаки `listed`,
--- `row_o`, `row_c` и `of_selected`, которые код ставит строкам окна.
+-- `row_c1` и `row_c2`, которые код ставит строкам окна.
 local function set_window(name)
   local g = game()
   for _, w in ipairs(WINDOWS) do
@@ -917,7 +992,6 @@ local function set_window(name)
     m.listed = g.win_notes
   end
   mark_car_rows()
-  mark_selected_stops()
   if g.win_notes then
     g.unread = 0
     refresh_notes()
@@ -1076,7 +1150,7 @@ local function first_step(g)
       text = "Заправка: водитель сам заезжает сюда, когда в баке меньше " .. FUEL_RESERVE_L ..
         " литров. Бензин — " .. fmt_money(FUEL_PRICE) .. " за литр."
     elseif string.sub(id, 1, 8) == "service_" then
-      text = "Автосервис: ТО за " .. fmt_money(TO_COST) .. " и полтора часа. Ставится кнопкой «На ТО» в карточке машины."
+      text = "Автосервис: ТО за " .. fmt_money(TO_COST) .. " и полтора часа. Ставится и снимается кнопкой с ключом в карточке машины."
     elseif id == "office" then
       text = "Ваша контора: здесь стоят машины и начинается день."
     elseif id == "station" then
@@ -1085,16 +1159,16 @@ local function first_step(g)
       text = "Стройка: сюда возят цемент и кирпич."
     end
     set_place_info(p, text)
+    p.title_text = upper(p.name)
   end
   g.started = true
   mark_car_rows()
   refresh_notes()
   start_day()
-  mark_selected_stops()
   follow_selected()
   refresh_cards()
   stop_time(g)
-  say("Первый день. Возьмите заказы в окне «Заказы» и нажмите ×1")
+  say("Первый день. Возьмите заказы в окне «Заказы» и запустите время")
 end
 
 function tick(g)
@@ -1115,7 +1189,8 @@ function tick(g)
     end_jam(g.minute)
     refresh_clock()
     refresh_money()
-    refresh_eta()
+    refresh_orders()
+    refresh_picks()
     refresh_cards()
     check_goal()
     if g.minute >= DAY_END then
@@ -1144,109 +1219,59 @@ function select_car(car)
     c.selected = false
   end
   car.selected = true
-  mark_selected_stops()
   follow_selected()
-  refresh_eta()
   refresh_cards()
 end
 
+-- «Взять» в строке нового заказа: загрузка и выгрузка — в конец очереди машины, выбранной в этой строке.
 function take_order(order)
   if order.taken then return end
-  local car = selected_car()
-  if car == nil or not car.has_driver then
-    for _, c in ipairs(cars()) do
-      if c.has_driver then car = c break end
-    end
-  end
-  if car == nil or not car.has_driver then
-    say("Некому везти: у машины нет водителя")
+  local car = car_by_id(order.pick_car)
+  if car == nil then
+    say("Некому везти: нужна " .. need_phrase(order) .. " — такой машины нет")
     return
   end
-  if order.weight > car.capacity then
-    say("Не влезет: " .. order.title .. " — " .. fmt_tons(order.weight))
+  local ok, why = fits(car, order)
+  if not ok then
+    say("Не взять: " .. why)
     return
   end
   local list = stops_of(car)
   local seq = (#list > 0) and (list[#list].stop_seq + 1) or 1
-  local sel = selected_car()
-  if sel == nil then
-    car.selected = true
-    sel = car
-    follow_selected()
-    refresh_cards()
-  end
-  local shown = game().win_orders and sel.car_id == car.car_id
   local load = { stop = true, stop_order = order.order_id, stop_car = car.car_id, stop_seq = seq, stop_kind = "load",
-                 stop_x = order.from_x, stop_y = order.from_y, place_name = order.from_name,
-                 stop_text = "Загрузка · " .. order.cargo .. " · " .. order.from_name, of_selected = shown }
+                 stop_x = order.from_x, stop_y = order.from_y, place_name = order.from_name }
   local unload = { stop = true, stop_order = order.order_id, stop_car = car.car_id, stop_seq = seq + 1, stop_kind = "unload",
-                   stop_x = order.to_x, stop_y = order.to_y, place_name = order.to_name,
-                   stop_text = "Выгрузка · " .. order.cargo .. " · " .. order.to_name .. " · до " .. fmt_time(order.deadline),
-                   of_selected = shown }
+                   stop_x = order.to_x, stop_y = order.to_y, place_name = order.to_name }
   list[#list + 1] = load
   list[#list + 1] = unload
-  eta_texts(car, list)
+  order_texts(car, list)
   create(load)
   create(unload)
   order.taken = true
   change_free_orders(-1)
+  refresh_picks({ [car.car_id] = 2 })
 end
 
--- Груз в машине по порядку остановок не больше грузоподъёмности, выгрузка — после загрузки.
-local function plan_valid(car, list)
-  local load = car.load
-  local loaded = {}
-  for _, s in ipairs(list) do
-    local order = order_by_id(s.stop_order)
-    if order ~= nil then
-      if s.stop_kind == "load" then
-        loaded[s.stop_order] = true
-        load = load + order.weight
-        if load > car.capacity + 1e-6 then
-          return false, "перегруз: в машину влезает " .. fmt_tons(car.capacity)
-        end
-      else
-        if not loaded[s.stop_order] and not order.picked then
-          return false, "сначала надо загрузить " .. order.title
-        end
-        load = load - order.weight
-      end
+-- Кнопка с машиной в строке нового заказа: следующая годная машина по номеру.
+function next_pick(order)
+  local list = fitting_cars(order)
+  if #list == 0 then
+    say("Нет подходящей машины: нужна " .. need_phrase(order))
+    return
+  end
+  local next_car = list[1]
+  for i, c in ipairs(list) do
+    if c.car_id == order.pick_car then
+      next_car = list[i % #list + 1]
     end
   end
-  return true
+  if next_car.car_id == order.pick_car then return end
+  order.pick_car = next_car.car_id
+  order.pick_text = next_car.name
+  order.pick_manual = true
 end
 
-function stop_up(stop)
-  local car = car_by_id(stop.stop_car)
-  if car == nil then return end
-  local list = stops_of(car)
-  local i = 0
-  for k, s in ipairs(list) do
-    if s == stop or s.stop_seq == stop.stop_seq then i = k end
-  end
-  if i <= 1 then return end
-  if i == 2 and car.working then
-    say("Машина уже работает на этой остановке")
-    return
-  end
-  local trial = {}
-  for k, s in ipairs(list) do trial[k] = s end
-  trial[i - 1], trial[i] = trial[i], trial[i - 1]
-  local ok, why = plan_valid(car, trial)
-  if not ok then
-    say("Так нельзя: " .. why)
-    return
-  end
-  local prev = list[i - 1]
-  prev.stop_seq, stop.stop_seq = stop.stop_seq, prev.stop_seq
-  if i == 2 and car.state == "driving" then
-    car.drive_to = { x = stop.stop_x, y = stop.stop_y }
-    driving_text(car, stop)
-  end
-  refresh_eta()
-end
-
--- Машина бросает текущую остановку и встаёт; со следующего шага едет по тому, что осталось в плане.
+-- Машина бросает текущую остановку и встаёт; со следующего шага едет по тому, что осталось в очереди.
 local function drop_current(car)
   car.drive_to = nil
   car.breaks_at = nil
@@ -1254,6 +1279,16 @@ local function drop_current(car)
   stop_work(car)
   car.state = "idle"
   car.state_text = "ждёт заказы"
+end
+
+-- «Отказаться» в строке заказа в работе.
+function cancel_order(order)
+  for _, s in ipairs(find({ has = { "stop" }, without = { "done" } })) do
+    if s.stop_order == order.order_id then
+      cancel_stop(s)
+      return
+    end
+  end
 end
 
 function cancel_stop(stop)
@@ -1264,12 +1299,14 @@ function cancel_stop(stop)
     return
   end
   if stop.stop_kind == "service" then
-    -- ТО — решение владельца: его можно убрать из плана, даже когда машина уже в сервисе.
+    -- ТО — решение владельца: его можно снять, даже когда машина уже в сервисе.
     local busy_with_it = current ~= nil and current.stop_seq == stop.stop_seq
     stop.done = true
     delete(stop)
-    refresh_eta()
-    say("ТО убрано из плана: " .. car.name)
+    refresh_orders()
+    refresh_picks()
+    refresh_cards()
+    say("ТО снято: " .. car.name)
     if busy_with_it and car.state ~= "broken" then
       drop_current(car)
     end
@@ -1290,30 +1327,31 @@ function cancel_stop(stop)
     end
   end
   order.taken = false
+  order.progress_text = ""
   change_free_orders(1)
-  refresh_eta()
+  refresh_orders()
+  refresh_picks()
   change_trust(order.client, -2)
   say("Отказались от заказа: " .. order.title)
-  -- Сломанная машина остаётся в ремонте: после него поедет по тому, что осталось в плане.
+  -- Сломанная машина остаётся в ремонте: после него поедет по тому, что осталось в очереди.
   if busy_with_it and car.state ~= "broken" then
     drop_current(car)
   end
 end
 
--- «На ТО» в карточке машины: остановка в ближайшем к машине автосервисе — в конец её плана; поднять её
--- выше можно, как любую остановку.
+-- Кнопка с ключом в карточке машины: остановка в ближайшем к машине автосервисе — в конец её очереди;
+-- повторный щелчок снимает поставленное ТО.
 function service_car(car)
+  local planned = service_planned(car)
+  if planned ~= nil then
+    cancel_stop(planned)
+    return
+  end
   if not car.has_driver then
     say("Некому вести машину на ТО: у неё нет водителя")
     return
   end
   local list = stops_of(car)
-  for _, s in ipairs(list) do
-    if s.stop_kind == "service" then
-      say("ТО уже в плане: " .. car.name)
-      return
-    end
-  end
   local garage = nearest_place(place_ids("service_"), car_center(car), car.drive_speed)
   if garage == nil then
     say("Мастерской в городе нет — ТО пройти негде")
@@ -1322,9 +1360,11 @@ function service_car(car)
   local seq = (#list > 0) and (list[#list].stop_seq + 1) or 1
   local stop = service_stop(car, "service", garage, seq)
   list[#list + 1] = stop
-  eta_texts(car, list)
+  order_texts(car, list)
   create(stop)
-  say("ТО поставлено в план: " .. car.name .. " — " .. garage.name .. ", полтора часа и " .. fmt_money(TO_COST))
+  car.service_text = to_text(car) .. " · ТО поставлено"
+  refresh_picks({ [car.car_id] = 1 })
+  say("ТО поставлено в очередь: " .. car.name .. " — " .. garage.name .. ", полтора часа и " .. fmt_money(TO_COST))
 end
 
 local function set_speed(k)
@@ -1354,17 +1394,22 @@ function buy_car()
   spend(CAR_PRICE)
   local office = place_point("office")
   local size = tables.templates.polutorka.size
-  create(tables.templates.polutorka, {
-    name = "Полуторка 2", model = "gaz_aa", car_id = state.next_car, has_driver = false, driver = "нет водителя",
+  local rows = mark_car_rows(1)
+  local car = {
+    body = tables.templates.polutorka.body,
+    name = "ГАЗ-АА №2", model = "gaz_aa", car_id = state.next_car, has_driver = false, driver = "нет водителя",
     position = { office.x + 1.2 - size[1] / 2, office.y - size[2] / 2 },
     odo = SECOND_CAR.odo, wear = SECOND_CAR.wear, fuel = SECOND_CAR.fuel, to_at = SECOND_CAR.to_at,
-    state = "idle", state_text = "стоит у конторы — нужен водитель", row_o = g.win_orders, row_c = g.win_cars,
-    card_text = "", selected_mark = "", follow_text = "Следить: нет",
-  })
+    load = 0, capacity = tables.templates.polutorka.capacity,
+    state = "idle", state_text = "стоит у конторы — нужен водитель",
+    row_c1 = rows.row_c1, row_c2 = rows.row_c2,
+  }
+  fill_card(car)
+  create(tables.templates.polutorka, car)
   state.next_car = state.next_car + 1
   -- Новая машина появится только после этой функции: кнопку найма и окно «Фирма» считаем с ней.
   refresh_money(1)
-  say("Куплена вторая полуторка. Наймите водителя в окне «Фирма», чтобы она поехала")
+  say("Куплен второй ГАЗ-АА. Наймите водителя в окне «Фирма», чтобы он поехал")
 end
 
 function hire_driver()
@@ -1376,6 +1421,7 @@ function hire_driver()
       c.driver = "Михалыч"
       spend(DRIVER_FEE)
       c.state_text = "ждёт заказы"
+      refresh_picks()
       say("Нанят водитель Михалыч: " .. fmt_money(DRIVER_WAGE) .. " в день")
       return
     end
@@ -1393,7 +1439,7 @@ function next_day()
   set_window("win_orders")
   start_day()
   refresh_cards()
-  say("Новый день. Возьмите заказы и нажмите ×1")
+  say("Новый день. Возьмите заказы и запустите время")
 end
 
 -- «Понятно» в подсказке: партия начинается с открытого окна «Заказы».
@@ -1406,12 +1452,13 @@ function open_orders() open_window("win_orders") end
 function open_cars() open_window("win_cars") end
 function open_notes() open_window("win_notes") end
 function open_firm() open_window("win_firm") end
+function open_settings() open_window("win_settings") end
 
 function close_toast(toast)
   delete(toast)
 end
 
--- «Следить» в карточке машины: у выбранной машины переключает слежение камеры, другую машину
+-- Кнопка с глазом в карточке машины: у выбранной машины переключает слежение камеры, другую машину
 -- выбирает и ставит под камеру.
 function follow_car(car)
   local g = game()
@@ -1423,12 +1470,6 @@ function follow_car(car)
   end
   g.follow_on = true
   select_car(car)
-end
-
--- «План» в карточке машины: выбирает её и открывает окно «Заказы» с её планом.
-function plan_car(car)
-  select_car(car)
-  set_window("win_orders")
 end
 
 function close_place()
