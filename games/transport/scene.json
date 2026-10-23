@@ -1,21 +1,15 @@
 {
   "objects": [
-    {"name":"Набережная улица","position":[208.337,78.539],"size":[6.02,0.5],"rotation":1.87,"road_kind":"main","layer":4,"road":true,"main_road":true,"road_speed":11.111},
-    {"name":"Соборная улица","position":[202.176,83.388],"size":[12.02,0.6],"rotation":1.87,"road_kind":"main","layer":5,"road":true,"main_road":true,"road_speed":11.111},
-    {"name":"Вокзальная улица","position":[203.176,83.388],"size":[10.02,0.6],"rotation":91.87,"road_kind":"main","layer":5,"road":true,"main_road":true,"road_speed":11.111},
-    {"name":"Торговая улица","position":[211.754,81.135],"size":[5.02,0.5],"rotation":91.87,"road_kind":"main","layer":4,"road":true,"main_road":true,"road_speed":11.111},
-    {"name":"Набережная улица","position":[202.341,78.418],"size":[6.02,0.35],"rotation":1.87,"road_kind":"street","layer":3,"road":true,"road_speed":11.111},
-    {"name":"Никольская улица","position":[197.179,83.318],"size":[10.02,0.35],"rotation":91.87,"road_kind":"street","layer":3,"road":true,"road_speed":11.111},
-    {"name":"Советская улица","position":[202.013,88.511],"size":[12.02,0.35],"rotation":1.87,"road_kind":"street","layer":3,"road":true,"road_speed":11.111},
-    {"name":"Торговая улица","position":[211.591,86.208],"size":[5.02,0.35],"rotation":91.87,"road_kind":"street","layer":3,"road":true,"road_speed":11.111},
-    {"name":"Гараж","position":[210.429,82.186],"size":[1.533,1.399],"rotation":1.87,"model":"garage","height":0.4838},
-    {"name":"Двор","position":[202.784,81.358],"size":[1.0094,1.9857],"rotation":1.87,"model":"yard_middle","height":0.3422},
-    {"name":"Двор","position":[204.533,81.415],"size":[1.0093,1.9858],"rotation":1.87,"model":"yard_middle_mirror","height":0.3422},
-    {"name":"Двор","position":[206.334,81.474],"size":[1.0094,1.9857],"rotation":1.87,"model":"yard_middle","height":0.3422},
-    {"name":"Двор","position":[202.957,83.718],"size":[1.0093,1.9858],"rotation":181.87,"model":"yard_middle_mirror","height":0.3422},
-    {"name":"Двор","position":[204.707,83.776],"size":[1.0094,1.9857],"rotation":181.87,"model":"yard_middle","height":0.3422},
-    {"name":"Двор","position":[206.457,83.833],"size":[1.0093,1.9858],"rotation":181.87,"model":"yard_middle_mirror","height":0.3422},
+    {"name":"Улица","position":[201.1471,83.3598],"size":[12.35,0.6],"rotation":1.87,"road_kind":"main","layer":5,"road":true,"main_road":true,"road_speed":11.111},
+    {"name":"Гараж","position":[202.6072,81.7219],"size":[1.5045,1.6851],"rotation":1.87,"model":"garage","height":0.4837},
+    {"name":"Контора","position":[201.9322,81.6897],"size":[0.8846,1.6248],"rotation":1.87,"model":"kontora","height":0.5439},
+    {"name":"Двор","position":[204.9318,81.4278],"size":[1.0094,1.9858],"rotation":1.87,"model":"yard_middle","height":0.3422},
+    {"name":"Двор","position":[210.1791,81.5989],"size":[1.0094,1.986],"rotation":1.87,"model":"yard_middle_mirror","height":0.3422},
+    {"name":"Двор","position":[202.4563,83.702],"size":[1.0094,1.986],"rotation":181.87,"model":"yard_middle_mirror","height":0.3422},
+    {"name":"Двор","position":[205.9545,83.8163],"size":[1.0094,1.9858],"rotation":181.87,"model":"yard_middle","height":0.3422},
+    {"name":"Двор","position":[207.7035,83.8734],"size":[1.0094,1.986],"rotation":181.87,"model":"yard_middle_mirror","height":0.3422},
+    {"name":"Двор","position":[211.2017,83.9876],"size":[1.0094,1.9858],"rotation":181.87,"model":"yard_middle","height":0.3422},
     {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":0,"clock_text":"","money_text":"","debt_text":"","goal_text":"Цель: второй ГАЗ-АА (90 000 ₽) и водитель","summary_text":"","firm_text":"","show_help":true,"follow_on":true,"unread":0,"unread_text":"0","orders_text":"Заказы · 0"},
-    {"name":"ГАЗ-АА","car":true,"size":[0.168,0.427],"model":"gaz_aa","height":0.158,"drive_speed":16.67,"capacity":1.5,"body":"бортовая","load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"side_icon":"icon_truck_big","position":[210.96,82.929],"selected":true,"odo":48000,"wear":45,"fuel":20,"to_at":48250,"selected_mark":""}
+    {"name":"ГАЗ-АА","car":true,"size":[0.168,0.427],"model":"gaz_aa","height":0.158,"drive_speed":16.67,"capacity":1.5,"body":"бортовая","load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"side_icon":"icon_truck_big","position":[203.1846,82.5085],"selected":true,"odo":48000,"wear":45,"fuel":20,"to_at":48250,"selected_mark":"","rotation":1.87}
   ]
 }

@@ -14,8 +14,8 @@
         400
       ],
       "start": [
-        211.0,
-        83.1
+        203.0,
+        82.8
       ]
     },
     "light": {
@@ -282,6 +282,9 @@
     "models": {
       "garage": {
         "path": "models/garage.glb"
+      },
+      "kontora": {
+        "path": "models/kontora.glb"
       },
       "gaz_aa": {
         "path": "models/gaz_aa.glb"

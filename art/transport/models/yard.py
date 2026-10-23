@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import lib  # noqa: E402
 from bakery import GRIME, noise  # noqa: E402
-from garage import Yard  # noqa: E402
+from garage import Yard, chimney, faded  # noqa: E402
 from gazel import smoothstep  # noqa: E402
 
 OUT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "games", "transport", "models"))
@@ -115,8 +115,8 @@ class Face:
 
 
 class Homestead(Yard):
-    """Сетка двора: к брусьям и пластинам гаража — круглые брёвна с корой или торцами своим материалом и комки
-    ботвы."""
+    """Сетка двора: к брусьям, пластинам и тропам гаража — круглые брёвна с корой или торцами своим материалом и
+    комки ботвы."""
 
     def log(self, a, b, r0, r1, mi, end, segments=12, ring=0.7, shift=(0.0, 0.0)):
         """Бревно от `a` до `b`: радиус у `a` — `r0`, у `b` — `r1`; кольца вершин через `ring` м — затенению в
@@ -147,57 +147,6 @@ class Homestead(Yard):
             for k in range(segments):
                 self.bm.edges.get((cap[k], cap[(k + 1) % segments])).smooth = False
 
-    def path(self, line, half, mi, seed, ruts=False, step=0.25, columns=12):
-        """Тропа по ломаной `line` на плане: полоса с поперечными рядами вершин через `step` м, середина гуляет в
-        стороны, ширина около `2 × half` меняется по длине. Насколько тропа видна, пишется в слой вершин `fade`: в
-        середине 1, к неровному краю и к концам — 0; у колеи телеги (`ruts`) между колеями трава — тропа там бледнее.
-        Развёртка — в метрах материала по плану."""
-        fade = self.bm.verts.layers.float.get("fade") or self.bm.verts.layers.float.new("fade")
-        meters = self.tiles[mi][0]
-        lengths = [0.0]
-        for (ax, ay), (bx, by) in zip(line, line[1:]):
-            lengths.append(lengths[-1] + math.hypot(bx - ax, by - ay))
-        total = lengths[-1]
-
-        def at(s):
-            """Точка ломаной на `s` м от начала и направление там."""
-            i = max(0, min(len(line) - 2, next((k for k in range(len(lengths) - 1) if s <= lengths[k + 1]), len(line) - 2)))
-            (ax, ay), (bx, by) = line[i], line[i + 1]
-            t = (s - lengths[i]) / max(1e-6, lengths[i + 1] - lengths[i])
-            d = Vector((bx - ax, by - ay)).normalized()
-            return Vector((ax + (bx - ax) * t, ay + (by - ay) * t)), d
-
-        rows = max(2, round(total / step))
-        grid = []
-        for r in range(rows + 1):
-            s = total * r / rows
-            c, d = at(s)
-            n = Vector((-d.y, d.x))
-            c = c + n * (0.3 * half * (noise(s / 2.2, 0.5, seed) - 0.5))
-            w = half * (0.8 + 0.4 * noise(s / 3.0, 1.5, seed + 1))
-            ends = smoothstep(0.0, 0.9, s) * smoothstep(0.0, 0.9, total - s)
-            ring = []
-            for j in range(columns + 1):
-                t = -1.35 + 2.7 * j / columns
-                p = c + n * (t * w)
-                ragged = abs(t) + 0.5 * (noise(s * 1.4, t * 2.0 + 3.0, seed + 2) - 0.5)
-                a = (1.0 - smoothstep(0.55, 1.25, ragged)) * ends
-                if ruts:
-                    a *= 1.0 - 0.6 * math.exp(-(t / 0.3) ** 2) * (0.6 + 0.4 * noise(s / 1.5, 7.0, seed + 3))
-                v = self.bm.verts.new((p.x, p.y, GROUND + 0.012 + 0.006 * a))
-                v[fade] = a
-                ring.append(v)
-            grid.append(ring)
-        for r in range(rows):
-            for j in range(columns):
-                f = self.bm.faces.new((grid[r][j], grid[r][j + 1], grid[r + 1][j + 1], grid[r + 1][j]))
-                f.material_index = mi
-                f.smooth = True
-                self.manual.add(f)
-                self.up.append(f)
-                for loop in f.loops:
-                    loop[self.uv].uv = (loop.vert.co.x / meters, loop.vert.co.y / meters)
-
     def clump(self, center, radius, mi, rnd, squash=0.85, subdiv=2, wobble=0.22):
         """Комок ботвы: гладкая сфера радиусом `radius`, сплюснутая по высоте до `squash`, с буграми на `wobble`
         радиуса."""
@@ -218,28 +167,6 @@ def tones(m, key, folder, meters, tints, swap=False):
     return [m.tex(f"{key}_{i}", folder, meters, tint=t, swap=swap) for i, t in enumerate(tints)]
 
 
-def faded(m, key, folder, meters, tint):
-    """Материал, прозрачный по альфе цвета вершин `occlusion`: край тропы растворяется в земле карты. Выгрузка пишет
-    его режимом BLEND, движок умножает прозрачность на альфу цвета вершины, как у кусков дорог. Цвет вершин умножен и
-    на цвет материала — так его понимает glTF; без этого выгрузка теряет альфу («Vertex Color alpha without color»)."""
-    mi = m.tex(key, folder, meters, tint=tint)
-    mat = m.materials[mi]
-    nodes, links = mat.node_tree.nodes, mat.node_tree.links
-    bsdf = lib.bsdf(mat)
-    attr = nodes.new("ShaderNodeVertexColor")
-    attr.layer_name = "occlusion"
-    mix = nodes.new("ShaderNodeMix")
-    mix.data_type = "RGBA"
-    mix.blend_type = "MULTIPLY"
-    mix.inputs[0].default_value = 1.0
-    links.new(bsdf.inputs["Base Color"].links[0].from_socket, mix.inputs[6])
-    links.new(attr.outputs["Color"], mix.inputs[7])
-    links.new(mix.outputs[2], bsdf.inputs["Base Color"])
-    links.new(attr.outputs["Alpha"], bsdf.inputs["Alpha"])
-    mat.surface_render_method = "BLENDED"
-    return mi
-
-
 def materials(m):
     return {
         # Светлота частей после карты и подкраски, примерно: дранка крыш 0,5, штакетник 0,52, бревенчатые стены 0,33,
@@ -257,12 +184,14 @@ def materials(m):
         "plank": m.tex("plank", "Planks012", 2.1, tint="#c8c2ba"),
         "paint": m.tex("paint", "PaintedWood009C", 1.2, tint="#fbf9f4"),
         "stone": m.tex("stone", "white_sandstone_bricks_03", 2.0, tint="#a39e95"),
-        "brick": m.tex("brick", "brick_wall_001", 3.0),
+        "brick": m.tex("brick", "Bricks085", 2.0, tint="#e0c4b8"),
         "soil": m.tex("soil", "Ground103", 2.5, tint="#8a7866"),
         "path": faded(m, "path", "Ground103", 2.5, "#e6dccd"),
         "glass": m.mat("glass", "#222b2b", 0.1, 0.3),
         "dark": m.mat("dark", "#161412", 0.95),
         "tin": m.mat("tin", "#7c8285", 0.5, 0.6),
+        "rust": m.tex("rust", "MetalPlates011", 2.0),
+        "soot": m.mat("soot", "#0e0d0c", 0.95),
         "iron": m.mat("iron", "#2c2d2f", 0.55, 0.5),
         "potato": m.mat("potato", "#4a6a2b", 0.85),
         "potato_light": m.mat("potato_light", "#5b7c33", 0.85),
@@ -480,8 +409,7 @@ def house(m, mt, rnd):
 
     # Кирпичная труба у конька на правом скате, с напуском поверху.
     cy = HY0 + 4.2
-    m.box(XM + 0.3, cy - 0.27, rz, XM + 0.84, cy + 0.27, ridge + 0.75, mt["brick"])
-    m.box(XM + 0.24, cy - 0.33, ridge + 0.75, XM + 0.9, cy + 0.33, ridge + 0.85, mt["brick"])
+    chimney(m, XM + 0.3, cy - 0.27, XM + 0.84, cy + 0.27, rz, ridge + 0.75, mt["brick"], mt["soot"], wall=0.13, cap=0.1, over=0.06)
 
 
 def covered_yard(m, mt, rnd):
@@ -672,8 +600,8 @@ def garden(m, mt, rnd):
 
 
 def bathhouse(m, mt, rnd):
-    """Баня: сруб из тонких закопчённых брёвен на угловых камнях, дверь и оконце к огороду, крыша из дранки, жестяная
-    труба."""
+    """Баня: сруб из тонких закопчённых брёвен на угловых камнях, дверь и оконце к огороду, крыша из дранки, ржавая
+    жестяная труба."""
     x0, x1, y0, y1 = BATH
     r, step, courses, base = 0.11, 0.19, 10, GROUND + 0.18
     door, win = (4.95, 5.65, base, base + 1.55), (6.45, 6.9, base + 0.85, base + 1.2)
@@ -691,8 +619,8 @@ def bathhouse(m, mt, rnd):
         gable_end(m, mt, Face(side, axis), x0 - r, x1 + r, top - step / 2, gable_z, 0.6, r * 0.4, rnd)
     ridge = roof(m, mt, x0, x1, y0 - 0.5, y1 + 0.5, rz, 0.6, 0.45, 0.45, rnd)
     ridge_log(m, mt, (x0 + x1) / 2, y0 - 0.5, y1 + 0.5, ridge, False, rnd)
-    m.cylinder(x1 - 0.7, y1 - 0.6, rz, 0.08, ridge - rz + 0.9, mt["tin"], 10)
-    m.cylinder(x1 - 0.7, y1 - 0.6, ridge + 0.9, 0.15, 0.12, mt["tin"], 10, r_top=0.04)
+    m.cylinder(x1 - 0.7, y1 - 0.6, rz, 0.08, ridge - rz + 0.9, mt["rust"], 10)
+    m.cylinder(x1 - 0.7, y1 - 0.6, ridge + 0.9, 0.15, 0.12, mt["rust"], 10, r_top=0.04)
 
 
 def fences(m, mt, rnd):
