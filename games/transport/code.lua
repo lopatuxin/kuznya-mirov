@@ -24,12 +24,13 @@ local TO_WEAR_DROP = 15          -- на сколько процентных п�
 local WEAR_FLOOR = 25            -- ниже ТО не опускает износ старой машины, %
 local WEAR_PER_100KM = 1         -- рост износа, процентных пунктов на 100 км
 local OVERDUE_WEAR = 3           -- во сколько раз быстрее изнашивается машина с просроченным ТО
-local LOAN_PAYMENT = 2500        -- платёж по кредиту в конце дня
+local LOAN_STEP = 10000          -- кредит берут и возвращают по столько
+local LOAN_MAX = 50000           -- больше банк не даёт
+local LOAN_RATE = 0.008          -- проценты за день от долга: 0,8 %, как у займов до зарплаты
 local OFFICE_RENT = 1500         -- аренда конторы за день
-local CAR_PRICE = 90000
-local SECOND_CAR = { odo = 21000, wear = 30, fuel = 20, to_at = 21300 }  -- подержанная вторая полуторка
 local DRIVER_FEE = 5000
 local DRIVER_WAGE = 2500
+local DRIVERS = { "Михалыч", "Петрович", "Семёныч", "Кузьмич", "Степаныч" }  -- наёмные водители по порядку найма
 local BANKRUPT_AT = -30000
 local REPAIR_COST = 3000
 local REPAIR_MINUTES = 40
@@ -41,7 +42,7 @@ local START_DATE = { year = 1930, month = 1, day = 1 }
 local MONTHS = { "января", "февраля", "марта", "апреля", "мая", "июня",
   "июля", "августа", "сентября", "октября", "ноября", "декабря" }
 
-local WINDOWS = { "win_orders", "win_cars", "win_notes", "win_firm", "win_settings" }  -- окна над полосой, открыто не больше одного
+local WINDOWS = { "win_orders", "win_cars", "win_buy", "win_notes", "win_firm", "win_settings" }  -- окна над полосой, открыто не больше одного
 
 local state = {
   game = nil,
@@ -54,6 +55,8 @@ local state = {
   next_order = 1,
   next_message = 1,
   next_car = 2,
+  next_driver = 1,
+  shop = 1,          -- какая машина таблицы `cars` выбрана в окне покупки
   free_orders = 0,
   closed = {},
   jam = {},
@@ -314,33 +317,52 @@ local function daily_wages()
   return wages
 end
 
--- Деньги, кнопки покупки и найма и текст окна «Фирма».
+-- Проценты по кредиту за день.
+local function loan_interest(debt)
+  return math.floor(debt * LOAN_RATE + 0.5)
+end
+
+-- Деньги, кнопки покупки, найма и кредита и тексты окон «Фирма» и «Покупка машины». Недоступная кнопка
+-- лежит серой, а подсказка над ней говорит почему.
 -- `bought` — машин без водителя, купленных в этом же шаге: `find` их ещё не видит.
 local function refresh_money(bought)
   local g = game()
   g.money_text = fmt_money(g.money)
   g.debt_text = fmt_money(g.debt)
-  local count = #cars() + (bought or 0)
   local has_spare_car = (bought or 0) > 0
   for _, c in ipairs(cars()) do
     if not c.has_driver then has_spare_car = true end
   end
-  g.can_buy = (g.money >= CAR_PRICE) and count < 2
+  local price = tables.cars[state.shop].price
+  g.can_buy = g.money >= price
+  g.buy_off = not g.can_buy
+  local room = LOAN_MAX - g.debt
+  g.buy_text = "На счёте " .. fmt_money(g.money) ..
+    (g.can_buy and "." or (", не хватает " .. fmt_money(price - g.money) .. "." ..
+      (room > 0 and (" Кредит до " .. fmt_money(room) .. " — в окне «Фирма».") or "")))
   g.can_hire = has_spare_car and g.money >= DRIVER_FEE
-  g.buy_off = count < 2 and not g.can_buy
-  g.hire_off = has_spare_car and not g.can_hire
-  g.firm_alert = g.can_buy or g.can_hire
+  g.hire_off = not g.can_hire
+  g.hire_why = has_spare_car and ("Не хватает " .. fmt_money(DRIVER_FEE - g.money))
+    or "Нанимать некого: у каждой машины есть водитель"
+  g.can_borrow = g.debt + LOAN_STEP <= LOAN_MAX
+  g.borrow_off = not g.can_borrow
+  g.borrow_why = "Больше банк не даёт: долг уже " .. fmt_money(g.debt)
+  g.can_repay = g.debt >= LOAN_STEP and g.money >= LOAN_STEP
+  g.repay_off = not g.can_repay
+  g.repay_why = g.debt < LOAN_STEP and "Долга нет" or ("Не хватает " .. fmt_money(LOAN_STEP - g.money))
+  g.firm_alert = g.can_hire
   local wages = daily_wages()
-  local text = "На счёте " .. fmt_money(g.money) .. ", долг по кредиту " .. fmt_money(g.debt) .. ".\n" ..
-    "Каждый вечер: платёж по кредиту " .. fmt_money(math.min(LOAN_PAYMENT, g.debt)) ..
-    ", аренда конторы " .. fmt_money(OFFICE_RENT) ..
-    (wages > 0 and (", зарплата водителя " .. fmt_money(wages)) or "") .. "."
-  if count < 2 and not g.can_buy then
-    text = text .. "\nВторой ГАЗ-АА — " .. fmt_money(CAR_PRICE) .. ": не хватает " .. fmt_money(CAR_PRICE - g.money) .. "."
-  elseif has_spare_car and not g.can_hire then
-    text = text .. "\nВодитель — " .. fmt_money(DRIVER_FEE) .. ": не хватает " .. fmt_money(DRIVER_FEE - g.money) .. "."
+  local evening = "аренда конторы " .. fmt_money(OFFICE_RENT)
+  if g.debt > 0 then
+    evening = evening .. ", проценты " .. fmt_money(loan_interest(g.debt))
   end
-  g.firm_text = text
+  if wages > 0 then
+    evening = evening .. ", зарплата водителей " .. fmt_money(wages)
+  end
+  g.firm_text = "На счёте " .. fmt_money(g.money) .. ".\n" ..
+    "Кредит: долг " .. fmt_money(g.debt) .. " из " .. fmt_money(LOAN_MAX) .. ", проценты — " ..
+    fmt_money(LOAN_RATE * 1000) .. " в день с каждой " .. fmt_money(1000) .. ".\n" ..
+    "Каждый вечер: " .. evening .. "."
 end
 
 local function spend(amount)
@@ -543,9 +565,17 @@ local function car_center(car)
   return { x = car.position.x + car.size.x / 2, y = car.position.y + car.size.y / 2 }
 end
 
+-- Где машины встают на ночь и где появляется купленная: у конторы, а на карте без неё — у первой машины.
+local function home_point()
+  if places().office ~= nil then
+    return place_point("office")
+  end
+  return car_center(car_by_id(1))
+end
+
 -- Скорость машины с грузом `load`: пустая едет со скоростью из шаблона полуторки (60 км/ч), с полным
 -- кузовом — на шестую часть медленнее, 50 км/ч: гружёная медленнее разгоняется. Где предел улицы ниже,
--- машина едет по пределу.
+-- машина едет по пределу. Шасси у бортовой, фургона и самосвала одно, и скорость у них одна.
 local function speed_for(car, load)
   return tables.templates.polutorka.drive_speed * (1 - FULL_LOAD_SLOWDOWN * clamp(load / car.capacity, 0, 1))
 end
@@ -942,8 +972,9 @@ local function street_names()
 end
 
 local function start_events()
-  if math.random() < 0.5 then
-    for _, r in ipairs(find({ has = { "road", "bridge" } })) do
+  local bridges = find({ has = { "road", "bridge" } })
+  if #bridges > 0 and math.random() < 0.5 then
+    for _, r in ipairs(bridges) do
       state.jam[#state.jam + 1] = { road = r, speed = r.road_speed }
       r.road_speed = 1.5
     end
@@ -990,6 +1021,9 @@ local function set_window(name)
   end
   for _, m in ipairs(find({ has = { "message" } })) do
     m.listed = g.win_notes
+  end
+  for _, o in ipairs(find({ has = { "offer" } })) do
+    o.listed = g.win_buy
   end
   mark_car_rows()
   if g.win_notes then
@@ -1052,11 +1086,11 @@ end
 local function check_goal()
   local g = game()
   if g.goal_done then return end
-  local list = cars()
-  if #list < 2 then return end
-  for _, c in ipairs(list) do
-    if not c.has_driver then return end
+  local driven = 0
+  for _, c in ipairs(cars()) do
+    if c.has_driver then driven = driven + 1 end
   end
+  if driven < 2 then return end
   g.goal_done = true
   g.goal_text = "Цель достигнута: две машины и водитель"
   say("Цель достигнута: у фирмы две машины и наёмный водитель!")
@@ -1065,9 +1099,8 @@ end
 local function end_day()
   local g = game()
   local wages = daily_wages()
-  local payment = math.min(LOAN_PAYMENT, g.debt)
-  g.debt = g.debt - payment
-  g.money = g.money - payment - wages - OFFICE_RENT
+  local interest = loan_interest(g.debt)
+  g.money = g.money - interest - wages - OFFICE_RENT
   refresh_money()
   local failed = 0
   for _, o in ipairs(find({ has = { "order", "taken" }, without = { "done" } })) do
@@ -1078,9 +1111,11 @@ local function end_day()
     "Доставлено заказов: " .. state.delivered .. ", из них с опозданием: " .. state.late .. ".\n" ..
     "Заработано: " .. fmt_money(state.earned) .. ". Бензин: " .. fmt_money(state.spent_fuel) ..
     (state.spent_repair > 0 and (". Ремонт и ТО: " .. fmt_money(state.spent_repair)) or "") .. ".\n" ..
-    "Платёж по кредиту: " .. fmt_money(payment) .. ". Аренда конторы: " .. fmt_money(OFFICE_RENT) .. (wages > 0 and (". Зарплата водителя: " .. fmt_money(wages)) or "") .. ".\n" ..
+    "Аренда конторы: " .. fmt_money(OFFICE_RENT) ..
+    (interest > 0 and (". Проценты по кредиту: " .. fmt_money(interest)) or "") ..
+    (wages > 0 and (". Зарплата водителей: " .. fmt_money(wages)) or "") .. ".\n" ..
     (failed > 0 and ("Не довезли до вечера: " .. failed .. " — клиенты недовольны.\n") or "") ..
-    "На счёте: " .. fmt_money(g.money) .. ", долг: " .. fmt_money(g.debt) .. "."
+    "На счёте: " .. fmt_money(g.money) .. (g.debt > 0 and (", долг: " .. fmt_money(g.debt)) or "") .. "."
   g.day_over = true
   -- Итог дня — посередине экрана: окна и всплывающие окошки закрываются, иначе их текст лёг бы поверх.
   set_window(nil)
@@ -1108,7 +1143,7 @@ local function clear_day()
     delete(s)
   end
   change_free_orders(-state.free_orders)
-  local office = place_point("office")
+  local office = home_point()
   -- Машины встают у конторы скачком: прошлое место не годится для счёта пробега.
   state.last_pos = {}
   for i, c in ipairs(cars()) do
@@ -1137,7 +1172,47 @@ local function start_day()
   refresh_money()
 end
 
--- Первый шаг партии: подписи мест, доверие клиентов, расписание первого дня.
+-- Окно «Покупка машины»: что за машина выбрана в нём — по её строке таблицы `cars`, её шаблону и числам
+-- этого файла.
+local function fill_shop(g)
+  local model = tables.cars[state.shop]
+  local t = tables.templates[model.template]
+  -- Скорость шаблона — клеток в секунду мира; клетка — CELL_M метров, секунда мира — 60 / MINUTE секунд игры.
+  local kmh = t.drive_speed * CELL_M * MINUTE / 60 * 3.6
+  local function dec(x)
+    return (string.gsub(string.format("%.1f", x), "%.", ","))
+  end
+  g.buy_name = upper(model.title)
+  g.buy_specs = table.concat({
+    t.body,
+    "до " .. fmt_tons(t.capacity),
+    fmt_int(kmh) .. " км/ч, гружёная " .. fmt_int(kmh * (1 - FULL_LOAD_SLOWDOWN)) .. " км/ч",
+    TANK_L .. " л",
+    dec(FUEL_EMPTY_L100) .. "–" .. dec(FUEL_FULL_L100) .. " л на 100 км",
+    "каждые " .. fmt_int(TO_INTERVAL_KM) .. " км",
+  }, "\n")
+  g.buy_label = "Купить за " .. fmt_money(model.price)
+end
+
+-- Строка машины в списке окна покупки: выбранная лежит на кремовой табличке с тёмным силуэтом, остальные —
+-- на синей кнопке со светлым. `o` — строка или таблица новой строки до `create`.
+local function mark_offer(o)
+  local picked = o.offer_n == state.shop
+  local model = tables.cars[o.offer_n]
+  o.offer_plaque = picked and "plaque_cream" or ""
+  o.offer_icon = picked and model.icon_dark or model.icon
+end
+
+-- Строки списка машин окна покупки — по строке на машину таблицы `cars`.
+local function create_offers()
+  for i, model in ipairs(tables.cars) do
+    local o = { offer = true, offer_n = i, title = model.title, listed = game().win_buy }
+    mark_offer(o)
+    create(o)
+  end
+end
+
+-- Первый шаг партии: подписи мест, доверие клиентов, окно покупки, расписание первого дня.
 local function first_step(g)
   for id, p in pairs(places()) do
     local info = tables.clients[id]
@@ -1162,6 +1237,8 @@ local function first_step(g)
     p.title_text = upper(p.name)
   end
   g.started = true
+  fill_shop(g)
+  create_offers()
   mark_car_rows()
   refresh_notes()
   start_day()
@@ -1388,44 +1465,85 @@ function toggle_pause()
   end
 end
 
+-- Строка машины в списке окна покупки: она становится выбранной, справа — её описание и цена.
+function pick_offer(offer)
+  state.shop = offer.offer_n
+  for _, o in ipairs(find({ has = { "offer" } })) do
+    mark_offer(o)
+  end
+  fill_shop(game())
+  refresh_money()
+end
+
+-- «Купить» в окне покупки: выбранная машина, новая, с завода, встаёт у конторы рядом с остальными, без
+-- водителя, а вместо окна покупки открывается окно «Машины» с ней.
 function buy_car()
   local g = game()
-  if g.money < CAR_PRICE or #cars() >= 2 then return end
-  spend(CAR_PRICE)
-  local office = place_point("office")
-  local size = tables.templates.polutorka.size
+  local model = tables.cars[state.shop]
+  if g.money < model.price then return end
+  spend(model.price)
+  local office = home_point()
+  local template = tables.templates[model.template]
+  local size = template.size
+  local id = state.next_car
+  set_window("win_cars")
   local rows = mark_car_rows(1)
   local car = {
-    body = tables.templates.polutorka.body,
-    name = "ГАЗ-АА №2", model = "gaz_aa", car_id = state.next_car, has_driver = false, driver = "нет водителя",
-    position = { office.x + 1.2 - size[1] / 2, office.y - size[2] / 2 },
-    odo = SECOND_CAR.odo, wear = SECOND_CAR.wear, fuel = SECOND_CAR.fuel, to_at = SECOND_CAR.to_at,
-    load = 0, capacity = tables.templates.polutorka.capacity,
+    name = template.name .. " №" .. id, car_id = id, has_driver = false, driver = "нет водителя",
+    position = { office.x - size[1] / 2 + #cars() * 1.2, office.y - size[2] / 2 },
+    odo = 0, wear = 0, fuel = TANK_L, to_at = TO_INTERVAL_KM,
+    load = 0, capacity = template.capacity,
     state = "idle", state_text = "стоит у конторы — нужен водитель",
     row_c1 = rows.row_c1, row_c2 = rows.row_c2,
   }
   fill_card(car)
-  create(tables.templates.polutorka, car)
-  state.next_car = state.next_car + 1
+  create(template, car)
+  state.next_car = id + 1
   -- Новая машина появится только после этой функции: кнопку найма и окно «Фирма» считаем с ней.
   refresh_money(1)
-  say("Куплен второй ГАЗ-АА. Наймите водителя в окне «Фирма», чтобы он поехал")
+  say("Куплен " .. car.name .. ". Наймите водителя в окне «Фирма», чтобы он поехал")
 end
 
+-- «Нанять водителя» в окне «Фирма»: водитель садится в машину без водителя с меньшим номером.
 function hire_driver()
   local g = game()
   if g.money < DRIVER_FEE then return end
-  for _, c in ipairs(cars()) do
+  local list = cars()
+  table.sort(list, function(a, b) return a.car_id < b.car_id end)
+  for _, c in ipairs(list) do
     if not c.has_driver then
+      local name = DRIVERS[(state.next_driver - 1) % #DRIVERS + 1]
+      state.next_driver = state.next_driver + 1
       c.has_driver = true
-      c.driver = "Михалыч"
+      c.driver = name
       spend(DRIVER_FEE)
       c.state_text = "ждёт заказы"
       refresh_picks()
-      say("Нанят водитель Михалыч: " .. fmt_money(DRIVER_WAGE) .. " в день")
+      say("Нанят водитель " .. name .. " на " .. c.name .. ": " .. fmt_money(DRIVER_WAGE) .. " в день")
       return
     end
   end
+end
+
+-- Кнопки кредита в окне «Фирма»: банк даёт и принимает назад по LOAN_STEP, долг — не больше LOAN_MAX.
+-- Проценты списываются каждый вечер, долг возвращает только игрок.
+function take_loan()
+  local g = game()
+  if g.debt + LOAN_STEP > LOAN_MAX then return end
+  g.debt = g.debt + LOAN_STEP
+  g.money = g.money + LOAN_STEP
+  refresh_money()
+  say("Взят кредит " .. fmt_money(LOAN_STEP) .. ", долг " .. fmt_money(g.debt) .. ": каждый вечер проценты " ..
+    fmt_money(loan_interest(g.debt)), "cash")
+end
+
+function repay_loan()
+  local g = game()
+  if g.debt < LOAN_STEP or g.money < LOAN_STEP then return end
+  g.debt = g.debt - LOAN_STEP
+  spend(LOAN_STEP)
+  say("Возвращено банку " .. fmt_money(LOAN_STEP) ..
+    (g.debt > 0 and (", долг " .. fmt_money(g.debt)) or ": долга больше нет"))
 end
 
 function next_day()
@@ -1450,6 +1568,7 @@ end
 
 function open_orders() open_window("win_orders") end
 function open_cars() open_window("win_cars") end
+function open_buy() open_window("win_buy") end
 function open_notes() open_window("win_notes") end
 function open_firm() open_window("win_firm") end
 function open_settings() open_window("win_settings") end

@@ -245,6 +245,34 @@ fn test_multiple_assignment() {
 }
 
 #[test]
+fn test_concat_with_conditional_operand_keeps_every_part() {
+    let mut vm = GlobalState::new(SafeOption::default());
+    vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();
+
+    let result = vm.main_state().execute(
+        r#"
+        local x = "5"
+        local flag = true
+        assert("A" .. x .. (flag and "." or ("B" .. x)) == "A5.")
+        flag = false
+        assert("A" .. x .. (flag and "." or ("B" .. x)) == "A5B5")
+        local t = {money = 7}
+        assert("A" .. tostring(t.money) .. (t.money > 5 and "!" or ("?" .. t.money)) == "A7!")
+        flag = true
+        assert((flag and x or "") .. "." == "5.")
+        assert("A" .. (flag and x or "") .. "." == "A5.")
+        flag = false
+        assert((flag and x or "") .. "." == ".")
+    "#,
+    );
+
+    if let Err(e) = &result {
+        eprintln!("Error: {}", e);
+    }
+    assert!(result.is_ok());
+}
+
+#[test]
 fn test_table_access() {
     let mut vm = GlobalState::new(SafeOption::default());
     vm.open_stdlib(crate::stdlib::Stdlib::All).unwrap();

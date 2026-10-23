@@ -1310,8 +1310,10 @@ fn swapexps(e1: &mut ExpDesc, e2: &mut ExpDesc) {
 // Port of codeconcat from lcode.c:1686-1698
 // Create code for '(e1 .. e2)'
 fn codeconcat(fs: &mut FuncState, e1: &mut ExpDesc, e2: &mut ExpDesc, line: usize) {
-    // Check if previous instruction is CONCAT to merge multiple concatenations
-    if fs.pc > 0 {
+    // Check if previous instruction is CONCAT to merge multiple concatenations. As 'previousinstruction'
+    // in lcode.c, an instruction at a jump target does not count: in `x .. (c and "." or ("B" .. y))` the
+    // last CONCAT belongs to one branch only, and merging into it would drop `x` on the other branch.
+    if fs.pc > fs.last_target {
         let prev_pc = fs.pc - 1;
         let prev_instr = fs.chunk.code[prev_pc];
         if Instruction::get_opcode(prev_instr) == OpCode::Concat {
@@ -1744,11 +1746,12 @@ pub fn posfix(
             // Constant folding: if e2 is a string constant and e1 was loaded
             // from a string constant via LOADK, fold them at compile time.
             // This handles chains like "a" .. "b" .. "c" (right-associative),
-            // folding them into a single constant with zero runtime cost.
+            // folding them into a single constant with zero runtime cost. A LOADK right before a jump
+            // target is one branch only: in `(c and a or "") .. "."` it loads the "" of the false branch.
             if e2.kind == ExpKind::VKSTR
                 && e1.kind == ExpKind::VNONRELOC
                 && !e1.has_jumps()
-                && fs.pc > 0
+                && fs.pc > fs.last_target
             {
                 let prev_pc = fs.pc - 1;
                 let prev_instr = fs.chunk.code[prev_pc];

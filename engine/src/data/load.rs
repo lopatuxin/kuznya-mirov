@@ -21,9 +21,9 @@ use crate::core::scene::{
     CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, SceneConfig,
 };
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, Element, Fill, FontId, ImageRef, MaxSpec, MusicId, Placement,
-    RunCall, RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle,
-    WorldColor, WorldElement, WorldElementKind, WorldTextPart,
+    Align, Anchor, ButtonCommand, Element, Fill, FontId, ImageRef, MaxSpec, MusicId, PanelFill,
+    Placement, RunCall, RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart,
+    TooltipStyle, WorldColor, WorldElement, WorldElementKind, WorldTextPart,
 };
 use crate::core::terrain::{DENSITIES, Terrain};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
@@ -7525,6 +7525,8 @@ enum ParsedElementData {
         placement: Placement,
         color: Option<[f32; 4]>,
         image_name: Option<String>,
+        /// `image: "{свойство}"` — имя картинки берёт свойство объекта элемента; `image_name` тогда пуст.
+        own_image: Option<PropertyId>,
         opacity: Option<f32>,
         image_scale: Option<f32>,
         tooltip: Option<Vec<TextPart>>,
@@ -8116,10 +8118,32 @@ fn parse_element(
             let image_scale = parse_image_scale(obj, image_name.is_some(), file, path, errors)?;
             let own = scope == Scope::Row || for_.is_some();
             let tooltip = parse_tooltip(obj, context, own, file, path, errors)?;
+            // «Элемент при объекте»: `{свойство}` в `image` — только у панели, у которой есть объект.
+            let (image_name, own_image) = match image_name {
+                Some(name) if name.contains(['{', '}']) => {
+                    let image_path = join(path, "image");
+                    if !own {
+                        errors.push(
+                            file,
+                            &image_path,
+                            format!(
+                                "\"{name}\": имя картинки из свойства берёт только панель при объекте — в строке списка или с for"
+                            ),
+                        );
+                        return None;
+                    }
+                    match parse_image_name(name, properties, file, &image_path, errors)? {
+                        ParsedImageRef::Own(property) => (None, Some(property)),
+                        ParsedImageRef::Name(name) => (Some(name), None),
+                    }
+                }
+                other => (other, None),
+            };
             Some(ParsedElementData::Panel {
                 placement,
                 color,
                 image_name,
+                own_image,
                 opacity,
                 image_scale,
                 tooltip,
@@ -8972,21 +8996,32 @@ fn resolve_element(
             placement,
             color,
             image_name,
+            own_image,
             opacity,
             image_scale,
             tooltip,
             for_,
         } => {
-            let fill = resolve_fill(
-                *color,
-                image_name.as_deref(),
-                *opacity,
-                None,
-                images,
-                file,
-                &join(path, "image"),
-                errors,
-            );
+            let fill = match own_image {
+                Some(property) => Some(PanelFill::Own {
+                    image: ImageRef::Own {
+                        property: *property,
+                        names: images.iter().map(|decl| decl.name.clone()).collect(),
+                    },
+                    opacity: opacity.unwrap_or(1.0),
+                }),
+                None => resolve_fill(
+                    *color,
+                    image_name.as_deref(),
+                    *opacity,
+                    None,
+                    images,
+                    file,
+                    &join(path, "image"),
+                    errors,
+                )
+                .map(PanelFill::Fixed),
+            };
             let tooltip_ok =
                 validate_tooltip_refs(tooltip, scene_names, file, scene_file, path, errors);
             let fill = fill?;
@@ -9461,7 +9496,8 @@ fn parse_world_max(
 }
 
 /// «Надписи, полоски и картинки в мире», требование 1: `image` — имя картинки из `files.images` или
-/// `{свойство}`, занимающее строку целиком: имя берётся из свойства самого объекта.
+/// `{свойство}`, занимающее строку целиком: имя берётся из свойства самого объекта. Так же — `image` панели
+/// при объекте («Элемент при объекте»).
 #[derive(Debug, Clone)]
 enum ParsedImageRef {
     Name(String),
@@ -9476,6 +9512,16 @@ fn parse_world_image(
     errors: &mut ErrorSink,
 ) -> Option<ParsedImageRef> {
     let text = expect_string(value, file, path, errors)?;
+    parse_image_name(text, properties, file, path, errors)
+}
+
+fn parse_image_name(
+    text: String,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedImageRef> {
     let Some(inner) = text
         .strip_prefix('{')
         .and_then(|rest| rest.strip_suffix('}'))
@@ -9497,7 +9543,7 @@ fn parse_world_image(
             file,
             path,
             format!(
-                "подстановка \"{text}\" над объектом в мире называет одно собственное свойство объекта, без точки и скобок внутри"
+                "подстановка \"{text}\" называет одно собственное свойство объекта, без точки и скобок внутри"
             ),
         );
         return None;
@@ -10555,6 +10601,20 @@ fn collect_used_images(
                 image: ImageRef::Own { .. }
             }
         )
+    }) || screens.iter().any(|screen| {
+        screen
+            .elements
+            .iter()
+            .flat_map(Element::leaves)
+            .any(|element| {
+                matches!(
+                    element,
+                    Element::Panel {
+                        fill: PanelFill::Own { .. },
+                        ..
+                    }
+                )
+            })
     });
     let text_names = if named_by_property { images } else { &[] };
     for element in world_elements {
@@ -10645,7 +10705,14 @@ fn collect_used_images(
     for screen in screens {
         for element in screen.elements.iter().flat_map(Element::leaves) {
             match element {
-                Element::Panel { fill, .. } => mark_fill_used(&mut used, fill),
+                Element::Panel {
+                    fill: PanelFill::Fixed(fill),
+                    ..
+                } => mark_fill_used(&mut used, fill),
+                Element::Panel {
+                    fill: PanelFill::Own { .. },
+                    ..
+                } => {}
                 Element::Button {
                     fill,
                     fill_hover,
@@ -10693,7 +10760,7 @@ fn validate_unused_images(
                 "game.json",
                 &format!("files → images → {}", decl.name),
                 format!(
-                    "картинка \"{}\" объявлена, но её не называет ни один объект, ни один шаблон создания и ни один элемент экрана",
+                    "картинка \"{}\" объявлена, но её не называет ни один объект, ни один шаблон создания, ни один элемент экрана, ни код и его таблицы",
                     decl.name
                 ),
             );
@@ -11452,18 +11519,28 @@ pub fn load_rest_with_models(
                 .iter()
                 .map(|junction| junction.name.clone()),
         );
+        // «Таблицы данных»: таблицы читает код игры, и имя модели, картинки или вида дороги в таблице —
+        // такое же упоминание, как в тексте кода. Без кода таблицы читать некому.
+        let code_and_tables = code_json.map(|code| {
+            let mut text = code.to_string();
+            for table in table_texts.iter().filter_map(|(_, table)| table.as_deref()) {
+                text.push('\n');
+                text.push_str(table);
+            }
+            text
+        });
         warn_unused_models(
             &config.files.models,
             &named_models,
             rules_json,
-            code_json,
+            code_and_tables.as_deref(),
             &mut errors,
         );
         warn_unused_road_kinds(
             &config.road_kinds,
             &named_in_scene(&scene_objects, property::ROAD_KIND),
             rules_json,
-            code_json,
+            code_and_tables.as_deref(),
             &mut errors,
         );
         // `screens_config` is `Some` whenever no error has been pushed — `resolve_screens` only
@@ -11478,7 +11555,7 @@ pub fn load_rest_with_models(
                 tooltip.as_ref(),
                 &world_elements,
                 &ground,
-                code_json,
+                code_and_tables.as_deref(),
                 &mut errors,
             );
         }

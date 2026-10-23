@@ -1,8 +1,8 @@
 {
   "name": "Транспортная компания",
   "scene": {
-    "width": 280,
-    "height": 170,
+    "width": 400,
+    "height": 400,
     "background": "#8a8b7f",
     "view_height": 40,
     "camera": {
@@ -11,11 +11,11 @@
     "player_camera": {
       "zoom": [
         8,
-        170
+        400
       ],
       "start": [
-        129.5,
-        36.3
+        211.0,
+        83.1
       ]
     },
     "light": {
@@ -276,47 +276,21 @@
     "tables": {
       "clients": "tables/clients.json",
       "templates": "tables/templates.json",
+      "cars": "tables/cars.json",
       "addresses": "tables/addresses.json"
     },
     "models": {
-      "birch": {
-        "path": "models/birch.glb"
-      },
-      "brick_house": {
-        "path": "models/brick_house.glb"
+      "garage": {
+        "path": "models/garage.glb"
       },
       "gaz_aa": {
         "path": "models/gaz_aa.glb"
       },
-      "izba_blue_grey": {
-        "path": "models/izba_blue_grey.glb"
+      "gaz_aa_dump": {
+        "path": "models/gaz_aa_dump.glb"
       },
-      "izba_brown_green": {
-        "path": "models/izba_brown_green.glb"
-      },
-      "izba_green_red": {
-        "path": "models/izba_green_red.glb"
-      },
-      "izba_ochre_green": {
-        "path": "models/izba_ochre_green.glb"
-      },
-      "linden": {
-        "path": "models/linden.glb"
-      },
-      "market": {
-        "path": "models/market.glb"
-      },
-      "office": {
-        "path": "models/office.glb"
-      },
-      "old_pink": {
-        "path": "models/old_pink.glb"
-      },
-      "old_yellow": {
-        "path": "models/old_yellow.glb"
-      },
-      "pine": {
-        "path": "models/pine.glb"
+      "gaz_aa_van": {
+        "path": "models/gaz_aa_van.glb"
       },
       "road_bend_drive_drive": {
         "path": "models/road_bend_drive_drive.glb"
@@ -426,36 +400,14 @@
       "road_tee_street_street": {
         "path": "models/road_tee_street_street.glb"
       },
-      "shop": {
-        "path": "models/shop.glb"
+      "yard_middle": {
+        "path": "models/yard_middle.glb"
       },
-      "site": {
-        "path": "models/site.glb"
-      },
-      "two_storey_blue": {
-        "path": "models/two_storey_blue.glb"
-      },
-      "white_house": {
-        "path": "models/white_house.glb"
+      "yard_middle_mirror": {
+        "path": "models/yard_middle_mirror.glb"
       }
     },
     "images": {
-      "jewelry": {
-        "path": "icons/jewelry.png",
-        "smooth": true
-      },
-      "market": {
-        "path": "icons/market.png",
-        "smooth": true
-      },
-      "office": {
-        "path": "icons/office.png",
-        "smooth": true
-      },
-      "shop": {
-        "path": "icons/shop.png",
-        "smooth": true
-      },
       "panel": {
         "path": "ui/panel.png",
         "slice": [34, 34, 34, 34],
@@ -618,6 +570,26 @@
       },
       "icon_truck_big": {
         "path": "ui/icons/truck-big.png",
+        "smooth": true
+      },
+      "icon_truck_big_dark": {
+        "path": "ui/icons/truck-big-dark.png",
+        "smooth": true
+      },
+      "icon_truck_van_big": {
+        "path": "ui/icons/truck-van-big.png",
+        "smooth": true
+      },
+      "icon_truck_van_big_dark": {
+        "path": "ui/icons/truck-van-big-dark.png",
+        "smooth": true
+      },
+      "icon_truck_dump_big": {
+        "path": "ui/icons/truck-dump-big.png",
+        "smooth": true
+      },
+      "icon_truck_dump_big_dark": {
+        "path": "ui/icons/truck-dump-big-dark.png",
         "smooth": true
       },
       "icon_scales": {

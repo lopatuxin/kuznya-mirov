@@ -826,6 +826,22 @@ fn the_model_shaders_validate_and_translate_to_glsl_es_300() {
     );
 }
 
+#[test]
+fn the_cut_out_shaders_lift_alpha_by_the_picture_level_and_translate_to_glsl_es_300() {
+    let (module, info) = parse_and_validate(include_str!("../shaders/scene3d.wgsl"));
+    let material: Vec<(u32, u32)> = (0..9).map(|binding| (1, binding)).collect();
+    let shared = [(0, 0), (0, 3), (0, 4)];
+    let all: Vec<(u32, u32)> = shared.iter().chain(&material).copied().collect();
+    for (entry, bindings) in [("fs_model_mask", &all), ("fs_model_blend", &all)] {
+        let glsl = to_webgl2_glsl(&module, &info, naga::ShaderStage::Fragment, entry, bindings);
+        // Ступень уменьшения картинки цвета — по её размеру и производным точки картинки на экране.
+        assert!(
+            glsl.contains("textureSize(") && glsl.contains("dFdx(") && glsl.contains("dFdy("),
+            "{entry}: {glsl}"
+        );
+    }
+}
+
 // -------------------------------------------------------------------------------------------
 // Маленький .glb для проверок ошибок
 // -------------------------------------------------------------------------------------------

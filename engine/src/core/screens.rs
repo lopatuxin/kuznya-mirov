@@ -300,7 +300,7 @@ pub enum ButtonCommand {
 pub enum Element {
     Panel {
         placement: Placement,
-        fill: Fill,
+        fill: PanelFill,
         /// «Картинки» → «Растягивание рамки»: толщина рамки картинки с полями `slice` на экране.
         image_scale: f32,
         /// «Подсказка»: текст, всплывающий над элементом.
@@ -531,6 +531,19 @@ impl ImageRef {
             }
         }
     }
+}
+
+/// Заливка панели: цвет или картинка из `files.images` — или «Элемент при объекте»: картинка, чьё имя
+/// хранит строковое свойство объекта элемента (`image: "{свойство}"` у панели строки списка или с `for`).
+#[derive(Debug, Clone)]
+pub enum PanelFill {
+    Fixed(Fill),
+    /// `image` — всегда `ImageRef::Own`. Нет свойства, оно пустое, называет картинку, которой нет, или
+    /// картинку, которую панель не берёт (видео, `frame_by`, `size`), — панели не видно.
+    Own {
+        image: ImageRef,
+        opacity: f32,
+    },
 }
 
 #[derive(Debug, Clone)]

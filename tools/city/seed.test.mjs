@@ -29,11 +29,11 @@ test("зародыш: все места, откуда и куда возят к�
     else assert.ok(places.has(end), `нет места «${end}»`);
   }
   for (const p of places.values()) assert.ok(Number.isFinite(p.stop_x) && Number.isFinite(p.stop_y), `у «${p.place}» нет остановки`);
-  // Над местом — значок его дела вместо подписи: у каждого места значок, он объявлен картинкой игры и файл есть.
-  const images = JSON.parse(readFileSync(new URL("../../games/transport/game.json", import.meta.url), "utf8")).files.images ?? {};
+  // Над местом — значок его дела вместо подписи: у каждого места значок, и его файл лежит среди значков игры. Объявлять
+  // значки в game.json — дело того, кто ставит городок на карту игры: сейчас на карте Транспортной компании его нет.
   for (const p of places.values()) {
-    assert.ok(images[p.icon], `значок «${p.icon}» места «${p.place}» не объявлен в files.images`);
-    assert.ok(existsSync(new URL(`../../games/transport/${images[p.icon].path}`, import.meta.url)), `нет файла значка «${p.icon}»`);
+    assert.ok(p.icon, `у места «${p.place}» нет значка`);
+    assert.ok(existsSync(new URL(`../../games/transport/icons/${p.icon}.png`, import.meta.url)), `нет файла значка «${p.icon}»`);
   }
 });
 

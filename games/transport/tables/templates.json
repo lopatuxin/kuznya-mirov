@@ -21,6 +21,57 @@
         "clicked",
         true
       ]
-    ]
+    ],
+    "side_icon": "icon_truck_big"
+  },
+  "polutorka_van": {
+    "name": "Фургон",
+    "car": true,
+    "size": [
+      0.168,
+      0.427
+    ],
+    "model": "gaz_aa_van",
+    "height": 0.184,
+    "drive_speed": 16.67,
+    "capacity": 1,
+    "body": "фургон",
+    "load": 0,
+    "state": "idle",
+    "state_text": "ждёт заказы",
+    "driver": "Вы",
+    "has_driver": true,
+    "on_click": [
+      [
+        "clicked",
+        true
+      ]
+    ],
+    "side_icon": "icon_truck_van_big"
+  },
+  "polutorka_dump": {
+    "name": "Самосвал",
+    "car": true,
+    "size": [
+      0.168,
+      0.37
+    ],
+    "model": "gaz_aa_dump",
+    "height": 0.158,
+    "drive_speed": 16.67,
+    "capacity": 1.2,
+    "body": "самосвал",
+    "load": 0,
+    "state": "idle",
+    "state_text": "ждёт заказы",
+    "driver": "Вы",
+    "has_driver": true,
+    "on_click": [
+      [
+        "clicked",
+        true
+      ]
+    ],
+    "side_icon": "icon_truck_dump_big"
   }
 }

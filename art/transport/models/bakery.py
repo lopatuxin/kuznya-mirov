@@ -76,7 +76,7 @@ class Plant(Model):
         m = bpy.data.materials.new(f"{self.name}_{key}")
         m.use_nodes = True
         nodes, links = m.node_tree.nodes, m.node_tree.links
-        bsdf = nodes["Principled BSDF"]
+        bsdf = lib.bsdf(m)
 
         def image(file, data):
             node = nodes.new("ShaderNodeTexImage")

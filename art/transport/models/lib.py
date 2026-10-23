@@ -8,7 +8,7 @@ import bmesh
 import bpy
 from mathutils import Matrix, Vector
 
-FONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "games", "transport", "fonts", "Rubik.ttf")
+FONT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "games", "transport", "fonts", "Tektur.ttf")
 
 
 def reset():
@@ -19,6 +19,11 @@ def hex_color(h):
     h = h.lstrip("#")
     srgb = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
     return tuple(c / 12.92 if c <= 0.04045 else ((c + 0.055) / 1.055) ** 2.4 for c in srgb)
+
+
+def bsdf(material):
+    """Узел Principled BSDF материала — по типу: в Blender с русским интерфейсом его имя переведено."""
+    return next(n for n in material.node_tree.nodes if n.bl_idname == "ShaderNodeBsdfPrincipled")
 
 
 class Model:
@@ -35,10 +40,10 @@ class Model:
             return self.index[key]
         m = bpy.data.materials.new(f"{self.name}_{key}")
         m.use_nodes = True
-        bsdf = m.node_tree.nodes["Principled BSDF"]
-        bsdf.inputs["Base Color"].default_value = (*hex_color(color), 1.0)
-        bsdf.inputs["Roughness"].default_value = rough
-        bsdf.inputs["Metallic"].default_value = metal
+        node = bsdf(m)
+        node.inputs["Base Color"].default_value = (*hex_color(color), 1.0)
+        node.inputs["Roughness"].default_value = rough
+        node.inputs["Metallic"].default_value = metal
         self.materials.append(m)
         self.index[key] = len(self.materials) - 1
         return self.index[key]
@@ -148,9 +153,13 @@ class Model:
         for f in {f for v in verts for f in v.link_faces}:
             f.material_index = mi
 
+    def orient(self):
+        """Нормали граней наружу; наследник поправляет после пересчёта то, что тот развернул не так."""
+        bmesh.ops.recalc_face_normals(self.bm, faces=self.bm.faces)
+
     def finish(self):
         me = bpy.data.meshes.new(self.name)
-        bmesh.ops.recalc_face_normals(self.bm, faces=self.bm.faces)
+        self.orient()
         self.bm.to_mesh(me)
         self.bm.free()
         for m in self.materials:
@@ -176,7 +185,7 @@ def text(model_obj, words, size, location, rotation_z, color, depth=0.04):
     t.rotation_euler = (math.pi / 2, 0, rotation_z)
     m = bpy.data.materials.new(f"{model_obj.name}_textmat")
     m.use_nodes = True
-    m.node_tree.nodes["Principled BSDF"].inputs["Base Color"].default_value = (*hex_color(color), 1.0)
+    bsdf(m).inputs["Base Color"].default_value = (*hex_color(color), 1.0)
     cu.materials.append(m)
     deps = bpy.context.evaluated_depsgraph_get()
     mesh = bpy.data.meshes.new_from_object(t.evaluated_get(deps))

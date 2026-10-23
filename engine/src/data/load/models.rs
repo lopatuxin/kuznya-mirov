@@ -229,7 +229,7 @@ pub(super) fn warn_unused_models(
             "game.json",
             &format!("files → models → {}", decl.name),
             format!(
-                "модель \"{}\" объявлена и нигде не названа ни в scene.json, ни в rules.json, ни в тексте кода",
+                "модель \"{}\" объявлена и нигде не названа ни в scene.json, ни в rules.json, ни в тексте кода и его таблицах",
                 decl.name
             ),
         );

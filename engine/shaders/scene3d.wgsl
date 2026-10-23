@@ -997,6 +997,23 @@ fn fs_shadow_model_mask(in: ShadowMaskOutput) {
     }
 }
 
+// На сколько поднимается прозрачность выреза `MASK` за каждую ступень уменьшения картинки цвета, которую берёт
+// видеокарта: издали листья с просветами усредняются ниже порога, и листва дерева пропала бы целиком, а с подъёмом
+// карточка веточки становится пятном цвета листвы и крона читается сплошной. Вблизи, на первой ступени, прозрачность
+// прежняя. Тень не поднимается: с подъёмом крона сплошь затеняла сама себя и темнела, а без него тень листвы
+// видна на ближнем и среднем виде игры.
+const MASK_BOOST_PER_LEVEL: f32 = 0.25;
+
+// Прозрачность выреза в точке `uv`, поднятая по ступени уменьшения картинки цвета — её видеокарта выбирает по тому,
+// сколько точек картинки ложится в одну точку экрана. Производные — до любых ветвлений.
+fn mask_alpha(alpha: f32, uv: vec2<f32>) -> f32 {
+    let texels = uv * vec2<f32>(textureDimensions(model_base_texture));
+    let dx = dpdx(texels);
+    let dy = dpdy(texels);
+    let level = max(0.0, 0.5 * log2(max(max(dot(dx, dx), dot(dy, dy)), 1e-8)));
+    return alpha * (1.0 + level * MASK_BOOST_PER_LEVEL);
+}
+
 struct ModelOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) world: vec3<f32>,
@@ -1094,11 +1111,12 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(point.rgb, 1.0);
 }
 
-// `MASK`: точки с прозрачностью меньше порога не рисуются, остальные сплошные.
+// `MASK`: точки с прозрачностью меньше порога не рисуются, остальные сплошные; издали прозрачность поднята —
+// `mask_alpha`.
 @fragment
 fn fs_model_mask(in: ModelOutput) -> @location(0) vec4<f32> {
     let point = model_point(in);
-    if (point.a < model_material.alpha.y) {
+    if (mask_alpha(point.a, in.uv) < model_material.alpha.y) {
         discard;
     }
     return vec4<f32>(point.rgb, 1.0);
@@ -1111,7 +1129,8 @@ fn fs_model_mask(in: ModelOutput) -> @location(0) vec4<f32> {
 fn fs_model_blend(in: ModelOutput) -> @location(0) vec4<f32> {
     let point = model_point(in);
     let mode = model_material.alpha.x;
-    if (mode > 0.5 && mode < 1.5 && point.a < model_material.alpha.y) {
+    let cut = mask_alpha(point.a, in.uv);
+    if (mode > 0.5 && mode < 1.5 && cut < model_material.alpha.y) {
         discard;
     }
     return vec4<f32>(point.rgb, select(1.0, point.a, mode > 1.5));
