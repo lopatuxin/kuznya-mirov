@@ -48,7 +48,9 @@ const ICONS = [
   ["firm", "firm", 36, true],
   ["mail", "mail", 36, true],
   ["settings", "settings", 34, true],
-  ["truck", "truck-big", 0, false],
+  ["truck", "truck-big", 0, true],
+  ["truck-van", "truck-van-big", 0, true],
+  ["truck-dump", "truck-dump-big", 0, true],
   ["scales", "scales", 36, false],
   ["fuel", "fuel", 36, false],
   ["engine", "engine", 36, false],
@@ -58,12 +60,13 @@ const ICONS = [
   ["service", "service", 38, false],
 ];
 
-// Силуэт машины в заголовке карточки — по ширине 56 (kit.md), без прозрачных полей вокруг: квадратный значок
-// с полями вылез бы из строки списка.
+// Силуэты машин в заголовке карточки и в окне покупки — по ширине 56 (kit.md), без прозрачных полей вокруг:
+// квадратный значок с полями вылез бы из строки списка. Все силуэты обрезаются одной рамкой — по всем сразу, —
+// чтобы машины на них были в одном масштабе: короткий самосвал не растягивается до длины бортовой.
 const TRUCK_BIG_W = 56;
 
-/** Значок `file`, обрезанный по непрозрачным точкам и уменьшенный до ширины `width`. */
-async function trimmedIcon(file, width, out) {
+/** Рамка непрозрачных точек значка `file`: [x0, y0, x1, y1]. */
+async function opaqueBox(file) {
   const { data, info } = await sharp(file).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
   let x0 = info.width, y0 = info.height, x1 = -1, y1 = -1;
   for (let y = 0; y < info.height; y++) {
@@ -73,6 +76,11 @@ async function trimmedIcon(file, width, out) {
       }
     }
   }
+  return [x0, y0, x1, y1];
+}
+
+/** Значок `file`, обрезанный рамкой `box` и уменьшенный до ширины `width`. */
+async function trimmedIcon(file, [x0, y0, x1, y1], width, out) {
   const height = Math.round(((y1 - y0 + 1) * width) / (x1 - x0 + 1));
   await sharp(file).extract({ left: x0, top: y0, width: x1 - x0 + 1, height: y1 - y0 + 1 })
     .resize(width, height, { kernel: "lanczos3" }).png().toFile(out);
@@ -139,11 +147,18 @@ for (const p of PIECES) {
     .toFile(join(OUT, `${p.out}.png`));
   images[p.out] = { path: `ui/${p.out}.png`, slice: p.slice.map((v) => Math.round(v * p.scale)), smooth: true };
 }
+const silhouettes = await Promise.all(
+  ICONS.filter(([, , size]) => size === 0).map(([src]) => opaqueBox(join(KIT, "icons", `${src}.png`))));
+const silhouetteBox = [
+  Math.min(...silhouettes.map((b) => b[0])), Math.min(...silhouettes.map((b) => b[1])),
+  Math.max(...silhouettes.map((b) => b[2])), Math.max(...silhouettes.map((b) => b[3])),
+];
 for (const [src, out, size, dark] of ICONS) {
   for (const suffix of dark ? ["", "-dark"] : [""]) {
     const file = join(OUT, "icons", `${out}${suffix}.png`);
     if (size === 0) {
-      console.error(`${out}: ${(await trimmedIcon(join(KIT, "icons", `${src}${suffix}.png`), TRUCK_BIG_W, file)).join(" × ")}`);
+      const icon = join(KIT, "icons", `${src}${suffix}.png`);
+      console.error(`${out}: ${(await trimmedIcon(icon, silhouetteBox, TRUCK_BIG_W, file)).join(" × ")}`);
     } else {
       await sharp(join(KIT, "icons", `${src}${suffix}.png`)).resize(size, size, { kernel: "lanczos3" }).png().toFile(file);
     }

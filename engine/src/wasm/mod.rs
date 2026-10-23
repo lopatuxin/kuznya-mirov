@@ -18,7 +18,7 @@ use crate::core::scene::{
     CellRange, GroundLayer, LayerView, ObjectTransform, pointer_hit, recorded_place, stamp_hit,
     terrain_hit, window_point,
 };
-use crate::core::screens::{self, Fill, ScreenState, ScreensConfig, WorldElementKind};
+use crate::core::screens::{self, Fill, PanelFill, ScreenState, ScreensConfig, WorldElementKind};
 use crate::core::world::World;
 use crate::core::world_elements::{self, ImageDraw, OverlayRun, WorldDraws};
 use crate::data::edit;
@@ -1232,10 +1232,35 @@ fn compose_ui(
         };
         match placed.element {
             screens::Element::Panel {
-                fill: panel_fill,
+                fill: PanelFill::Fixed(panel_fill),
                 image_scale,
                 ..
             } => fill(panel_fill, rect, *image_scale),
+            // «Элемент при объекте»: картинку называет свойство объекта; картинку, которую панель не берёт
+            // (видео, `frame_by`, `size`), — не рисуем, как и неизвестное имя.
+            screens::Element::Panel {
+                fill: PanelFill::Own { image, opacity },
+                image_scale,
+                ..
+            } => {
+                let image = placed
+                    .object
+                    .and_then(|id| image.resolve(world, id, properties))
+                    .filter(|&image| {
+                        let decl = &images[image];
+                        !decl.video && decl.frame_by.is_none() && decl.size.is_none()
+                    });
+                if let Some(image) = image {
+                    fill(
+                        &Fill::Image {
+                            image,
+                            opacity: *opacity,
+                        },
+                        rect,
+                        *image_scale,
+                    );
+                }
+            }
             screens::Element::Bar {
                 fill: bar_fill,
                 back,

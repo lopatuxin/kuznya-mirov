@@ -431,7 +431,7 @@ pub(super) fn warn_unused_road_kinds(
             FILE,
             &join(PATH, &kind.name),
             format!(
-                "вид дороги \"{}\" объявлен и нигде не назван ни в scene.json, ни в rules.json, ни в тексте кода",
+                "вид дороги \"{}\" объявлен и нигде не назван ни в scene.json, ни в rules.json, ни в тексте кода и его таблицах",
                 kind.name
             ),
         );

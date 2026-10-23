@@ -1,0 +1,23 @@
+[
+  {
+    "template": "polutorka",
+    "title": "ГАЗ-АА бортовая",
+    "price": 90000,
+    "icon": "icon_truck_big",
+    "icon_dark": "icon_truck_big_dark"
+  },
+  {
+    "template": "polutorka_van",
+    "title": "ГАЗ-АА фургон",
+    "price": 105000,
+    "icon": "icon_truck_van_big",
+    "icon_dark": "icon_truck_van_big_dark"
+  },
+  {
+    "template": "polutorka_dump",
+    "title": "ГАЗ-410 самосвал",
+    "price": 115000,
+    "icon": "icon_truck_dump_big",
+    "icon_dark": "icon_truck_dump_big_dark"
+  }
+]
