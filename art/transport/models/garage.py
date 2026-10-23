@@ -1,16 +1,17 @@
-# Первый гараж игрока со всем двором: бывший каретный сарай купеческой усадьбы, переделанный под полуторку
-# в 1930 году. Сарай из старого кирпича в облупившейся побелке под ржавой железной крышей с фальцами, щипец
-# сеновала с балкой и крюком над воротами, две лучковые арки с кирпичными перемычками и зелёными дощатыми
-# воротами — левые распахнуты, за ними верстак и смотровая яма; на столбе между арками синяя эмалевая табличка
-# «ГАРАЖ». Справа дощатая мастерская с жестяной трубой и тележным колесом у стены, слева навес с бочками бензина
-# и пожарный щит с ящиком песка, коновязь. Забора нет: двор открыт на улицу.
+# Первый гараж игрока на две машины со всем двором: бывший каретный сарай купеческой усадьбы, переделанный под
+# полуторку в 1930 году; рядом, слева, — дом усадьбы с конторой (`kontora.py`). Сарай из старого голого красного
+# кирпича под ржавой железной крышей с фальцами, щипец сеновала с балкой и крюком над воротами, две лучковые арки
+# с кирпичными перемычками и зелёными дощатыми воротами — левые распахнуты, за ними верстак и смотровая яма; на
+# столбе между арками синяя эмалевая табличка «ГАРАЖ». Справа дощатая мастерская с жестяной трубой и тележным
+# колесом у стены, слева навес с бочками бензина и пожарный щит с ящиком песка, коновязь. С улицы двор открыт,
+# дощатый забор — только сбоку справа и сзади.
 # Двор устроен под проезд полуторки игры (8,5 × 3,3 м, в 1,6 раза крупнее настоящей): от улицы к каждой арке
-# и к навесу ведёт свой подъезд с колеями; ручная колонка со стеклянным мерником стоит на островке между
-# подъездами к аркам — машина заправляется рядом с ней перед въездом. Земля — сеткой: неровный край сходит
-# к земле карты, в колеях грязь и лужи, где не ездят — трава. Образец вида — art/transport/garage/concept.png.
+# и к навесу ведёт свой подъезд — колея с прозрачным краем, как тропы двора избы; ручная колонка со стеклянным
+# мерником стоит на островке между подъездами к аркам — машина заправляется рядом с ней перед въездом. Земли и
+# травы в модели нет: их рисует движок. Образец вида — art/transport/estate/concept.png, кирпич — без побелки.
 # Размер настоящий; арки — 4 м в ширину. Улица — со стороны −Y Blender, начало — середина сарая по ширине,
-# единица — метр. Материалы — карты ambientCG и Poly Haven из art/transport/textures в настоящем размере, как у
-# хлебозавода; затенение запечено в цвет вершин.
+# единица — метр; верх земли — ноль. Материалы — карты ambientCG и Poly Haven из art/transport/textures в
+# настоящем размере, как у хлебозавода; затенение запечено в цвет вершин.
 # Запуск: "C:\Program Files\Blender Foundation\Blender 5.2\blender.exe" --background --factory-startup --python art/transport/models/garage.py [-- <папка>]
 import math
 import os
@@ -23,16 +24,16 @@ from mathutils import Vector
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import lib  # noqa: E402
-from bakery import GRIME, GROUND, Plant, noise  # noqa: E402
+from bakery import GRIME, Plant, noise  # noqa: E402
 from gaz_aa import glass  # noqa: E402
 from gazel import smoothstep  # noqa: E402
 
 OUT = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "..", "games", "transport", "models"))
 
-# Двор: прямоугольник со скруглёнными углами и неровным краем; за краем земля за `EDGE` м сходит к земле карты.
-YARD = (-15.0, -11.8, 14.5, 15.0)
-EDGE = 1.6
-CELL = 0.3  # шаг сетки земли: колеи уже метра, и затенению в вершинах нужны частые вершины
+GROUND = 0.0  # земля двора — земля карты движка; ниже неё в модели ничего нет: движок ставит самую низкую точку модели на землю
+# Край двора со стороны улицы: от него до оси главной улицы 9,3 м, как у двора избы, и подъезды начинаются за ним
+# в 5,6 м — под укатанным краем дороги.
+FRONT = -11.8
 
 # Каретный сарай: коробка стен, двускатная крыша с коньком вдоль X, щипец сеновала посередине фасада.
 X0, X1, YF, YB = -6.5, 6.5, 1.5, 12.0
@@ -55,7 +56,7 @@ DORMER_TOP = EAVE + DORMER * DORMER_SLOPE
 DORMER_EAVE = DORMER + OVER * SLOPE / DORMER_SLOPE  # где скат щипца сходится со свесом крыши
 DORMER_END = YF + DORMER * DORMER_SLOPE / SLOPE  # где конёк щипца упирается в скат крыши
 CEILING = 4.15  # низ пола сеновала
-FLOOR = GROUND + 0.03  # пол сарая выше кочек земли двора, что идёт под ним
+FLOOR = GROUND + 0.03  # пол сарая выше подъездов, что уходят под ворота
 
 # Мастерская справа от сарая: стены по высоте `shed_top`, крыша скатом вправо.
 WX0, WX1, WY0, WY1 = X1, 10.6, 2.6, 11.0
@@ -66,23 +67,16 @@ FX0, FX1, FY0, FY1 = -13.0, -8.4, 2.5, 6.0
 PUMP = (0.0, -2.5)
 DRUM_R, DRUM_H = 0.29, 0.44  # бочка на 200 л: 0,58 × 0,88 м
 
-# Подъезды: с улицы к левой и правой арке и к навесу; начинаются за краем двора. Вдоль осей — две колеи по колее
-# полуторки игры (2,6 м), в колеях земля просела, посередине протёрта; на концах подъезда колея за `TAPER` м
-# сходит на нет.
+# Подъезды: с улицы к левой и правой арке и к навесу — колеи по колее полуторки игры (2,6 м) с прозрачным краем;
+# начинаются под укатанным краем улицы и уходят под ворота и под навес.
 WEAR = [
-    [(-14.9, -13.05), (-12.0, -12.3), (-7.0, -11.0), (-4.2, -8.5), (-3.3, -5.0), (-3.2, -1.0), (-3.2, 2.5)],
-    [(13.88, -13.13), (11.0, -12.3), (6.5, -11.0), (4.1, -8.5), (3.3, -5.0), (3.2, -1.0), (3.2, 2.5)],
-    [(-16.88, -13.63), (-14.5, -11.8), (-11.5, -9.5), (-10.8, -6.0), (-10.7, 1.8)],
+    [(-7.5, FRONT - 5.6), (-5.2, -12.5), (-3.6, -7.0), (-3.2, -2.0), (-3.2, 2.5)],
+    [(7.5, FRONT - 5.6), (5.2, -12.5), (3.6, -7.0), (3.2, -2.0), (3.2, 2.5)],
+    [(-14.0, FRONT - 5.6), (-12.0, -11.0), (-10.9, -5.0), (-10.7, 1.8)],
 ]
-TRACK = 1.28  # половина колеи
-TAPER = 1.5
-# Где земля голая: под навесом, у колонки, у щита, в сараях. Трава и кочки растут вне этих мест и вне колей.
-BARE = [(FX0 - 0.3, FY0 - 0.5, FX1 + 0.3, FY1 + 0.3), (PUMP[0] - 1.0, PUMP[1] - 1.6, PUMP[0] + 1.0, PUMP[1] + 1.6),
-        (-8.3, 3.6, -6.6, 4.8), (X0, YF, X1, YB), (WX0, WY0, WX1, WY1)]
-# Лужи в колеях и масляные пятна между колеями: подъезд, метры от его начала, колея (−1 — левая, 1 — правая,
-# 0 — середина), полуоси пятна.
-PUDDLES = [(0, 17.0, -1, 0.3, 0.9), (0, 14.0, 1, 0.28, 0.7), (1, 17.5, 1, 0.32, 1.0), (1, 14.5, -1, 0.25, 0.6), (2, 12.0, -1, 0.3, 0.8)]
-STAINS = [(0, 20.5, 0, 0.5, 0.35), (1, 20.3, 0, 0.45, 0.3), (0, 18.0, 0, 0.3, 0.25), (2, 15.4, 0, 0.4, 0.3)]
+LANE = 1.9  # полуширина колеи подъезда
+# Дощатый забор: справа от мастерской и сзади за сараем, до забора дома усадьбы; с улицы двор открыт.
+FENCE_X, FENCE_Y0, FENCE_Y1, FENCE_BACK_X0 = 13.5, -8.0, 15.0, -13.0
 
 
 def arc(cx, n=14):
@@ -107,96 +101,16 @@ def shed_top(x):
     return 3.9 - (x - WX0) / (WX1 - WX0) * 1.1
 
 
-def nearest_lane(x, y):
-    """Ближайший подъезд `WEAR`: расстояние от точки до его оси и сколько колеи там ещё осталось — у начала и конца
-    подъезда она за `TAPER` м сходит на нет. За началом и концом расстояние не считается: иначе колея обогнула бы
-    конец подъезда полукольцом."""
-    best, left = 1e9, 0.0
-    for line in WEAR:
-        last = len(line) - 2
-        for i, ((ax, ay), (bx, by)) in enumerate(zip(line, line[1:])):
-            dx, dy = bx - ax, by - ay
-            length = math.hypot(dx, dy)
-            t = ((x - ax) * dx + (y - ay) * dy) / (length * length)
-            if (i == 0 and t < 0.0) or (i == last and t > 1.0):
-                continue
-            t = max(0.0, min(1.0, t))
-            d = math.hypot(x - ax - dx * t, y - ay - dy * t)
-            if d < best:
-                best, left = d, 1.0
-                if i == 0:
-                    left = min(left, smoothstep(0.0, TAPER, t * length))
-                if i == last:
-                    left = min(left, smoothstep(0.0, TAPER, (1.0 - t) * length))
-    return best, left
-
-
-def on_lane(lane, s, side):
-    """Точка подъезда `WEAR[lane]` в `s` метрах от его начала (не дальше конца): на оси (`side` = 0) или в колее слева
-    (−1) и справа (1)."""
-    line = WEAR[lane]
-    (ax, ay), (bx, by) = line[0], line[1]
-    for following in line[2:]:
-        length = math.hypot(bx - ax, by - ay)
-        if s <= length:
-            break
-        s -= length
-        (ax, ay), (bx, by) = (bx, by), following
-    length = math.hypot(bx - ax, by - ay)
-    dx, dy = (bx - ax) / length, (by - ay) / length
-    t = min(s, length)
-    return ax + dx * t + dy * side * TRACK, ay + dy * t - dx * side * TRACK
-
-
-def worn(x, y):
-    """Насколько точка протёрта колёсами: 1 в колее, меньше половины посередине между колеями, к 2 м за колеёй — 0."""
-    d, left = nearest_lane(x, y)
-    return left * max(math.exp(-((d - TRACK) / 0.4) ** 2), 0.45 * math.exp(-(d / 1.2) ** 2))
-
-
-def rut(x, y):
-    """Глубина колеи от 0 до 1: 1 посередине следа колеса."""
-    d, left = nearest_lane(x, y)
-    return left * math.exp(-((d - TRACK) / 0.32) ** 2)
-
-
-def edge(x, y):
-    """Сколько метров от точки до края двора; снаружи — меньше нуля. Край — прямоугольник `YARD` со скруглёнными
-    углами, неровный примерно на метр."""
-    x0, y0, x1, y1 = YARD
-    r = 3.0
-    qx = abs(x - (x0 + x1) / 2) - ((x1 - x0) / 2 - r)
-    qy = abs(y - (y0 + y1) / 2) - ((y1 - y0) / 2 - r)
-    outside = math.hypot(max(qx, 0.0), max(qy, 0.0)) + min(max(qx, qy), 0.0) - r
-    return -outside - 1.4 * (noise(x / 4.0, y / 4.0, 11) - 0.5) - 0.6 * (noise(x / 1.5, y / 1.5, 12) - 0.5)
-
-
-def ground_z(x, y):
-    """Высота земли: кочки по 2–3 см, колеи на 3,5 см глубже; к краю двора — к нулю, к земле карты."""
-    fade = smoothstep(0.0, EDGE, edge(x, y))
-    return fade * (GROUND + 0.025 * (noise(x / 1.3, y / 1.3, 13) - 0.5) - 0.035 * rut(x, y))
-
-
-def bare(x, y):
-    return any(x0 <= x <= x1 and y0 <= y <= y1 for x0, y0, x1, y1 in BARE)
-
-
-def grassy(x, y):
-    """Сколько травы: у края двора и за сараем больше, пятнами в глубине двора, на подъездах нет совсем."""
-    g = 1.0 - smoothstep(0.6, 3.2, edge(x, y)) + 0.6 * smoothstep(YB, YB + 2.0, y) + 0.9 * (noise(x / 3.5, y / 3.5, 14) - 0.55)
-    return g - 1.6 * worn(x, y)
-
-
 class Yard(Plant):
     """Сетка двора: к материалам и развёртке хлебозавода — брусья под любым углом, плоские фигуры с толщиной,
-    наклонные пластины, тела вращения, своды арок, створки ворот и земля открытой сеткой."""
+    наклонные пластины, тела вращения, своды арок, створки ворот и тропы открытой сеткой."""
 
     def __init__(self, name):
         super().__init__(name)
         self.up = []
 
     def orient(self):
-        """Земля — открытая сетка, пересчёт может развернуть её вниз: её грани разворачиваются вверх."""
+        """Тропы — открытая сетка, пересчёт может развернуть её вниз: её грани разворачиваются вверх."""
         super().orient()
         for f in self.up:
             f.normal_update()
@@ -293,7 +207,7 @@ class Yard(Plant):
 
     def voussoirs(self, cx, bricks, mortar, rnd):
         """Кирпичная перемычка арки: кирпичи на ребро, торцами по радиусу, с швами раствора между ними; раствор —
-        полосой под кирпичами. Выступает из побелки на 3,5 см."""
+        полосой под кирпичами. Выступает из стены на 3,5 см."""
         pts, r, zc = arc(cx, n=40)
         outer = r + VOUSSOIR + 0.01
         mortar_rows = [[self.bm.verts.new((cx + (x - cx) * k, y, zc + (z - zc) * k)) for x, z in pts]
@@ -342,6 +256,120 @@ class Yard(Plant):
             self.beam(at(0.06, z, off), at(width - 0.06, z, off), 0.05, 0.14, boards)
         self.beam(at(0.15, low + 0.08, off), at(width - 0.15, high - 0.08, off), 0.05, 0.12, boards)
 
+    def path(self, line, half, mi, seed, ruts=False, step=0.25, columns=12):
+        """Тропа по ломаной `line` на плане: полоса с поперечными рядами вершин через `step` м, середина гуляет в
+        стороны, ширина около `2 × half` меняется по длине. Насколько тропа видна, пишется в слой вершин `fade`: в
+        середине 1, к неровному краю и к концам — 0; у колеи (`ruts`) между колеями трава — тропа там бледнее.
+        Развёртка — в метрах материала по плану."""
+        fade = self.bm.verts.layers.float.get("fade") or self.bm.verts.layers.float.new("fade")
+        meters = self.tiles[mi][0]
+        lengths = [0.0]
+        for (ax, ay), (bx, by) in zip(line, line[1:]):
+            lengths.append(lengths[-1] + math.hypot(bx - ax, by - ay))
+        total = lengths[-1]
+
+        def at(s):
+            """Точка ломаной на `s` м от начала и направление там."""
+            i = max(0, min(len(line) - 2, next((k for k in range(len(lengths) - 1) if s <= lengths[k + 1]), len(line) - 2)))
+            (ax, ay), (bx, by) = line[i], line[i + 1]
+            t = (s - lengths[i]) / max(1e-6, lengths[i + 1] - lengths[i])
+            d = Vector((bx - ax, by - ay)).normalized()
+            return Vector((ax + (bx - ax) * t, ay + (by - ay) * t)), d
+
+        rows = max(2, round(total / step))
+        grid = []
+        for r in range(rows + 1):
+            s = total * r / rows
+            c, d = at(s)
+            n = Vector((-d.y, d.x))
+            c = c + n * (0.3 * half * (noise(s / 2.2, 0.5, seed) - 0.5))
+            w = half * (0.8 + 0.4 * noise(s / 3.0, 1.5, seed + 1))
+            ends = smoothstep(0.0, 0.9, s) * smoothstep(0.0, 0.9, total - s)
+            ring = []
+            for j in range(columns + 1):
+                t = -1.35 + 2.7 * j / columns
+                p = c + n * (t * w)
+                ragged = abs(t) + 0.5 * (noise(s * 1.4, t * 2.0 + 3.0, seed + 2) - 0.5)
+                a = (1.0 - smoothstep(0.55, 1.25, ragged)) * ends
+                if ruts:
+                    a *= 1.0 - 0.6 * math.exp(-(t / 0.3) ** 2) * (0.6 + 0.4 * noise(s / 1.5, 7.0, seed + 3))
+                v = self.bm.verts.new((p.x, p.y, GROUND + 0.012 + 0.006 * a))
+                v[fade] = a
+                ring.append(v)
+            grid.append(ring)
+        for r in range(rows):
+            for j in range(columns):
+                f = self.bm.faces.new((grid[r][j], grid[r][j + 1], grid[r + 1][j + 1], grid[r + 1][j]))
+                f.material_index = mi
+                f.smooth = True
+                self.manual.add(f)
+                self.up.append(f)
+                for loop in f.loops:
+                    loop[self.uv].uv = (loop.vert.co.x / meters, loop.vert.co.y / meters)
+
+
+def faded(m, key, folder, meters, tint):
+    """Материал, прозрачный по альфе цвета вершин `occlusion`: край тропы растворяется в земле карты. Выгрузка пишет
+    его режимом BLEND, движок умножает прозрачность на альфу цвета вершины, как у кусков дорог. Цвет вершин умножен и
+    на цвет материала — так его понимает glTF; без этого выгрузка теряет альфу («Vertex Color alpha without color»)."""
+    mi = m.tex(key, folder, meters, tint=tint)
+    mat = m.materials[mi]
+    nodes, links = mat.node_tree.nodes, mat.node_tree.links
+    bsdf = lib.bsdf(mat)
+    attr = nodes.new("ShaderNodeVertexColor")
+    attr.layer_name = "occlusion"
+    mix = nodes.new("ShaderNodeMix")
+    mix.data_type = "RGBA"
+    mix.blend_type = "MULTIPLY"
+    mix.inputs[0].default_value = 1.0
+    links.new(bsdf.inputs["Base Color"].links[0].from_socket, mix.inputs[6])
+    links.new(attr.outputs["Color"], mix.inputs[7])
+    links.new(mix.outputs[2], bsdf.inputs["Base Color"])
+    links.new(attr.outputs["Alpha"], bsdf.inputs["Alpha"])
+    mat.surface_render_method = "BLENDED"
+    return mi
+
+
+def plank_fence(m, a, b, h, boards, post, rnd):
+    """Дощатый забор от `a` до `b` на плане высотой около `h`: столбы через ~2,5 м, две слеги изнутри (к +Y или +X
+    от линии забора — по левую руку от `a` к `b`), вертикальные доски по 18 см со щелями в полтора сантиметра, верх
+    чуть неровный; каждая доска — одним из тонов `boards`."""
+    a, b = Vector((a[0], a[1], 0.0)), Vector((b[0], b[1], 0.0))
+    along = b - a
+    length = along.length
+    d = along / length
+    inner = Vector((-d.y, d.x, 0.0))
+    up = Vector((0.0, 0.0, 1.0))
+    n = max(1, math.ceil(length / 2.5))
+    for i in range(n + 1):
+        p = a + along * (i / n) + inner * 0.09
+        m.beam(p, p + up * (h + 0.08), 0.12, 0.12, post, up=tuple(inner))
+    for z in (0.45, h - 0.4):
+        m.beam(a + inner * 0.06 + up * z, b + inner * 0.06 + up * z, 0.05, 0.1, post)
+    count = round(length / 0.195)
+    for i in range(count):
+        p = a + d * (length * (i + 0.5) / count)
+        top = h + rnd.uniform(-0.04, 0.03)
+        m.beam(p + up * 0.05, p + up * top, 0.18, 0.025, rnd.choice(boards), up=tuple(inner))
+
+
+def chimney(m, x0, y0, x1, y1, z0, z1, brick, soot, wall=0.14, cap=0.1, over=0.06):
+    """Кирпичная труба над крышей: четыре стенки толщиной `wall` вокруг дымохода от `z0` до `z1`, сверху напуск на
+    `over` наружу высотой `cap` с тем же отверстием; дымоход изнутри закопчён на 0,4 м вглубь, там тёмное дно — сверху
+    в трубе видно чёрное отверстие."""
+    ix0, iy0, ix1, iy1 = x0 + wall, y0 + wall, x1 - wall, y1 - wall
+    for a0, b0, a1, b1 in ((x0, y0, x1, iy0), (x0, iy1, x1, y1), (x0, iy0, ix0, iy1), (ix1, iy0, x1, iy1)):
+        m.box(a0, b0, z0, a1, b1, z1, brick)
+    top = z1 + cap
+    for a0, b0, a1, b1 in ((x0 - over, y0 - over, x1 + over, iy0), (x0 - over, iy1, x1 + over, y1 + over), (x0 - over, iy0, ix0, iy1),
+                           (ix1, iy0, x1 + over, iy1)):
+        m.box(a0, b0, z1, a1, b1, top, brick)
+    deep = top - 0.4
+    m.box(ix0, iy0, deep - 0.05, ix1, iy1, deep, soot)
+    t = 0.006
+    for a0, b0, a1, b1 in ((ix0, iy0, ix1, iy0 + t), (ix0, iy1 - t, ix1, iy1), (ix0, iy0 + t, ix0 + t, iy1 - t), (ix1 - t, iy0 + t, ix1, iy1 - t)):
+        m.box(a0, b0, deep, a1, b1, top - 0.002, soot)
+
 
 def drum(m, center, axis, paint):
     """Стальная бочка на 200 л: обечайка с двумя обручами катания, закатанные края-уторы, донышки утоплены на
@@ -360,19 +388,20 @@ def drum(m, center, axis, paint):
 
 def coach_house(m, mt):
     """Каретный сарай: стены с арками, щипцы, крыша с фальцами и щипцом сеновала, труба, нутро левого проезда."""
-    plaster, brick = mt["plaster"], mt["brick"]
-    # Стены: столбы между арками, стены над арками, торцы, задняя; кирпичные перемычки арок, цоколь и карниз.
+    wall, brick = mt["wall"], mt["brick"]
+    # Стены голого кирпича: столбы между арками, стены над арками, торцы, задняя; перемычки арок кирпичом на ребро,
+    # цоколь и карниз — кирпичом темнее.
     edges = [X0] + [x for cx in GATES for x in (cx - GATE_W / 2, cx + GATE_W / 2)] + [X1]
     for x0, x1 in zip(edges[::2], edges[1::2]):
-        m.box(x0, YF, GROUND, x1, YF + WALL, EAVE, plaster)
+        m.box(x0, YF, GROUND, x1, YF + WALL, EAVE, wall)
         m.box(x0 - (0.04 if x0 == X0 else 0.0), YF - 0.04, 0.0, x1 + (0.04 if x1 == X1 else 0.0), YF, 0.55, brick)
     rnd = random.Random(18)
     for cx in GATES:
-        m.spandrel(cx, plaster)
+        m.spandrel(cx, wall)
         m.voussoirs(cx, (mt["voussoir"], mt["voussoir_dark"]), mt["mortar"], rnd)
-    m.box(X0, YB - WALL, GROUND, X1, YB, EAVE, plaster)
-    m.box(X0, YF + WALL, GROUND, X0 + WALL, YB - WALL, EAVE, plaster)
-    m.box(X1 - WALL, YF + WALL, GROUND, X1, YB - WALL, EAVE, plaster)
+    m.box(X0, YB - WALL, GROUND, X1, YB, EAVE, wall)
+    m.box(X0, YF + WALL, GROUND, X0 + WALL, YB - WALL, EAVE, wall)
+    m.box(X1 - WALL, YF + WALL, GROUND, X1, YB - WALL, EAVE, wall)
     m.box(X0 - 0.04, YB, 0.0, X1 + 0.04, YB + 0.04, 0.55, brick)
     m.box(X0 - 0.04, YF, 0.0, X0, YB, 0.55, brick)
     m.box(X1, YF, 0.0, X1 + 0.04, YB, 0.55, brick)
@@ -380,8 +409,8 @@ def coach_house(m, mt):
         s = -1 if y == YF else 1
         m.box(X0 - 0.1, min(y, y + s * 0.12), EAVE - 0.48, X1 + 0.1, max(y, y + s * 0.12), EAVE - 0.2, brick)
     for x, out in ((X0, WALL), (X1, -WALL)):
-        m.prism([(x, YF, EAVE - SINK), (x, YB, EAVE - SINK), (x, YM, RIDGE - SINK)], (out, 0.0, 0.0), plaster)
-    m.prism([(-DORMER, YF, EAVE - SINK), (DORMER, YF, EAVE - SINK), (0.0, YF, DORMER_TOP - SINK)], (0.0, WALL, 0.0), plaster)
+        m.prism([(x, YF, EAVE - SINK), (x, YB, EAVE - SINK), (x, YM, RIDGE - SINK)], (out, 0.0, 0.0), wall)
+    m.prism([(-DORMER, YF, EAVE - SINK), (DORMER, YF, EAVE - SINK), (0.0, YF, DORMER_TOP - SINK)], (0.0, WALL, 0.0), wall)
 
     # Табличка «ГАРАЖ» на столбе между арками: синяя эмаль с белой каймой; буквы ставит `build`.
     m.box(-0.5, YF - 0.03, 2.05, 0.5, YF, 2.42, mt["enamel"])
@@ -423,8 +452,7 @@ def coach_house(m, mt):
     m.beam((0.0, YF - OVER, DORMER_TOP + 0.02), (0.0, DORMER_END, DORMER_TOP + 0.02), 0.22, 0.06, roof)
 
     # Кирпичная труба на заднем скате.
-    m.box(3.9, 8.2, CEILING, 4.55, 8.85, RIDGE + 1.0, brick)
-    m.box(3.82, 8.12, RIDGE + 1.0, 4.63, 8.93, RIDGE + 1.12, brick)
+    chimney(m, 3.9, 8.2, 4.55, 8.85, CEILING, RIDGE + 1.0, brick, mt["soot"], wall=0.15, cap=0.12, over=0.08)
 
     # Сеновал: дверца в щипце, балка с блоком, верёвкой и крюком.
     m.box(-0.7, YF - 0.05, EAVE + 0.25, 0.7, YF, EAVE + 1.7, mt["frame_dark"])
@@ -471,7 +499,7 @@ def coach_house(m, mt):
 
 
 def workshop(m, mt):
-    """Дощатая мастерская справа от сарая: односкатная крыша, окно с переплётом, дверь, жестяная труба; у стены —
+    """Дощатая мастерская справа от сарая: односкатная крыша, окно с переплётом, дверь, ржавая жестяная труба; у стены —
     тележное колесо, у торца — брошенные доски."""
     walls = mt["shed_wall"]
     m.prism([(WX0, WY0, GROUND), (WX1, WY0, GROUND), (WX1, WY0, shed_top(WX1)), (WX0, WY0, shed_top(WX0))], (0.0, BOARD, 0.0), walls)
@@ -498,9 +526,9 @@ def workshop(m, mt):
     for z in (0.35, 1.65):
         m.box(7.05, WY0 - 0.07, z, 7.9, WY0 - 0.04, z + 0.12, mt["planks"])
     m.box(7.8, WY0 - 0.1, 1.0, 7.86, WY0 - 0.07, 1.12, mt["iron"])
-    # Жестяная труба печки с колпаком.
-    m.cylinder(9.6, 8.5, 2.6, 0.1, 2.3, mt["tin"], 12)
-    m.cylinder(9.6, 8.5, 4.9, 0.2, 0.18, mt["tin"], 12, r_top=0.05)
+    # Ржавая жестяная труба печки с колпаком.
+    m.cylinder(9.6, 8.5, 2.6, 0.1, 2.3, mt["rust"], 12)
+    m.cylinder(9.6, 8.5, 4.9, 0.2, 0.18, mt["rust"], 12, r_top=0.05)
     # Тележное колесо, прислонённое к стене справа от окна: обод, ступица, двенадцать спиц.
     center, axis = Vector((10.15, WY0 - 0.2, 0.66)), Vector((0.0, -0.96, 0.28))
     m.lathe(center, axis, [(-0.035, 0.56), (0.035, 0.56), (0.035, 0.62), (-0.035, 0.62)], mt["log"], 32, closed=True)
@@ -531,7 +559,7 @@ def fuel_shed(m, mt):
     mid = front + 0.6  # у самого края навеса: глубже крыша закрывает бочки от камеры игры
     for y in (mid - 0.35, mid + 0.35):
         m.box(x0 + 0.15, y - 0.07, 0.0, x1 - 0.15, y + 0.07, GROUND + 0.12, log)
-    paints = (mt["drum"], mt["drum_grey"], mt["drum"], mt["drum_rust"], mt["drum"], mt["drum_grey"])
+    paints = (mt["drum"], mt["drum_grey"], mt["drum"], mt["rust"], mt["drum"], mt["drum_grey"])
     base = GROUND + 0.12 + DRUM_R + 0.008
     row = [(x0 + 0.45 + 0.63 * i, base) for i in range(6)] + [(x0 + 0.765 + 0.63 * i, base + 0.52) for i in range(5)]
     for i, (x, z) in enumerate(row):
@@ -611,132 +639,29 @@ def hitching_post(m, mt):
     m.cylinder_x(10.5, -4.0, 1.0, 0.075, 3.6, mt["log"], 10)
 
 
-def clip(polygon, field):
-    """Часть выпуклого многоугольника из точек (x, y, z), где `field(x, y)` больше нуля: края режутся там, где поле
-    переходит через ноль, — граница идёт плавной линией, а не ступеньками клеток. Точка разреза лежит на ребре и
-    по высоте, поэтому части одного треугольника остаются в его плоскости и сходятся без щелей."""
-    out = []
-    for p, q in zip(polygon, polygon[1:] + polygon[:1]):
-        fp, fq = field(p[0], p[1]), field(q[0], q[1])
-        if fp > 0:
-            out.append(p)
-        if (fp > 0) != (fq > 0):
-            t = fp / (fp - fq)
-            out.append(tuple(a + (b - a) * t for a, b in zip(p, q)))
-    return out
-
-
-def mud_field(x, y):
-    """Больше нуля там, где на подъезде грязь: пятнами в метр-три с рваным краем, гуще на оси подъезда, за
-    его краем — нет."""
-    d, left = nearest_lane(x, y)
-    lane = left * math.exp(-(d / 2.0) ** 2)
-    patches = 2.0 * (noise(x / 3.0, y / 3.0, 15) - 0.6) + 0.3 * (noise(x / 0.9, y / 0.9, 16) - 0.5)
-    return patches + 1.2 * (lane - 0.6) - 2.0 * (1.0 - lane) ** 4 - (2.0 if bare(x, y) else 0.0)
-
-
-def turf_field(x, y):
-    """Больше нуля там, где растёт трава."""
-    return grassy(x, y) - 0.5 - (2.0 if bare(x, y) else 0.0)
-
-
-def ground(m, mt):
-    """Земля двора открытой гладкой сеткой `CELL` по высоте `ground_z`: клетка — два треугольника, обрезанных по
-    краю двора и разрезанных по границам грязи и травы; вершины на общих рёбрах общие. Развёртка — в метрах, своя."""
-    x0, y0 = YARD[0] - 1.0, YARD[1] - 1.0
-    nx, ny = round((YARD[2] - YARD[0] + 2.0) / CELL), round((YARD[3] - YARD[1] + 2.0) / CELL)
-    corners, verts = {}, {}
-
-    def corner(i, j):
-        if (i, j) not in corners:
-            x, y = x0 + i * CELL, y0 + j * CELL
-            corners[(i, j)] = (x, y, ground_z(x, y))
-        return corners[(i, j)]
-
-    def vert(p):
-        key = (round(p[0], 4), round(p[1], 4))
-        if key not in verts:
-            verts[key] = m.bm.verts.new(p)
-        return verts[key]
-
-    def face(polygon, kind):
-        ring = []
-        for p in polygon:
-            v = vert(p)
-            if v not in ring:
-                ring.append(v)
-        if len(ring) < 3:
-            return
-        f = m.bm.faces.new(ring)
-        f.material_index = mt[kind]
-        f.smooth = True
-        m.manual.add(f)
-        m.up.append(f)
-        meters = m.tiles[mt[kind]][0]
-        for loop in f.loops:
-            loop[m.uv].uv = (loop.vert.co.x / meters, loop.vert.co.y / meters)
-
-    for i in range(nx):
-        for j in range(ny):
-            a, b, c, d = corner(i, j), corner(i + 1, j), corner(i + 1, j + 1), corner(i, j + 1)
-            for triangle in ([a, b, c], [a, c, d]):
-                inside_yard = clip(triangle, edge)
-                if len(inside_yard) < 3:
-                    continue
-                face(clip(inside_yard, mud_field), "mud")
-                rest = clip(inside_yard, lambda x, y: -mud_field(x, y))
-                face(clip(rest, turf_field), "turf")
-                face(clip(rest, lambda x, y: -turf_field(x, y)), "dirt")
-    for spots, mi, seed, lift in ((PUDDLES, mt["puddle"], 600, 0.012), (STAINS, mt["oil"], 700, 0.01)):
-        for i, (lane, s, side, rx, ry) in enumerate(spots):
-            x, y = on_lane(lane, s, side)
-            m.blot(x, y, rx, ry, mi, seed + i, z=ground_z(x, y) + lift)
-
-
-def grass(m, mt):
-    """Кочки травы у края двора, у стен и пятнами там, где трава в земле; на подъездах и в голых местах — нет."""
-    rnd = random.Random(7)
-    x0, y0, x1, y1 = YARD
-    placed = 0
-    for _ in range(4000):
-        x, y = rnd.uniform(x0, x1), rnd.uniform(y0, y1)
-        if edge(x, y) < 0.3 or bare(x, y) or worn(x, y) > 0.12 or grassy(x, y) < 0.3:
-            continue
-        placed += 1
-        if placed > 340:
-            break
-        blade = mt["grass"] if rnd.random() < 0.7 else mt["grass_dry"]
-        z = ground_z(x, y) - 0.01
-        for _ in range(rnd.randint(5, 9)):
-            m.cylinder(x + rnd.uniform(-0.15, 0.15), y + rnd.uniform(-0.15, 0.15), z, rnd.uniform(0.03, 0.05), rnd.uniform(0.2, 0.45),
-                       blade, 3, r_top=0.002)
-
-
 def materials(m):
     return {
-        "plaster": m.tex("plaster", "PaintedPlaster014", 2.5, tint="#f6efe6"),
-        "brick": m.tex("brick", "brick_wall_001", 3.0),
-        "voussoir": m.tex("voussoir", "brick_wall_001", 12.0),
-        "voussoir_dark": m.tex("voussoir_dark", "brick_wall_001", 12.0, tint="#c9b5a8"),
+        "wall": m.tex("wall", "Bricks085", 2.0, tint="#e0c4b8"),
+        "brick": m.tex("brick", "Bricks085", 2.0, tint="#b8a096"),
+        "voussoir": m.mat("voussoir", "#8a4634", 0.85),
+        "voussoir_dark": m.mat("voussoir_dark", "#76392b", 0.85),
         "mortar": m.mat("mortar", "#b3aa9c", 0.95),
         "roof": m.tex("roof", "MetalPlates011", 2.0, tint="#b8a8a8"),
         "gate": m.tex("gate", "PaintedWood009C", 1.2, tint="#6b896b", swap=True),
         "planks": m.tex("planks", "Planks012", 2.1, swap=True),
         "shed_wall": m.tex("shed_wall", "Planks012", 2.1, tint="#c8c2ba", swap=True),
         "shed_roof": m.tex("shed_roof", "Planks012", 2.1, tint="#b0aca6"),
+        "fence": [m.tex(f"fence_{i}", "Wood033", 1.6, tint=t, swap=True) for i, t in enumerate(("#b8b0a4", "#a9a195", "#c3bbaf", "#a19a8f"))],
+        "post": m.tex("post", "Wood059", 1.4, tint="#8b8079"),
         "log": m.tex("log", "Wood062", 1.6),
         "red": m.tex("red", "PaintedWood003", 1.2),
         "drum": m.tex("drum", "green_metal_rust", 1.6),
         "drum_grey": m.tex("drum_grey", "green_metal_rust", 1.6, tint="#a9b4bd"),
-        "drum_rust": m.tex("drum_rust", "MetalPlates011", 2.0),
+        "rust": m.tex("rust", "MetalPlates011", 2.0),
         "concrete": m.tex("concrete", "garage_floor", 1.89),
-        "dirt": m.tex("dirt", "Ground103", 2.5),
-        "turf": m.tex("turf", "Ground003", 2.5),
-        "mud": m.tex("mud", "Ground051", 2.0),
         "floor": m.tex("floor", "Ground103", 2.5, tint="#9a948c"),
-        "puddle": m.mat("puddle", "#86919a", 0.03),  # вода отражает небо
-        "oil": m.mat("oil", "#3b3631", 0.35, 0.1),
-        "tin": m.mat("tin", "#8d9396", 0.45, 0.6),
+        "path": faded(m, "path", "Ground103", 2.5, "#e6dccd"),
+        "soot": m.mat("soot", "#0e0d0c", 0.95),
         "iron": m.mat("iron", "#2c2d2f", 0.55, 0.5),
         "rubber": m.mat("rubber", "#1d1d1e", 0.85),
         "rope": m.mat("rope", "#8a7a5c", 0.95),
@@ -750,15 +675,7 @@ def materials(m):
         "globe": m.mat("globe", "#f1ece0", 0.25),
         "enamel": m.mat("enamel", "#1c3c8c", 0.25),
         "enamel_white": m.mat("enamel_white", "#f2efe6", 0.3),
-        "grass": m.mat("grass", "#5d7a35", 0.9),
-        "grass_dry": m.mat("grass_dry", "#8c8a4c", 0.9),
     }
-
-
-def macro(x, y):
-    """Крупные светлые и тёмные пятна земли 3–8 м — гасят повтор картинки грунта — и протёртые колёсами подъезды."""
-    spots = 0.82 + 0.24 * (0.6 * noise(x / 7.0, y / 7.0, 3) + 0.4 * noise(x / 3.0, y / 3.0, 4))
-    return spots * (1.0 - 0.3 * worn(x, y))
 
 
 def inside(co):
@@ -766,9 +683,10 @@ def inside(co):
     return X0 + WALL - 0.02 < co.x < X1 - WALL + 0.02 and YF + WALL - 0.02 < co.y < YB - WALL + 0.02 and co.z < CEILING + 0.01
 
 
-def bake_occlusion(obj):
-    """Затенение в цвет вершин: запечённое Cycles для земли, крыш и стен, у земли — пятна и колеи `macro`, стены
-    темнеют к земле до `GRIME`; всё внутри сарая — вдвое темнее, свет туда идёт только через открытую арку."""
+def bake_occlusion(obj, path):
+    """Затенение в цвет вершин: запечённое Cycles над плоскостью на месте земли карты, стены темнеют к земле до
+    `GRIME`; всё внутри сарая — вдвое темнее, свет туда идёт только через открытую арку. У граней подъездов (материал
+    `path`) в альфу цвета ложится слой вершин `fade` — как колея видна; сам слой после этого убирается."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
@@ -776,7 +694,7 @@ def bake_occlusion(obj):
     world = bpy.data.worlds.new("bake")
     world.light_settings.distance = 3.0
     scene.world = world
-    bpy.ops.mesh.primitive_plane_add(size=300.0, location=(0.0, 0.0, -0.002))
+    bpy.ops.mesh.primitive_plane_add(size=300.0, location=(0.0, 0.0, GROUND - 0.002))
     plane = bpy.context.active_object
     attr = obj.data.color_attributes.new("occlusion", "BYTE_COLOR", "CORNER")
     obj.data.color_attributes.active_color = attr
@@ -787,22 +705,29 @@ def bake_occlusion(obj):
     scene.render.bake.target = "VERTEX_COLORS"
     bpy.ops.object.bake(type="AO")
     mesh = obj.data
+    fade = mesh.attributes["fade"].data
     for poly in mesh.polygons:
         flat = abs(poly.normal.z) > 0.5
         shade = 0.5 if inside(poly.center) else 1.0
         for li in poly.loop_indices:
-            co = mesh.vertices[mesh.loops[li].vertex_index].co
+            vi = mesh.loops[li].vertex_index
+            co = mesh.vertices[vi].co
             ao = attr.data[li].color[0]
             if flat:
                 v = 0.45 + 0.55 * ao
-                if co.z < 0.2:
-                    v *= macro(co.x, co.y)
             else:
-                t = min(1.0, max(0.0, co.z / GRIME))
-                v = (0.72 + 0.28 * t * t * (3 - 2 * t)) * (0.55 + 0.45 * ao)
+                v = (0.72 + 0.28 * smoothstep(0.0, GRIME, co.z - GROUND)) * (0.55 + 0.45 * ao)
             v *= shade
-            attr.data[li].color = (v, v, v, 1.0)
+            attr.data[li].color = (v, v, v, fade[vi].value if poly.material_index == path else 1.0)
+    mesh.attributes.remove(mesh.attributes["fade"])
     bpy.data.objects.remove(plane)
+
+
+def fences(m, mt):
+    """Дощатый забор справа от мастерской и сзади за сараем — до забора дома усадьбы."""
+    rnd = random.Random(19)
+    plank_fence(m, (FENCE_X, FENCE_Y0), (FENCE_X, FENCE_Y1), 1.8, mt["fence"], mt["post"], rnd)
+    plank_fence(m, (FENCE_X, FENCE_Y1), (FENCE_BACK_X0, FENCE_Y1), 1.8, mt["fence"], mt["post"], rnd)
 
 
 def build(out=OUT):
@@ -815,15 +740,16 @@ def build(out=OUT):
     pump(m, mt)
     fire_board(m, mt)
     hitching_post(m, mt)
+    fences(m, mt)
     m.project()
     m.grid()
-    ground(m, mt)
-    grass(m, mt)
+    for i, line in enumerate(WEAR):
+        m.path(line, LANE, mt["path"], 60 + i, ruts=True)
     obj = m.finish()
-    bake_occlusion(obj)
+    bake_occlusion(obj, mt["path"])
     lib.text(obj, "ГАРАЖ", 0.2, (0.0, YF - 0.045, 2.235), 0, "#f2efe6", depth=0.008)
     pts = [obj.matrix_world @ Vector(c) for c in obj.bound_box]
-    print("garage size", *(round(max(p[i] for p in pts) - min(p[i] for p in pts), 2) for i in range(3)))
+    print("garage size", *(round(max(p[i] for p in pts) - min(p[i] for p in pts), 2) for i in range(3)), "faces", len(obj.data.polygons))
     os.makedirs(out, exist_ok=True)
     lib.export(os.path.join(out, "garage.glb"), vertex_color="ACTIVE")
     print("written garage")
