@@ -30,6 +30,19 @@ const LUMA_EDGE = 0.1;
 // Тёмная трава на розовом отличается от фона по яркости на ~70 уровней, светлый куст — на 0–8.
 const MIN_LUMA_GAP = 32;
 const BLEED = 8;
+// Избыток зелёного над красным и синим у точек фона — от этого уровня: у фона нейросети он около 240, у обычного
+// зелёного фона съёмки — около 110. У персонажа его нет или он мал.
+const SCREEN_MIN_EXCESS = 64;
+// Доли избытка зелёного у фона: до первой точка сплошная, от второй — чистый фон. Рябь фона видео syntx
+// опускается до 0,95 его избытка, а тень, которую нейросеть кладёт от поднятой руки на фон, — до 0,76: фон
+// начинается раньше, иначе тень висела бы тёмным пятном в воздухе рядом с персонажем. Первая доля — около 24
+// при фоне 240: зеленоватые места самого персонажа остаются сплошными.
+const GREEN_SOLID = 0.1;
+const GREEN_CLEAR = 0.7;
+// Край на зелёном фоне берёт цвет сплошной точки персонажа не дальше стольких точек.
+const EDGE_REACH = 4;
+// Точка, видная хотя бы наполовину: полупрозрачная точка, у которой таких нет в `EDGE_REACH`, — тень на фоне.
+const HALF_ALPHA = 128;
 
 function positiveInt(name, text) {
   if (text === undefined) return undefined;
@@ -53,24 +66,85 @@ export function smoothstep(edge0, edge1, x) {
 }
 
 /**
- * Точки RGB — в RGBA без зелёного фона. Прозрачность — по тому, насколько зелёный канал выше
- * красного и синего: чистый фон исчезает, персонаж остаётся, край получает промежуточную
- * прозрачность. Зелёный канал прижимается к большему из двух других, чтобы по краю не оставалась
- * зелёная кайма.
+ * Точки RGB — в RGBA без зелёного фона. Прозрачность — по тому, какую долю избытка зелёного над
+ * красным и синим, как у фона, несёт точка: точка края — смесь персонажа с фоном, и чем больше в ней
+ * фона, тем прозрачнее она, по прямой между `GREEN_SOLID` и `GREEN_CLEAR`. Поэтому край, где
+ * персонажа меньше 0,3, уже прозрачен, а наполовину покрытая точка видна на треть. Избыток фона —
+ * медиана по точкам фона в самой картинке. Зелёный канал прижимается к большему из двух других,
+ * чтобы по краю не оставалась зелёная кайма.
  */
 export function keyGreen(rgb) {
+  const screen = screenExcess(rgb);
+  const solid = GREEN_SOLID * screen;
+  const clear = GREEN_CLEAR * screen;
   const rgba = Buffer.alloc((rgb.length / 3) * 4);
   for (let src = 0, dst = 0; src < rgb.length; src += 3, dst += 4) {
     const red = rgb[src];
     const green = rgb[src + 1];
     const blue = rgb[src + 2];
     const other = Math.max(red, blue);
+    const share = Math.min(1, Math.max(0, (green - other - solid) / (clear - solid)));
     rgba[dst] = red;
     rgba[dst + 1] = Math.min(green, other);
     rgba[dst + 2] = blue;
-    rgba[dst + 3] = Math.round(255 * (1 - smoothstep(25, 110, green - other)));
+    rgba[dst + 3] = Math.round(255 * (1 - share));
   }
   return rgba;
+}
+
+/**
+ * Избыток зелёного над красным и синим у фона картинки — медиана по точкам фона. Без них — 255, избыток идеального
+ * фона: на картинке нет зелёного фона, ключ его не снимает, и это сразу видно.
+ */
+function screenExcess(rgb) {
+  const histogram = new Array(256).fill(0);
+  for (let i = 0; i < rgb.length; i += 3) {
+    const excess = rgb[i + 1] - Math.max(rgb[i], rgb[i + 2]);
+    if (excess >= SCREEN_MIN_EXCESS) histogram[excess]++;
+  }
+  return histogramMedian(histogram) ?? 255;
+}
+
+/**
+ * Полупрозрачный край силуэта на зелёном фоне получает цвет ближайшей сплошной точки персонажа не
+ * дальше `EDGE_REACH` точек. Точка края — смесь персонажа с фоном, и ключ снимает с неё только
+ * избыток зелёного, а красный и синий в ней разбавлены фоном, где их почти нет: край выходил темнее
+ * персонажа, и на светлом фоне игры светлую рубаху обводила бурая кайма. Краем считается точка, у
+ * которой рядом есть и сплошная точка, и чистый фон; полупрозрачная точка внутри силуэта — кусок
+ * зеленоватого ремня у руки, тонкая верёвка — остаётся своего цвета. Точка, у которой рядом нет ни
+ * одной видной хотя бы наполовину, — не край, а тень или смазанный след руки на фоне: она становится
+ * прозрачной, иначе на светлом фоне игры у руки висело бы серое пятно.
+ */
+export function colorEdgesFromFigure(rgba, width, height) {
+  const shadows = [];
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      const i = (y * width + x) * 4;
+      if (rgba[i + 3] === 0 || rgba[i + 3] === 255) continue;
+      let nearest = -1;
+      let best = Infinity;
+      let onFigure = rgba[i + 3] >= HALF_ALPHA;
+      let nearScreen = false;
+      for (let dy = -EDGE_REACH; dy <= EDGE_REACH; dy++) {
+        const ny = y + dy;
+        if (ny < 0 || ny >= height) continue;
+        for (let dx = -EDGE_REACH; dx <= EDGE_REACH; dx++) {
+          const nx = x + dx;
+          if (nx < 0 || nx >= width) continue;
+          const alpha = rgba[(ny * width + nx) * 4 + 3];
+          if (alpha >= HALF_ALPHA) onFigure = true;
+          if (alpha === 0) nearScreen = true;
+          const distance = dx * dx + dy * dy;
+          if (alpha !== 255 || distance >= best) continue;
+          best = distance;
+          nearest = (ny * width + nx) * 4;
+        }
+      }
+      if (!onFigure) shadows.push(i);
+      else if (nearScreen && nearest >= 0) rgba.copy(rgba, i, nearest, nearest + 3);
+    }
+  }
+  for (const i of shadows) rgba[i + 3] = 0;
 }
 
 /**
@@ -199,12 +273,15 @@ function removeBackgroundChroma(rgb, rgba, { background, solidLuma }) {
 }
 
 /**
- * Кадр видео в RGBA без фона: ключ по цвету, ключ по плоскости яркости `luma` и, на розовом фоне, цвет без розовой
- * примеси.
+ * Кадр видео в RGBA без фона: ключ по цвету, а на розовом фоне ещё ключ по плоскости яркости `luma` и цвет без
+ * розовой примеси. На зелёном ключа по яркости нет: тень, которую нейросеть кладёт на фон у руки, темнее фона, и у
+ * тёмного персонажа ключ по яркости сделал бы её видимой каймой. Цена — тонкая тёмная прядь, у которой видео смешало
+ * цвет с фоном, выходит бледнее, но видна хотя бы наполовину.
  */
 export function keyVideoFrame(rgb, luma, key) {
   const rgba = KEYS[key](rgb);
-  const levels = key === "magenta" ? frameLevels(rgb, rgba) : undefined;
+  if (key !== "magenta") return rgba;
+  const levels = frameLevels(rgb, rgba);
   addLumaKey(rgba, luma);
   if (levels !== undefined) removeBackgroundChroma(rgb, rgba, levels);
   return rgba;
@@ -212,13 +289,17 @@ export function keyVideoFrame(rgb, luma, key) {
 
 export async function removeBackground(file, key) {
   const { data, info } = await sharp(file).removeAlpha().raw().toBuffer({ resolveWithObject: true });
-  return { rgba: KEYS[key](data), width: info.width, height: info.height };
+  const rgba = KEYS[key](data);
+  if (key === "green") colorEdgesFromFigure(rgba, info.width, info.height);
+  return { rgba, width: info.width, height: info.height };
 }
 
 async function keyFrame(frame, key) {
   const { data, info } = await sharp(frame.color).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const luma = await sharp(frame.luma).extractChannel(0).raw().toBuffer();
-  return { rgba: keyVideoFrame(data, luma, key), width: info.width, height: info.height };
+  const rgba = keyVideoFrame(data, luma, key);
+  if (key === "green") colorEdgesFromFigure(rgba, info.width, info.height);
+  return { rgba, width: info.width, height: info.height };
 }
 
 /** Крайние видимые точки картинки, или `null`, если видимых нет. */
