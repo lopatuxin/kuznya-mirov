@@ -7,8 +7,8 @@ import { describe, it } from "node:test";
 import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 import {
-  bleedColor, fadeEnds, findCycle, findLoop, keyGreen, keyMagenta, keyVideoFrame, makeVideo, padToEven, parseRange,
-  pickFrames, stackColorAndMask, wrapEnds,
+  bleedColor, colorEdgesFromFigure, fadeEnds, findCycle, findLoop, keyGreen, keyMagenta, keyVideoFrame, makeVideo,
+  padToEven, parseRange, pickFrames, removeBackground, stackColorAndMask, wrapEnds,
 } from "./sheet.mjs";
 
 const THUMB = 64;
@@ -41,10 +41,104 @@ describe("keyGreen", () => {
     assert.deepEqual([...keyGreen(Buffer.from([240, 225, 200]))], [240, 225, 200, 255]);
   });
 
+  // Десять точек фона, как у видео syntx: избыток зелёного 240.
+  const SCREEN = [0, 240, 0];
+  const withScreen = (pixel) => keyGreen(Buffer.from([...Array(10).fill(SCREEN), pixel].flat()));
+
   it("край получает промежуточную прозрачность, а зелёный прижимается к красному и синему", () => {
-    const [red, green, blue, alpha] = keyGreen(Buffer.from([100, 170, 60]));
+    const [red, green, blue, alpha] = withScreen([100, 170, 60]).subarray(10 * 4);
     assert.deepEqual([red, green, blue], [100, 100, 60]);
     assert.ok(alpha > 0 && alpha < 255, `прозрачность ${alpha}`);
+  });
+
+  it("чем больше в точке края фона, тем она прозрачнее", () => {
+    // Серый (120, 120, 120) без избытка зелёного с четвертью и с половиной фона.
+    const quarter = withScreen([90, 150, 90])[10 * 4 + 3];
+    const half = withScreen([60, 180, 60])[10 * 4 + 3];
+    assert.ok(255 > quarter && quarter > half && half > 0, `четверть ${quarter}, половина ${half}`);
+  });
+
+  it("рябь фона видео и тень на фоне от руки остаются прозрачными", () => {
+    // Рябь — 0,95 избытка фона (228), тень — 0,76 (182).
+    assert.equal(withScreen([5, 233, 5])[10 * 4 + 3], 0);
+    assert.equal(withScreen([25, 207, 12])[10 * 4 + 3], 0);
+  });
+
+  it("обычный зелёный фон съёмки с избытком 113 тоже становится прозрачным", () => {
+    const rgba = keyGreen(Buffer.from([...Array(10).fill([0, 177, 64]), [200, 150, 120]].flat()));
+    assert.equal(rgba[3], 0);
+    assert.equal(rgba[10 * 4 + 3], 255);
+  });
+
+  it("зеленоватое место персонажа с избытком 20 остаётся сплошным, а с избытком 30 уже нет", () => {
+    assert.equal(withScreen([100, 120, 100])[10 * 4 + 3], 255);
+    assert.ok(withScreen([100, 130, 100])[10 * 4 + 3] < 255);
+  });
+});
+
+describe("colorEdgesFromFigure", () => {
+  // Строка картинки: прозрачность и цвет каждой точки, прочие точки строки прозрачны.
+  function row(width, pixels) {
+    const rgba = Buffer.alloc(width * 4);
+    for (const [x, color] of Object.entries(pixels)) rgba.set(color, Number(x) * 4);
+    colorEdgesFromFigure(rgba, width, 1);
+    return (x) => [...rgba.subarray(x * 4, x * 4 + 4)];
+  }
+
+  it("полупрозрачный край берёт цвет ближайшей сплошной точки, а прозрачность у него прежняя", () => {
+    const at = row(3, { 0: [150, 100, 70, 255], 1: [60, 60, 30, 128] });
+    assert.deepEqual(at(0), [150, 100, 70, 255]);
+    assert.deepEqual(at(1), [150, 100, 70, 128]);
+  });
+
+  it("край ровно в четырёх точках от сплошной ещё берёт её цвет", () => {
+    assert.deepEqual(row(5, { 0: [150, 100, 70, 255], 4: [60, 60, 30, 40] })(4), [150, 100, 70, 40]);
+  });
+
+  it("полупрозрачная точка дальше четырёх точек от места, где персонажа хотя бы половина, — тень на фоне — становится прозрачной", () => {
+    assert.equal(row(6, { 0: [150, 100, 70, 255], 5: [25, 25, 12, 40] })(5)[3], 0);
+  });
+
+  it("тонкая верёвка с прозрачностью 191 вдали от сплошной точки остаётся своего цвета", () => {
+    const rope = Object.fromEntries(Array.from({ length: 9 }, (_, k) => [k + 1, [60, 60, 30, 191]]));
+    const at = row(10, { 0: [150, 100, 70, 255], ...rope });
+    assert.deepEqual(at(9), [60, 60, 30, 191]);
+  });
+
+  it("зеленоватый ремень у руки внутри силуэта не перекрашивается в цвет руки", () => {
+    const strap = Object.fromEntries(Array.from({ length: 6 }, (_, k) => [k + 1, [70, 70, 70, 227]]));
+    const at = row(7, { 0: [220, 170, 140, 255], ...strap });
+    assert.deepEqual(at(1), [70, 70, 70, 227]);
+  });
+
+  it("широкий кусок почти сплошной зеленоватой одежды не дырявится и остаётся своего цвета", () => {
+    const size = 12;
+    const rgba = Buffer.alloc(size * size * 4);
+    for (let i = 0; i < size * size; i++) rgba.set([120, 120, 90, 244], i * 4);
+    colorEdgesFromFigure(rgba, size, size);
+    const middle = ((size / 2) * size + size / 2) * 4;
+    assert.deepEqual([...rgba.subarray(middle, middle + 4)], [120, 120, 90, 244]);
+  });
+});
+
+describe("removeBackground", () => {
+  it("край бурого персонажа на зелёном не темнее самого персонажа", async () => {
+    // Бурый квадрат на фоне, обведённый полосой смеси бурого с фоном пополам.
+    const BROWN = [150, 100, 70];
+    const size = 12;
+    const pixels = Buffer.alloc(size * size * 3);
+    for (let y = 0; y < size; y++) {
+      for (let x = 0; x < size; x++) {
+        const ring = Math.max(Math.abs(x - 5.5), Math.abs(y - 5.5));
+        const color = ring < 2 ? BROWN : ring < 3 ? BROWN.map((c, k) => (c + [0, 240, 0][k]) / 2) : [0, 240, 0];
+        pixels.set(color.map(Math.round), (y * size + x) * 3);
+      }
+    }
+    const png = await sharp(pixels, { raw: { width: size, height: size, channels: 3 } }).png().toBuffer();
+    const { rgba } = await removeBackground(png, "green");
+    const edge = (3 * size + 6) * 4;
+    assert.ok(rgba[edge + 3] > 0 && rgba[edge + 3] < 255, `прозрачность края ${rgba[edge + 3]}`);
+    assert.deepEqual([...rgba.subarray(edge, edge + 3)], BROWN);
   });
 });
 
@@ -126,6 +220,22 @@ describe("keyVideoFrame", () => {
   it("зелёная трава своего цвета не меняет", () => {
     const color = colorAt(frame([]), 10);
     color.forEach((channel, c) => assert.ok(Math.abs(channel - GRASS[c]) <= 1, `трава ${color}`));
+  });
+
+  it("на зелёном тень у тёмного персонажа, темнее фона по яркости, остаётся прозрачной", () => {
+    // Десять точек фона яркостью 141, десять точек тёмного персонажа яркостью 64 и тень: по цвету фон, по яркости темнее.
+    const pixels = [...Array(10).fill([0, 240, 0]), ...Array(10).fill([80, 60, 50]), [25, 207, 12]];
+    const luma = [...Array(10).fill(141), ...Array(10).fill(64), 130];
+    const rgba = keyVideoFrame(Buffer.from(pixels.flat()), Uint8Array.from(luma), "green");
+    assert.equal(alphaAt(rgba, 20), 0);
+  });
+
+  it("на зелёном тонкая тёмная прядь, у которой видео смешало цвет с фоном пополам, видна хотя бы наполовину", () => {
+    // Прядь (50, 35, 30) с яркостью пряди и цветностью наполовину от фона (0, 240, 0) — точка (0, 87, 0).
+    const pixels = [...Array(10).fill([0, 240, 0]), ...Array(10).fill([80, 60, 50]), [0, 87, 0]];
+    const luma = [...Array(10).fill(141), ...Array(10).fill(64), 39];
+    const alpha = alphaAt(keyVideoFrame(Buffer.from(pixels.flat()), Uint8Array.from(luma), "green"), 20);
+    assert.ok(alpha >= 128 && alpha < 255, `прозрачность ${alpha}`);
   });
 
   it("у светлого куста, по яркости равного фону, рябь фона остаётся прозрачной", () => {
