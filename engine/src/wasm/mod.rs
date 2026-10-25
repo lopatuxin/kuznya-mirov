@@ -25,10 +25,9 @@ use crate::data::edit;
 use crate::data::error::GameError;
 use crate::data::load::{
     self, CoverMask, GameConfig, ImageDecl, ImageVerdict, MaterialDecl, ModelFile, MusicVerdict,
-    NeededMedia,
+    NeededMedia, ReverseVerdict,
 };
 use crate::data::session::{self, PlaySession};
-use crate::render::VideoSource;
 use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint, UiPaint};
 use crate::render::clouds::Camera;
 use crate::render::materials::Relief;
@@ -40,6 +39,7 @@ use crate::render::{
     DrawRect, Globals3d, GroundVertex, ModelsFrame, Renderer, Scene3dFrame, ShapeInstance,
     TextDraw, UiLayers, WorldOverlay, WorldRun, WorldTextDraw,
 };
+use crate::render::{PanelInput, VideoSource};
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
     let _ = Reflect::set(obj, &JsValue::from_str(key), value);
@@ -181,6 +181,22 @@ fn js_indexed_media_table(subset: &[(String, String)], full: &[(String, String)]
     arr
 }
 
+/// `read_texts()`'s `images`: `{index, name, path}` на каждую картинку, а у видео с `reverse` ещё `reverse` — путь
+/// файла того же ролика задом наперёд, «Картинки» → «Видео на панели».
+fn js_image_table(images: &[(String, String)], reverses: &[(String, String)]) -> Array {
+    let arr = js_indexed_media_table(images, images);
+    for (item, (name, _)) in arr.iter().zip(images) {
+        if let Some((_, reverse)) = reverses.iter().find(|(video, _)| video == name) {
+            let _ = Reflect::set(
+                &item,
+                &JsValue::from_str("reverse"),
+                &JsValue::from_str(reverse),
+            );
+        }
+    }
+    arr
+}
+
 /// Пути карт или масок с их номерами: страница отвечает на них по номеру.
 fn js_numbered_paths(paths: &[String]) -> Array {
     let arr = Array::new();
@@ -225,7 +241,7 @@ fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> J
     set(
         &obj,
         "images",
-        &js_indexed_media_table(&needed.images, &needed.images),
+        &js_image_table(&needed.images, &needed.reverses),
     );
     set(&obj, "materials", &js_numbered_paths(&needed.materials));
     set(&obj, "masks", &js_numbered_paths(&needed.masks));
@@ -291,6 +307,15 @@ fn js_code_error(code_path: &str, rules_path: &str, err: &crate::core::code::Cod
     obj.into()
 }
 
+/// «Экраны и состояние» → «Команды», `exit`: игра просит страницу уйти к списку игр, а редактор — остановить
+/// партию, как «Стоп».
+fn js_exit() -> JsValue {
+    let obj = Object::new();
+    set(&obj, "running", &JsValue::FALSE);
+    set(&obj, "exit", &JsValue::TRUE);
+    obj.into()
+}
+
 fn outcome_str(outcome: Outcome) -> &'static str {
     match outcome {
         Outcome::Win => "win",
@@ -309,9 +334,17 @@ fn js_ended(outcome: Outcome, step: u64) -> JsValue {
 /// «Редактор», требования 9, 33: `step()` reports the same running/ended/error shape `tick()`
 /// does — a code error or the game's own outcome is exactly as visible on a single manual step as
 /// on any other, instead of the page having no way to see it.
-fn game_tick_result(game: &Game, code_path: &str, rules_path: &str) -> JsValue {
+fn game_tick_result(
+    game: &Game,
+    state: &ScreenState,
+    code_path: &str,
+    rules_path: &str,
+) -> JsValue {
     if let Some(err) = game.code_error() {
         return js_code_error(code_path, rules_path, err);
+    }
+    if state.exit_requested() {
+        return js_exit();
     }
     match game.outcome() {
         Some((outcome, step)) => js_ended(outcome, step),
@@ -686,11 +719,48 @@ fn parse_model_files(models: &JsValue, table: &[(String, String)]) -> Vec<(Strin
 struct VideoPlayer {
     name: String,
     player: HtmlVideoElement,
+    reverse: Option<HtmlVideoElement>,
     first_frame: Vec<u8>,
 }
 
+/// Длина ролика проигрывателя в секундах; нуль, пока браузер её не знает.
+fn seconds_of(player: &HtmlVideoElement) -> f64 {
+    let seconds = player.duration();
+    if seconds.is_finite() { seconds } else { 0.0 }
+}
+
+/// Ответ страницы по файлу `reverse` видео — `{verdict: "ok"|"missing"|"rejected", player?: HTMLVideoElement}`
+/// в поле `reverse` ответа по видео; размер и длину файла движок читает у самого проигрывателя. Нет поля — нет
+/// ответа. «Картинки» → «Видео на панели».
+fn parse_reverse_answer(item: &JsValue) -> (Option<ReverseVerdict>, Option<HtmlVideoElement>) {
+    let Some(reverse) = Reflect::get(item, &JsValue::from_str("reverse"))
+        .ok()
+        .filter(JsValue::is_object)
+    else {
+        return (None, None);
+    };
+    let verdict = Reflect::get(&reverse, &JsValue::from_str("verdict"))
+        .ok()
+        .and_then(|v| v.as_string());
+    let player = Reflect::get(&reverse, &JsValue::from_str("player"))
+        .ok()
+        .and_then(|v| v.dyn_into::<HtmlVideoElement>().ok());
+    match (verdict.as_deref(), player) {
+        (Some("ok"), Some(player)) => (
+            Some(ReverseVerdict::Ok {
+                width: player.video_width(),
+                height: player.video_height(),
+                seconds: seconds_of(&player),
+            }),
+            Some(player),
+        ),
+        (Some("ok" | "rejected"), _) => (Some(ReverseVerdict::Rejected), None),
+        _ => (Some(ReverseVerdict::Missing), None),
+    }
+}
+
 /// Reads `videos` — the page's `[{index, verdict: "ok"|"missing"|"rejected", width?, height?, player?:
-/// HTMLVideoElement, pixels?: Uint8Array}, ...]`, numbered the way `read_texts()` numbered `images` —
+/// HTMLVideoElement, pixels?: Uint8Array, reverse?: {verdict, player?}}, ...]`, numbered the way `read_texts()` numbered `images` —
 /// into `(name, ImageVerdict)` pairs for `load::load_rest` and, apart, the players of the videos the
 /// browser plays. «Картинки» → «Видео»: `width`/`height` are the file's, both layers together;
 /// `pixels` is the first frame, half the file's height; an `"ok"` without a player is read as
@@ -720,14 +790,19 @@ fn parse_video_answers(
                     .ok()
                     .map(|v| Uint8Array::new(&v).to_vec())
                     .unwrap_or_default();
+                let (reverse_verdict, reverse) = parse_reverse_answer(&item);
+                let seconds = seconds_of(&player);
                 players.push(VideoPlayer {
                     name: name.clone(),
                     player,
+                    reverse,
                     first_frame,
                 });
                 ImageVerdict::Video {
                     width: js_finite(&item, "width").map_or(0, |v| v as u32),
                     height: js_finite(&item, "height").map_or(0, |v| v as u32),
+                    seconds,
+                    reverse: reverse_verdict,
                 }
             }
             (Some("ok" | "rejected"), _) => ImageVerdict::Rejected,
@@ -739,11 +814,13 @@ fn parse_video_answers(
 }
 
 /// «Картинки» → «Видео»: проигрыватели видео игры с местом каждого в атласе. `atlas_images` и
-/// `atlas_rects` идут в порядке `images`; размер файла — кадр, удвоенный по высоте.
+/// `atlas_rects` идут в порядке `images`; размер файла — кадр, удвоенный по высоте. `panel_videos` — номера
+/// картинок, которые играют панели с `play_on_hover`.
 fn video_sources(
     images: &[ImageDecl],
     atlas_images: &[atlas::AtlasImage],
     atlas_rects: &[AtlasRect],
+    panel_videos: &[usize],
     mut players: Vec<VideoPlayer>,
 ) -> Vec<VideoSource> {
     let mut sources = Vec::new();
@@ -752,8 +829,14 @@ fn video_sources(
             .iter()
             .position(|video| video.name == decl.name)
             .expect("load_rest succeeded: every declared video has a player");
+        let VideoPlayer {
+            player, reverse, ..
+        } = players.remove(at);
         sources.push(VideoSource {
-            player: players.remove(at).player,
+            image: index,
+            player,
+            reverse,
+            panel: panel_videos.contains(&index),
             width: atlas_images[index].width,
             height: atlas_images[index].height * 2,
             place: atlas_rects[index],
@@ -1202,6 +1285,8 @@ fn compose_ui(
     };
     let mut paints = Vec::new();
     let parts = interface::layout(screen, screen_id, world, state, frame.viewport);
+    let place = screens::hover_place(&parts, tooltip.pointer.map(|pointer| frame.point(pointer)));
+    let mut panel_videos = Vec::new();
     for part in &parts {
         let placed = match part {
             Part::ScrollBar { rect, color } => {
@@ -1217,6 +1302,24 @@ fn compose_ui(
             }
             Part::Element(placed) => placed,
         };
+        // «Видео на панели»: видео панели ведёт ход, пока панель на экране, видна она сейчас или нет.
+        if let screens::Element::Panel {
+            fill: PanelFill::Fixed(Fill::Image { image, .. }),
+            play_on_hover: Some(target),
+            rest_at,
+            ..
+        } = placed.element
+        {
+            panel_videos.push(PanelInput {
+                image: *image,
+                hovering: place == Some(*target),
+                rest_at: *rest_at,
+            });
+        }
+        // «Наведение»: элемент с `show_on_hover` рисуется, только пока курсор над его местом.
+        if !placed.element.visible_over(place) {
+            continue;
+        }
         let rect = placed.rect;
         let mut fill = |fill: &Fill, rect: [f32; 4], image_scale: f32| {
             push_fill(
@@ -1326,6 +1429,7 @@ fn compose_ui(
             screens::Element::List { .. } => {}
         }
     }
+    renderer.set_panel_videos(&panel_videos);
     if let Some(style) = &config.tooltip {
         let shown = tooltip.hover.show(
             &parts,
@@ -2048,7 +2152,7 @@ impl Engine {
                                 height,
                                 pixels,
                             },
-                            ImageVerdict::Video { width, height } => {
+                            ImageVerdict::Video { width, height, .. } => {
                                 atlas::AtlasImage::video_frame(width, height / 2)
                             }
                             ImageVerdict::Missing | ImageVerdict::Rejected => unreachable!(
@@ -2089,6 +2193,7 @@ impl Engine {
                     &image_order,
                     &atlas_images,
                     &atlas_rects,
+                    &screens_config.panel_videos(),
                     video_players,
                 ));
                 self.atlas_rects = atlas_rects;
@@ -2346,7 +2451,10 @@ impl Engine {
                 &self.atlas_rects,
                 self.last_ui_elapsed_steps,
             ),
-            _ => UiLayers::default(),
+            _ => {
+                self.renderer.set_panel_videos(&[]);
+                UiLayers::default()
+            }
         };
         if let Err(e) = render_world(
             &mut self.renderer,
@@ -3016,7 +3124,7 @@ impl Engine {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
 
-        game_tick_result(game, game.code_path(), &self.rules_path)
+        game_tick_result(game, state, game.code_path(), &self.rules_path)
     }
 
     /// Reconfigures the GPU surface for a new device-pixel canvas size. Call on canvas/container
@@ -3153,7 +3261,7 @@ impl Engine {
             session.is_replay(),
             Some(session),
         );
-        game_tick_result(game, game.code_path(), &self.rules_path)
+        game_tick_result(game, state, game.code_path(), &self.rules_path)
     }
 
     /// «Редактор», требование 8: why the "Шаг" button would do nothing right now, in Russian, for
@@ -3441,7 +3549,7 @@ impl Engine {
             viewport,
             &self.images,
         );
-        game_tick_result(game, game.code_path(), &self.rules_path)
+        game_tick_result(game, state, game.code_path(), &self.rules_path)
     }
 
     /// `seek(current - 1)` — требование 47; a no-op on step 0 or without an open replay. See
@@ -3467,6 +3575,6 @@ impl Engine {
             viewport,
             &self.images,
         );
-        game_tick_result(game, game.code_path(), &self.rules_path)
+        game_tick_result(game, state, game.code_path(), &self.rules_path)
     }
 }

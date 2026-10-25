@@ -6,7 +6,7 @@ use super::gpu_models::ModelsGpu;
 use super::gpu3d;
 use super::materials::Relief;
 use super::text_area;
-use super::video::{VideoSource, Videos};
+use super::video::{PanelInput, VideoSource, Videos};
 use super::wind;
 use crate::core::model::ModelTable;
 use crate::core::screens::{Align, FontId};
@@ -863,8 +863,14 @@ impl Renderer {
     }
 
     /// Кадры видео — в атлас; звать перед отрисовкой кадра плоской сцены.
-    pub fn refresh_videos(&self) {
+    pub fn refresh_videos(&mut self) {
         self.videos.refresh(&self.device, &self.queue);
+    }
+
+    /// «Видео на панели»: панели с видео на экране этого кадра и над какими местами курсор; звать до
+    /// `refresh_videos`. Пустой список — экрана с видео нет.
+    pub fn set_panel_videos(&mut self, inputs: &[PanelInput]) {
+        self.videos.set_panel_inputs(inputs);
     }
 
     /// Часы кадров по времени идут — видео играют, стоят — на паузе.

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseTickResult } from "./tickResult";
+import { parseTickResult, type RawTickResult } from "./tickResult";
 
 describe("parseTickResult", () => {
   it("running:true — игра идёт дальше", () => {
@@ -23,5 +23,14 @@ describe("parseTickResult", () => {
       column: null,
     };
     expect(parseTickResult({ running: false, error })).toEqual({ status: "error", error });
+  });
+
+  it("running:false с exit — игра просит уйти к списку игр", () => {
+    expect(parseTickResult({ running: false, exit: true })).toEqual({ status: "exit" });
+  });
+
+  it("код ошибки приоритетнее exit", () => {
+    const error = { file: "code.lua", path: "", message: "ошибка", line: null, column: null };
+    expect(parseTickResult({ running: false, error, exit: true } as unknown as RawTickResult)).toEqual({ status: "error", error });
   });
 });

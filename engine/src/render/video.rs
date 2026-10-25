@@ -11,20 +11,46 @@ use web_sys::{HtmlMediaElement, HtmlVideoElement};
 
 use super::atlas::AtlasRect;
 use super::gpu::ATLAS_FORMAT;
-use super::video_play::{self, PlayRequest, PlayerAction};
+use super::video_play::{
+    self, PanelCourse, PanelStep, PlayRequest, PlayerAction, PlayerReading, Roll,
+};
 
 /// Видео игры, как его отдаёт загрузка: проигрыватель, размер файла (оба слоя вместе) и место одного
-/// кадра в атласе.
+/// кадра в атласе. `panel` — видео панели с `play_on_hover`: его ведёт ход видео панели, а не часы кадров, и
+/// у него есть второй проигрыватель — файл `reverse`.
 pub struct VideoSource {
+    pub image: usize,
     pub player: HtmlVideoElement,
+    pub reverse: Option<HtmlVideoElement>,
+    pub panel: bool,
     pub width: u32,
     pub height: u32,
     pub place: AtlasRect,
 }
 
+/// «Видео на панели»: панель с видео `image` стоит на экране; `hovering` — курсор над её местом наведения,
+/// `rest_at` — секунда ролика с позой последнего кадра.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PanelInput {
+    pub image: usize,
+    pub hovering: bool,
+    pub rest_at: Option<f32>,
+}
+
+/// Ход видео панели и второй проигрыватель — тот же ролик задом наперёд.
+struct PanelVideo {
+    reverse: HtmlVideoElement,
+    reverse_request: Rc<Cell<PlayRequest>>,
+    course: PanelCourse,
+    /// Чей кадр писать в атлас в этом кадре; `None` — оставить показанный.
+    show: Option<Roll>,
+}
+
 struct Video {
+    image: usize,
     player: HtmlVideoElement,
     play_request: Rc<Cell<PlayRequest>>,
+    panel: Option<PanelVideo>,
     width: u32,
     height: u32,
     place: AtlasRect,
@@ -42,6 +68,7 @@ struct VideoPass {
 pub(super) struct Videos {
     pass: Option<VideoPass>,
     items: Vec<Video>,
+    panel_inputs: Vec<PanelInput>,
 }
 
 impl Videos {
@@ -49,6 +76,7 @@ impl Videos {
     /// которой пишет проход.
     pub fn set(&mut self, device: &wgpu::Device, atlas: &wgpu::Texture, sources: Vec<VideoSource>) {
         self.release();
+        self.panel_inputs.clear();
         if sources.is_empty() {
             return;
         }
@@ -63,19 +91,31 @@ impl Videos {
     pub fn release(&mut self) {
         for video in self.items.drain(..) {
             let _ = video.player.pause();
+            if let Some(panel) = &video.panel {
+                let _ = panel.reverse.pause();
+            }
         }
     }
 
+    /// «Видео на панели»: панели с видео, что стоят на экране этого кадра, и над какими местами курсор. Видео
+    /// панели, которой в списке нет, возвращается на первый кадр.
+    pub fn set_panel_inputs(&mut self, inputs: &[PanelInput]) {
+        self.panel_inputs.clear();
+        self.panel_inputs.extend_from_slice(inputs);
+    }
+
     /// Раз в отрисовку: кадр каждого видео, у которого он уже есть, копируется в текстуру файла и
-    /// пишется в атлас. Видео без кадра остаётся прозрачным.
-    pub fn refresh(&self, device: &wgpu::Device, queue: &wgpu::Queue) {
+    /// пишется в атлас. Видео без кадра остаётся прозрачным. Видео панели сначала делает свой шаг.
+    pub fn refresh(&mut self, device: &wgpu::Device, queue: &wgpu::Queue) {
+        self.drive_panels();
         let Some(pass) = &self.pass else {
             return;
         };
-        let ready: Vec<&Video> = self
+        let ready: Vec<(&Video, &HtmlVideoElement)> = self
             .items
             .iter()
-            .filter(|video| video.has_frame())
+            .filter_map(|video| Some((video, video.shown_player()?)))
+            .filter(|(video, player)| video.has_frame(player))
             .collect();
         if ready.is_empty() {
             return;
@@ -83,17 +123,51 @@ impl Videos {
         let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("video_frames"),
         });
-        for video in ready {
-            video.copy_frame(queue);
+        for (video, player) in ready {
+            video.copy_frame(queue, player);
             video.encode_into_atlas(&mut encoder, pass);
         }
         queue.submit(std::iter::once(encoder.finish()));
     }
 
+    fn drive_panels(&mut self) {
+        for video in &mut self.items {
+            let Some(panel) = &mut video.panel else {
+                continue;
+            };
+            let input = self
+                .panel_inputs
+                .iter()
+                .find(|input| input.image == video.image);
+            let Some(input) = input else {
+                panel.show = None;
+                if panel.course.reset() {
+                    let _ = video.player.pause();
+                    let _ = panel.reverse.pause();
+                    video.play_request.set(PlayRequest::None);
+                    panel.reverse_request.set(PlayRequest::None);
+                    seek(&video.player, 0.0);
+                }
+                continue;
+            };
+            let current = match panel.course.current() {
+                Roll::Forward => &video.player,
+                Roll::Backward => &panel.reverse,
+            };
+            let step = panel.course.step(
+                input.hovering,
+                input.rest_at.map(f64::from),
+                reading_of(current),
+            );
+            panel.show = step.show;
+            apply_panel_step(&step, video);
+        }
+    }
+
     /// Часы кадров идут (`playing`) — проигрыватели играют, стоят — на паузе; когда просить играть,
     /// решает [`video_play::next_step`].
     pub fn set_playing(&self, playing: bool) {
-        for video in &self.items {
+        for video in self.items.iter().filter(|video| video.panel.is_none()) {
             let (action, request) =
                 video_play::next_step(playing, video.player.paused(), video.play_request.get());
             video.play_request.set(request);
@@ -203,9 +277,25 @@ impl Video {
             array_layer_count: Some(1),
             ..Default::default()
         });
+        let panel = source
+            .panel
+            .then_some(source.reverse)
+            .flatten()
+            .map(|reverse| {
+                source.player.set_loop(false);
+                reverse.set_loop(false);
+                PanelVideo {
+                    reverse,
+                    reverse_request: Rc::new(Cell::new(PlayRequest::None)),
+                    course: PanelCourse::new(source.player.duration()),
+                    show: None,
+                }
+            });
         Video {
+            image: source.image,
             player: source.player,
             play_request: Rc::new(Cell::new(PlayRequest::None)),
+            panel,
             width: source.width,
             height: source.height,
             place: source.place,
@@ -215,18 +305,30 @@ impl Video {
         }
     }
 
-    /// Проигрыватель уже отдаёт кадр своего размера. Копировать видео без кадра браузер не даёт —
-    /// `wgpu` на WebGPU упал бы на этом.
-    fn has_frame(&self) -> bool {
-        self.player.ready_state() >= HtmlMediaElement::HAVE_CURRENT_DATA
-            && self.player.video_width() == self.width
-            && self.player.video_height() == self.height
+    /// Проигрыватель, чей кадр писать в атлас в этом кадре: у обычного видео свой, у видео панели тот, что ход
+    /// выбрал, а пока он переходит на новое место, — никакой.
+    fn shown_player(&self) -> Option<&HtmlVideoElement> {
+        match &self.panel {
+            None => Some(&self.player),
+            Some(panel) => match panel.show? {
+                Roll::Forward => Some(&self.player),
+                Roll::Backward => Some(&panel.reverse),
+            },
+        }
     }
 
-    fn copy_frame(&self, queue: &wgpu::Queue) {
+    /// Проигрыватель уже отдаёт кадр своего размера. Копировать видео без кадра браузер не даёт —
+    /// `wgpu` на WebGPU упал бы на этом.
+    fn has_frame(&self, player: &HtmlVideoElement) -> bool {
+        player.ready_state() >= HtmlMediaElement::HAVE_CURRENT_DATA
+            && player.video_width() == self.width
+            && player.video_height() == self.height
+    }
+
+    fn copy_frame(&self, queue: &wgpu::Queue, player: &HtmlVideoElement) {
         queue.copy_external_image_to_texture(
             &wgpu::CopyExternalImageSourceInfo {
-                source: wgpu::ExternalImageSource::HTMLVideoElement(self.player.clone()),
+                source: wgpu::ExternalImageSource::HTMLVideoElement(player.clone()),
                 origin: wgpu::Origin2d::ZERO,
                 flip_y: false,
             },
@@ -279,19 +381,73 @@ impl Video {
     /// Просьба играть. Ответ браузера дожидается, чтобы отказ не стал необработанным и запомнился;
     /// просьбу, которую прервала пауза самого движка (`AbortError`), отказом не считают.
     fn start(&self) {
-        let Ok(promise) = self.player.play() else {
-            self.play_request.set(video_play::after_answer(true));
-            return;
+        request_play(&self.player, &self.play_request);
+    }
+}
+
+/// Просьба играть `player`; ответ браузера оседает в `request`.
+fn request_play(player: &HtmlVideoElement, request: &Rc<Cell<PlayRequest>>) {
+    let Ok(promise) = player.play() else {
+        request.set(video_play::after_answer(true));
+        return;
+    };
+    let request = Rc::clone(request);
+    wasm_bindgen_futures::spawn_local(async move {
+        let refused = match wasm_bindgen_futures::JsFuture::from(promise).await {
+            Ok(_) => false,
+            Err(error) => !error
+                .dyn_ref::<js_sys::Error>()
+                .is_some_and(|error| error.name() == "AbortError"),
         };
-        let play_request = Rc::clone(&self.play_request);
-        wasm_bindgen_futures::spawn_local(async move {
-            let refused = match wasm_bindgen_futures::JsFuture::from(promise).await {
-                Ok(_) => false,
-                Err(error) => !error
-                    .dyn_ref::<js_sys::Error>()
-                    .is_some_and(|error| error.name() == "AbortError"),
-            };
-            play_request.set(video_play::after_answer(refused));
-        });
+        request.set(video_play::after_answer(refused));
+    });
+}
+
+fn reading_of(player: &HtmlVideoElement) -> PlayerReading {
+    PlayerReading {
+        time: player.current_time(),
+        seeking: player.seeking(),
+        paused: player.paused(),
+    }
+}
+
+/// Переход проигрывателя на `time` секунд своего файла, не дальше его конца.
+fn seek(player: &HtmlVideoElement, time: f64) {
+    let end = player.duration();
+    player.set_current_time(if end.is_finite() { time.min(end) } else { time });
+}
+
+/// Выполняет шаг хода видео панели: пауза, переход на место, просьба играть. Просьбу, на которую браузер
+/// ещё не ответил или отказал, не повторяют; отказ забывается, когда проигрыватель встаёт или уходит на
+/// другое место.
+fn apply_panel_step(step: &PanelStep, video: &Video) {
+    let Some(panel) = &video.panel else {
+        return;
+    };
+    let part = |roll: Roll| match roll {
+        Roll::Forward => (&video.player, &video.play_request),
+        Roll::Backward => (&panel.reverse, &panel.reverse_request),
+    };
+    let forget_refusal = |request: &Rc<Cell<PlayRequest>>| {
+        if request.get() == PlayRequest::Refused {
+            request.set(PlayRequest::None);
+        }
+    };
+    if let Some(roll) = step.pause {
+        let (player, request) = part(roll);
+        let _ = player.pause();
+        forget_refusal(request);
+    }
+    if let Some((roll, time)) = step.seek {
+        let (player, request) = part(roll);
+        seek(player, time);
+        forget_refusal(request);
+    }
+    if let Some(roll) = step.play {
+        let (player, request) = part(roll);
+        if request.get() == PlayRequest::None {
+            request.set(PlayRequest::Pending);
+            request_play(player, request);
+        }
     }
 }

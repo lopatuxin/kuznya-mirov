@@ -1,0 +1,38 @@
+{
+ "font": "C:/projects/kuznya-mirov/games/platformer/fonts/Monomakh.ttf",
+ "lines": [
+  {
+   "id": "ilya",
+   "text": [
+    "Налево пойдёшь —",
+    "силой возьмёшь"
+   ],
+   "cx": 1118,
+   "top": 134,
+   "size": 29,
+   "step": 34
+  },
+  {
+   "id": "alyosha",
+   "text": [
+    "Прямо пойдёшь —",
+    "хитростью пройдёшь"
+   ],
+   "cx": 1122,
+   "top": 222,
+   "size": 33,
+   "step": 38
+  },
+  {
+   "id": "vasilisa",
+   "text": [
+    "Направо пойдёшь —",
+    "мудростью одолеешь"
+   ],
+   "cx": 1122,
+   "top": 316,
+   "size": 33,
+   "step": 38
+  }
+ ]
+}

@@ -528,6 +528,71 @@ describe("loadProject", () => {
       ]);
     });
 
+    describe("видео панели с reverse", () => {
+      const reverseFiles: Record<string, string | Uint8Array> = {
+        ...files,
+        "images/hero.mp4": new Uint8Array([3]),
+        "images/hero-reverse.mp4": new Uint8Array([4]),
+      };
+
+      function createReverseEngine() {
+        const { engine, load } = createEngine({ ok: true, warnings: NO_WARNINGS });
+        engine.read_texts = vi.fn(() => ({
+          fonts: [],
+          sounds: [],
+          music: [],
+          images: [
+            { index: 2, name: "hero", path: "images/hero.mp4", reverse: "images/hero-reverse.mp4" },
+            { index: 5, name: "lost", path: "images/lost.mp4", reverse: "images/lost-reverse.mp4" },
+          ],
+          materials: [],
+          masks: [],
+          models: [],
+        }));
+        return { engine, load };
+      }
+
+      it("обратный файл читается и уходит в load в поле reverse ответа по видео; нет файла — reverse не создаётся", async () => {
+        stubBrowser();
+        const { engine, load } = createReverseEngine();
+
+        await loadProject(engine, createReader(reverseFiles), "{}", stubAudioContext, createVideoPlayerKeeper());
+
+        expect(players).toHaveLength(2);
+        expect((load.mock.calls[0] ?? [])[14]).toEqual([
+          { index: 2, verdict: "ok", width: 4, height: 4, player: players[0], pixels: expect.any(Uint8Array), reverse: { verdict: "ok", player: players[1] } },
+          { index: 5, verdict: "missing" },
+        ]);
+      });
+
+      it("новая загрузка отпускает и обычный, и обратный проигрыватель прежней", async () => {
+        stubBrowser();
+        const { engine } = createReverseEngine();
+        const keeper = createVideoPlayerKeeper();
+
+        await loadProject(engine, createReader(reverseFiles), "{}", stubAudioContext, keeper);
+        await loadProject(engine, createReader(reverseFiles), "{}", stubAudioContext, keeper);
+
+        expect(players).toHaveLength(4);
+        expect(players[0]?.pause).toHaveBeenCalled();
+        expect(players[1]?.pause).toHaveBeenCalled();
+        expect(players[2]?.pause).not.toHaveBeenCalled();
+        expect(players[3]?.pause).not.toHaveBeenCalled();
+      });
+
+      it("отказ load освобождает оба новых проигрывателя", async () => {
+        stubBrowser();
+        const { engine } = createReverseEngine();
+        engine.load = vi.fn(() => ({ ok: false as const, errors: [], warnings: NO_WARNINGS }));
+
+        await loadProject(engine, createReader(reverseFiles), "{}", stubAudioContext, createVideoPlayerKeeper());
+
+        expect(players).toHaveLength(2);
+        expect(players[0]?.pause).toHaveBeenCalled();
+        expect(players[1]?.pause).toHaveBeenCalled();
+      });
+    });
+
     it("редактору видео достаётся кадром: ширина файла, половина высоты и своё имя; картинка — как раньше", async () => {
       stubBrowser();
       const { engine } = createEngine({ ok: true, warnings: NO_WARNINGS });

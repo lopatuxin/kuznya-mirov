@@ -892,7 +892,12 @@ fn video_file_size(path: &str) -> (u32, u32) {
 fn file_verdict(decl: &ImageDecl) -> ImageVerdict {
     if decl.video {
         let (width, height) = video_file_size(&decl.path);
-        return ImageVerdict::Video { width, height };
+        return ImageVerdict::Video {
+            width,
+            height,
+            seconds: 1.0,
+            reverse: None,
+        };
     }
     let (width, height, pixels) = blank_image(&decl.path);
     ImageVerdict::Ok {
@@ -997,7 +1002,7 @@ fn repeated_layers_cover_a_window_of_any_width() {
                 height,
                 pixels,
             },
-            ImageVerdict::Video { width, height } => AtlasImage::video_frame(width, height / 2),
+            ImageVerdict::Video { width, height, .. } => AtlasImage::video_frame(width, height / 2),
             ImageVerdict::Missing | ImageVerdict::Rejected => unreachable!("файл уровня на месте"),
         })
         .collect();

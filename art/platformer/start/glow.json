@@ -1,0 +1,24 @@
+{
+  "width": 2048,
+  "height": 930,
+  "boxes": {
+    "ilya": {
+      "left": 981,
+      "top": 117,
+      "width": 273,
+      "height": 92
+    },
+    "alyosha": {
+      "left": 954,
+      "top": 202,
+      "width": 336,
+      "height": 111
+    },
+    "vasilisa": {
+      "left": 956,
+      "top": 296,
+      "width": 332,
+      "height": 104
+    }
+  }
+}

@@ -28,4 +28,4 @@ pub use gpu_models::ModelsFrame;
 #[cfg(target_arch = "wasm32")]
 pub use gpu3d::{Globals3d, GroundVertex, Scene3dFrame, ShapeInstance};
 #[cfg(target_arch = "wasm32")]
-pub use video::VideoSource;
+pub use video::{PanelInput, VideoSource};

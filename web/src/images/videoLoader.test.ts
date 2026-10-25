@@ -1,6 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeVideo } from "./fakeVideo";
-import { composeFirstFrame, createVideoPlayerKeeper, decodeVideo, FIRST_FRAME_WAIT_MS, releaseVideoPlayer } from "./videoLoader";
+import {
+  composeFirstFrame,
+  createVideoPlayerKeeper,
+  decodeReverseVideo,
+  decodeVideo,
+  FIRST_FRAME_WAIT_MS,
+  releaseDecodedVideos,
+  releaseVideoPlayer,
+} from "./videoLoader";
 
 /** Файл 2 × 4: верхняя половина — четыре точки цвета, нижняя — четыре точки маски: белая, серая, чёрная, красная. */
 const FILE_RGBA = new Uint8ClampedArray([
@@ -87,6 +95,124 @@ describe("decodeVideo", () => {
     stubBrowser(new FakeVideo("loadeddata", 0, 0));
 
     expect(await decodeVideo(new Uint8Array([1]))).toEqual({ verdict: "rejected" });
+  });
+});
+
+/** Проигрыватели выдаются по порядку заведения: сначала обычный файл, потом обратный. */
+function stubBrowserWithPlayers(videos: FakeVideo[], getImageData: () => { data: Uint8ClampedArray } = () => ({ data: FILE_RGBA })): void {
+  const context = { drawImage: vi.fn(), getImageData };
+  let made = 0;
+  vi.stubGlobal("document", {
+    createElement: (tag: string) => (tag === "video" ? videos[made++] : { width: 0, height: 0, getContext: () => context }),
+  } as unknown as Document);
+  vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:video-1");
+  vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+}
+
+describe("decodeReverseVideo", () => {
+  it("файла нет — missing, проигрыватель не заводится", async () => {
+    const createElement = vi.fn();
+    vi.stubGlobal("document", { createElement } as unknown as Document);
+
+    expect(await decodeReverseVideo(null)).toEqual({ verdict: "missing" });
+    expect(createElement).not.toHaveBeenCalled();
+  });
+
+  it("первый кадр получен — ok с таким же проигрывателем, как у основного видео", async () => {
+    const video = new FakeVideo("loadeddata");
+    stubBrowser(video);
+
+    const result = await decodeReverseVideo(new Uint8Array([1]));
+
+    expect(result).toEqual({ verdict: "ok", player: video });
+    expect([video.muted, video.playsInline, video.preload]).toEqual([true, true, "auto"]);
+    expect(video.src).toBe("blob:video-1");
+  });
+
+  it("браузер ответил ошибкой — rejected, проигрыватель освобождён", async () => {
+    const video = new FakeVideo("error");
+    stubBrowser(video);
+
+    expect(await decodeReverseVideo(new Uint8Array([1]))).toEqual({ verdict: "rejected" });
+    expect(video.removeAttribute).toHaveBeenCalledWith("src");
+  });
+});
+
+describe("decodeVideo с reverse", () => {
+  it("без обратных байтов ответ без поля reverse", async () => {
+    stubBrowser(new FakeVideo("loadeddata"));
+
+    expect(await decodeVideo(new Uint8Array([1]))).not.toHaveProperty("reverse");
+  });
+
+  it("оба файла разобраны — ok с проигрывателем обратного файла в reverse", async () => {
+    const main = new FakeVideo("loadeddata", 2, 4);
+    const reverse = new FakeVideo("loadeddata", 2, 4);
+    stubBrowserWithPlayers([main, reverse]);
+
+    const result = await decodeVideo(new Uint8Array([1]), new Uint8Array([2]));
+
+    expect(result).toMatchObject({ verdict: "ok", player: main, reverse: { verdict: "ok", player: reverse } });
+  });
+
+  it("обратного файла нет — основной ok, reverse говорит missing", async () => {
+    const main = new FakeVideo("loadeddata");
+    stubBrowserWithPlayers([main]);
+
+    const result = await decodeVideo(new Uint8Array([1]), null);
+
+    expect(result).toMatchObject({ verdict: "ok", player: main, reverse: { verdict: "missing" } });
+  });
+
+  it("обратный файл браузер не взял — reverse rejected, основной играет", async () => {
+    const main = new FakeVideo("loadeddata");
+    const reverse = new FakeVideo("error");
+    stubBrowserWithPlayers([main, reverse]);
+
+    const result = await decodeVideo(new Uint8Array([1]), new Uint8Array([2]));
+
+    expect(result).toMatchObject({ verdict: "ok", reverse: { verdict: "rejected" } });
+    expect(main.pause).not.toHaveBeenCalled();
+  });
+
+  it("основной файл не взят — освобождён и проигрыватель обратного", async () => {
+    const main = new FakeVideo("error");
+    const reverse = new FakeVideo("loadeddata");
+    stubBrowserWithPlayers([main, reverse]);
+
+    expect(await decodeVideo(new Uint8Array([1]), new Uint8Array([2]))).toEqual({ verdict: "rejected" });
+    expect(main.removeAttribute).toHaveBeenCalledWith("src");
+    expect(reverse.removeAttribute).toHaveBeenCalledWith("src");
+  });
+
+  it("сбой чтения кадра основного файла освобождает и обратный проигрыватель и уходит дальше", async () => {
+    const main = new FakeVideo("loadeddata");
+    const reverse = new FakeVideo("loadeddata");
+    stubBrowserWithPlayers([main, reverse], () => {
+      throw new Error("не хватило памяти");
+    });
+
+    await expect(decodeVideo(new Uint8Array([1]), new Uint8Array([2]))).rejects.toThrow("не хватило памяти");
+    expect(main.removeAttribute).toHaveBeenCalledWith("src");
+    expect(reverse.removeAttribute).toHaveBeenCalledWith("src");
+  });
+});
+
+describe("releaseDecodedVideos", () => {
+  it("освобождает и обычные проигрыватели, и обратные; missing и rejected пропускает", () => {
+    stubBrowser(new FakeVideo("loadeddata"));
+    const main = new FakeVideo("loadeddata");
+    const reverse = new FakeVideo("loadeddata");
+    const frame = { width: 1, height: 1, pixels: new Uint8Array(4) };
+
+    releaseDecodedVideos([
+      { verdict: "ok", width: 1, height: 2, player: main as unknown as HTMLVideoElement, frame, reverse: { verdict: "ok", player: reverse as unknown as HTMLVideoElement } },
+      { verdict: "missing" },
+      { verdict: "rejected" },
+    ]);
+
+    expect(main.pause).toHaveBeenCalledTimes(1);
+    expect(reverse.pause).toHaveBeenCalledTimes(1);
   });
 });
 

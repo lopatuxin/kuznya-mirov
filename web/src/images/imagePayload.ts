@@ -1,10 +1,14 @@
 import { decodeImage, type DecodedImage } from "./imageLoader";
 import { decodeVideo, releaseDecodedVideos, type DecodedVideo } from "./videoLoader";
 
-export type ImageEntry = { index: number; name: string; path: string };
-/** Карта материала и маска покрытия читаются как картинки, но имени у них нет — «Свет и материалы», «Загрузка». */
-export type ImageFileEntry = { index: number; path: string };
-export type LoadedImage = { index: number; path: string; bytes: Uint8Array | null };
+export type ImageEntry = { index: number; name: string; path: string; reverse?: string };
+/**
+ * Карта материала и маска покрытия читаются как картинки, но имени у них нет — «Свет и материалы», «Загрузка».
+ * `reverse` — путь обратного файла, он есть только у видео панели («Картинки» → «Видео на панели»).
+ */
+export type ImageFileEntry = { index: number; path: string; reverse?: string };
+/** `reverseBytes` есть, только если у записи есть `reverse`; `null` — обратный файл не нашёлся. */
+export type LoadedImage = { index: number; path: string; bytes: Uint8Array | null; reverseBytes?: Uint8Array | null };
 export type ImagePayloadEntry = { index: number } & DecodedImage;
 export type VideoPayloadEntry = { index: number } & DecodedVideo;
 
@@ -23,8 +27,16 @@ export async function fetchImageBytes(
   images: ImageFileEntry[],
   readBinary: (path: string) => Promise<Uint8Array | null>,
 ): Promise<LoadedImage[]> {
-  const bytesList = await Promise.all(images.map((image) => readBinary(image.path)));
-  return images.map((image, index) => ({ index: image.index, path: image.path, bytes: bytesList[index] ?? null }));
+  const [bytesList, reverseBytesList] = await Promise.all([
+    Promise.all(images.map((image) => readBinary(image.path))),
+    Promise.all(images.map((image) => (image.reverse === undefined ? undefined : readBinary(image.reverse)))),
+  ]);
+  return images.map((image, index) => ({
+    index: image.index,
+    path: image.path,
+    bytes: bytesList[index] ?? null,
+    ...(image.reverse !== undefined && { reverseBytes: reverseBytesList[index] ?? null }),
+  }));
 }
 
 /**
@@ -42,7 +54,7 @@ export async function buildImagePayload(loaded: LoadedImage[]): Promise<ImagePay
  * им будет некому.
  */
 export async function buildVideoPayload(loaded: LoadedImage[]): Promise<VideoPayloadEntry[]> {
-  const settled = await Promise.allSettled(loaded.map((video) => decodeVideo(video.bytes)));
+  const settled = await Promise.allSettled(loaded.map((video) => decodeVideo(video.bytes, video.reverseBytes)));
   const failed = settled.find((result) => result.status === "rejected");
   const decoded = settled.flatMap((result) => (result.status === "fulfilled" ? [result.value] : []));
   if (failed !== undefined) {

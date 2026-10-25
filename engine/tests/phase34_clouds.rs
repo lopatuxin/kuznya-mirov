@@ -75,6 +75,8 @@ fn verdicts() -> Vec<(&'static str, ImageVerdict)> {
             ImageVerdict::Video {
                 width: 8,
                 height: 16,
+                seconds: 1.0,
+                reverse: None,
             },
         ),
     ]
@@ -697,7 +699,7 @@ impl Rig {
                         height,
                         pixels,
                     },
-                    ImageVerdict::Video { width, height } => {
+                    ImageVerdict::Video { width, height, .. } => {
                         AtlasImage::video_frame(width, height / 2)
                     }
                     _ => unreachable!("все картинки теста — ok или видео"),
@@ -930,7 +932,9 @@ fn the_base_size_is_the_size_of_the_picture_or_its_points_over_cell_pixels() {
                     height,
                     pixels,
                 },
-                ImageVerdict::Video { width, height } => AtlasImage::video_frame(width, height / 2),
+                ImageVerdict::Video { width, height, .. } => {
+                    AtlasImage::video_frame(width, height / 2)
+                }
                 _ => unreachable!(),
             }
         })

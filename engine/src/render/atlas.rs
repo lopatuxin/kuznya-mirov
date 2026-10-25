@@ -1872,6 +1872,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            reverse: None,
             slice: None,
         }
     }
@@ -2202,6 +2203,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            reverse: None,
             slice: None,
         }];
         let atlas_rects = vec![AtlasRect {
@@ -2296,6 +2298,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            reverse: None,
             slice: None,
         }
     }
@@ -2500,6 +2503,7 @@ mod tests {
             glow: false,
             frame_seconds: 0.0,
             video: false,
+            reverse: None,
             slice: None,
         }
     }

@@ -188,6 +188,9 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
   const selectionRef = useRef<LiveSelection | null>(null);
   const soundPlayerRef = useRef<{ sounds: LoadedSound[]; music: LoadedMusicVerdict[]; player: SoundPlayer } | null>(null);
   const startedAtRef = useRef<Date>(new Date());
+  // Кадровый цикл живёт дольше рендера, в котором завёлся, а «Стоп» читает свежие `params`.
+  const stopRef = useRef(stop);
+  stopRef.current = stop;
 
   function applySnapshot(next: Snapshot): void {
     selectionRef.current = next.selection;
@@ -242,6 +245,10 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
       if (stopped) return;
       const memory = paramsRef.current.memory;
       const result = parseTickResult(engine!.tick(now) as RawTickResult);
+      if (result.status === "exit") {
+        stopRef.current();
+        return;
+      }
       if (result.status === "error") {
         setIsRunning(false);
         setCodeError(result.error);
@@ -353,6 +360,10 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
     } catch (error) {
       result = { status: "error", error: toEngineError(error) };
     }
+    if (result.status === "exit") {
+      stop();
+      return;
+    }
     if (result.status === "error") setCodeError(result.error);
     refreshSnapshot(engine);
   }
@@ -404,6 +415,10 @@ export function useBattleSession(params: UseBattleSessionParams): BattleSessionS
    */
   function afterSeek(engine: Engine, raw: unknown): void {
     const result = parseTickResult(raw as RawTickResult);
+    if (result.status === "exit") {
+      stop();
+      return;
+    }
     engine.pause();
     stopSound();
     setIsRunning(false);

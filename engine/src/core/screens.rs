@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::game::Game;
 use super::input::{ButtonKey, MouseEvent, MouseState, UiEvent, UiQueue};
-use super::interface::{self, Part, SCROLL_POINTS_PER_ROW};
+use super::interface::{self, Part, Placed, SCROLL_POINTS_PER_ROW};
 use super::property::{self, PropertyId, PropertyTable};
 use super::rules::{Outcome, Selector};
 use super::value::{ImageId, PropKind, Value};
@@ -291,6 +291,9 @@ pub enum ButtonCommand {
     ToggleSound,
     /// «Экраны и состояние» → «Команды»: вызывает функцию кода игры с объектом кнопки.
     Run(RunId),
+    /// «Экраны и состояние» → «Команды»: выход из игры — мир уничтожается, страница уходит к списку игр
+    /// (в редакторе партия останавливается, как «Стоп»).
+    Exit,
 }
 
 /// Элемент экрана. Панель, надпись и кнопка вне строки списка могут иметь отбор `for_` — «Элемент при
@@ -306,6 +309,14 @@ pub enum Element {
         /// «Подсказка»: текст, всплывающий над элементом.
         tooltip: Option<Vec<TextPart>>,
         for_: Option<Selector>,
+        /// «Наведение»: имя места наведения.
+        name: Option<String>,
+        /// «Наведение»: номер элемента экрана — места, пока курсор над которым панель рисуется.
+        show_on_hover: Option<usize>,
+        /// «Наведение», «Видео на панели»: номер места, пока курсор над которым видео панели идёт вперёд.
+        play_on_hover: Option<usize>,
+        /// «Видео на панели»: секунда ролика, где поза та же, что на последнем кадре; `None` — назад играет весь ролик.
+        rest_at: Option<f32>,
     },
     Label {
         placement: Placement,
@@ -317,6 +328,8 @@ pub enum Element {
         /// «Текст»: перенос по словам по ширине элемента, строки сверху.
         wrap: bool,
         for_: Option<Selector>,
+        /// «Наведение»: номер элемента экрана — места, пока курсор над которым надпись рисуется.
+        show_on_hover: Option<usize>,
     },
     Button {
         placement: Placement,
@@ -332,6 +345,8 @@ pub enum Element {
         tooltip: Option<Vec<TextPart>>,
         on_click: ButtonCommand,
         for_: Option<Selector>,
+        /// «Наведение»: имя места наведения.
+        name: Option<String>,
     },
     /// «Шкала»: подложка на весь прямоугольник и заливка от левого края на долю `value / max`
     /// объекта элемента — объекта отбора `for_` или строки списка.
@@ -386,6 +401,39 @@ impl Element {
             other => (Some(other), &[][..]),
         };
         single.into_iter().chain(row)
+    }
+
+    /// «Наведение»: имя места наведения панели или кнопки.
+    pub fn place_name(&self) -> Option<&str> {
+        match self {
+            Element::Panel { name, .. } | Element::Button { name, .. } => name.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// «Наведение»: место, пока курсор над которым панель или надпись рисуется; без него рисуется всегда.
+    pub fn show_on_hover(&self) -> Option<usize> {
+        match self {
+            Element::Panel { show_on_hover, .. } | Element::Label { show_on_hover, .. } => {
+                *show_on_hover
+            }
+            _ => None,
+        }
+    }
+
+    /// «Наведение»: рисуется ли элемент, когда курсор над местом `place` (`None` — ни над каким): без
+    /// `show_on_hover` рисуется всегда.
+    pub fn visible_over(&self, place: Option<usize>) -> bool {
+        self.show_on_hover()
+            .is_none_or(|target| place == Some(target))
+    }
+
+    /// «Наведение», «Видео на панели»: место, пока курсор над которым видео панели идёт вперёд.
+    pub fn play_on_hover(&self) -> Option<usize> {
+        match self {
+            Element::Panel { play_on_hover, .. } => *play_on_hover,
+            _ => None,
+        }
     }
 
     /// Отбор `for` элемента при объекте; у списка свой отбор строк, он не в счёт.
@@ -466,6 +514,23 @@ impl UiFrame {
 }
 
 impl ScreensConfig {
+    /// «Видео на панели»: картинки-видео, которые играют панели с `play_on_hover`.
+    pub fn panel_videos(&self) -> Vec<ImageId> {
+        let mut videos = Vec::new();
+        for element in self.screens.iter().flat_map(|screen| &screen.elements) {
+            if let Element::Panel {
+                fill: PanelFill::Fixed(Fill::Image { image, .. }),
+                play_on_hover: Some(_),
+                ..
+            } = element
+                && !videos.contains(image)
+            {
+                videos.push(*image);
+            }
+        }
+        videos
+    }
+
     /// Интерфейс окна `window` (в точках CSS): с `ui_reference` всё умножено на
     /// `min(ширина окна / ширина, высота окна / высота)`, без него — как есть.
     pub fn ui_frame(&self, window: [f32; 2]) -> UiFrame {
@@ -590,6 +655,8 @@ pub struct ScreenState {
     /// «Список»: на сколько строк прокручен каждый список — по экрану и номеру его элемента. Новая
     /// партия сбрасывает прокрутку.
     scrolls: HashMap<(ScreenId, usize), ListScroll>,
+    /// «Экраны и состояние» → «Команды»: `exit` сработал — игра просит страницу уйти к списку игр.
+    exit_requested: bool,
 }
 
 /// Прокрутка одного списка: первая видимая строка и накопленная доля следующей строки. Строка
@@ -607,6 +674,7 @@ impl ScreenState {
             previous: None,
             sound_enabled: true,
             scrolls: HashMap::new(),
+            exit_requested: false,
         }
     }
 
@@ -646,6 +714,12 @@ impl ScreenState {
 
     pub fn sound_enabled(&self) -> bool {
         self.sound_enabled
+    }
+
+    /// «Экраны и состояние» → «Команды»: сработал ли `exit` — страница уходит к списку игр, редактор
+    /// останавливает партию.
+    pub fn exit_requested(&self) -> bool {
+        self.exit_requested
     }
 
     pub fn is_live(&self, config: &ScreensConfig) -> bool {
@@ -713,6 +787,12 @@ pub fn apply_command_on(
             game.quit();
             state.reset_scrolls();
             switch_to(state, config, game, config.start_screen, false);
+        }
+        ButtonCommand::Exit => {
+            game.quit();
+            state.reset_scrolls();
+            switch_to(state, config, game, config.start_screen, false);
+            state.exit_requested = true;
         }
         ButtonCommand::Run(run) => {
             if let Some(call) = config.runs.get(run) {
@@ -889,15 +969,16 @@ pub fn handle_screen_key_up(
 
 /// «Мышь в мире», требование 13: что под точкой — самая верхняя кнопка (её ключ) или, когда кнопки
 /// под точкой нет, панель (она забирает нажатие у мира и никому его не отдаёт). Панель поверх кнопки,
-/// как значок на табличке, нажатие у кнопки не отнимает. Надписи и шкалы прозрачны для мыши и сюда не
-/// попадают.
-enum InterfaceHit {
-    Button(ButtonKey),
-    Panel,
+/// как значок на табличке, нажатие у кнопки не отнимает. Надписи, шкалы и панели с `show_on_hover`
+/// прозрачны для мыши и сюда не попадают.
+enum InterfaceHit<'a> {
+    Button(Placed<'a>),
+    /// Верхняя из панелей под точкой.
+    Panel(Placed<'a>),
 }
 
-fn topmost_interface_hit(parts: &[Part<'_>], point: [f32; 2]) -> Option<InterfaceHit> {
-    let mut over_panel = false;
+fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<InterfaceHit<'a>> {
+    let mut topmost_panel = None;
     for part in parts.iter().rev() {
         let Part::Element(placed) = part else {
             continue;
@@ -906,12 +987,29 @@ fn topmost_interface_hit(parts: &[Part<'_>], point: [f32; 2]) -> Option<Interfac
             continue;
         }
         match placed.element {
-            Element::Button { .. } => return Some(InterfaceHit::Button(placed.key)),
-            Element::Panel { .. } => over_panel = true,
+            Element::Button { .. } => return Some(InterfaceHit::Button(*placed)),
+            // «Наведение»: панель с `show_on_hover` прозрачна для мыши, видна она сейчас или нет.
+            Element::Panel {
+                show_on_hover: None,
+                ..
+            } => {
+                topmost_panel.get_or_insert(*placed);
+            }
             _ => {}
         }
     }
-    over_panel.then_some(InterfaceHit::Panel)
+    topmost_panel.map(InterfaceHit::Panel)
+}
+
+/// «Интерфейс игры» → «Наведение»: номер элемента экрана — места наведения, над которым курсор. Место —
+/// то, что получило бы нажатие: кнопка под точкой, а без кнопки верхняя панель; если у неё нет `name`,
+/// курсор ни над каким местом. `point` — в точках `screens.json`; `None` — курсор за краем окна.
+pub fn hover_place(parts: &[Part<'_>], point: Option<[f32; 2]>) -> Option<usize> {
+    let placed = match topmost_interface_hit(parts, point?)? {
+        InterfaceHit::Button(placed) | InterfaceHit::Panel(placed) => placed,
+    };
+    placed.element.place_name()?;
+    Some(placed.key.element)
 }
 
 /// «Интерфейс игры» → «Мышь»: стоит ли точка окна над кнопкой, панелью или списком со строками
@@ -992,11 +1090,11 @@ fn press_outcome(
     image_object: Option<u32>,
 ) -> MouseOutcome {
     match topmost_interface_hit(parts, mouse.position) {
-        Some(InterfaceHit::Button(key)) => {
-            mouse.captured = Some(key);
+        Some(InterfaceHit::Button(placed)) => {
+            mouse.captured = Some(placed.key);
             MouseOutcome::None
         }
-        Some(InterfaceHit::Panel) => MouseOutcome::None,
+        Some(InterfaceHit::Panel(_)) => MouseOutcome::None,
         None if world_accepts => {
             mouse.world_captured = true;
             MouseOutcome::WorldPress(image_object)
@@ -1020,7 +1118,7 @@ fn handle_mouse_event(
             mouse.position = pos;
             if mouse.captured.is_none() {
                 mouse.hover = match topmost_interface_hit(parts, pos) {
-                    Some(InterfaceHit::Button(key)) => Some(key),
+                    Some(InterfaceHit::Button(placed)) => Some(placed.key),
                     _ => None,
                 };
             }
