@@ -1,14 +1,15 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, it } from "node:test";
 import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 import {
   bleedColor, colorEdgesFromFigure, fadeEnds, findCycle, findLoop, keyGreen, keyMagenta, keyVideoFrame, makeVideo,
-  padToEven, parseRange, pickFrames, removeBackground, stackColorAndMask, wrapEnds,
+  padToEven, parseRange, pickFrames, removeBackground, reversePath, stackColorAndMask, wrapEnds,
 } from "./sheet.mjs";
 
 const THUMB = 64;
@@ -164,10 +165,10 @@ describe("keyVideoFrame", () => {
   // Десять точек розового фона яркостью 102 и десять точек травы яркостью 30 задают уровни ключа.
   const BACKGROUND = [226, 45, 225];
   const GRASS = [40, 90, 30];
-  function frame(extra) {
+  function frame(extra, keepColor = false) {
     const pixels = [...Array(10).fill(BACKGROUND), ...Array(10).fill(GRASS), ...extra.map(([color]) => color)];
     const luma = [...Array(10).fill(102), ...Array(10).fill(30), ...extra.map(([, level]) => level)];
-    return keyVideoFrame(Buffer.from(pixels.flat()), Uint8Array.from(luma), "magenta");
+    return keyVideoFrame(Buffer.from(pixels.flat()), Uint8Array.from(luma), "magenta", keepColor);
   }
   const alphaAt = (rgba, index) => rgba[index * 4 + 3];
 
@@ -215,6 +216,25 @@ describe("keyVideoFrame", () => {
     const mixed = [189, 54, 186];
     const color = colorAt(frame([[mixed, 88]]), 20);
     assert.ok(Math.abs(lumaOf(color) - lumaOf(GRASS)) < 15, `край ${color}, яркость ${lumaOf(color)}`);
+  });
+
+  it("с keepColor сплошной красный сарафан остаётся красным", () => {
+    // Без keepColor у красного снимается составляющая вдоль розового фона, и сарафан (188, 44, 2) выходит охристым.
+    const sarafan = [188, 44, 2];
+    const color = colorAt(frame([[sarafan, 82]], true), 20);
+    color.forEach((channel, c) => assert.ok(Math.abs(channel - sarafan[c]) <= 2, `сарафан ${color}`));
+  });
+
+  it("с keepColor золотое сияние с розовой примесью теряет розовое", () => {
+    // Сияние почти непрозрачно, и примесь фона в нём видна только по синему выше зелёного.
+    const [, green, blue] = colorAt(frame([[[250, 190, 215], 211]], true), 20);
+    assert.ok(blue < green, `сияние ${[green, blue]}`);
+  });
+
+  it("с keepColor полупрозрачный край из травы и фона всё равно теряет розовое", () => {
+    const mixed = [133, 68, 128];
+    const [, green, blue] = colorAt(frame([[mixed, 66]], true), 20);
+    assert.ok(blue - green < mixed[2] - mixed[1] - 20, `край ${[green, blue]}`);
   });
 
   it("зелёная трава своего цвета не меняет", () => {
@@ -324,6 +344,81 @@ describe("makeVideo", () => {
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("reversePath", () => {
+  it("ставит -reverse перед расширением рядом с выходом", () => {
+    assert.equal(reversePath(join("games", "x", "ilya_greet.mp4")), join("games", "x", "ilya_greet-reverse.mp4"));
+    assert.equal(reversePath("clip.MP4"), "clip-reverse.mp4");
+  });
+});
+
+describe("makeVideo с reverse", () => {
+  // Два прямоугольника на розовом фоне: левый в первую секунду, правый во вторую — 48 кадров по 24 в секунду.
+  function makeClip(dir) {
+    const clip = join(dir, "clip.mp4");
+    const make = spawnSync(ffmpegPath, [
+      "-hide_banner", "-loglevel", "error", "-f", "lavfi", "-i", "color=c=0xE22DE1:s=96x48:r=24:d=2",
+      "-vf", "drawbox=x=8:y=15:w=20:h=12:color=0x1E3C14:t=fill:enable='lt(n,24)',drawbox=x=68:y=15:w=20:h=12:color=0x1E3C14:t=fill:enable='gte(n,24)'",
+      "-c:v", "libx264", "-pix_fmt", "yuv420p", clip,
+    ], { encoding: "utf8" });
+    assert.equal(make.status, 0, make.stderr);
+    return clip;
+  }
+
+  function frameInfos(file) {
+    const run = spawnSync(ffmpegPath, ["-hide_banner", "-i", file, "-vf", "showinfo", "-f", "null", "-"], { encoding: "utf8" });
+    assert.equal(run.status, 0, run.stderr);
+    return [...run.stderr.matchAll(/n:\s*(\d+).*iskey:(\d)/g)].map((match) => ({ number: Number(match[1]), isKey: match[2] === "1" }));
+  }
+
+  async function maskAt(file, frame, side) {
+    const png = join(file + `.${frame}.png`);
+    const decode = spawnSync(ffmpegPath, ["-hide_banner", "-loglevel", "error", "-y", "-i", file, "-vf", `select='eq(n,${frame})'`, "-frames:v", "1", png], { encoding: "utf8" });
+    assert.equal(decode.status, 0, decode.stderr);
+    const { data, info } = await sharp(png).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+    const half = info.height / 2;
+    const y = half + Math.floor(half / 2);
+    return data[(y * info.width + (side === "left" ? Math.floor(info.width * 0.12) : Math.floor(info.width * 0.88))) * 3];
+  }
+
+  it("пишет рядом <выход>-reverse.mp4 с теми же кадрами задом наперёд и ключевым кадром не реже полсекунды", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kuznya-reverse-test-"));
+    try {
+      const output = join(dir, "out.mp4");
+      await makeVideo(makeClip(dir), output, { key: "magenta", range: parseRange("1-48"), reverse: true });
+      const reversed = reversePath(output);
+
+      assert.equal(frameInfos(output).length, 48);
+      assert.equal(frameInfos(reversed).length, 48);
+      assert.ok(await maskAt(output, 0, "left") > 200 && await maskAt(output, 0, "right") < 60, "обычный: первый кадр слева");
+      assert.ok(await maskAt(reversed, 0, "right") > 200 && await maskAt(reversed, 0, "left") < 60, "обратный: первый кадр справа");
+      assert.ok(await maskAt(reversed, 47, "left") > 200, "обратный: последний кадр слева");
+      for (const file of [output, reversed]) {
+        const keys = [...frameInfos(file).filter((info) => info.isKey).map((info) => info.number), 48];
+        keys.forEach((key, i) => i > 0 && assert.ok(key - keys[i - 1] <= 12, `${file}: ключевые кадры ${keys}`));
+      }
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("без reverse обратного файла не пишет", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "kuznya-reverse-test-"));
+    try {
+      const output = join(dir, "out.mp4");
+      await makeVideo(makeClip(dir), output, { key: "magenta", range: parseRange("1-48") });
+      assert.equal(existsSync(reversePath(output)), false);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("--reverse у выхода не .mp4 — ошибка", () => {
+    const run = spawnSync(process.execPath, [fileURLToPath(new URL("./sheet.mjs", import.meta.url)), "clip.mp4", "sheet.png", "--reverse"], { encoding: "utf8" });
+    assert.equal(run.status, 1);
+    assert.match(run.stderr, /--reverse — только с выходом \.mp4/);
   });
 });
 

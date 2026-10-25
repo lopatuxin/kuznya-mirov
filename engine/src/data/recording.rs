@@ -18,6 +18,7 @@ pub enum ReplayCommand {
     Resume,
     Quit,
     ToggleSound,
+    Exit,
     /// «Экраны и состояние» → «Команды», `run`: имя функции кода и номер объекта кнопки — строки списка или
     /// элемента с `for`, — если он был. Повтор вызывает функцию в то же место записи.
     Run(String, Option<u32>),
@@ -115,6 +116,7 @@ fn parse_command(arr: &[Json]) -> Result<ReplayCommand, String> {
         "resume" => Ok(ReplayCommand::Resume),
         "quit" => Ok(ReplayCommand::Quit),
         "toggle_sound" => Ok(ReplayCommand::ToggleSound),
+        "exit" => Ok(ReplayCommand::Exit),
         "run" => {
             let function = want_str(arr.get(1).ok_or("run без функции")?, "run[1]")?;
             let object = arr
@@ -147,6 +149,7 @@ fn command_to_json(cmd: &ReplayCommand) -> Json {
         ReplayCommand::Resume => Json::Array(vec![Json::String("resume".to_string())]),
         ReplayCommand::Quit => Json::Array(vec![Json::String("quit".to_string())]),
         ReplayCommand::ToggleSound => Json::Array(vec![Json::String("toggle_sound".to_string())]),
+        ReplayCommand::Exit => Json::Array(vec![Json::String("exit".to_string())]),
         ReplayCommand::Run(function, object) => {
             let mut arr = vec![
                 Json::String("run".to_string()),

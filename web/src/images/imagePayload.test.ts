@@ -65,6 +65,46 @@ describe("видео", () => {
     expect(payload).toEqual([{ index: 4, verdict: "missing" }]);
   });
 
+  it("fetchImageBytes читает обратный файл по reverse записи; без reverse поля reverseBytes нет, ненайденный обратный — null", async () => {
+    const bytesByPath = new Map<string, Uint8Array>([
+      ["images/a.mp4", new Uint8Array([1])],
+      ["images/a-reverse.mp4", new Uint8Array([2])],
+      ["images/b.mp4", new Uint8Array([3])],
+    ]);
+    const readBinary = async (path: string): Promise<Uint8Array | null> => bytesByPath.get(path) ?? null;
+
+    const loaded = await fetchImageBytes(
+      [
+        { index: 0, path: "images/a.mp4", reverse: "images/a-reverse.mp4" },
+        { index: 1, path: "images/b.mp4", reverse: "images/b-reverse.mp4" },
+        { index: 2, path: "images/c.png" },
+      ],
+      readBinary,
+    );
+
+    expect(loaded[0]?.reverseBytes).toEqual(new Uint8Array([2]));
+    expect(loaded[1]?.reverseBytes).toBeNull();
+    expect(loaded[2]).not.toHaveProperty("reverseBytes");
+  });
+
+  it("buildVideoPayload отдаёт обратные байты разбору видео: ответ несёт reverse", async () => {
+    const main = new FakeVideo("loadeddata", 4, 4);
+    const reverse = new FakeVideo("loadeddata", 4, 4);
+    const players = [main, reverse];
+    let made = 0;
+    vi.stubGlobal("document", {
+      createElement: (tag: string) =>
+        tag === "video"
+          ? players[made++]
+          : { width: 0, height: 0, getContext: () => ({ drawImage: vi.fn(), getImageData: (_x: number, _y: number, width: number, height: number) => ({ data: new Uint8ClampedArray(width * height * 4) }) }) },
+    } as unknown as Document);
+    vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:video");
+
+    const payload = await buildVideoPayload([{ index: 4, path: "images/a.mp4", bytes: new Uint8Array([1]), reverseBytes: new Uint8Array([2]) }]);
+
+    expect(payload[0]).toMatchObject({ index: 4, verdict: "ok", player: main, reverse: { verdict: "ok", player: reverse } });
+  });
+
   it("buildVideoPayload: сбой чтения кадра одного видео освобождает проигрыватели всех и уходит дальше", async () => {
     const players = [new FakeVideo("loadeddata", 4, 4), new FakeVideo("loadeddata", 4, 4)];
     let made = 0;

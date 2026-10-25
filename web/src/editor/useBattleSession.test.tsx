@@ -244,3 +244,56 @@ describe("useBattleSession: свойства частиц на ходу", () => 
     expect(session.current.canUndoLiveEdit).toBe(false);
   });
 });
+
+describe("useBattleSession: команда exit", () => {
+  let engine: FakeBattleEngine;
+  let session: { current: BattleSessionState };
+  let frameCallback: FrameRequestCallback | null;
+
+  beforeEach(() => {
+    frameCallback = null;
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
+      frameCallback = callback;
+      return 1;
+    });
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    engine = createFakeBattleEngine();
+    session = renderSession(engine);
+    act(() => session.current.play());
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("tick вернул exit — партия останавливается как «Стоп»: engine.stop и режим правки", () => {
+    vi.mocked(engine.tick).mockReturnValueOnce({ running: false, exit: true });
+
+    act(() => frameCallback?.(0));
+
+    expect(engine.stop).toHaveBeenCalledTimes(1);
+    expect(session.current.mode).toBe("edit");
+    expect(session.current.isRunning).toBe(false);
+  });
+
+  it("step вернул exit — партия останавливается как «Стоп»", () => {
+    vi.mocked(engine.step).mockReturnValueOnce({ running: false, exit: true });
+
+    act(() => session.current.step());
+
+    expect(engine.stop).toHaveBeenCalledTimes(1);
+    expect(session.current.mode).toBe("edit");
+  });
+
+  it("seek и step_back в повторе, вернувшие exit, останавливают партию, не трогая паузу мира", () => {
+    act(() => session.current.startReplay());
+    engine.seekMock.mockReturnValueOnce({ running: false, exit: true });
+
+    act(() => session.current.seek(3));
+
+    expect(engine.stop).toHaveBeenCalledTimes(1);
+    expect(engine.pause).not.toHaveBeenCalled();
+    expect(session.current.mode).toBe("edit");
+  });
+});

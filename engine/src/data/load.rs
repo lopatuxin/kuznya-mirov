@@ -2632,6 +2632,8 @@ pub struct ImageDecl {
     /// «Картинки» → «Видео»: `path` на `.mp4` — видео двойной высоты (цвет сверху, маска снизу), а
     /// не картинка; кадров, столбцов и `frame_by` у него нет.
     pub video: bool,
+    /// «Картинки» → «Видео на панели»: путь на `.mp4` с тем же роликом задом наперёд; бывает только у видео.
+    pub reverse: Option<String>,
     /// «Картинки» → «Растягивание рамки»: поля `[слева, сверху, справа, снизу]` в точках картинки — у
     /// панели, кнопки и шкалы экрана она тянется девятью кусками.
     pub slice: Option<[u32; 4]>,
@@ -2676,9 +2678,26 @@ pub enum ImageVerdict {
         height: u32,
         pixels: Vec<u8>,
     },
+    /// `seconds` — длина ролика; `reverse` — ответ по файлу `reverse` его описания, `None` — страница его
+    /// не присылала.
     Video {
         width: u32,
         height: u32,
+        seconds: f64,
+        reverse: Option<ReverseVerdict>,
+    },
+    Missing,
+    Rejected,
+}
+
+/// Ответ страницы по файлу `reverse` видео — «Картинки» → «Видео на панели»: размер файла, оба слоя вместе,
+/// и длина ролика в секундах.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ReverseVerdict {
+    Ok {
+        width: u32,
+        height: u32,
+        seconds: f64,
     },
     Missing,
     Rejected,
@@ -2717,6 +2736,8 @@ pub struct NeededMedia {
     pub sounds: Vec<(String, String)>,
     pub music: Vec<(String, String)>,
     pub images: Vec<(String, String)>,
+    /// `(имя видео, путь его reverse)` — «Картинки» → «Видео на панели»: страница читает и этот файл.
+    pub reverses: Vec<(String, String)>,
     /// Пути карт всех материалов: материал за материалом, в каждом `color`, `normal`, `roughness`,
     /// `height`, `ao`.
     pub materials: Vec<String>,
@@ -2847,6 +2868,12 @@ pub fn read_texts(
             .images
             .iter()
             .map(|decl| (decl.name.clone(), decl.path.clone()))
+            .collect(),
+        reverses: config
+            .files
+            .images
+            .iter()
+            .filter_map(|decl| Some((decl.name.clone(), decl.reverse.clone()?)))
             .collect(),
         // «Свет и материалы»: каждая карта каждого материала и каждая маска покрытий.
         materials: config
@@ -3496,6 +3523,7 @@ fn parse_images_table(
                 "smooth",
                 "glow",
                 "slice",
+                "reverse",
             ],
             file,
             &entry_path,
@@ -3524,6 +3552,9 @@ fn parse_images_table(
         if video && reject_video_frame_keys(decl_obj, file, &entry_path, errors) {
             continue;
         }
+        let Some(reverse) = parse_reverse(decl_obj, video, file, &entry_path, errors) else {
+            continue;
+        };
         let frame_by_json = decl_obj.get("frame_by");
         // «Картинки», требование 23: `frame_by` требует `frames`; вместе с `frame_time` —
         // ошибка. Имя свойства разрешается позже, в `resolve_image_frame_by`, once
@@ -3721,6 +3752,7 @@ fn parse_images_table(
                 .and_then(Json::as_f64)
                 .unwrap_or(0.0),
             video,
+            reverse,
             slice,
         });
     }
@@ -3775,6 +3807,41 @@ fn parse_slice(
 
 /// «Картинки» → «Видео»: путь на такое окончание — видео, а не PNG.
 const VIDEO_EXTENSION: &str = ".mp4";
+
+/// «Картинки» → «Видео на панели»: `reverse` — путь на `.mp4` с тем же роликом задом наперёд, только у видео.
+/// Внешний `None` — ошибка уже названа.
+fn parse_reverse(
+    decl_obj: &serde_json::Map<String, Json>,
+    video: bool,
+    file: &str,
+    entry_path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<String>> {
+    let Some(value) = decl_obj.get("reverse") else {
+        return Some(None);
+    };
+    let path = join(entry_path, "reverse");
+    if !video {
+        errors.push(
+            file,
+            &path,
+            "reverse — тот же ролик задом наперёд: у картинки PNG его не бывает, только у видео",
+        );
+        return None;
+    }
+    let reverse = expect_string(value, file, &path, errors)?;
+    if !reverse.to_ascii_lowercase().ends_with(VIDEO_EXTENSION) {
+        errors.push(
+            file,
+            &path,
+            format!(
+                "{reverse} — reverse берёт MP4; путь должен оканчиваться на \"{VIDEO_EXTENSION}\""
+            ),
+        );
+        return None;
+    }
+    Some(Some(reverse))
+}
 
 /// «Картинки» → «Видео»: у видео нет `frames`, `columns`, `frame_time` и `frame_by` — его кадры это
 /// кадры ролика. Каждый названный ключ — своя ошибка; `true`, если хоть один назван.
@@ -7406,6 +7473,7 @@ enum ParsedCommand {
     Resume,
     Quit,
     ToggleSound,
+    Exit,
     /// Имя функции кода, ещё не сверенное с файлом кода — `resolve_on_click` сверяет.
     Run(String),
 }
@@ -7496,6 +7564,7 @@ fn parse_button_command(
         }
         "resume" => want_args(1, errors).then_some(ParsedCommand::Resume),
         "quit" => want_args(1, errors).then_some(ParsedCommand::Quit),
+        "exit" => want_args(1, errors).then_some(ParsedCommand::Exit),
         "toggle_sound" => {
             if arr.len() != 1 {
                 errors.push(
@@ -7531,6 +7600,8 @@ enum ParsedElementData {
         image_scale: Option<f32>,
         tooltip: Option<Vec<TextPart>>,
         for_: Option<Selector>,
+        hover: HoverFields,
+        rest_at: Option<f32>,
     },
     /// «Шкала»: в коробке, как кнопка, — вид элемента не раздувается.
     Bar(Box<ParsedBar>),
@@ -7543,6 +7614,7 @@ enum ParsedElementData {
         align: Align,
         wrap: bool,
         for_: Option<Selector>,
+        hover: HoverFields,
     },
     Button {
         placement: Placement,
@@ -7564,6 +7636,7 @@ enum ParsedElementData {
         on_click: ParsedCommand,
         /// В коробке: кнопка — самый большой вид элемента.
         for_: Option<Box<Selector>>,
+        hover: HoverFields,
     },
     List {
         placement: Placement,
@@ -7599,6 +7672,10 @@ const PANEL_KEYS: &[&str] = &[
     "image_scale",
     "tooltip",
     "for",
+    "name",
+    "show_on_hover",
+    "play_on_hover",
+    "rest_at",
 ];
 const BAR_KEYS: &[&str] = &[
     "kind",
@@ -7614,6 +7691,9 @@ const BAR_KEYS: &[&str] = &[
     "back_image",
     "image_scale",
     "tooltip",
+    "name",
+    "show_on_hover",
+    "play_on_hover",
 ];
 const LABEL_KEYS: &[&str] = &[
     "kind",
@@ -7627,6 +7707,9 @@ const LABEL_KEYS: &[&str] = &[
     "align",
     "wrap",
     "for",
+    "name",
+    "show_on_hover",
+    "play_on_hover",
 ];
 const BUTTON_KEYS: &[&str] = &[
     "kind",
@@ -7648,6 +7731,9 @@ const BUTTON_KEYS: &[&str] = &[
     "tooltip",
     "on_click",
     "for",
+    "name",
+    "show_on_hover",
+    "play_on_hover",
 ];
 const LIST_KEYS: &[&str] = &[
     "kind",
@@ -7661,7 +7747,111 @@ const LIST_KEYS: &[&str] = &[
     "descending",
     "row",
     "scroll_color",
+    "name",
+    "show_on_hover",
+    "play_on_hover",
 ];
+
+/// «Наведение»: `name`, `show_on_hover` и `play_on_hover` одного элемента, места ещё по именам.
+#[derive(Debug, Clone, Default)]
+struct HoverFields {
+    name: Option<String>,
+    show_on_hover: Option<String>,
+    play_on_hover: Option<String>,
+}
+
+/// Вид элемента, у которого разбираются поля наведения.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HoverOwner {
+    Panel,
+    Label,
+    Button,
+    Bar,
+    List,
+}
+
+impl HoverOwner {
+    fn genitive(self) -> &'static str {
+        match self {
+            HoverOwner::Panel => "панели",
+            HoverOwner::Label => "надписи",
+            HoverOwner::Button => "кнопки",
+            HoverOwner::Bar => "шкалы",
+            HoverOwner::List => "списка",
+        }
+    }
+}
+
+/// «Наведение»: разбирает `name`, `show_on_hover` и `play_on_hover` элемента `owner`. `name` бывает у панели
+/// и кнопки, `show_on_hover` — у панели и надписи, `play_on_hover` — у панели; все три — только у элемента
+/// самого экрана, `name` — ещё и без отбора `for`. Внешний `None` — ошибка уже названа.
+fn parse_hover_fields(
+    obj: &serde_json::Map<String, Json>,
+    owner: HoverOwner,
+    scope: Scope,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<HoverFields> {
+    let mut fields = HoverFields::default();
+    let mut ok = true;
+    for (key, allowed, who) in [
+        (
+            "name",
+            matches!(owner, HoverOwner::Panel | HoverOwner::Button),
+            "место наведения бывает только у панели и кнопки",
+        ),
+        (
+            "show_on_hover",
+            matches!(owner, HoverOwner::Panel | HoverOwner::Label),
+            "показ по наведению бывает только у панели и надписи",
+        ),
+        (
+            "play_on_hover",
+            owner == HoverOwner::Panel,
+            "видео по наведению играет только панель",
+        ),
+    ] {
+        let Some(value) = obj.get(key) else {
+            continue;
+        };
+        let key_path = join(path, key);
+        let problem = if !allowed {
+            Some(format!("у {} нет \"{key}\": {who}", owner.genitive()))
+        } else if scope == Scope::Row {
+            Some(format!(
+                "у элемента строки списка нет \"{key}\": место наведения — элемент самого экрана"
+            ))
+        } else if key == "name" && obj.contains_key("for") {
+            Some(
+                "у элемента с for нет \"name\": место наведения стоит на экране всегда, а не при объекте"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        if let Some(problem) = problem {
+            errors.push(file, &key_path, problem);
+            ok = false;
+            continue;
+        }
+        let Some(text) = expect_string(value, file, &key_path, errors) else {
+            ok = false;
+            continue;
+        };
+        if text.is_empty() {
+            errors.push(file, &key_path, format!("\"{key}\" не может быть пустым"));
+            ok = false;
+            continue;
+        }
+        match key {
+            "name" => fields.name = Some(text),
+            "show_on_hover" => fields.show_on_hover = Some(text),
+            _ => fields.play_on_hover = Some(text),
+        }
+    }
+    ok.then_some(fields)
+}
 
 /// «Картинки» → «Где появляется картинка»: a panel or button must show exactly one of `color`/
 /// `image`, never both and never neither — checked once here for the two element kinds that can
@@ -7700,6 +7890,30 @@ fn parse_opacity(
             Some(Some(n as f32))
         }
     }
+}
+
+/// «Видео на панели»: `rest_at` — секунда ролика, число не меньше нуля; верхнюю границу — длину ролика —
+/// проверяет `validate_rest_at`, когда страница ответила по файлу. Внешний `None` — ошибка уже названа.
+fn parse_rest_at(
+    obj: &serde_json::Map<String, Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<f32>> {
+    let Some(v) = obj.get("rest_at") else {
+        return Some(None);
+    };
+    let rest_path = join(path, "rest_at");
+    let n = expect_number(v, file, &rest_path, errors)?;
+    if n < 0.0 {
+        errors.push(
+            file,
+            &rest_path,
+            format!("свойство \"rest_at\" не может быть отрицательным, получено {n}"),
+        );
+        return None;
+    }
+    Some(Some(n as f32))
 }
 
 /// «Картинки» → «Растягивание рамки»: `image_scale` — число больше нуля, только у элемента с картинкой.
@@ -8102,6 +8316,7 @@ fn parse_element(
     match kind.as_str() {
         "panel" => {
             reject_unknown_keys(obj, PANEL_KEYS, file, path, errors);
+            let hover = parse_hover_fields(obj, HoverOwner::Panel, scope, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
             let color = match obj.get("color") {
@@ -8116,6 +8331,7 @@ fn parse_element(
             let opacity = parse_opacity(obj, file, path, errors)?;
             validate_opacity_has_image(image_name.is_some(), opacity.is_some(), file, path, errors);
             let image_scale = parse_image_scale(obj, image_name.is_some(), file, path, errors)?;
+            let rest_at = parse_rest_at(obj, file, path, errors);
             let own = scope == Scope::Row || for_.is_some();
             let tooltip = parse_tooltip(obj, context, own, file, path, errors)?;
             // «Элемент при объекте»: `{свойство}` в `image` — только у панели, у которой есть объект.
@@ -8148,10 +8364,13 @@ fn parse_element(
                 image_scale,
                 tooltip,
                 for_,
+                hover: hover?,
+                rest_at: rest_at?,
             })
         }
         "label" => {
             reject_unknown_keys(obj, LABEL_KEYS, file, path, errors);
+            let hover = parse_hover_fields(obj, HoverOwner::Label, scope, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
             let text_json = require_field(obj, "text", file, path, errors)?;
@@ -8199,10 +8418,12 @@ fn parse_element(
                 align,
                 wrap,
                 for_,
+                hover: hover?,
             })
         }
         "button" => {
             reject_unknown_keys(obj, BUTTON_KEYS, file, path, errors);
+            let hover = parse_hover_fields(obj, HoverOwner::Button, scope, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
             let text_json = require_field(obj, "text", file, path, errors)?;
@@ -8318,10 +8539,19 @@ fn parse_element(
                 tooltip,
                 on_click,
                 for_: for_.map(Box::new),
+                hover: hover?,
             })
         }
-        "bar" => parse_bar(obj, scope, context, file, path, errors),
-        "list" if scope == Scope::Screen => parse_list(obj, path, file, context, errors),
+        "bar" => {
+            let hover = parse_hover_fields(obj, HoverOwner::Bar, scope, file, path, errors);
+            let bar = parse_bar(obj, scope, context, file, path, errors);
+            hover.and(bar)
+        }
+        "list" if scope == Scope::Screen => {
+            let hover = parse_hover_fields(obj, HoverOwner::List, scope, file, path, errors);
+            let list = parse_list(obj, path, file, context, errors);
+            hover.and(list)
+        }
         "list" => {
             errors.push(
                 file,
@@ -8865,6 +9095,7 @@ fn resolve_on_click(
         ParsedCommand::Resume => Some(ButtonCommand::Resume),
         ParsedCommand::Quit => Some(ButtonCommand::Quit),
         ParsedCommand::ToggleSound => Some(ButtonCommand::ToggleSound),
+        ParsedCommand::Exit => Some(ButtonCommand::Exit),
         ParsedCommand::Run(function) => runs
             .add(function, origin, file, path, errors)
             .map(ButtonCommand::Run),
@@ -8940,7 +9171,9 @@ fn resolve_fill(
                 errors.push(
                     file,
                     image_path,
-                    format!("\"{name}\" объявлена видео: панель и кнопка её не берут"),
+                    format!(
+                        "\"{name}\" объявлена видео: панель и кнопка её не берут; панель берёт видео только с play_on_hover"
+                    ),
                 );
                 return None;
             }
@@ -8974,6 +9207,98 @@ fn resolve_fill(
     }
 }
 
+/// «Наведение»: имена мест наведения одного экрана и номера их элементов.
+type HoverPlaces = std::collections::HashMap<String, usize>;
+
+/// «Наведение»: места наведения экрана — панели и кнопки с `name`. Имя единственное на экране.
+fn screen_hover_places(
+    screen: &ParsedScreen,
+    elements_path: &str,
+    file: &str,
+    errors: &mut ErrorSink,
+) -> HoverPlaces {
+    let mut places = HoverPlaces::new();
+    for (index, data) in screen.elements.iter().enumerate() {
+        let name = match data {
+            ParsedElementData::Panel { hover, .. } | ParsedElementData::Button { hover, .. } => {
+                hover.name.as_deref()
+            }
+            _ => None,
+        };
+        let Some(name) = name else {
+            continue;
+        };
+        if places.insert(name.to_string(), index).is_some() {
+            errors.push(
+                file,
+                &join(&join(elements_path, &format!("[{index}]")), "name"),
+                format!(
+                    "имя места наведения \"{name}\" повторяется на экране \"{}\": имя единственное на экране",
+                    screen.name
+                ),
+            );
+        }
+    }
+    places
+}
+
+/// «Наведение»: место, названное в `key` (`show_on_hover` или `play_on_hover`) элемента по пути `path`.
+/// `Some(None)` — поля нет, внешний `None` — места с таким именем на экране нет, ошибка названа.
+fn resolve_hover_place(
+    name: Option<&str>,
+    key: &str,
+    places: &HoverPlaces,
+    screen_name: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<usize>> {
+    let Some(name) = name else {
+        return Some(None);
+    };
+    match places.get(name) {
+        Some(&index) => Some(Some(index)),
+        None => {
+            errors.push(
+                file,
+                &join(path, key),
+                format!(
+                    "на экране \"{screen_name}\" нет места наведения \"{name}\": name есть у панели или кнопки этого экрана"
+                ),
+            );
+            None
+        }
+    }
+}
+
+/// «Видео на панели»: заливка панели с `play_on_hover` — видео `image`; у видео панели в `files.images`
+/// обязателен `reverse`.
+fn resolve_panel_video(
+    image: ImageId,
+    opacity: Option<f32>,
+    images: &[ImageDecl],
+    file: &str,
+    image_path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Fill> {
+    let decl = &images[image];
+    if decl.reverse.is_none() {
+        errors.push(
+            file,
+            image_path,
+            format!(
+                "видео \"{}\" играет панель, а в files.images у него нет reverse: нужен путь к тому же ролику задом наперёд",
+                decl.name
+            ),
+        );
+        return None;
+    }
+    Some(Fill::Image {
+        image,
+        opacity: opacity.unwrap_or(1.0),
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_element(
     data: &ParsedElementData,
@@ -8987,6 +9312,7 @@ fn resolve_element(
     scene_names: &std::collections::HashSet<&str>,
     name_to_id: &std::collections::HashMap<String, ScreenId>,
     parsed_screens: &[ParsedScreen],
+    places: &HoverPlaces,
     initial_values_table: &mut Vec<Vec<(String, PropertyId, Value)>>,
     runs: &mut RunTable<'_>,
     errors: &mut ErrorSink,
@@ -9001,36 +9327,86 @@ fn resolve_element(
             image_scale,
             tooltip,
             for_,
+            hover,
+            rest_at,
         } => {
-            let fill = match own_image {
-                Some(property) => Some(PanelFill::Own {
+            let image_path = join(path, "image");
+            let show_on_hover = resolve_hover_place(
+                hover.show_on_hover.as_deref(),
+                "show_on_hover",
+                places,
+                screen_name,
+                file,
+                path,
+                errors,
+            );
+            let play_on_hover = resolve_hover_place(
+                hover.play_on_hover.as_deref(),
+                "play_on_hover",
+                places,
+                screen_name,
+                file,
+                path,
+                errors,
+            );
+            let video = image_name.as_deref().and_then(|name| {
+                images
+                    .iter()
+                    .position(|decl| decl.video && decl.name == name)
+            });
+            let fill = match (own_image, video) {
+                (Some(property), _) => Some(PanelFill::Own {
                     image: ImageRef::Own {
                         property: *property,
                         names: images.iter().map(|decl| decl.name.clone()).collect(),
                     },
                     opacity: opacity.unwrap_or(1.0),
                 }),
-                None => resolve_fill(
+                (None, Some(image)) if hover.play_on_hover.is_some() => {
+                    resolve_panel_video(image, *opacity, images, file, &image_path, errors)
+                        .map(PanelFill::Fixed)
+                }
+                (None, _) => resolve_fill(
                     *color,
                     image_name.as_deref(),
                     *opacity,
                     None,
                     images,
                     file,
-                    &join(path, "image"),
+                    &image_path,
                     errors,
                 )
                 .map(PanelFill::Fixed),
             };
+            let plays_nothing = hover.play_on_hover.is_some() && video.is_none();
+            if plays_nothing {
+                errors.push(
+                    file,
+                    &join(path, "play_on_hover"),
+                    "play_on_hover у панели без видео: играть нечего, в image нужна картинка, объявленная в files.images путём на .mp4",
+                );
+            }
+            let rests_nowhere = rest_at.is_some() && video.is_none();
+            if rests_nowhere {
+                errors.push(
+                    file,
+                    &join(path, "rest_at"),
+                    "rest_at у панели без видео: позы покоя нет, в image нужна картинка, объявленная в files.images путём на .mp4",
+                );
+            }
             let tooltip_ok =
                 validate_tooltip_refs(tooltip, scene_names, file, scene_file, path, errors);
-            let fill = fill?;
-            tooltip_ok.then(|| Element::Panel {
+            let (fill, show_on_hover, play_on_hover) = (fill?, show_on_hover?, play_on_hover?);
+            (tooltip_ok && !plays_nothing && !rests_nowhere).then(|| Element::Panel {
                 placement: *placement,
                 fill,
                 image_scale: image_scale.unwrap_or(1.0),
                 tooltip: tooltip.clone(),
                 for_: for_.clone(),
+                name: hover.name.clone(),
+                show_on_hover,
+                play_on_hover,
+                rest_at: *rest_at,
             })
         }
         ParsedElementData::Bar(bar) => {
@@ -9045,7 +9421,17 @@ fn resolve_element(
             align,
             wrap,
             for_,
+            hover,
         } => {
+            let show_on_hover = resolve_hover_place(
+                hover.show_on_hover.as_deref(),
+                "show_on_hover",
+                places,
+                screen_name,
+                file,
+                path,
+                errors,
+            );
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
             let text_ok = validate_text_refs(
                 text,
@@ -9055,7 +9441,7 @@ fn resolve_element(
                 &join(path, "text"),
                 errors,
             );
-            let font = font?;
+            let (font, show_on_hover) = (font?, show_on_hover?);
             if !text_ok {
                 return None;
             }
@@ -9068,6 +9454,7 @@ fn resolve_element(
                 align: *align,
                 wrap: *wrap,
                 for_: for_.clone(),
+                show_on_hover,
             })
         }
         ParsedElementData::Button {
@@ -9088,6 +9475,7 @@ fn resolve_element(
             tooltip,
             on_click,
             for_,
+            hover,
         } => {
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
             let tooltip_ok =
@@ -9163,6 +9551,7 @@ fn resolve_element(
                 tooltip: tooltip.clone(),
                 on_click,
                 for_: for_.as_deref().cloned(),
+                name: hover.name.clone(),
             })
         }
         ParsedElementData::List {
@@ -9192,6 +9581,7 @@ fn resolve_element(
                         scene_names,
                         name_to_id,
                         parsed_screens,
+                        places,
                         initial_values_table,
                         runs,
                         errors,
@@ -9972,6 +10362,7 @@ fn resolve_screens(
         .iter()
         .map(|screen| {
             let elements_path = join(&screen.path, "elements");
+            let places = screen_hover_places(screen, &elements_path, file, errors);
             let elements = screen
                 .elements
                 .iter()
@@ -9989,6 +10380,7 @@ fn resolve_screens(
                         &scene_names,
                         &name_to_id,
                         parsed,
+                        &places,
                         &mut initial_values,
                         &mut runs,
                         errors,
@@ -10122,6 +10514,7 @@ fn resolve_screens(
                 ButtonCommand::Resume
                 | ButtonCommand::Quit
                 | ButtonCommand::ToggleSound
+                | ButtonCommand::Exit
                 | ButtonCommand::Run(_) => {}
             }
         }
@@ -10486,9 +10879,15 @@ fn validate_video_file(
     errors: &mut ErrorSink,
 ) {
     let message = match verdict {
-        Some(ImageVerdict::Video { width, height }) => {
-            video_size_problem(&decl.path, *width, *height)
-        }
+        Some(ImageVerdict::Video {
+            width,
+            height,
+            seconds,
+            reverse,
+        }) => video_size_problem(&decl.path, *width, *height).or_else(|| {
+            let reverse_path = decl.reverse.as_deref()?;
+            reverse_problem(reverse_path, [*width, *height], *seconds, reverse.as_ref())
+        }),
         Some(ImageVerdict::Ok { .. }) => Some(format!(
             "{} — страница ответила картинкой, а объявлено видео",
             decl.path
@@ -10504,6 +10903,46 @@ fn validate_video_file(
     };
     if let Some(message) = message {
         errors.push("game.json", field_path, message);
+    }
+}
+
+/// Насколько файл `reverse` может быть длиннее или короче ролика: один кадр при 24 кадрах в секунду, как у
+/// роликов, которые режет `tools/art`.
+const REVERSE_LENGTH_SLACK_SECONDS: f64 = 1.0 / 24.0 + 1e-6;
+
+/// «Картинки» → «Видео на панели»: что не так с файлом `reverse` видео размера `size` и длины `seconds`:
+/// его нет или браузер не играет его, он другого размера, длиннее или короче больше чем на кадр.
+fn reverse_problem(
+    path: &str,
+    size: [u32; 2],
+    seconds: f64,
+    verdict: Option<&ReverseVerdict>,
+) -> Option<String> {
+    match verdict {
+        Some(ReverseVerdict::Ok {
+            width,
+            height,
+            seconds: reverse_seconds,
+        }) => {
+            if [*width, *height] != size {
+                Some(format!(
+                    "{path} — reverse размером {width}×{height}, а ролик {}×{}: обратный файл должен быть того же размера",
+                    size[0], size[1]
+                ))
+            } else if (reverse_seconds - seconds).abs() > REVERSE_LENGTH_SLACK_SECONDS {
+                Some(format!(
+                    "{path} — reverse длиной {reverse_seconds:.3} с, а ролик {seconds:.3} с: обратный файл не должен отличаться по длине больше чем на кадр"
+                ))
+            } else {
+                None
+            }
+        }
+        Some(ReverseVerdict::Rejected) => Some(format!(
+            "{path} — исполнитель (браузер) не берётся играть этот reverse"
+        )),
+        Some(ReverseVerdict::Missing) | None => Some(format!(
+            "файл reverse \"{path}\" не найден; ожидалось видео MP4 — тот же ролик задом наперёд"
+        )),
     }
 }
 
@@ -10734,6 +11173,120 @@ fn collect_used_images(
         }
     }
     used
+}
+
+/// «Картинки» → «Видео на панели»: одно видео — на одной панели. Видео панели с `play_on_hover`, которое
+/// называет ещё и другая панель, объект мира, картинка над объектом или земля, — ошибка использования.
+#[allow(clippy::too_many_arguments)]
+fn validate_panel_videos(
+    images: &[ImageDecl],
+    scene: &[ParsedObject],
+    rules: &RuleSet,
+    screens: &[Screen],
+    world_elements: &[WorldElement],
+    ground: &[GroundLayer],
+    screens_file: &str,
+    errors: &mut ErrorSink,
+) {
+    let outside_screens = collect_used_images(scene, rules, &[], world_elements, ground, images);
+    let mut played = std::collections::HashSet::new();
+    for (screen_index, screen) in screens.iter().enumerate() {
+        for (element_index, element) in screen.elements.iter().enumerate() {
+            let Element::Panel {
+                fill: PanelFill::Fixed(Fill::Image { image, .. }),
+                play_on_hover: Some(_),
+                ..
+            } = element
+            else {
+                continue;
+            };
+            let path = format!("screens[{screen_index}].elements[{element_index}].image");
+            let name = &images[*image].name;
+            if outside_screens.contains(image) {
+                errors.push(
+                    screens_file,
+                    &path,
+                    format!(
+                        "видео \"{name}\" играет панель, а его называет ещё и объект мира, картинка над объектом или земля: одно видео — на одной панели"
+                    ),
+                );
+            } else if !played.insert(*image) {
+                errors.push(
+                    screens_file,
+                    &path,
+                    format!(
+                        "видео \"{name}\" уже играет другая панель: одно видео — на одной панели"
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// «Картинки» → «Видео на панели»: `rest_at` панели не длиннее её ролика; длину называет ответ страницы по
+/// файлу. Ролик без ответа уже назван ошибкой файла.
+fn validate_rest_at(
+    screens: &[Screen],
+    images: &[ImageDecl],
+    image_data: &[(String, ImageVerdict)],
+    screens_file: &str,
+    errors: &mut ErrorSink,
+) {
+    for (screen_index, screen) in screens.iter().enumerate() {
+        for (element_index, element) in screen.elements.iter().enumerate() {
+            let Element::Panel {
+                fill: PanelFill::Fixed(Fill::Image { image, .. }),
+                rest_at: Some(rest_at),
+                ..
+            } = element
+            else {
+                continue;
+            };
+            let name = &images[*image].name;
+            let Some((_, ImageVerdict::Video { seconds, .. })) =
+                image_data.iter().find(|(n, _)| n == name)
+            else {
+                continue;
+            };
+            if *rest_at > *seconds as f32 {
+                errors.push(
+                    screens_file,
+                    &format!("screens[{screen_index}].elements[{element_index}].rest_at"),
+                    format!(
+                        "rest_at {rest_at} с длиннее ролика \"{name}\" в {seconds:.3} с: поза покоя лежит внутри ролика"
+                    ),
+                );
+            }
+        }
+    }
+}
+
+/// «Наведение»: предупреждение (игра идёт) о месте наведения, на которое не откликается ни один элемент
+/// того же экрана — ни `show_on_hover`, ни `play_on_hover` с его именем.
+fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: &mut ErrorSink) {
+    for (screen_index, screen) in screens.iter().enumerate() {
+        let answered: std::collections::HashSet<usize> = screen
+            .elements
+            .iter()
+            .flat_map(|element| [element.show_on_hover(), element.play_on_hover()])
+            .flatten()
+            .collect();
+        for (element_index, element) in screen.elements.iter().enumerate() {
+            let Some(name) = element.place_name() else {
+                continue;
+            };
+            if !answered.contains(&element_index) {
+                errors.push_warning(
+                    screens_file,
+                    &format!("screens[{screen_index}].elements[{element_index}].name"),
+                    format!(
+                        "место наведения \"{name}\" на экране \"{}\": на него не откликается ни один элемент; ожидался show_on_hover или play_on_hover с этим именем",
+                        screen.name
+                    ),
+                );
+            }
+        }
+    }
 }
 
 /// «Картинки»: предупреждение (игра идёт), если объявленная картинка не встречается ни на одном
@@ -11495,6 +12048,7 @@ pub fn load_rest_with_models(
             &mut errors,
         );
         warn_row_elements_outside_row(screens_for_usage, &config.files.screens, &mut errors);
+        warn_unanswered_hover_places(screens_for_usage, &config.files.screens, &mut errors);
         validate_unused_sounds(&config.files.sounds, &rules, code_json, &mut errors);
         validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
         validate_unused_tables(&config.files.tables, code_json, &mut errors);
@@ -11547,6 +12101,25 @@ pub fn load_rest_with_models(
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {
             validate_toggle_sound_presence(&rules, &sc.screens, &config.files.screens, &mut errors);
+            validate_panel_videos(
+                &config.files.images,
+                &scene_objects,
+                &rules,
+                &sc.screens,
+                &world_elements,
+                &ground,
+                &config.files.screens,
+                &mut errors,
+            );
+            if !skip_media_validation {
+                validate_rest_at(
+                    &sc.screens,
+                    &config.files.images,
+                    image_data,
+                    &config.files.screens,
+                    &mut errors,
+                );
+            }
             validate_unused_images(
                 &config.files.images,
                 &scene_objects,

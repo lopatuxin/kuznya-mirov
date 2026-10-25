@@ -29,7 +29,12 @@ fn game_json(scene_extra: &str, files_extra: &str) -> String {
 
 /// Файл видео двойной высоты: оба слоя вместе.
 fn video(width: u32, height: u32) -> ImageVerdict {
-    ImageVerdict::Video { width, height }
+    ImageVerdict::Video {
+        width,
+        height,
+        seconds: 1.0,
+        reverse: None,
+    }
 }
 
 fn picture(width: u32, height: u32) -> ImageVerdict {

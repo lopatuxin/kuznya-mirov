@@ -5,11 +5,18 @@
 export type VideoFirstFrame = { width: number; height: number; pixels: Uint8Array };
 
 /**
+ * Ответ по файлу `reverse` видео панели: проигрыватель только при `ok`. Размер и длину файла движок читает у самого
+ * проигрывателя и сверяет с обычным сам («Картинки» → «Видео на панели»).
+ */
+export type DecodedReverseVideo = { verdict: "ok"; player: HTMLVideoElement } | { verdict: "missing" | "rejected" };
+
+/**
  * Ровно то, что «load» ждёт по одному видео: при `ok` размер файла (оба слоя вместе) и проигрыватель,
- * при `missing`/`rejected` движок эти поля не читает. Из `frame` движку уходят только точки.
+ * при `missing`/`rejected` движок эти поля не читает. Из `frame` движку уходят только точки. `reverse` есть только у
+ * видео, объявленного с `reverse`.
  */
 export type DecodedVideo =
-  | { verdict: "ok"; width: number; height: number; player: HTMLVideoElement; frame: VideoFirstFrame }
+  | { verdict: "ok"; width: number; height: number; player: HTMLVideoElement; frame: VideoFirstFrame; reverse?: DecodedReverseVideo }
   | { verdict: "missing" | "rejected" };
 
 const RED_WEIGHT = 0.299;
@@ -45,9 +52,18 @@ export function releaseVideoPlayer(player: HTMLVideoElement): void {
   URL.revokeObjectURL(url);
 }
 
-/** Освобождает проигрыватели тех видео, что браузер взялся играть. */
+/** Освобождает проигрыватель обратного файла, если браузер взялся его играть. */
+function releaseReverseVideo(reverse: DecodedReverseVideo | undefined): void {
+  if (reverse?.verdict === "ok") releaseVideoPlayer(reverse.player);
+}
+
+/** Освобождает проигрыватели тех видео, что браузер взялся играть, — и обычные, и обратные. */
 export function releaseDecodedVideos(videos: readonly DecodedVideo[]): void {
-  for (const video of videos) if (video.verdict === "ok") releaseVideoPlayer(video.player);
+  for (const video of videos) {
+    if (video.verdict !== "ok") continue;
+    releaseVideoPlayer(video.player);
+    releaseReverseVideo(video.reverse);
+  }
 }
 
 /**
@@ -101,15 +117,8 @@ function readFirstFrame(player: HTMLVideoElement): VideoFirstFrame | null {
   return composeFirstFrame(context.getImageData(0, 0, width, height).data, width, height);
 }
 
-/**
- * `bytes === null` — файл не нашёлся, это `missing`. Иначе байты становятся Blob-адресом проигрывателя без звука,
- * по кругу, не показанного на странице; он ждёт первый кадр, и если браузер вместо него отдал ошибку или не ответил
- * за `FIRST_FRAME_WAIT_MS` — это `rejected`.
- * Играть и ставить на паузу проигрыватель будет сам движок.
- */
-export async function decodeVideo(bytes: Uint8Array | null): Promise<DecodedVideo> {
-  if (bytes === null) return { verdict: "missing" };
-
+/** Проигрыватель без звука, по кругу, не показанный на странице, на Blob-адресе байтов; `hasFirstFrame` — дождался ли он первого кадра. */
+function openVideoPlayer(bytes: Uint8Array): { player: HTMLVideoElement; hasFirstFrame: Promise<boolean> } {
   const player = document.createElement("video");
   player.muted = true;
   player.loop = true;
@@ -117,6 +126,36 @@ export async function decodeVideo(bytes: Uint8Array | null): Promise<DecodedVide
   player.preload = "auto";
   const hasFirstFrame = waitForFirstFrame(player);
   player.src = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "video/mp4" }));
+  return { player, hasFirstFrame };
+}
+
+/**
+ * Обратный файл видео панели: проигрыватель такой же, как у основного видео, и тоже с первым кадром, но точки кадра
+ * не читаются — ими покрашен только обычный файл. `null` — файл не нашёлся, это `missing`.
+ */
+export async function decodeReverseVideo(bytes: Uint8Array | null): Promise<DecodedReverseVideo> {
+  if (bytes === null) return { verdict: "missing" };
+  const { player, hasFirstFrame } = openVideoPlayer(bytes);
+  if (!(await hasFirstFrame)) {
+    releaseVideoPlayer(player);
+    return { verdict: "rejected" };
+  }
+  return { verdict: "ok", player };
+}
+
+/**
+ * `bytes === null` — файл не нашёлся, это `missing`. Иначе байты становятся Blob-адресом проигрывателя без звука,
+ * по кругу, не показанного на странице; он ждёт первый кадр, и если браузер вместо него отдал ошибку или не ответил
+ * за `FIRST_FRAME_WAIT_MS` — это `rejected`.
+ * `reverseBytes` — файл `reverse` видео панели (`undefined` — не объявлен); он разбирается тем же порядком, а при
+ * `missing` или `rejected` обычного файла его проигрыватель освобождается: играть им некому.
+ * Играть и ставить на паузу проигрыватель будет сам движок.
+ */
+export async function decodeVideo(bytes: Uint8Array | null, reverseBytes?: Uint8Array | null): Promise<DecodedVideo> {
+  if (bytes === null) return { verdict: "missing" };
+
+  const { player, hasFirstFrame } = openVideoPlayer(bytes);
+  const reverseDecoding = reverseBytes === undefined ? undefined : decodeReverseVideo(reverseBytes);
 
   let frame: VideoFirstFrame | null;
   try {
@@ -124,11 +163,14 @@ export async function decodeVideo(bytes: Uint8Array | null): Promise<DecodedVide
   } catch (error) {
     // Чтение кадра упало (не хватило памяти под холст) — проигрыватель с источником не должен остаться играть.
     releaseVideoPlayer(player);
+    releaseReverseVideo(await reverseDecoding);
     throw error;
   }
+  const reverse = await reverseDecoding;
   if (frame === null) {
     releaseVideoPlayer(player);
+    releaseReverseVideo(reverse);
     return { verdict: "rejected" };
   }
-  return { verdict: "ok", width: player.videoWidth, height: player.videoHeight, player, frame };
+  return { verdict: "ok", width: player.videoWidth, height: player.videoHeight, player, frame, ...(reverse && { reverse }) };
 }

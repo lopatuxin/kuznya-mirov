@@ -2,7 +2,7 @@ import type { Engine } from "engine";
 import { GAME_FILE_FETCH, fetchText } from "./gameOptions";
 import { buildImagePayload, buildVideoPayload, fetchImageBytes, isVideoPath, type ImageEntry, type ImageFileEntry } from "./images/imagePayload";
 import { buildModelPayload, type ModelEntry } from "./images/modelImages";
-import { releaseDecodedVideos, releaseVideoPlayer, type VideoPlayerKeeper } from "./images/videoLoader";
+import { releaseDecodedVideos, releaseVideoPlayer, type DecodedReverseVideo, type VideoPlayerKeeper } from "./images/videoLoader";
 import { probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import type { EngineError } from "./engineErrors";
 
@@ -54,9 +54,12 @@ type LoadedMusic = { index: number; path: string; bytes: Uint8Array | null };
  *  (только страница игры, не редактор), решает по приговору, кому строить Blob-адрес сам. */
 export type LoadedMusicVerdict = LoadedMusic & { verdict: MusicVerdict };
 type MusicVerdictEntry = { index: number; verdict: MusicVerdict };
-/** Ответ по одному видео для `load`: размер файла, проигрыватель и точки первого кадра только при `ok` — «Картинки» → «Видео». */
+/**
+ * Ответ по одному видео для `load`: размер файла, проигрыватель и точки первого кадра только при `ok` — «Картинки» → «Видео».
+ * `reverse` — ответ по обратному файлу, он есть только у видео, объявленного с `reverse` («Видео на панели»).
+ */
 type VideoAnswer = { index: number } & (
-  | { verdict: "ok"; width: number; height: number; player: HTMLVideoElement; pixels: Uint8Array }
+  | { verdict: "ok"; width: number; height: number; player: HTMLVideoElement; pixels: Uint8Array; reverse?: DecodedReverseVideo }
   | { verdict: "missing" | "rejected" }
 );
 
@@ -212,10 +215,21 @@ export async function loadProject(
   const musicPayload: MusicVerdictEntry[] = musicTracks.map((track) => ({ index: track.index, verdict: track.verdict }));
   const videoAnswers: VideoAnswer[] = videosPayload.map((video) =>
     video.verdict === "ok"
-      ? { index: video.index, verdict: "ok", width: video.width, height: video.height, player: video.player, pixels: video.frame.pixels }
+      ? {
+          index: video.index,
+          verdict: "ok",
+          width: video.width,
+          height: video.height,
+          player: video.player,
+          pixels: video.frame.pixels,
+          ...(video.reverse && { reverse: video.reverse }),
+        }
       : { index: video.index, verdict: video.verdict },
   );
-  const players = videoAnswers.flatMap((answer) => (answer.verdict === "ok" ? [answer.player] : []));
+  const players = videoAnswers.flatMap((answer) => {
+    if (answer.verdict !== "ok") return [];
+    return answer.reverse?.verdict === "ok" ? [answer.player, answer.reverse.player] : [answer.player];
+  });
 
   let loadResult: LoadResult;
   try {

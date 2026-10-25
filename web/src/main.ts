@@ -26,16 +26,18 @@ const warningsList = document.querySelector<HTMLElement>("#warnings-list");
 const backToGames = document.querySelector<HTMLButtonElement>("#back-to-games");
 const musicElement = document.querySelector<HTMLAudioElement>("#music");
 
+function goToGameList(): void {
+  location.href = `${location.pathname}${gameListSearch(location.search)}`;
+}
+
 /**
- * Единственный выход из открытой игры. Показывается на игре и на экране ошибки, но не на самом
- * списке — там возвращаться некуда.
+ * Выход из открытой игры кнопкой страницы; команда `exit` игры ведёт на тот же адрес. Показывается на игре и на
+ * экране ошибки, но не на самом списке — там возвращаться некуда.
  */
 function showBackToGames(): void {
   if (!backToGames) return;
   backToGames.hidden = false;
-  backToGames.addEventListener("click", () => {
-    location.href = `${location.pathname}${gameListSearch(location.search)}`;
-  });
+  backToGames.addEventListener("click", goToGameList);
 }
 
 function showError(text: string): void {
@@ -277,7 +279,7 @@ function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundP
     let result: TickResult = { status: "running" };
     try {
       result = parseTickResult(engine.tick(now) as RawTickResult);
-      if (result.status !== "error") {
+      if (result.status === "running" || result.status === "ended") {
         // «Звук» → «Один вызов движка»: страница читает окно после того,
         // как вызов вернул ей управление, — то есть прямо здесь, а не отдельным пересечением границы.
         const snapshot = readSoundWindow(memory, engine.sound_window_ptr(), engine.sound_window_len());
@@ -291,6 +293,11 @@ function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundP
 
     if (result.status === "error") {
       stopOnCodeError(result.error);
+      return;
+    }
+    // «Экраны и состояние» → «Команды», `exit`: мир уже уничтожен, дальше кадров нет — страница уходит к списку игр.
+    if (result.status === "exit") {
+      goToGameList();
       return;
     }
 

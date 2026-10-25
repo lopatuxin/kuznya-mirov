@@ -3,42 +3,20 @@
 //! защита не останавливает, а прыжок спасает.
 
 use std::fs;
-use std::path::PathBuf;
 
 use engine::core::game::Game;
 use engine::core::input::{MouseState, UiQueue};
 use engine::core::property;
-use engine::core::screens::{ScreenState, ScreensConfig};
-use engine::data::load::{ImageVerdict, load_rest_with_stamps, read_entry};
+use engine::core::screens::{self, ButtonCommand, ScreenState, ScreensConfig};
+use engine::data::load::{load_rest_with_stamps, read_entry};
 use engine::data::session::PlaySession;
+
+#[path = "platformer_support/mod.rs"]
+mod support;
+use support::{platformer_dir, read};
 
 const VIEWPORT: [f32; 2] = [800.0, 600.0];
 const HERO_START: &str = r#""name": "Илья", "position": [3, 7.1]"#;
-
-fn platformer_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("..")
-        .join("games")
-        .join("platformer")
-}
-
-fn read(name: &str) -> String {
-    fs::read_to_string(platformer_dir().join(name))
-        .unwrap_or_else(|e| panic!("не смог прочитать {name}: {e}"))
-}
-
-/// Размер картинки из заголовка PNG и пустые точки такого размера: бою точки не нужны.
-fn blank_image(path: &str) -> ImageVerdict {
-    let bytes = fs::read(platformer_dir().join(path))
-        .unwrap_or_else(|e| panic!("не смог прочитать {path}: {e}"));
-    let width = u32::from_be_bytes(bytes[16..20].try_into().unwrap());
-    let height = u32::from_be_bytes(bytes[20..24].try_into().unwrap());
-    ImageVerdict::Ok {
-        width,
-        height,
-        pixels: vec![0u8; (width * height * 4) as usize],
-    }
-}
 
 /// Партия первого уровня, где Илья поставлен в точку `hero_at` (левый верхний угол его прямоугольника).
 struct Fight {
@@ -52,12 +30,7 @@ impl Fight {
     fn start(hero_at: [f64; 2]) -> Self {
         let game_json = read("game.json");
         let (config, _) = read_entry(&game_json).expect("game.json разобран");
-        let images: Vec<(String, ImageVerdict)> = config
-            .files
-            .images
-            .iter()
-            .map(|decl| (decl.name.clone(), blank_image(&decl.path)))
-            .collect();
+        let images = support::image_verdicts(&config.files.images);
         let fonts: Vec<(String, Option<Vec<u8>>)> = config
             .files
             .fonts
@@ -95,6 +68,17 @@ impl Fight {
         .unwrap_or_else(|e| panic!("уровень не загрузился: {e:?}"));
         let mut state = ScreenState::new(config.start_screen);
         let session = PlaySession::begin_live(&mut game, &config, &mut state);
+        let level = config
+            .screens
+            .iter()
+            .position(|screen| screen.name == "game")
+            .expect("экран game");
+        screens::apply_command(
+            ButtonCommand::NewGame(level, None),
+            &mut game,
+            &config,
+            &mut state,
+        );
         Fight {
             game,
             config,

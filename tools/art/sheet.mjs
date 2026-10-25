@@ -4,24 +4,30 @@
 // у слоя фона, который повторяется по ширине, `--repeat-x` сводит концы без шва. `--fade-ends` и
 // `--repeat-x` считаются в точках картинки после `--height`. Видео становится листом кадров
 // сеткой: повторяющийся шаг находится сам, а движение без повтора (удар, падение) задаётся
-// номерами кадров через --range. Персонаж в видео должен двигаться на месте при неподвижной
+// номерами кадров через --range. Красное и синее на розовом фоне (героиня в красном, которая
+// превращается из зелёной лягушки) режется с `--keep-color`: розовая примесь снимается только с
+// точек с розовым избытком — края и сияния. Персонаж в видео должен двигаться на месте при неподвижной
 // камере: все кадры режутся одним общим прямоугольником, и если персонаж идёт через кадр, он
 // будет перемещаться внутри листа. Видео с выходом `.mp4` становится видео игры двойной высоты:
 // сверху цвет, снизу маска прозрачности; петля без скачка находится сама или задаётся --range.
+// `--reverse` пишет рядом `<выход>-reverse.mp4` — те же кадры задом наперёд: движок играет его, когда
+// курсор уходит с панели с видео. Оба файла сжимаются с ключевым кадром не реже раза в полсекунды.
 // Зависимости ставятся один раз: `npm install` в `tools/art/`.
 
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
-import { extname, join } from "node:path";
+import { basename, dirname, extname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { parseArgs } from "node:util";
 import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
-const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png|.mp4> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--fade-ends P] [--repeat-x P]";
+const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png|.mp4> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--keep-color] [--fade-ends P] [--repeat-x P] [--reverse]";
 const MARGIN = 4;
+// С `--reverse` ключевой кадр в видео не реже чем через столько секунд: переход на середину ролика тогда быстрый.
+export const REVERSE_KEYFRAME_SECONDS = 0.5;
 export const VISIBLE_ALPHA = 26;
 const THUMB_SIZE = 96;
 const MIN_PERIOD = 4;
@@ -30,6 +36,9 @@ const LUMA_EDGE = 0.1;
 // Тёмная трава на розовом отличается от фона по яркости на ~70 уровней, светлый куст — на 0–8.
 const MIN_LUMA_GAP = 32;
 const BLEED = 8;
+// С `--keep-color` розовая примесь снимается целиком с точки, у которой меньший из красного и синего выше зелёного
+// на столько: у красного сарафана, белой рубахи и кожи избытка нет, у золотого сияния на розовом — около 40.
+const KEEP_COLOR_EXCESS = 24;
 // Избыток зелёного над красным и синим у точек фона — от этого уровня: у фона нейросети он около 240, у обычного
 // зелёного фона съёмки — около 110. У персонажа его нет или он мал.
 const SCREEN_MIN_EXCESS = 64;
@@ -239,13 +248,16 @@ function frameLevels(rgb, rgba) {
  * подмешан к цвету тонких колосков и краёв травинок; ключ по цвету снимает только избыток меньшего из красного и
  * синего над зелёным, и оливковый колосок с такой примесью оставался красноватым. Здесь из цветности каждой точки
  * (Cb, Cr) убирается её составляющая вдоль цветности фона `background`. Зелёный, оливковый и золотистый лежат против
- * розового — их собственный оттенок не трогается; красный и синий предмет потерял бы свою розовую часть, поэтому их
- * снимают не на розовом фоне. Яркость сплошной точки остаётся, а у полупрозрачной точки края из яркости вычитается
+ * розового — их собственный оттенок не трогается; красный и синий предмет без `keepColor` теряет свою розовую часть,
+ * лиловый — и с ним. Яркость сплошной точки остаётся, а у полупрозрачной точки края из яркости вычитается
  * доля фона по её прозрачности: иначе край был бы светлой смесью травы с розовым и светился бы на тёмном. Прозрачность
  * у самого края ключ по яркости нарочно занижает, и вычитание по ней ушло бы в чёрное, поэтому край не темнее
- * сплошной травы `solidLuma`, если сама точка не темнее её. Цвет пишется в `rgba` поверх цвета ключа.
+ * сплошной травы `solidLuma`, если сама точка не темнее её. С `keepColor` составляющая вдоль фона снимается
+ * только у точек с розовым избытком — меньший из красного и синего выше зелёного, как у фона, полностью от
+ * `KEEP_COLOR_EXCESS`: красный сарафан, белая рубаха и кожа его не имеют и остаются своего цвета, а край и
+ * золотое сияние с розовой примесью его теряют. Цвет пишется в `rgba` поверх цвета ключа.
  */
-function removeBackgroundChroma(rgb, rgba, { background, solidLuma }) {
+function removeBackgroundChroma(rgb, rgba, { background, solidLuma }, keepColor) {
   const towardBlue = chromaBlue(...background);
   const towardRed = chromaRed(...background);
   const length = Math.hypot(towardBlue, towardRed);
@@ -261,7 +273,8 @@ function removeBackgroundChroma(rgb, rgba, { background, solidLuma }) {
     const luma = Math.max(unmixed, Math.min(mixed, solidLuma));
     let cb = chromaBlue(red, green, blue);
     let cr = chromaRed(red, green, blue);
-    const along = (cb * towardBlue + cr * towardRed) / length;
+    const pinkShare = keepColor ? smoothstep(0, KEEP_COLOR_EXCESS, Math.min(red, blue) - green) : 1;
+    const along = ((cb * towardBlue + cr * towardRed) / length) * pinkShare;
     if (along > 0) {
       cb -= (along * towardBlue) / length;
       cr -= (along * towardRed) / length;
@@ -278,12 +291,12 @@ function removeBackgroundChroma(rgb, rgba, { background, solidLuma }) {
  * тёмного персонажа ключ по яркости сделал бы её видимой каймой. Цена — тонкая тёмная прядь, у которой видео смешало
  * цвет с фоном, выходит бледнее, но видна хотя бы наполовину.
  */
-export function keyVideoFrame(rgb, luma, key) {
+export function keyVideoFrame(rgb, luma, key, keepColor = false) {
   const rgba = KEYS[key](rgb);
   if (key !== "magenta") return rgba;
   const levels = frameLevels(rgb, rgba);
   addLumaKey(rgba, luma);
-  if (levels !== undefined) removeBackgroundChroma(rgb, rgba, levels);
+  if (levels !== undefined) removeBackgroundChroma(rgb, rgba, levels, keepColor);
   return rgba;
 }
 
@@ -294,10 +307,10 @@ export async function removeBackground(file, key) {
   return { rgba, width: info.width, height: info.height };
 }
 
-async function keyFrame(frame, key) {
+async function keyFrame(frame, key, keepColor) {
   const { data, info } = await sharp(frame.color).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const luma = await sharp(frame.luma).extractChannel(0).raw().toBuffer();
-  const rgba = keyVideoFrame(data, luma, key);
+  const rgba = keyVideoFrame(data, luma, key, keepColor);
   if (key === "green") colorEdgesFromFigure(rgba, info.width, info.height);
   return { rgba, width: info.width, height: info.height };
 }
@@ -353,7 +366,7 @@ export function cutOut(image, box, targetHeight) {
   return cropped(image, box, targetHeight).png().toBuffer({ resolveWithObject: true });
 }
 
-function runFfmpeg(args) {
+export function runFfmpeg(args) {
   if (!ffmpegPath) throw new Error("для этой системы у ffmpeg-static нет готового ffmpeg");
   const run = spawnSync(ffmpegPath, args, { encoding: "utf8" });
   if (run.error) throw new Error(`ffmpeg не запустился: ${run.error.message}`);
@@ -364,7 +377,7 @@ function lastLine(text) {
   return text.trim().split("\n").pop();
 }
 
-function readFps(input) {
+export function readFps(input) {
   const probe = runFfmpeg(["-hide_banner", "-i", input]);
   const match = /(\d+(?:\.\d+)?) fps/.exec(probe.stderr);
   if (!match) throw new Error(`ffmpeg не узнал частоту кадров видео ${input}: ${lastLine(probe.stderr)}`);
@@ -476,7 +489,7 @@ async function makeSheet(input, output, options) {
       span = findCycle(thumbs);
     }
     const count = Math.min(options.frames ?? span.length, span.length);
-    const images = await Promise.all(pickFrames(span, count).map((i) => keyFrame(files[i], options.key)));
+    const images = await Promise.all(pickFrames(span, count).map((i) => keyFrame(files[i], options.key, options.keepColor)));
     const box = visibleBox(images);
     const frames = await Promise.all(images.map((image) => cutOut(image, box, options.height)));
     const { width: frameWidth, height: frameHeight } = frames[0].info;
@@ -629,6 +642,25 @@ export function stackColorAndMask(rgba, width, height) {
   return out;
 }
 
+/** Путь обратного файла: `<выход>-reverse.mp4` рядом с `<выход>.mp4`. */
+export function reversePath(output) {
+  return join(dirname(output), `${basename(output, extname(output))}-reverse.mp4`);
+}
+
+/** Кадры `pattern` в видео игры; `keyframeSeconds` — как часто нужен ключевой кадр, без него кодек решает сам. */
+export function encodeVideo(pattern, output, fps, keyframeSeconds) {
+  const keyframes = keyframeSeconds === undefined ? [] : ["-g", String(Math.max(1, Math.floor(fps * keyframeSeconds)))];
+  const run = runFfmpeg([
+    "-hide_banner", "-loglevel", "error", "-y",
+    "-framerate", String(fps), "-i", pattern,
+    "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
+    "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p", ...keyframes,
+    "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "iec61966-2-1", "-color_range", "tv",
+    "-an", "-movflags", "+faststart", output,
+  ]);
+  if (run.status !== 0) throw new Error(`ffmpeg не собрал видео: ${lastLine(run.stderr)}`);
+}
+
 async function maskThumb({ rgba, width, height }) {
   return sharp(rgba, { raw: { width, height, channels: 4 } })
     .resize(THUMB_SIZE, THUMB_SIZE, { fit: "fill" })
@@ -640,7 +672,8 @@ async function maskThumb({ rgba, width, height }) {
 /**
  * Видео игры из ролика: петля кадров без скачка, фон снят ключами по цвету и яркости, кадр вырезан
  * одним прямоугольником на все кадры. Каждый кадр выхода — цвет над маской; сжатие H.264 с цветом
- * sRGB, чтобы браузер отдал маску теми же числами.
+ * sRGB, чтобы браузер отдал маску теми же числами. С `options.reverse` рядом пишется `<выход>-reverse.mp4` с теми
+ * же кадрами в обратном порядке.
  */
 export async function makeVideo(input, output, options) {
   const dir = mkdtempSync(join(tmpdir(), "kuznya-video-"));
@@ -653,7 +686,7 @@ export async function makeVideo(input, output, options) {
     const masks = [];
     let source;
     for (const frame of frames) {
-      const image = await keyFrame(frame, options.key);
+      const image = await keyFrame(frame, options.key, options.keepColor);
       source = { width: image.width, height: image.height };
       bounds.push(visibleBounds(image));
       if (!span) masks.push(await maskThumb(image));
@@ -667,30 +700,27 @@ export async function makeVideo(input, output, options) {
     const visible = unionBounds(bounds.slice(span.start, span.start + span.length));
     const box = boxAround(visible, source.width, source.height);
     const scale = options.height ? options.height / box.height : 1;
+    const keyframeSeconds = options.reverse ? REVERSE_KEYFRAME_SECONDS : undefined;
     let size;
     for (let k = 0; k < span.length; k++) {
-      const image = await keyFrame(frames[span.start + k], options.key);
+      const image = await keyFrame(frames[span.start + k], options.key, options.keepColor);
       if (options.fade !== undefined) fadeEnds(image.rgba, image.width, image.height, options.fade / scale, visible);
       const { data, info } = await cropped(image, box, options.height).raw().toBuffer({ resolveWithObject: true });
       const frame = padToEven(data, info.width, info.height);
       bleedColor(frame.rgba, frame.width, frame.height);
       size = { width: frame.width, height: frame.height };
+      const file = join(dir, `v${String(k + 1).padStart(6, "0")}.png`);
       await sharp(stackColorAndMask(frame.rgba, frame.width, frame.height), { raw: { width: frame.width, height: frame.height * 2, channels: 3 } })
         .png({ compressionLevel: 1 })
-        .toFile(join(dir, `v${String(k + 1).padStart(6, "0")}.png`));
+        .toFile(file);
+      if (options.reverse) copyFileSync(file, join(dir, `r${String(span.length - k).padStart(6, "0")}.png`));
     }
-    const run = runFfmpeg([
-      "-hide_banner", "-loglevel", "error", "-y",
-      "-framerate", String(fps), "-i", join(dir, "v%06d.png"),
-      "-vf", "scale=out_color_matrix=bt709:out_range=tv,format=yuv420p",
-      "-c:v", "libx264", "-preset", "slow", "-crf", "16", "-pix_fmt", "yuv420p",
-      "-colorspace", "bt709", "-color_primaries", "bt709", "-color_trc", "iec61966-2-1", "-color_range", "tv",
-      "-an", "-movflags", "+faststart", output,
-    ]);
-    if (run.status !== 0) throw new Error(`ffmpeg не собрал видео: ${lastLine(run.stderr)}`);
+    encodeVideo(join(dir, "v%06d.png"), output, fps, keyframeSeconds);
+    if (options.reverse) encodeVideo(join(dir, "r%06d.png"), reversePath(output), fps, keyframeSeconds);
     console.log(`кадры видео ${span.start + 1}-${span.start + span.length} из ${frames.length}, длина ${span.length} (${(span.length / fps).toFixed(2)} с)`);
     if (jump !== undefined) console.log(`скачок на стыке петли: ${jump.toFixed(2)} из 255`);
     console.log(`кадр ${size.width}×${size.height}, видео ${size.width}×${size.height * 2}`);
+    if (options.reverse) console.log(`обратное видео: ${reversePath(output)}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
@@ -724,6 +754,8 @@ async function main() {
       columns: { type: "string" },
       range: { type: "string" },
       key: { type: "string", default: "green" },
+      "keep-color": { type: "boolean", default: false },
+      reverse: { type: "boolean", default: false },
       "fade-ends": { type: "string" },
       "repeat-x": { type: "string" },
     },
@@ -732,10 +764,12 @@ async function main() {
   const [input, output] = positionals;
   const height = positiveInt("height", values.height);
   if (!Object.hasOwn(KEYS, values.key)) throw new Error(`--key должно быть green или magenta, а не «${values.key}»`);
+  if (values["keep-color"] && values.key !== "magenta") throw new Error("--keep-color — только с --key magenta");
   const toVideo = extname(output).toLowerCase() === ".mp4";
+  if (values.reverse && !toVideo) throw new Error("--reverse — только с выходом .mp4");
   if (!VIDEO_EXTENSIONS.has(extname(input).toLowerCase())) {
     if (toVideo) throw new Error("видео игры делается только из видео");
-    if ([values.frames, values.columns, values.range].some((value) => value !== undefined)) throw new Error("--frames, --columns и --range — только для видео");
+    if ([values.frames, values.columns, values.range].some((value) => value !== undefined) || values["keep-color"]) throw new Error("--frames, --columns, --range и --keep-color — только для видео");
     if (values["fade-ends"] !== undefined && values["repeat-x"] !== undefined) throw new Error("--fade-ends и --repeat-x не бывают вместе: гашёные концы повтор не сведёт");
     await makeCutout(input, output, height, values.key, positiveInt("fade-ends", values["fade-ends"]), positiveInt("repeat-x", values["repeat-x"]));
     return;
@@ -744,7 +778,7 @@ async function main() {
   if (toVideo) {
     const sheetOnly = ["frames", "columns", "repeat-x"].find((name) => values[name] !== undefined);
     if (sheetOnly !== undefined) throw new Error(`--${sheetOnly} не бывает у видео игры`);
-    await makeVideo(input, output, { height, key: values.key, range, fade: positiveInt("fade-ends", values["fade-ends"]) });
+    await makeVideo(input, output, { height, key: values.key, keepColor: values["keep-color"], range, fade: positiveInt("fade-ends", values["fade-ends"]), reverse: values.reverse });
     return;
   }
   const pictureOnly = ["fade-ends", "repeat-x"].find((name) => values[name] !== undefined);
@@ -752,6 +786,7 @@ async function main() {
   await makeSheet(input, output, {
     height,
     key: values.key,
+    keepColor: values["keep-color"],
     frames: positiveInt("frames", values.frames),
     columns: positiveInt("columns", values.columns) ?? 8,
     range,
