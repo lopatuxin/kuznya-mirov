@@ -4,14 +4,16 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use super::keys::{KeyEdit, KeyTable};
 use super::model::{Model, ModelTable};
 use super::property::{self, PropertyId, PropertyTable};
-use super::road_kinds::{LayoutRoad, RoadKindTable};
-use super::roads::RoadShape;
+use super::road_ground::{RoadGround, RoadInput};
+use super::road_kinds::{LayoutForm, RoadKindTable};
+use super::roads::{RoadForm, RoadShape};
 use super::run_jump::JumpState;
 use super::surface;
 use super::terrain::Terrain;
 use super::value::{FollowAxis, GridSpec, ImageId, PropKind, Rotation, Shape, Value, Vec2};
 
 static NEXT_SURFACE_REVISION: AtomicU64 = AtomicU64::new(1);
+static NEXT_TERRAIN_REVISION: AtomicU64 = AtomicU64::new(1);
 
 /// Свойства, от которых зависят место и верх настила.
 const DECK_GEOMETRY: [PropertyId; 5] = [
@@ -20,6 +22,16 @@ const DECK_GEOMETRY: [PropertyId; 5] = [
     property::ROTATION,
     property::HEIGHT,
     property::SHAPE,
+];
+
+/// Свойства, от которых зависят ось дороги, её высоты и поправки земли под ней.
+const ROAD_GEOMETRY: [PropertyId; 6] = [
+    property::POSITION,
+    property::SIZE,
+    property::ROTATION,
+    property::BEND,
+    property::ROAD,
+    property::DECK,
 ];
 
 #[derive(Debug, Clone)]
@@ -141,8 +153,22 @@ pub struct World {
     /// «Трёхмерная сцена»: мир трёхмерной игры — `rotation` поворачивает и место на земле, а не только
     /// вид (`core::footprint`). Берётся из таблицы свойств, по которой мир строится.
     three_d: bool,
-    /// «Рельеф»: земля трёхмерной сцены; `None` — ровная на высоте 0. Берётся из таблицы свойств.
+    /// «Рельеф»: земля трёхмерной сцены вместе с поправками дорог без `z`; `None` — ровная на высоте 0. Берётся
+    /// из таблицы свойств и правится под дорогами мира.
     terrain: Option<Arc<Terrain>>,
+    /// «Рельеф» → «Дороги на рельефе»: земля такой, какой её отдала таблица свойств, — без поправок дорог.
+    plain: Option<Arc<Terrain>>,
+    /// «Езда по дорогам»: высоты концов дорог и охваты их поправок земли.
+    road_ground: RoadGround,
+    /// Дороги правятся пачкой (сборка мира): пересчёт ждёт `settle_roads`.
+    roads_suspended: bool,
+    roads_dirty: bool,
+    /// Номер состояния высот земли: по нему перестраивается сетка рельефа для рисования.
+    terrain_revision: u64,
+    /// «Рельеф»: высота основания записана (третье число `position`, `z` кода) — дорога с ней ровная.
+    leveled: Vec<bool>,
+    /// «Трёхмерная сцена»: наклон машины на дороге вдоль её длины, радианы; нос выше при положительном.
+    tilt: Vec<f64>,
     /// «Трёхмерная сцена» → «Модели и движения»: модели игры; объект называет свою свойством `model`.
     /// Берутся из таблицы свойств.
     models: Arc<ModelTable>,
@@ -172,6 +198,10 @@ fn next_surface_revision() -> u64 {
     NEXT_SURFACE_REVISION.fetch_add(1, Ordering::Relaxed)
 }
 
+fn next_terrain_revision() -> u64 {
+    NEXT_TERRAIN_REVISION.fetch_add(1, Ordering::Relaxed)
+}
+
 impl World {
     pub fn new(properties: &PropertyTable) -> Self {
         let columns = properties
@@ -186,6 +216,13 @@ impl World {
             generation: Vec::new(),
             three_d: properties.three_d(),
             terrain: properties.terrain().cloned(),
+            plain: properties.terrain().cloned(),
+            road_ground: RoadGround::default(),
+            roads_suspended: false,
+            roads_dirty: false,
+            terrain_revision: next_terrain_revision(),
+            leveled: Vec::new(),
+            tilt: Vec::new(),
             models: Arc::clone(properties.models()),
             road_kinds: Arc::clone(properties.road_kinds()),
             base_z: Vec::new(),
@@ -227,6 +264,131 @@ impl World {
         } else if DECK_GEOMETRY.contains(&prop) {
             self.note_deck_moved(id);
         }
+        if ROAD_GEOMETRY.contains(&prop)
+            && (prop == property::ROAD || self.flag(id, property::ROAD))
+        {
+            self.roads_changed();
+        }
+    }
+
+    fn roads_changed(&mut self) {
+        if self.roads_suspended {
+            self.roads_dirty = true;
+        } else {
+            self.refresh_roads();
+        }
+    }
+
+    /// «Езда по дорогам»: дороги правятся пачкой — например, при сборке мира: пересчёт высот и поправок земли
+    /// ждёт `settle_roads`.
+    pub fn suspend_roads(&mut self) {
+        self.roads_suspended = true;
+    }
+
+    /// Кончает пачку правок дорог и пересчитывает высоты и землю под ними, если дороги правили.
+    pub fn settle_roads(&mut self) {
+        self.roads_suspended = false;
+        if self.roads_dirty {
+            self.refresh_roads();
+        }
+    }
+
+    /// Дороги мира, как их видит расчёт высот: живые объекты с признаком `road`, `position` и `size`, по
+    /// возрастанию номера. Дорога ровная, если `z` записан или она настил.
+    fn road_inputs(&self) -> Vec<RoadInput> {
+        self.ids()
+            .filter(|&id| self.flag(id, property::ROAD))
+            .filter_map(|id| {
+                let level = self.is_level(id) || self.flag(id, property::DECK);
+                Some(RoadInput {
+                    shape: RoadShape {
+                        id,
+                        position: self.vec2(id, property::POSITION)?,
+                        size: self.vec2(id, property::SIZE)?,
+                        sin_cos: self
+                            .rotation(id, property::ROTATION)
+                            .map_or((0.0, 1.0), Rotation::sin_cos),
+                        z: if level { self.base_z(id) } else { 0.0 },
+                    },
+                    bend: self
+                        .number_like(id, property::BEND)
+                        .filter(|bend| !bend.is_nan())
+                        .unwrap_or(0.0),
+                    level,
+                })
+            })
+            .collect()
+    }
+
+    /// Ставит высоты концов дорог без `z` и правит землю под ними: только там, где дороги изменились.
+    fn refresh_roads(&mut self) {
+        self.roads_dirty = false;
+        let inputs = self.road_inputs();
+        if inputs.is_empty() && self.road_ground.is_empty() {
+            return;
+        }
+        let plain: &Terrain = self.plain.as_deref().unwrap_or_else(|| Terrain::flat());
+        let patch = self.road_ground.settle(&inputs, plain);
+        for (input, form) in inputs.iter().zip(self.road_ground.forms()) {
+            if !input.level
+                && let Some(slot) = self.base_z.get_mut(input.shape.id as usize)
+            {
+                *slot = form.shape.z.min(form.end_z);
+            }
+        }
+        let (Some(patch), Some(plain)) = (patch, self.plain.as_ref()) else {
+            return;
+        };
+        let terrain = Arc::make_mut(self.terrain.get_or_insert_with(|| Arc::clone(plain)));
+        if terrain.adjust_for_roads(patch.area.clone(), |column, row| {
+            patch.lift(plain, column, row)
+        }) {
+            self.terrain_revision = next_terrain_revision();
+            self.surface_changed();
+        }
+    }
+
+    /// Номер состояния высот земли: новый у каждого мира и при каждой правке земли дорогами; счётчик общий на все миры.
+    pub fn terrain_revision(&self) -> u64 {
+        self.terrain_revision
+    }
+
+    /// Форма дороги `id` с высотами обоих концов; `None`, если объект не дорога.
+    pub fn road_form(&self, id: u32) -> Option<&RoadForm> {
+        self.road_ground.form_of(id)
+    }
+
+    /// Записана ли объекту высота основания (`z` в данных или в коде).
+    pub fn is_level(&self, id: u32) -> bool {
+        self.leveled.get(id as usize).copied().unwrap_or(false)
+    }
+
+    /// Записывает высоту основания ровно на `z`: дорога с ней ровная.
+    pub fn set_level_z(&mut self, id: u32, z: f64) {
+        if let Some(slot) = self.leveled.get_mut(id as usize) {
+            *slot = true;
+        }
+        self.set_base_z(id, z);
+    }
+
+    /// Наклон объекта вдоль его длины, радианы; ноль, пока ничего не наклоняло.
+    pub fn tilt(&self, id: u32) -> f64 {
+        self.tilt.get(id as usize).copied().unwrap_or(0.0)
+    }
+
+    pub fn set_tilt(&mut self, id: u32, angle: f64) {
+        if let Some(slot) = self.tilt.get_mut(id as usize) {
+            *slot = angle;
+        }
+    }
+
+    /// Выпрямляет все наклонённые объекты, кроме `keep`.
+    pub fn level_tilts_except(&mut self, keep: &std::collections::HashSet<u32>) {
+        for (id, angle) in self.tilt.iter_mut().enumerate() {
+            if *angle != 0.0 && !keep.contains(&(id as u32)) {
+                *angle = 0.0;
+            }
+        }
     }
 
     fn note_deck_moved(&mut self, id: u32) {
@@ -267,8 +429,11 @@ impl World {
     /// Меняет землю мира на `terrain` из таблицы свойств, ничего не пересаживая: годится, когда высоты
     /// и отпечатки те же, а другое — например, покрытия.
     pub fn replace_terrain(&mut self, terrain: Option<Arc<Terrain>>) {
+        self.plain = terrain.clone();
         self.terrain = terrain;
+        self.road_ground.reset();
         self.surface_changed();
+        self.roads_changed();
     }
 
     /// Высота основания объекта; 0, пока ничего не ставило её.
@@ -282,33 +447,21 @@ impl World {
             *slot = z;
         }
         self.note_deck_moved(id);
-    }
-
-    /// «Езда по дорогам»: дорога `id` — живой объект с признаком `road`, `position` и `size`.
-    fn road_shape(&self, id: u32) -> Option<RoadShape> {
-        if !self.flag(id, property::ROAD) {
-            return None;
+        if self.is_alive(id) && self.flag(id, property::ROAD) {
+            self.roads_changed();
         }
-        Some(RoadShape {
-            id,
-            position: self.vec2(id, property::POSITION)?,
-            size: self.vec2(id, property::SIZE)?,
-            sin_cos: self
-                .rotation(id, property::ROTATION)
-                .map_or((0.0, 1.0), Rotation::sin_cos),
-            z: self.base_z(id),
-        })
     }
 
     /// «Езда по дорогам»: дороги мира — живые объекты с признаком `road`, `position` и `size`, по
-    /// возрастанию номера, — и предельная скорость каждой; `NaN` в `road_speed` считается закрытой.
-    pub fn collect_roads(&self, shapes: &mut Vec<RoadShape>, speeds: &mut Vec<Option<f64>>) {
-        shapes.clear();
+    /// возрастанию номера, — с высотами обоих концов и изгибом, и предельная скорость каждой; `NaN` в `road_speed`
+    /// считается закрытой.
+    pub fn collect_roads(&self, forms: &mut Vec<RoadForm>, speeds: &mut Vec<Option<f64>>) {
+        forms.clear();
         speeds.clear();
-        for (id, shape) in self.ids().filter_map(|id| Some((id, self.road_shape(id)?))) {
-            shapes.push(shape);
+        for form in self.road_ground.forms() {
+            forms.push(*form);
             speeds.push(
-                self.number_like(id, property::ROAD_SPEED)
+                self.number_like(form.shape.id, property::ROAD_SPEED)
                     .map(|speed| if speed.is_nan() { 0.0 } else { speed }),
             );
         }
@@ -316,15 +469,15 @@ impl World {
 
     /// «Вид дороги»: все дороги мира для раскладки видов — вместе с закрытыми и без вида, они нужны связям, —
     /// по возрастанию номера, и вид каждой.
-    pub fn collect_layout_roads(&self, roads: &mut Vec<LayoutRoad>) {
+    pub fn collect_layout_roads(&self, roads: &mut Vec<LayoutForm>) {
         roads.clear();
-        roads.extend(self.ids().filter_map(|id| {
-            Some(LayoutRoad {
-                shape: self.road_shape(id)?,
+        roads.extend(self.road_ground.forms().map(|form| {
+            LayoutForm {
+                form: *form,
                 kind: self
-                    .text(id, property::ROAD_KIND)
+                    .text(form.shape.id, property::ROAD_KIND)
                     .and_then(|name| self.road_kinds.index_of(name)),
-            })
+            }
         }));
     }
 
@@ -357,6 +510,8 @@ impl World {
             self.alive[id as usize] = true;
             self.generation[id as usize] += 1;
             self.base_z[id as usize] = 0.0;
+            self.leveled[id as usize] = false;
+            self.tilt[id as usize] = 0.0;
             self.walk_to_z[id as usize] = None;
             self.jump[id as usize] = JumpState::default();
             return id;
@@ -366,6 +521,8 @@ impl World {
         self.grid_counter.push(0);
         self.generation.push(0);
         self.base_z.push(0.0);
+        self.leveled.push(false);
+        self.tilt.push(0.0);
         self.walk_to_z.push(None);
         self.jump.push(JumpState::default());
         for column in &mut self.columns {
@@ -399,6 +556,7 @@ impl World {
         if !self.alive.get(idx).copied().unwrap_or(false) {
             return;
         }
+        let was_road = self.flag(id, property::ROAD);
         self.alive[idx] = false;
         if let Ok(at) = self.decks.binary_search(&id) {
             self.decks.remove(at);
@@ -408,9 +566,14 @@ impl World {
             column.clear(idx);
         }
         self.base_z[idx] = 0.0;
+        self.leveled[idx] = false;
+        self.tilt[idx] = 0.0;
         self.walk_to_z[idx] = None;
         self.jump[idx] = JumpState::default();
         self.free_list.push(id);
+        if was_road {
+            self.roads_changed();
+        }
     }
 
     pub fn is_alive(&self, id: u32) -> bool {
@@ -472,12 +635,23 @@ impl World {
         }
     }
 
+    /// Как `set_position_exact`, но дорога, что сама стоит концами на земле, такой и остаётся: правило
+    /// двигает её без записи `z`, и концы встают на землю заново.
+    pub fn set_position_keeping_grade(&mut self, id: u32, position: Vec2, z: f64) {
+        if surface::is_graded_road(self, id) && !self.is_level(id) {
+            self.set_vec2(id, property::POSITION, position);
+        } else {
+            self.set_position_exact(id, position, z);
+        }
+    }
+
     /// Ставит `position` вместе с высотой основания ровно на `z`: объект держит её, пока не сдвинется.
     pub fn set_position_exact(&mut self, id: u32, position: Vec2, z: f64) {
         if let Column::Vec2(v) = &mut self.columns[property::POSITION as usize] {
             v[id as usize] = Some(position);
         }
         self.base_z[id as usize] = z;
+        self.leveled[id as usize] = true;
         self.note_write(id, property::POSITION);
     }
 

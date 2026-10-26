@@ -1,15 +1,16 @@
-//! «Правила игры» → «Езда по дорогам»: сеть из дорог-прямоугольников, самый быстрый путь по ней и
-//! движение машины по своей стороне со скруглёнными углами. Модуль не знает о `World`: дороги ему
-//! приносят готовыми прямоугольниками, как `pathfind` приносит препятствия.
+//! «Правила игры» → «Езда по дорогам»: сеть из дорог — полос вдоль оси-прямой или оси-дуги с профилем
+//! высот, самый быстрый путь по ней и движение машины по своей стороне со скруглёнными углами. Модуль не
+//! знает о `World`: дороги ему приносят готовыми (`RoadForm`), как `pathfind` приносит препятствия.
 
 use std::cell::RefCell;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BinaryHeap, HashMap, HashSet};
+use std::f64::consts::{FRAC_PI_2, PI, TAU};
 use std::rc::Rc;
 
 use super::value::Vec2;
 
-/// Дороги связаны, если их высоты расходятся не больше чем на это.
+/// Дороги связаны, если их высоты в точке связи расходятся не больше чем на это.
 pub const MAX_HEIGHT_GAP: f64 = 0.4;
 /// Доля ширины дороги, на которую своя сторона сдвинута от оси.
 pub const SIDE_SHIFT_SHARE: f64 = 0.25;
@@ -17,8 +18,20 @@ pub const SIDE_SHIFT_SHARE: f64 = 0.25;
 pub const MAX_JOINT_TURN_DEGREES: f64 = 150.0;
 /// Доля ширины дороги, дальше которой от излома дуга скругления не начинается.
 pub const ARC_WIDTH_SHARE: f64 = 0.5;
+/// Изгиб оси строго меньше 180°: записанный больше берётся этим числом, ближайшим допустимым.
+pub const MAX_BEND_DEGREES: f64 = 179.9;
+/// Поворот оси на одном отрезке ломаной, которой рисуется ось в редакторе.
+pub const AXIS_SAMPLE_DEGREES: f64 = 2.0;
+/// Поворот на одном отрезке ломаной, по которой идёт сторона машины на дуге: отрезок уходит от дуги не дальше
+/// радиус × 0,00004.
+const PATH_SAMPLE_DEGREES: f64 = 1.0;
 
+/// Точка лежит на оси, если до неё не дальше этого: пересечения дуг считаются в числах с запасом.
+const AXIS_EPS: f64 = 1e-7;
 const EPS: f64 = 1e-9;
+/// Не больше стольких шагов вдоль луча при поиске полотна дороги; и сколько раз отрезок с пересечением делится пополам.
+const RAY_STEPS_MAX: usize = 20_000;
+const RAY_BISECTIONS: usize = 50;
 
 pub(super) fn sub(a: Vec2, b: Vec2) -> Vec2 {
     [a[0] - b[0], a[1] - b[1]]
@@ -44,13 +57,23 @@ pub(super) fn distance(a: Vec2, b: Vec2) -> f64 {
     length(sub(a, b))
 }
 
-fn unit(a: Vec2) -> Vec2 {
+pub(super) fn unit(a: Vec2) -> Vec2 {
     let len = length(a);
     if len < EPS {
         [1.0, 0.0]
     } else {
         [a[0] / len, a[1] / len]
     }
+}
+
+/// Угол, приведённый к (−π, π].
+fn wrap_pi(angle: f64) -> f64 {
+    let wrapped = (angle + PI).rem_euclid(TAU) - PI;
+    if wrapped <= -PI { PI } else { wrapped }
+}
+
+fn lerp(from: f64, to: f64, share: f64) -> f64 {
+    from + (to - from) * share
 }
 
 /// Ближайшая к `p` точка отрезка `a`–`b` и её доля пути от `a` к `b`.
@@ -64,8 +87,23 @@ fn closest_on_segment(p: Vec2, a: Vec2, b: Vec2) -> (Vec2, f64) {
     (add_scaled(a, along, share), share)
 }
 
-/// Дорога, как её видит сеть: прямоугольник `position`/`size`, повёрнутый вокруг середины, и высота
-/// основания. `sin_cos` — синус и косинус `rotation`, как их считает `Rotation::sin_cos`.
+/// Изгиб, который можно дать дороге с хордой `chord` и шириной `width`: ближайший к `bend` из тех, при
+/// которых изгиб меньше 180° и радиус дуги не меньше ширины. Не число — прямая.
+fn clamp_bend(bend: f64, chord: f64, width: f64) -> f64 {
+    if bend.is_nan() {
+        return 0.0;
+    }
+    let by_radius = if width > EPS && chord > EPS {
+        2.0 * libm::asin((chord / (2.0 * width)).min(1.0)).to_degrees()
+    } else {
+        MAX_BEND_DEGREES
+    };
+    let limit = MAX_BEND_DEGREES.min(by_radius);
+    bend.clamp(-limit, limit)
+}
+
+/// Дорога, как её видит сеть: прямоугольник `position`/`size`, повёрнутый вокруг середины, — хорда оси и ширина — и
+/// высота основания. `sin_cos` — синус и косинус `rotation`, как их считает `Rotation::sin_cos`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RoadShape {
     pub id: u32,
@@ -75,19 +113,64 @@ pub struct RoadShape {
     pub z: f64,
 }
 
+/// Дорога целиком: хорда и высота её начала (`shape`), изгиб оси в градусах (`bend`) и высота конца оси
+/// (`end_z`). Ровная дорога — `end_z` равна `shape.z`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct RoadForm {
+    pub shape: RoadShape,
+    pub bend: f64,
+    pub end_z: f64,
+}
+
+impl RoadForm {
+    /// Прямая ровная дорога на высоте `shape.z`.
+    pub fn straight(shape: RoadShape) -> RoadForm {
+        RoadForm {
+            shape,
+            bend: 0.0,
+            end_z: shape.z,
+        }
+    }
+}
+
+/// Дорога в расчётах: ось — прямая или дуга окружности, профиль — прямая между высотами концов по длине оси.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Road {
     pub(super) id: u32,
-    pub(super) center: Vec2,
-    pub(super) dir: Vec2,
-    pub(super) half_length: f64,
+    /// Середина и направление хорды: у прямой — самой оси.
+    center: Vec2,
+    dir: Vec2,
+    half_chord: f64,
     pub(super) half_width: f64,
-    pub(super) z: f64,
+    /// Высоты начала и конца оси.
+    pub(super) z: [f64; 2],
+    /// Длина оси; у прямой равна хорде.
+    length: f64,
+    /// Поворот оси на единицу длины со знаком (1 / радиус): положительный поворачивает в сторону роста угла
+    /// направления, как положительный `rotation`; у прямой ноль.
+    curvature: f64,
+    /// Угол направления оси в начале; только у дуги.
+    heading: f64,
+}
+
+/// Ближайшая точка оси: расстояние от начала оси, сама точка и расстояние до неё.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct Closest {
+    pub(super) s: f64,
+    pub(super) point: Vec2,
+    pub(super) distance: f64,
 }
 
 impl Road {
-    /// Ось идёт вдоль длинной стороны; у квадрата — вдоль ширины `size`.
+    /// Прямая ровная дорога по прямоугольнику.
+    #[cfg(test)]
     pub(super) fn from_shape(shape: &RoadShape) -> Road {
+        Road::from_form(&RoadForm::straight(*shape))
+    }
+
+    /// Хорда идёт вдоль длинной стороны; у квадрата — вдоль ширины `size`. Изгиб берётся ближайшим допустимым.
+    pub(super) fn from_form(form: &RoadForm) -> Road {
+        let shape = &form.shape;
         let (sin, cos) = shape.sin_cos;
         let center = [
             shape.position[0] + shape.size[0] / 2.0,
@@ -98,61 +181,460 @@ impl Road {
         } else {
             ([cos, sin], shape.size[0], shape.size[1])
         };
+        let bend = if long < EPS {
+            0.0
+        } else {
+            clamp_bend(form.bend, long, short).to_radians()
+        };
+        let (length, curvature, heading) = if bend.abs() < 1e-12 {
+            (long, 0.0, 0.0)
+        } else {
+            let radius = long / (2.0 * libm::sin(bend.abs() / 2.0));
+            let length = radius * bend.abs();
+            (
+                length,
+                bend / length,
+                libm::atan2(dir[1], dir[0]) - bend / 2.0,
+            )
+        };
         Road {
             id: shape.id,
             center,
             dir,
-            half_length: long / 2.0,
+            half_chord: long / 2.0,
             half_width: short / 2.0,
-            z: shape.z,
+            z: [shape.z, form.end_z],
+            length,
+            curvature,
+            heading,
         }
     }
 
     pub(super) fn length(&self) -> f64 {
-        self.half_length * 2.0
+        self.length
     }
 
-    pub(super) fn point_at(&self, along: f64) -> Vec2 {
-        add_scaled(self.center, self.dir, along - self.half_length)
+    pub(super) fn width(&self) -> f64 {
+        self.half_width * 2.0
+    }
+
+    pub(super) fn is_straight(&self) -> bool {
+        self.curvature == 0.0
+    }
+
+    pub(super) fn is_level(&self) -> bool {
+        self.z[0] == self.z[1]
+    }
+
+    /// Поворот оси на единицу длины со знаком.
+    pub(super) fn curvature(&self) -> f64 {
+        self.curvature
+    }
+
+    /// Уклон профиля: подъём на единицу длины оси от начала к концу.
+    pub(super) fn slope(&self) -> f64 {
+        if self.length < EPS {
+            0.0
+        } else {
+            (self.z[1] - self.z[0]) / self.length
+        }
+    }
+
+    /// Высота профиля на расстоянии `s` от начала оси; за концами она равна высоте конца: так же ложится земля у
+    /// концов дороги.
+    pub(super) fn height_at(&self, s: f64) -> f64 {
+        if self.length < EPS {
+            self.z[0]
+        } else {
+            lerp(self.z[0], self.z[1], (s / self.length).clamp(0.0, 1.0))
+        }
+    }
+
+    fn chord_start(&self) -> Vec2 {
+        add_scaled(self.center, self.dir, -self.half_chord)
+    }
+
+    /// Угол направления оси на расстоянии `s` от начала; только у дуги.
+    fn heading_at(&self, s: f64) -> f64 {
+        self.heading + self.curvature * s.clamp(0.0, self.length)
+    }
+
+    /// Единичная касательная оси на расстоянии `s` от начала; за концами — касательная конца.
+    pub(super) fn tangent_at(&self, s: f64) -> Vec2 {
+        if self.is_straight() {
+            self.dir
+        } else {
+            let (sin, cos) = libm::sincos(self.heading_at(s));
+            [cos, sin]
+        }
+    }
+
+    /// Центр дуги; только у дуги.
+    pub(super) fn arc_center(&self) -> Vec2 {
+        let (sin, cos) = libm::sincos(self.heading);
+        add_scaled(self.chord_start(), [-sin, cos], 1.0 / self.curvature)
+    }
+
+    pub(super) fn radius(&self) -> f64 {
+        1.0 / self.curvature.abs()
+    }
+
+    fn curve_point(&self, s: f64) -> Vec2 {
+        if self.is_straight() {
+            return add_scaled(self.center, self.dir, s - self.half_chord);
+        }
+        let start = self.chord_start();
+        let (sin0, cos0) = libm::sincos(self.heading);
+        let (sin, cos) = libm::sincos(self.heading + self.curvature * s);
+        [
+            start[0] + (sin - sin0) / self.curvature,
+            start[1] - (cos - cos0) / self.curvature,
+        ]
+    }
+
+    /// Точка оси на расстоянии `s` от начала; за концами ось продолжена по касательной конца.
+    pub(super) fn point_at(&self, s: f64) -> Vec2 {
+        if self.is_straight() {
+            return self.curve_point(s);
+        }
+        let inner = s.clamp(0.0, self.length);
+        let on_curve = self.curve_point(inner);
+        if inner == s {
+            on_curve
+        } else {
+            add_scaled(on_curve, self.tangent_at(inner), s - inner)
+        }
     }
 
     pub(super) fn end(&self, which: usize) -> Vec2 {
-        self.point_at(if which == 0 { 0.0 } else { self.length() })
+        self.point_at(if which == 0 { 0.0 } else { self.length })
     }
 
-    fn axis(&self) -> [Vec2; 2] {
+    #[cfg(test)]
+    pub(super) fn axis(&self) -> [Vec2; 2] {
         [self.end(0), self.end(1)]
     }
 
-    /// Лежит ли точка в прямоугольнике дороги, края включая.
-    fn contains(&self, p: Vec2) -> bool {
-        let local = sub(p, self.center);
-        dot(local, self.dir).abs() <= self.half_length + EPS
-            && cross(self.dir, local).abs() <= self.half_width + EPS
+    /// Лежит ли точка в полосе дороги, края включая: ось дуги, ширина в обе стороны, торцы поперёк оси.
+    pub(super) fn contains(&self, p: Vec2) -> bool {
+        if self.is_straight() {
+            let local = sub(p, self.center);
+            return dot(local, self.dir).abs() <= self.half_chord + EPS
+                && cross(self.dir, local).abs() <= self.half_width + EPS;
+        }
+        let spoke = sub(p, self.arc_center());
+        if (length(spoke) - self.radius()).abs() > self.half_width + EPS {
+            return false;
+        }
+        let s = self.arc_s(spoke);
+        s >= -EPS && s <= self.length + EPS
     }
 
-    /// Ближайшая к `p` точка оси и её расстояние от начала оси.
-    fn closest_on_axis(&self, p: Vec2) -> (Vec2, f64) {
-        let (point, share) = closest_on_segment(p, self.end(0), self.end(1));
-        (point, share * self.length())
-    }
-
-    fn bounds(&self) -> [Vec2; 2] {
-        let reach = |axis: usize| {
-            self.dir[axis].abs() * self.half_length
-                + self.dir[1 - axis].abs() * self.half_width
-                + EPS
+    /// Расстояние по оси до точки дуги с лучом `spoke` от центра; вне дуги может выйти за концы.
+    fn arc_s(&self, spoke: Vec2) -> f64 {
+        let radial = libm::atan2(spoke[1], spoke[0]);
+        let heading = if self.curvature > 0.0 {
+            radial + FRAC_PI_2
+        } else {
+            radial - FRAC_PI_2
         };
-        let (rx, ry) = (reach(0), reach(1));
+        wrap_pi(heading - self.heading) / self.curvature
+    }
+
+    /// Ближайшая к `p` точка оси.
+    pub(super) fn closest(&self, p: Vec2) -> Closest {
+        if self.is_straight() {
+            let (point, share) = closest_on_segment(p, self.end(0), self.end(1));
+            return Closest {
+                s: share * self.length,
+                point,
+                distance: distance(p, point),
+            };
+        }
+        let center = self.arc_center();
+        let spoke = sub(p, center);
+        let at_end = |s: f64| {
+            let point = self.point_at(s);
+            Closest {
+                s,
+                point,
+                distance: distance(p, point),
+            }
+        };
+        if length(spoke) < EPS {
+            return at_end(0.0);
+        }
+        let s = self.arc_s(spoke);
+        if (0.0..=self.length).contains(&s) {
+            let radius = self.radius();
+            Closest {
+                s,
+                point: add_scaled(center, unit(spoke), radius),
+                distance: (length(spoke) - radius).abs(),
+            }
+        } else {
+            let (first, last) = (at_end(0.0), at_end(self.length));
+            if first.distance <= last.distance {
+                first
+            } else {
+                last
+            }
+        }
+    }
+
+    /// Ближайшая к `p` точка части оси от `low` до `high`.
+    pub(super) fn closest_between(&self, p: Vec2, low: f64, high: f64) -> Closest {
+        let free = self.closest(p);
+        let at = |s: f64| {
+            let point = self.point_at(s);
+            Closest {
+                s,
+                point,
+                distance: distance(p, point),
+            }
+        };
+        if self.is_straight() {
+            return at(free.s.clamp(low, high));
+        }
+        [at(free.s.clamp(low, high)), at(low), at(high)]
+            .into_iter()
+            .min_by(|a, b| a.distance.total_cmp(&b.distance))
+            .unwrap_or(free)
+    }
+
+    /// Расстояние по оси до точки возле оси; у точек за концом оси — продолжено по касательной конца, как
+    /// `point_at`, и выходит за `0..length`.
+    pub(super) fn along(&self, p: Vec2) -> f64 {
+        if self.is_straight() {
+            return dot(sub(p, self.end(0)), self.dir);
+        }
+        let near = self.closest(p);
+        if near.s <= 0.0 {
+            dot(sub(p, self.end(0)), self.tangent_at(0.0))
+        } else if near.s >= self.length {
+            self.length + dot(sub(p, self.end(1)), self.tangent_at(self.length))
+        } else {
+            near.s
+        }
+    }
+
+    /// Охватывающий прямоугольник полосы по осям с запасом.
+    pub(super) fn bounds(&self) -> [Vec2; 2] {
+        if self.is_straight() {
+            let reach = |axis: usize| {
+                self.dir[axis].abs() * self.half_chord
+                    + self.dir[1 - axis].abs() * self.half_width
+                    + EPS
+            };
+            let (rx, ry) = (reach(0), reach(1));
+            return [
+                [self.center[0] - rx, self.center[1] - ry],
+                [self.center[0] + rx, self.center[1] + ry],
+            ];
+        }
+        let mut low = [f64::INFINITY; 2];
+        let mut high = [f64::NEG_INFINITY; 2];
+        let mut take = |point: Vec2| {
+            for axis in 0..2 {
+                low[axis] = low[axis].min(point[axis]);
+                high[axis] = high[axis].max(point[axis]);
+            }
+        };
+        take(self.end(0));
+        take(self.end(1));
+        let (first, last) = (
+            self.heading
+                .min(self.heading + self.curvature * self.length),
+            self.heading
+                .max(self.heading + self.curvature * self.length),
+        );
+        let quarter = FRAC_PI_2;
+        let (from, to) = (
+            (first / quarter).ceil() as i64,
+            (last / quarter).floor() as i64,
+        );
+        for turn in from..=to {
+            take(self.curve_point((turn as f64 * quarter - self.heading) / self.curvature));
+        }
+        let margin = self.half_width + EPS;
         [
-            [self.center[0] - rx, self.center[1] - ry],
-            [self.center[0] + rx, self.center[1] + ry],
+            [low[0] - margin, low[1] - margin],
+            [high[0] + margin, high[1] + margin],
         ]
+    }
+
+    /// Расстояние вдоль луча `origin + t · direction` до полотна дороги: полосы шириной дороги вдоль оси на высоте её
+    /// профиля. `None`, если луч не идёт вниз или не встретил полосу.
+    pub(super) fn ray_hit(&self, origin: [f64; 3], direction: [f64; 3]) -> Option<f64> {
+        if direction[2] > -EPS {
+            return None;
+        }
+        let [low, high] = self.bounds();
+        let (mut from, mut to) = (0.0_f64, f64::INFINITY);
+        for axis in 0..2 {
+            if direction[axis].abs() < EPS {
+                if origin[axis] < low[axis] || origin[axis] > high[axis] {
+                    return None;
+                }
+                continue;
+            }
+            let ends = [
+                (low[axis] - origin[axis]) / direction[axis],
+                (high[axis] - origin[axis]) / direction[axis],
+            ];
+            from = from.max(ends[0].min(ends[1]));
+            to = to.min(ends[0].max(ends[1]));
+        }
+        let (top, bottom) = (
+            self.z[0].max(self.z[1]) + AXIS_EPS,
+            self.z[0].min(self.z[1]) - AXIS_EPS,
+        );
+        from = from.max((top - origin[2]) / direction[2]);
+        to = to.min((bottom - origin[2]) / direction[2]);
+        if from > to {
+            return None;
+        }
+        let place = |t: f64| [origin[0] + t * direction[0], origin[1] + t * direction[1]];
+        let gap = |t: f64| {
+            let point = place(t);
+            origin[2] + t * direction[2] - self.height_at(self.closest(point).s)
+        };
+        let plan = direction[0].hypot(direction[1]);
+        let steps = (((to - from) * plan / (self.half_width / 2.0).max(0.05)).ceil() as usize)
+            .clamp(1, RAY_STEPS_MAX);
+        let mut above: Option<f64> = None;
+        for step in 0..=steps {
+            let t = from + (to - from) * step as f64 / steps as f64;
+            let here = gap(t);
+            if here <= 0.0 && self.contains(place(t)) {
+                let (mut near, mut far) = (above.unwrap_or(t), t);
+                for _ in 0..RAY_BISECTIONS {
+                    let middle = (near + far) / 2.0;
+                    if gap(middle) > 0.0 {
+                        near = middle;
+                    } else {
+                        far = middle;
+                    }
+                }
+                if self.contains(place(far)) {
+                    return Some(far);
+                }
+            }
+            above = (here > 0.0).then_some(t);
+        }
+        None
+    }
+
+    /// Охват полосы: наибольшая из длины и ширины.
+    fn reach(&self) -> f64 {
+        self.length.max(self.width())
+    }
+
+    /// Точки оси через равные доли длины, поворот между соседними не больше `AXIS_SAMPLE_DEGREES`, с высотой.
+    pub(super) fn axis_samples(&self) -> Vec<[f64; 3]> {
+        let turn = (self.curvature * self.length).abs().to_degrees();
+        let parts = (turn / AXIS_SAMPLE_DEGREES).ceil().max(1.0) as usize;
+        (0..=parts)
+            .map(|k| {
+                let s = self.length * k as f64 / parts as f64;
+                let point = self.point_at(s);
+                [point[0], point[1], self.height_at(s)]
+            })
+            .collect()
     }
 }
 
+/// Точки пересечения осей двух дорог.
+fn axes_cross(first: &Road, second: &Road) -> Vec<Vec2> {
+    if first.is_straight() && second.is_straight() {
+        return straight_cross(first, second).into_iter().collect();
+    }
+    let candidates = match (first.is_straight(), second.is_straight()) {
+        (false, true) => line_circle(second, first),
+        (true, false) => line_circle(first, second),
+        _ => circle_circle(first, second),
+    };
+    candidates
+        .into_iter()
+        .filter(|&point| {
+            first.closest(point).distance <= AXIS_EPS && second.closest(point).distance <= AXIS_EPS
+        })
+        .collect()
+}
+
+fn straight_cross(first: &Road, second: &Road) -> Option<Vec2> {
+    let (a1, a2) = (first.end(0), second.end(0));
+    let r = sub(first.end(1), a1);
+    let s = sub(second.end(1), a2);
+    let denominator = cross(r, s);
+    if denominator.abs() < EPS * EPS {
+        return None;
+    }
+    let between = sub(a2, a1);
+    let along_first = cross(between, s) / denominator;
+    let along_second = cross(between, r) / denominator;
+    let within = |share: f64, len: f64| share * len >= -EPS && (share - 1.0) * len <= EPS;
+    (within(along_first, length(r)) && within(along_second, length(s)))
+        .then(|| add_scaled(a1, r, along_first))
+}
+
+/// Точки пересечения целых носителей осей двух дорог — прямых и окружностей дуг.
+pub(super) fn carriers_cross(first: &Road, second: &Road) -> Vec<Vec2> {
+    match (first.is_straight(), second.is_straight()) {
+        (true, true) => {
+            let denominator = cross(first.dir, second.dir);
+            if denominator.abs() < EPS * EPS {
+                return Vec::new();
+            }
+            let along = cross(sub(second.end(0), first.end(0)), second.dir) / denominator;
+            vec![add_scaled(first.end(0), first.dir, along)]
+        }
+        (false, true) => line_circle(second, first),
+        (true, false) => line_circle(first, second),
+        (false, false) => circle_circle(first, second),
+    }
+}
+
+/// Пересечения прямой `line` (целой) с окружностью дуги `arc` (целой).
+fn line_circle(line: &Road, arc: &Road) -> Vec<Vec2> {
+    let origin = line.end(0);
+    let center = arc.arc_center();
+    let spoke = sub(origin, center);
+    let half = dot(line.dir, spoke);
+    let discriminant = half * half - (dot(spoke, spoke) - arc.radius().powi(2));
+    if discriminant < 0.0 {
+        return Vec::new();
+    }
+    let root = discriminant.sqrt();
+    let mut points = vec![add_scaled(origin, line.dir, -half - root)];
+    if root > 0.0 {
+        points.push(add_scaled(origin, line.dir, -half + root));
+    }
+    points
+}
+
+/// Пересечения двух окружностей дуг.
+fn circle_circle(first: &Road, second: &Road) -> Vec<Vec2> {
+    let (c1, c2) = (first.arc_center(), second.arc_center());
+    let (r1, r2) = (first.radius(), second.radius());
+    let between = sub(c2, c1);
+    let gap = length(between);
+    if gap < EPS || gap > r1 + r2 + EPS || gap < (r1 - r2).abs() - EPS {
+        return Vec::new();
+    }
+    let along = (gap * gap + r1 * r1 - r2 * r2) / (2.0 * gap);
+    let height = (r1 * r1 - along * along).max(0.0).sqrt();
+    let axis = [between[0] / gap, between[1] / gap];
+    let middle = add_scaled(c1, axis, along);
+    let mut points = vec![add_scaled(middle, [-axis[1], axis[0]], height)];
+    if height > 0.0 {
+        points.push(add_scaled(middle, [-axis[1], axis[0]], -height));
+    }
+    points
+}
+
 /// Связь двух дорог: точка на оси каждой. Концом `end_of_a` называется тот конец оси дороги `a`,
-/// что лежит внутри прямоугольника `b`; у пересечения осей его нет.
+/// что лежит внутри полосы `b`; у пересечения осей его нет.
 #[derive(Debug, Clone, Copy)]
 pub(super) struct Link {
     pub(super) a: usize,
@@ -162,20 +644,21 @@ pub(super) struct Link {
     pub(super) point_b: Vec2,
 }
 
+/// Кусок сети между узлами `a` и `b`: часть оси дороги `road` от `span[0]` до `span[1]` либо, без `span`, короткий
+/// отрезок связи от конца оси дороги `road` до оси другой. `z` — высоты в узлах.
 #[derive(Debug, Clone, Copy)]
 struct Piece {
     a: usize,
     b: usize,
     road: usize,
     length: f64,
+    span: Option<[f64; 2]>,
+    z: [f64; 2],
 }
 
-/// Пары дорог, чьи прямоугольники могут пересекаться, — через сетку, а не каждая с каждой.
+/// Пары дорог, чьи полосы могут пересекаться, — через сетку, а не каждая с каждой.
 fn candidate_pairs(roads: &[Road]) -> Vec<(usize, usize)> {
-    let cell = (roads
-        .iter()
-        .map(|road| road.half_length.max(road.half_width) * 2.0)
-        .sum::<f64>()
+    let cell = (roads.iter().map(|road| road.reach() * 2.0).sum::<f64>()
         / roads.len().max(1) as f64)
         .max(1.0);
     let mut cells: BTreeMap<(i64, i64), Vec<usize>> = BTreeMap::new();
@@ -208,46 +691,36 @@ fn candidate_pairs(roads: &[Road]) -> Vec<(usize, usize)> {
     pairs
 }
 
-/// Точка пересечения осей двух дорог, если они пересекаются.
-fn axes_cross(first: &Road, second: &Road) -> Option<Vec2> {
-    let (a1, a2) = (first.end(0), second.end(0));
-    let r = sub(first.end(1), a1);
-    let s = sub(second.end(1), a2);
-    let denominator = cross(r, s);
-    if denominator.abs() < EPS * EPS {
-        return None;
-    }
-    let between = sub(a2, a1);
-    let along_first = cross(between, s) / denominator;
-    let along_second = cross(between, r) / denominator;
-    let within = |share: f64, len: f64| share * len >= -EPS && (share - 1.0) * len <= EPS;
-    (within(along_first, length(r)) && within(along_second, length(s)))
-        .then(|| add_scaled(a1, r, along_first))
-}
-
 fn links_between(roads: &[Road], a: usize, b: usize, links: &mut Vec<Link>) {
-    if (roads[a].z - roads[b].z).abs() > MAX_HEIGHT_GAP + EPS {
-        return;
-    }
-    if let Some(point) = axes_cross(&roads[a], &roads[b]) {
-        links.push(Link {
-            a,
-            b,
-            end_of_a: None,
-            point_a: point,
-            point_b: point,
-        });
+    for point in axes_cross(&roads[a], &roads[b]) {
+        let gap = (roads[a].height_at(roads[a].closest(point).s)
+            - roads[b].height_at(roads[b].closest(point).s))
+        .abs();
+        if gap <= MAX_HEIGHT_GAP + EPS {
+            links.push(Link {
+                a,
+                b,
+                end_of_a: None,
+                point_a: point,
+                point_b: point,
+            });
+        }
     }
     for (carried, carrier) in [(a, b), (b, a)] {
         for end in 0..2 {
             let point = roads[carried].end(end);
-            if roads[carrier].contains(point) {
+            if !roads[carrier].contains(point) {
+                continue;
+            }
+            let near = roads[carrier].closest(point);
+            let gap = (roads[carried].z[end] - roads[carrier].height_at(near.s)).abs();
+            if gap <= MAX_HEIGHT_GAP + EPS {
                 links.push(Link {
                     a: carried,
                     b: carrier,
                     end_of_a: Some(end),
                     point_a: point,
-                    point_b: roads[carrier].closest_on_axis(point).0,
+                    point_b: near.point,
                 });
             }
         }
@@ -263,7 +736,7 @@ pub(super) fn find_links(roads: &[Road]) -> Vec<Link> {
 }
 
 /// Узлы сети и куски между ними: узлы — концы осей и точки связей, куски — части осей между
-/// соседними узлами и короткие куски связей «конец в прямоугольнике другой дороги».
+/// соседними узлами и короткие куски связей «конец в полосе другой дороги».
 fn cut_into_pieces(roads: &[Road], links: &[Link]) -> (Vec<Vec2>, Vec<Piece>) {
     let mut nodes: Vec<Vec2> = Vec::new();
     let mut cuts: Vec<Vec<(f64, usize)>> = Vec::with_capacity(roads.len());
@@ -277,12 +750,12 @@ fn cut_into_pieces(roads: &[Road], links: &[Link]) -> (Vec<Vec2>, Vec<Piece>) {
     }
     let mut pieces = Vec::new();
     for link in links {
-        let along_b = roads[link.b].closest_on_axis(link.point_b).1;
+        let along_b = roads[link.b].closest(link.point_b).s;
         match link.end_of_a {
             None => {
                 let node = nodes.len();
                 nodes.push(link.point_a);
-                cuts[link.a].push((roads[link.a].closest_on_axis(link.point_a).1, node));
+                cuts[link.a].push((roads[link.a].closest(link.point_a).s, node));
                 cuts[link.b].push((along_b, node));
             }
             Some(end) if distance(link.point_a, link.point_b) <= EPS => {
@@ -297,6 +770,8 @@ fn cut_into_pieces(roads: &[Road], links: &[Link]) -> (Vec<Vec2>, Vec<Piece>) {
                     b: node,
                     road: link.a,
                     length: distance(link.point_a, link.point_b),
+                    span: None,
+                    z: [roads[link.a].z[end], roads[link.b].height_at(along_b)],
                 });
             }
         }
@@ -310,6 +785,11 @@ fn cut_into_pieces(roads: &[Road], links: &[Link]) -> (Vec<Vec2>, Vec<Piece>) {
                     b: pair[1].1,
                     road,
                     length: pair[1].0 - pair[0].0,
+                    span: Some([pair[0].0, pair[1].0]),
+                    z: [
+                        roads[road].height_at(pair[0].0),
+                        roads[road].height_at(pair[1].0),
+                    ],
                 });
             }
         }
@@ -335,7 +815,23 @@ impl Side {
     }
 }
 
-/// Часть пути по дороге: от `from` до `to` вдоль одной дороги, предельная скорость на ней `cap`.
+/// Высота и уклон по ходу у одной точки части пути: уклон — подъём на единицу пути в сторону хода.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Rise {
+    z: f64,
+    slope: f64,
+}
+
+/// Дуга части пути: центр, радиус и поворот от начала к концу со знаком (против часовой в осях сцены — плюс).
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct LegArc {
+    center: Vec2,
+    radius: f64,
+    sweep: f64,
+}
+
+/// Часть пути по дороге: от `from` до `to` вдоль одной дороги, предельная скорость на ней `cap`. Часть по дуге
+/// оси идёт по дуге; высота и уклон — по профилю дороги.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Leg {
     pub from: Vec2,
@@ -343,11 +839,96 @@ pub struct Leg {
     pub road: usize,
     pub width: f64,
     pub cap: Option<f64>,
+    arc: Option<LegArc>,
+    rise: [Rise; 2],
+    /// Расстояния по оси дороги до начала и конца части; нет у короткой части связи.
+    span: Option<[f64; 2]>,
 }
 
 impl Leg {
-    fn length(&self) -> f64 {
-        distance(self.from, self.to)
+    /// Прямая ровная часть между точками.
+    #[cfg(test)]
+    fn straight(from: Vec2, to: Vec2, road: usize, width: f64, cap: Option<f64>) -> Leg {
+        Leg {
+            from,
+            to,
+            road,
+            width,
+            cap,
+            arc: None,
+            rise: [Rise { z: 0.0, slope: 0.0 }; 2],
+            span: None,
+        }
+    }
+
+    /// Длина части: по дуге, если она идёт по дуге.
+    pub fn length(&self) -> f64 {
+        match self.arc {
+            Some(arc) => arc.radius * arc.sweep.abs(),
+            None => distance(self.from, self.to),
+        }
+    }
+
+    /// Направление хода у начала и у конца части.
+    fn directions(&self) -> (Vec2, Vec2) {
+        match self.arc {
+            None => {
+                let dir = unit(sub(self.to, self.from));
+                (dir, dir)
+            }
+            Some(arc) => {
+                let tangent = |point: Vec2| {
+                    let spoke = sub(point, arc.center);
+                    let along = arc.sweep.signum() / arc.radius;
+                    [-spoke[1] * along, spoke[0] * along]
+                };
+                (tangent(self.from), tangent(self.to))
+            }
+        }
+    }
+
+    /// Сдвиг своей стороны от оси в сторону правой руки, клетки.
+    fn shift(&self, side: Side) -> f64 {
+        side.share() * SIDE_SHIFT_SHARE * self.width
+    }
+
+    /// Точки своей стороны от начала части до конца: у прямой две, у дуги — вершины ломаной на концентрической дуге
+    /// не реже чем через `AXIS_SAMPLE_DEGREES`. С высотой и уклоном каждой.
+    fn side_curve(&self, side: Side) -> Vec<(Vec2, Rise)> {
+        let shift = self.shift(side);
+        let rise_at = |share: f64| Rise {
+            z: lerp(self.rise[0].z, self.rise[1].z, share),
+            slope: lerp(self.rise[0].slope, self.rise[1].slope, share),
+        };
+        match self.arc {
+            None => {
+                let dir = unit(sub(self.to, self.from));
+                let right = [-dir[1], dir[0]];
+                vec![
+                    (add_scaled(self.from, right, shift), rise_at(0.0)),
+                    (add_scaled(self.to, right, shift), rise_at(1.0)),
+                ]
+            }
+            Some(arc) => {
+                let radius = arc.radius - shift * arc.sweep.signum();
+                let spoke = sub(self.from, arc.center);
+                let parts = (arc.sweep.abs().to_degrees() / PATH_SAMPLE_DEGREES)
+                    .ceil()
+                    .max(1.0) as usize;
+                (0..=parts)
+                    .map(|k| {
+                        let share = k as f64 / parts as f64;
+                        let (sin, cos) = libm::sincos(arc.sweep * share);
+                        let turned = [
+                            spoke[0] * cos - spoke[1] * sin,
+                            spoke[0] * sin + spoke[1] * cos,
+                        ];
+                        let point = add_scaled(arc.center, turned, radius / arc.radius);
+                        (point, rise_at(share))
+                    })
+                    .collect()
+            }
+        }
     }
 }
 
@@ -418,21 +999,29 @@ impl PartialOrd for Waiting {
     }
 }
 
+/// Ось дороги для редактора: точки с высотой от начала до конца и изгиб в градусах.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AxisView {
+    pub points: Vec<[f64; 3]>,
+    pub bend: f64,
+}
+
 /// Что сеть рассказывает редактору о выбранной дороге.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RoadLinks {
-    pub z: f64,
-    pub axis: [Vec2; 2],
-    pub links: Vec<(Vec2, u32)>,
-    pub ends: Vec<Vec2>,
-    pub neighbours: Vec<(u32, [Vec2; 2], f64)>,
+    pub axis: AxisView,
+    /// Середина оси: здесь ручка изгиба.
+    pub handle: [f64; 3],
+    pub links: Vec<([f64; 3], u32)>,
+    pub ends: Vec<[f64; 3]>,
+    pub neighbours: Vec<(u32, AxisView)>,
 }
 
 /// Сеть дорог: узлы, куски и связи. Собирается заново, когда меняются дороги, а предельные скорости
 /// дорог — только время на их кусках.
 #[derive(Debug, Default)]
 pub struct RoadNetwork {
-    shapes: Vec<RoadShape>,
+    forms: Vec<RoadForm>,
     speeds: Vec<Option<f64>>,
     roads: Vec<Road>,
     nodes: Vec<Vec2>,
@@ -440,7 +1029,7 @@ pub struct RoadNetwork {
     around: Vec<Vec<usize>>,
     links: Vec<Link>,
     version: u64,
-    fresh_shapes: Vec<RoadShape>,
+    fresh_forms: Vec<RoadForm>,
     fresh_speeds: Vec<Option<f64>>,
 }
 
@@ -454,11 +1043,11 @@ impl RoadNetwork {
         self.roads.is_empty()
     }
 
-    /// Приводит сеть к дорогам `shapes` (по возрастанию номера) и их скоростям `speeds`; `true`, если
+    /// Приводит сеть к дорогам `forms` (по возрастанию номера) и их скоростям `speeds`; `true`, если
     /// что-то изменилось.
-    pub fn sync(&mut self, shapes: &[RoadShape], speeds: &[Option<f64>]) -> bool {
-        if self.shapes != shapes {
-            self.rebuild(shapes);
+    pub fn sync(&mut self, forms: &[RoadForm], speeds: &[Option<f64>]) -> bool {
+        if self.forms != forms {
+            self.rebuild(forms);
             self.speeds = speeds.to_vec();
             self.version += 1;
             return true;
@@ -475,13 +1064,13 @@ impl RoadNetwork {
     /// вызовами, и шаг без перемен ничего не выделяет.
     pub fn sync_with(
         &mut self,
-        fill: impl FnOnce(&mut Vec<RoadShape>, &mut Vec<Option<f64>>),
+        fill: impl FnOnce(&mut Vec<RoadForm>, &mut Vec<Option<f64>>),
     ) -> bool {
-        let mut shapes = std::mem::take(&mut self.fresh_shapes);
+        let mut forms = std::mem::take(&mut self.fresh_forms);
         let mut speeds = std::mem::take(&mut self.fresh_speeds);
-        fill(&mut shapes, &mut speeds);
-        let changed = self.sync(&shapes, &speeds);
-        self.fresh_shapes = shapes;
+        fill(&mut forms, &mut speeds);
+        let changed = self.sync(&forms, &speeds);
+        self.fresh_forms = forms;
         self.fresh_speeds = speeds;
         changed
     }
@@ -492,9 +1081,9 @@ impl RoadNetwork {
         self.version += 1;
     }
 
-    fn rebuild(&mut self, shapes: &[RoadShape]) {
-        self.shapes = shapes.to_vec();
-        self.roads = shapes.iter().map(Road::from_shape).collect();
+    fn rebuild(&mut self, forms: &[RoadForm]) {
+        self.forms = forms.to_vec();
+        self.roads = forms.iter().map(Road::from_form).collect();
         self.links = find_links(&self.roads);
         (self.nodes, self.pieces) = cut_into_pieces(&self.roads, &self.links);
         self.around = vec![Vec::new(); self.nodes.len()];
@@ -522,25 +1111,36 @@ impl RoadNetwork {
         Some(piece.length / self.travel_speed(piece.road, speed)?)
     }
 
-    fn ends_of(&self, piece: &Piece) -> [Vec2; 2] {
-        [self.nodes[piece.a], self.nodes[piece.b]]
+    /// Ближайшая к `p` точка куска, её доля пути по куску от узла `a` к `b` и высота в ней.
+    fn piece_closest(&self, piece: &Piece, p: Vec2) -> (Vec2, f64, f64) {
+        let (point, share) = match piece.span {
+            Some([low, high]) => {
+                let found = self.roads[piece.road].closest_between(p, low, high);
+                let share = if high - low < EPS {
+                    0.0
+                } else {
+                    (found.s - low) / (high - low)
+                };
+                (found.point, share)
+            }
+            None => closest_on_segment(p, self.nodes[piece.a], self.nodes[piece.b]),
+        };
+        (point, share, lerp(piece.z[0], piece.z[1], share))
     }
 
     /// Въезд: ближайшая к `start` точка осей открытых дорог; с `z` — среди дорог не выше и не ниже
-    /// ступеньки, а если таких нет, среди всех.
+    /// ступеньки в этой точке, а если таких нет, среди всех.
     fn find_entry(&self, start: Vec2, z: Option<f64>) -> Option<Entry> {
         let nearest = |near_z: Option<f64>| {
             let mut best: Option<(f64, Entry)> = None;
             for (index, piece) in self.pieces.iter().enumerate() {
-                if !self.is_open(piece.road)
-                    || near_z.is_some_and(|z| {
-                        (self.roads[piece.road].z - z).abs() > MAX_HEIGHT_GAP + EPS
-                    })
-                {
+                if !self.is_open(piece.road) {
                     continue;
                 }
-                let [a, b] = self.ends_of(piece);
-                let (point, share) = closest_on_segment(start, a, b);
+                let (point, share, height) = self.piece_closest(piece, start);
+                if near_z.is_some_and(|z| (height - z).abs() > MAX_HEIGHT_GAP + EPS) {
+                    continue;
+                }
                 let gap = distance(start, point);
                 if best.is_none_or(|(known, _)| gap < known - 1e-12) {
                     best = Some((
@@ -611,8 +1211,7 @@ impl RoadNetwork {
             let Some(whole) = self.piece_time(piece, speed) else {
                 continue;
             };
-            let [a, b] = self.ends_of(piece);
-            let (point, share) = closest_on_segment(goal, a, b);
+            let (point, share, _) = self.piece_closest(piece, goal);
             let mut arrival: Option<(f64, Option<usize>)> = None;
             let mut consider = |time: f64, from_node: Option<usize>| {
                 if arrival.is_none_or(|(known, _)| time < known) {
@@ -645,14 +1244,49 @@ impl RoadNetwork {
         best
     }
 
-    fn leg(&self, from: Vec2, to: Vec2, road: usize) -> Leg {
-        Leg {
-            from,
-            to,
-            road,
-            width: self.roads[road].half_width * 2.0,
-            cap: self.cap(road),
-        }
+    /// Часть пути по `piece` от точки `from` до точки `to`, обе лежат на куске.
+    fn leg(&self, piece: &Piece, from: Vec2, to: Vec2) -> Leg {
+        let road = &self.roads[piece.road];
+        let cap = self.cap(piece.road);
+        let width = road.width();
+        let Some([low, high]) = piece.span else {
+            let node = self.nodes[piece.a];
+            let span = distance(node, self.nodes[piece.b]);
+            let share_of = |point: Vec2| {
+                if span < EPS {
+                    0.0
+                } else {
+                    distance(node, point) / span
+                }
+            };
+            let outward = if distance(node, road.end(1)) <= distance(node, road.end(0)) {
+                1.0
+            } else {
+                -1.0
+            };
+            let away_from_end = if share_of(from) <= share_of(to) {
+                1.0
+            } else {
+                -1.0
+            };
+            let slope = road.slope() * outward * away_from_end;
+            return Leg {
+                from,
+                to,
+                road: piece.road,
+                width,
+                cap,
+                arc: None,
+                rise: [share_of(from), share_of(to)].map(|share| Rise {
+                    z: lerp(piece.z[0], piece.z[1], share),
+                    slope,
+                }),
+                span: None,
+            };
+        };
+        let s_from = road.closest_between(from, low, high).s;
+        let s_to = road.closest_between(to, low, high).s;
+        road_leg(road, piece.road, cap, [s_from, s_to], [from, to])
     }
 
     /// Части пути от въезда до съезда: куски, которыми едет машина, без нулевых и со слитыми
@@ -661,7 +1295,7 @@ impl RoadNetwork {
         let mut raw: Vec<Leg> = Vec::new();
         let first_piece = self.pieces[entry.piece];
         match exit.from_node {
-            None => raw.push(self.leg(entry.point, exit.point, first_piece.road)),
+            None => raw.push(self.leg(&first_piece, entry.point, exit.point)),
             Some(last) => {
                 let mut chain = Vec::new();
                 let mut node = last;
@@ -669,31 +1303,64 @@ impl RoadNetwork {
                     chain.push((piece, from, node));
                     node = from;
                 }
-                raw.push(self.leg(entry.point, self.nodes[node], first_piece.road));
+                raw.push(self.leg(&first_piece, entry.point, self.nodes[node]));
                 for &(piece, from, to) in chain.iter().rev() {
-                    raw.push(self.leg(self.nodes[from], self.nodes[to], self.pieces[piece].road));
+                    let piece = self.pieces[piece];
+                    raw.push(self.leg(&piece, self.nodes[from], self.nodes[to]));
                 }
-                raw.push(self.leg(self.nodes[last], exit.point, self.pieces[exit.piece].road));
+                let last_piece = self.pieces[exit.piece];
+                raw.push(self.leg(&last_piece, self.nodes[last], exit.point));
             }
         }
         let mut legs: Vec<Leg> = Vec::new();
         for leg in raw.into_iter().filter(|leg| leg.length() > EPS) {
             if let Some(previous) = legs.last_mut()
-                && previous.road == leg.road
-                && cross(
-                    unit(sub(previous.to, previous.from)),
-                    unit(sub(leg.to, leg.from)),
-                )
-                .abs()
-                    < EPS
-                && dot(sub(previous.to, previous.from), sub(leg.to, leg.from)) > 0.0
+                && let Some(merged) = self.merged(previous, &leg)
             {
-                previous.to = leg.to;
+                *previous = merged;
             } else {
                 legs.push(leg);
             }
         }
         legs
+    }
+
+    /// Две части подряд по одной дороге в одну сторону — одна часть.
+    fn merged(&self, previous: &Leg, next: &Leg) -> Option<Leg> {
+        if previous.road != next.road {
+            return None;
+        }
+        match (previous.span, next.span, previous.arc, next.arc) {
+            (Some(first), Some(second), _, _) => {
+                let same_way = (first[1] - first[0]) * (second[1] - second[0]) > 0.0
+                    && (first[1] - second[0]).abs() <= AXIS_EPS;
+                same_way.then(|| {
+                    road_leg(
+                        &self.roads[previous.road],
+                        previous.road,
+                        previous.cap,
+                        [first[0], second[1]],
+                        [previous.from, next.to],
+                    )
+                })
+            }
+            (_, _, None, None) => {
+                let straight_on = cross(
+                    unit(sub(previous.to, previous.from)),
+                    unit(sub(next.to, next.from)),
+                )
+                .abs()
+                    < EPS
+                    && dot(sub(previous.to, previous.from), sub(next.to, next.from)) > 0.0;
+                straight_on.then(|| Leg {
+                    to: next.to,
+                    rise: [previous.rise[0], next.rise[1]],
+                    span: None,
+                    ..*previous
+                })
+            }
+            _ => None,
+        }
     }
 
     /// Самый быстрый путь по сети от `start` к `goal` для машины со скоростью `speed`; `None` —
@@ -739,12 +1406,22 @@ impl RoadNetwork {
         self.roads.binary_search_by_key(&id, |road| road.id).ok()
     }
 
+    fn axis_view(&self, index: usize) -> AxisView {
+        let road = &self.roads[index];
+        AxisView {
+            points: road.axis_samples(),
+            bend: (road.curvature() * road.length()).to_degrees(),
+        }
+    }
+
     /// Связи дороги `id`; `None`, если такой дороги в сети нет.
     pub fn links_of(&self, id: u32) -> Option<RoadLinks> {
         let index = self.index_of(id)?;
         let road = &self.roads[index];
-        let mut links = Vec::new();
-        let mut neighbours: Vec<(u32, [Vec2; 2], f64)> = Vec::new();
+        let with_height =
+            |road: &Road, point: Vec2| [point[0], point[1], road.height_at(road.closest(point).s)];
+        let mut links: Vec<(Vec2, u32)> = Vec::new();
+        let mut neighbours: Vec<(u32, AxisView)> = Vec::new();
         for link in &self.links {
             let (point, other) = if link.a == index {
                 (link.point_a, link.b)
@@ -761,25 +1438,67 @@ impl RoadNetwork {
                 continue;
             }
             links.push((point, other_road.id));
-            if !neighbours
-                .iter()
-                .any(|(known, _, _)| *known == other_road.id)
-            {
-                neighbours.push((other_road.id, other_road.axis(), other_road.z));
+            if !neighbours.iter().any(|(known, _)| *known == other_road.id) {
+                neighbours.push((other_road.id, self.axis_view(other)));
             }
         }
         let ends = (0..2)
             .map(|end| road.end(end))
             .filter(|&end| links.iter().all(|(point, _)| distance(*point, end) > EPS))
+            .map(|end| with_height(road, end))
             .collect();
+        let middle = road.length() / 2.0;
         Some(RoadLinks {
-            z: road.z,
-            axis: road.axis(),
-            links,
+            axis: self.axis_view(index),
+            handle: with_height(road, road.point_at(middle)),
+            links: links
+                .into_iter()
+                .map(|(point, id)| (with_height(road, point), id))
+                .collect(),
             ends,
             neighbours,
         })
     }
+}
+
+/// Часть пути по оси дороги `road` от расстояния `span[0]` до `span[1]` между точками `points`.
+fn road_leg(road: &Road, index: usize, cap: Option<f64>, span: [f64; 2], points: [Vec2; 2]) -> Leg {
+    let forward = if span[1] >= span[0] { 1.0 } else { -1.0 };
+    let slope = road.slope() * forward;
+    let arc = (!road.is_straight()).then(|| LegArc {
+        center: road.arc_center(),
+        radius: road.radius(),
+        sweep: road.curvature() * (span[1] - span[0]),
+    });
+    Leg {
+        from: points[0],
+        to: points[1],
+        road: index,
+        width: road.width(),
+        cap,
+        arc,
+        rise: span.map(|s| Rise {
+            z: road.height_at(s),
+            slope,
+        }),
+        span: Some(span),
+    }
+}
+
+/// Высота и наклон машины на дороге в её точке.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Lift {
+    /// Высота дороги в точке машины.
+    pub z: f64,
+    /// Подъём на единицу пути в сторону хода: тангенс наклона вдоль длины машины, на подъёме больше нуля.
+    pub slope: f64,
+}
+
+/// Высота и уклон примитива пути; нет у кусков вне дороги.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct Climb {
+    z: [f64; 2],
+    slope: f64,
 }
 
 /// Часть пути машины: прямая или дуга окружности. `cap` — предельная скорость на ней.
@@ -789,6 +1508,7 @@ enum Primitive {
         from: Vec2,
         to: Vec2,
         cap: Option<f64>,
+        climb: Option<Climb>,
     },
     Arc {
         center: Vec2,
@@ -797,6 +1517,7 @@ enum Primitive {
         /// Поворот по дуге в радианах со знаком: куда повернут путь.
         sweep: f64,
         cap: Option<f64>,
+        climb: Option<Climb>,
     },
 }
 
@@ -811,6 +1532,38 @@ impl Primitive {
     fn cap(&self) -> Option<f64> {
         match self {
             Primitive::Line { cap, .. } | Primitive::Arc { cap, .. } => *cap,
+        }
+    }
+
+    fn climb(&self) -> Option<Climb> {
+        match self {
+            Primitive::Line { climb, .. } | Primitive::Arc { climb, .. } => *climb,
+        }
+    }
+
+    fn with_climb(self, new: Option<Climb>) -> Primitive {
+        match self {
+            Primitive::Line { from, to, cap, .. } => Primitive::Line {
+                from,
+                to,
+                cap,
+                climb: new,
+            },
+            Primitive::Arc {
+                center,
+                start,
+                radius,
+                sweep,
+                cap,
+                ..
+            } => Primitive::Arc {
+                center,
+                start,
+                radius,
+                sweep,
+                cap,
+                climb: new,
+            },
         }
     }
 
@@ -850,23 +1603,15 @@ fn min_cap(a: Option<f64>, b: Option<f64>) -> Option<f64> {
     }
 }
 
-/// Линия своей стороны одной части пути: начало, конец и направление.
-fn side_line(leg: &Leg, side: Side) -> (Vec2, Vec2, Vec2) {
-    let dir = unit(sub(leg.to, leg.from));
-    let shift = side.share() * SIDE_SHIFT_SHARE * leg.width;
-    let right = [-dir[1], dir[0]];
-    (
-        add_scaled(leg.from, right, shift),
-        add_scaled(leg.to, right, shift),
-        dir,
-    )
-}
-
 /// Точка, где линии сторон двух частей продолжаются до пересечения; `None` — на стыке машина идёт
-/// по прямой: разворот, параллельные линии или пересечение дальше ширины дороги от узла.
+/// по прямой: разворот, параллельные линии или пересечение дальше ширины дороги от узла. Линии идут по
+/// касательным сторон в узле.
 fn joint_point(previous: Vec2, first: &Leg, second: &Leg, side: Side) -> Option<Vec2> {
-    let (a1, _, d1) = side_line(first, side);
-    let (a2, b2, d2) = side_line(second, side);
+    let before = first.side_curve(side);
+    let after = second.side_curve(side);
+    let (a1, d1) = (before[before.len() - 1].0, first.directions().1);
+    let (a2, d2) = (after[0].0, second.directions().0);
+    let b2 = after[after.len() - 1].0;
     let turn = libm::atan2(cross(d1, d2).abs(), dot(d1, d2));
     if turn > MAX_JOINT_TURN_DEGREES.to_radians() || cross(d1, d2).abs() < EPS {
         return None;
@@ -880,22 +1625,39 @@ fn joint_point(previous: Vec2, first: &Leg, second: &Leg, side: Side) -> Option<
         .then_some(point)
 }
 
-/// Ломаная пути: вершины, ширина дороги у каждой и предельная скорость на отрезке, что к ней идёт.
+/// Ломаная пути: вершины, ширина дороги у каждой, предельная скорость и высота с уклоном на отрезке, что к ней
+/// идёт.
 struct Polyline {
     points: Vec<Vec2>,
     widths: Vec<f64>,
     caps: Vec<Option<f64>>,
+    /// Высота и уклон при подходе к вершине по отрезку, что к ней идёт.
+    rises: Vec<Option<Rise>>,
+    /// Высота в вершине в начале отрезка, что от неё уходит: на стыке двух дорог, чьи высоты разошлись, отрезок
+    /// начинается на высоте следующей дороги.
+    starts: Vec<Option<f64>>,
 }
 
 impl Polyline {
-    fn push(&mut self, point: Vec2, width: f64, cap: Option<f64>) {
+    fn push(&mut self, point: Vec2, width: f64, cap: Option<f64>, rise: Option<Rise>) {
         let last = self.points[self.points.len() - 1];
         if distance(last, point) <= EPS {
+            let known = self.rises.len() - 1;
+            self.rises[known] = self.rises[known].or(rise);
+            if let Some(rise) = rise {
+                self.starts[known] = Some(rise.z);
+            }
             return;
         }
         self.points.push(point);
         self.widths.push(width);
         self.caps.push(cap);
+        self.rises.push(rise);
+        self.starts.push(rise.map(|rise| rise.z));
+    }
+
+    fn last(&self) -> Vec2 {
+        self.points[self.points.len() - 1]
     }
 }
 
@@ -904,27 +1666,49 @@ fn polyline_of(start: Vec2, goal: Vec2, legs: &[Leg], side: Side) -> Polyline {
         points: vec![start],
         widths: vec![0.0],
         caps: vec![None],
+        rises: vec![None],
+        starts: vec![None],
     };
-    let first = &legs[0];
-    line.push(side_line(first, side).0, first.width, None);
-    for pair in legs.windows(2) {
-        let (before, after) = (&pair[0], &pair[1]);
-        let previous = line.points[line.points.len() - 1];
-        match joint_point(previous, before, after, side) {
-            Some(point) => line.push(point, before.width.min(after.width), before.cap),
+    let mut joined = false;
+    for (index, leg) in legs.iter().enumerate() {
+        let curve = leg.side_curve(side);
+        let (first, interior, last) =
+            (curve[0], &curve[1..curve.len() - 1], curve[curve.len() - 1]);
+        if !joined {
+            let cap = if index == 0 { None } else { leg.cap };
+            line.push(first.0, leg.width, cap, Some(first.1));
+        }
+        for &(point, rise) in interior {
+            line.push(point, leg.width, leg.cap, Some(rise));
+        }
+        joined = false;
+        let Some(next) = legs.get(index + 1) else {
+            line.push(last.0, leg.width, leg.cap, Some(last.1));
+            continue;
+        };
+        match joint_point(line.last(), leg, next, side) {
+            Some(point) => {
+                let rise = Rise {
+                    z: (last.1.z + next.rise[0].z) / 2.0,
+                    slope: last.1.slope,
+                };
+                line.push(point, leg.width.min(next.width), leg.cap, Some(rise));
+                joined = true;
+            }
             None => {
-                line.push(side_line(before, side).1, before.width, before.cap);
+                line.push(last.0, leg.width, leg.cap, Some(last.1));
+                let begin = next.side_curve(side)[0];
                 line.push(
-                    side_line(after, side).0,
-                    after.width,
-                    min_cap(before.cap, after.cap),
+                    begin.0,
+                    next.width,
+                    min_cap(leg.cap, next.cap),
+                    Some(begin.1),
                 );
+                joined = true;
             }
         }
     }
-    let last = &legs[legs.len() - 1];
-    line.push(side_line(last, side).1, last.width, last.cap);
-    line.push(goal, 0.0, None);
+    line.push(goal, 0.0, None, None);
     line
 }
 
@@ -942,48 +1726,99 @@ fn fillet(corner: Vec2, before: Vec2, after: Vec2, reach: f64, cap: Option<f64>)
         radius,
         sweep: side * turn,
         cap,
+        climb: None,
+    }
+}
+
+/// Высота и уклон на отрезке ломаной от вершины `index` к следующей, в доле `share` его длины.
+struct Segments<'a>(&'a Polyline);
+
+impl Segments<'_> {
+    /// Высота отрезка, что идёт от вершины `index` к следующей, на его доле `share`; `None` вне дороги.
+    fn z(&self, index: usize, share: f64) -> Option<f64> {
+        let (from, to) = (self.0.starts[index]?, self.0.rises[index + 1]?);
+        Some(lerp(from, to.z, share))
+    }
+
+    fn slope(&self, index: usize) -> Option<f64> {
+        self.0.starts[index]?;
+        self.0.rises[index + 1].map(|rise| rise.slope)
+    }
+
+    fn climb(&self, index: usize, shares: [f64; 2]) -> Option<Climb> {
+        Some(Climb {
+            z: [self.z(index, shares[0])?, self.z(index, shares[1])?],
+            slope: self.slope(index)?,
+        })
     }
 }
 
 fn round_corners(line: &Polyline) -> Vec<Primitive> {
     let points = &line.points;
+    let segments = Segments(line);
     let mut primitives = Vec::new();
     let mut from = points[0];
+    let mut from_share = 0.0;
     for (before_index, corner) in points.windows(3).enumerate() {
         let index = before_index + 1;
         let before = unit(sub(corner[1], corner[0]));
         let after = unit(sub(corner[2], corner[1]));
         let turn = libm::atan2(cross(before, after).abs(), dot(before, after));
+        let (length_in, length_out) = (
+            distance(corner[1], corner[0]),
+            distance(corner[2], corner[1]),
+        );
         let reach = (line.widths[index] * ARC_WIDTH_SHARE)
-            .min(distance(corner[1], corner[0]) / 2.0)
-            .min(distance(corner[2], corner[1]) / 2.0);
+            .min(length_in / 2.0)
+            .min(length_out / 2.0);
         if turn < EPS || turn > std::f64::consts::PI - EPS || reach < EPS {
             primitives.push(Primitive::Line {
                 from,
                 to: corner[1],
                 cap: line.caps[index],
+                climb: segments.climb(before_index, [from_share, 1.0]),
             });
             from = corner[1];
+            from_share = 0.0;
             continue;
         }
+        let share_in = 1.0 - reach / length_in;
+        let share_out = reach / length_out;
         primitives.push(Primitive::Line {
             from,
             to: add_scaled(corner[1], before, -reach),
             cap: line.caps[index],
+            climb: segments.climb(before_index, [from_share, share_in]),
         });
-        primitives.push(fillet(
+        let round = fillet(
             corner[1],
             before,
             after,
             reach,
             min_cap(line.caps[index], line.caps[index + 1]),
-        ));
+        );
+        let arc_climb = match (
+            segments.z(before_index, share_in),
+            segments.z(index, share_out),
+            segments.slope(before_index),
+            segments.slope(index),
+        ) {
+            (Some(z0), Some(z1), Some(a), Some(b)) => Some(Climb {
+                z: [z0, z1],
+                slope: (a + b) / 2.0,
+            }),
+            _ => None,
+        };
+        primitives.push(round.with_climb(arc_climb));
         from = add_scaled(corner[1], after, reach);
+        from_share = share_out;
     }
+    let last = points.len() - 2;
     primitives.push(Primitive::Line {
         from,
         to: points[points.len() - 1],
         cap: line.caps[points.len() - 1],
+        climb: segments.climb(last, [from_share, 1.0]),
     });
     primitives
 }
@@ -1004,6 +1839,7 @@ impl Path {
                 from: start,
                 to: goal,
                 cap: None,
+                climb: None,
             }]
         } else {
             round_corners(&polyline_of(start, goal, legs, side))
@@ -1049,6 +1885,28 @@ impl Cursor {
             .get(self.index)
             .map_or(path.goal, |primitive| primitive.point_at(self.travelled))
     }
+
+    /// Высота и наклон на дороге; `None` вне дороги. Доехавшая машина стоит на конце последней части пути.
+    fn lift(&self, path: &Path) -> Option<Lift> {
+        let (primitive, travelled) = match path.primitives.get(self.index) {
+            Some(primitive) => (primitive, self.travelled),
+            None => {
+                let last = path.primitives.last()?;
+                (last, last.length())
+            }
+        };
+        let climb = primitive.climb()?;
+        let len = primitive.length();
+        let share = if len < EPS {
+            1.0
+        } else {
+            (travelled / len).clamp(0.0, 1.0)
+        };
+        Some(Lift {
+            z: lerp(climb.z[0], climb.z[1], share),
+            slope: climb.slope,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -1072,11 +1930,12 @@ pub struct Driver {
     pub side: Side,
 }
 
-/// Куда машина попала за шаг: новое `position` и приехала ли.
+/// Куда машина попала за шаг: новое `position`, приехала ли и, если она на дороге, высота и наклон.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Moved {
     pub position: Vec2,
     pub arrived: bool,
+    pub lift: Option<Lift>,
 }
 
 /// Сеть дорог и пути машин — всё, что езда держит между шагами. Сеть одна на игру: ею пользуются и правило
@@ -1100,7 +1959,7 @@ impl RoadState {
 
     /// Сверяет сеть с дорогами мира, которые `fill` кладёт в переданные списки; `true`, если сеть
     /// изменилась.
-    pub fn sync_with(&self, fill: impl FnOnce(&mut Vec<RoadShape>, &mut Vec<Option<f64>>)) -> bool {
+    pub fn sync_with(&self, fill: impl FnOnce(&mut Vec<RoadForm>, &mut Vec<Option<f64>>)) -> bool {
         self.network.borrow_mut().sync_with(fill)
     }
 
@@ -1159,6 +2018,7 @@ impl RoadState {
         };
         let arrived = car.cursor.advance(&car.path, driver.speed, seconds);
         let center = car.cursor.position(&car.path);
+        let lift = car.cursor.lift(&car.path);
         car.position = [
             center[0] - driver.size[0] / 2.0,
             center[1] - driver.size[1] / 2.0,
@@ -1167,7 +2027,11 @@ impl RoadState {
         if !arrived {
             self.paths.insert(id, car);
         }
-        Moved { position, arrived }
+        Moved {
+            position,
+            arrived,
+            lift,
+        }
     }
 }
 
@@ -1194,9 +2058,19 @@ mod tests {
         ]
     }
 
+    fn straight_forms(shapes: &[RoadShape]) -> Vec<RoadForm> {
+        shapes.iter().copied().map(RoadForm::straight).collect()
+    }
+
     fn network(shapes: &[RoadShape], speeds: &[Option<f64>]) -> RoadNetwork {
         let mut network = RoadNetwork::default();
-        network.sync(shapes, speeds);
+        network.sync(&straight_forms(shapes), speeds);
+        network
+    }
+
+    fn network_of(forms: &[RoadForm], speeds: &[Option<f64>]) -> RoadNetwork {
+        let mut network = RoadNetwork::default();
+        network.sync(forms, speeds);
         network
     }
 
@@ -1225,6 +2099,24 @@ mod tests {
         Path::new([2.0, 10.0], [10.0, 2.0], route.as_ref(), side)
     }
 
+    /// Дорога по концам оси, ширине, изгибу и высотам концов.
+    fn bent(id: u32, from: Vec2, to: Vec2, width: f64, bend: f64, z: [f64; 2]) -> RoadForm {
+        let (dx, dy) = (to[0] - from[0], to[1] - from[1]);
+        let chord = dx.hypot(dy);
+        let middle = [(from[0] + to[0]) / 2.0, (from[1] + to[1]) / 2.0];
+        RoadForm {
+            shape: RoadShape {
+                id,
+                position: [middle[0] - chord / 2.0, middle[1] - width / 2.0],
+                size: [chord, width],
+                sin_cos: (dy / chord, dx / chord),
+                z: z[0],
+            },
+            bend,
+            end_z: z[1],
+        }
+    }
+
     #[test]
     fn axes_run_along_the_long_side_and_a_square_along_its_width() {
         let long = Road::from_shape(&shape(0, [0.0, 9.5], [20.0, 1.0]));
@@ -1250,10 +2142,12 @@ mod tests {
     fn crossing_axes_link_at_the_crossing_point() {
         let network = network(&crossing(), &[None, None]);
         let links = network.links_of(0).expect("дорога");
-        assert_eq!(links.links, vec![([10.0, 10.0], 1)]);
+        assert_eq!(links.links, vec![([10.0, 10.0, 0.0], 1)]);
         assert_eq!(links.neighbours.len(), 1);
         assert_eq!(links.neighbours[0].0, 1);
-        assert_eq!(links.ends, vec![[0.0, 10.0], [20.0, 10.0]]);
+        assert_eq!(links.ends, vec![[0.0, 10.0, 0.0], [20.0, 10.0, 0.0]]);
+        assert_eq!(links.axis.points, vec![[0.0, 10.0, 0.0], [20.0, 10.0, 0.0]]);
+        assert_eq!(links.handle, [10.0, 10.0, 0.0]);
     }
 
     #[test]
@@ -1264,8 +2158,8 @@ mod tests {
         ];
         let network = network(&shapes, &[None, None]);
         let links = network.links_of(1).expect("дорога");
-        assert_eq!(links.links, vec![([20.0, 10.0], 0)]);
-        assert_eq!(links.ends, vec![[28.0, 10.0]]);
+        assert_eq!(links.links, vec![([20.0, 10.0, 0.0], 0)]);
+        assert_eq!(links.ends, vec![[28.0, 10.0, 0.0]]);
         let route = network
             .route([2.0, 10.0], [27.0, 10.0], 4.0, None)
             .expect("путь");
@@ -1283,7 +2177,7 @@ mod tests {
         let network = network(&shapes, &[None, None]);
         let links = network.links_of(1).expect("дорога");
         assert_eq!(links.links.len(), 1);
-        near_point(links.links[0].0, [10.5, 9.5]);
+        near_point([links.links[0].0[0], links.links[0].0[1]], [10.5, 9.5]);
         let route = network
             .route([2.0, 10.0], [10.5, 1.0], 4.0, None)
             .expect("путь");
@@ -1489,20 +2383,8 @@ mod tests {
 
     #[test]
     fn a_uturn_goes_straight_across_from_one_side_to_the_other() {
-        let first = Leg {
-            from: [0.0, 10.0],
-            to: [10.0, 10.0],
-            road: 0,
-            width: 1.0,
-            cap: None,
-        };
-        let back = Leg {
-            from: [10.0, 10.0],
-            to: [0.0, 10.0],
-            road: 0,
-            width: 1.0,
-            cap: None,
-        };
+        let first = Leg::straight([0.0, 10.0], [10.0, 10.0], 0, 1.0, None);
+        let back = Leg::straight([10.0, 10.0], [0.0, 10.0], 0, 1.0, None);
         assert!(joint_point([0.0, 10.25], &first, &back, Side::Right).is_none());
         let line = polyline_of([0.0, 10.0], [0.0, 10.0], &[first, back], Side::Right);
         assert!(line.points.contains(&[10.0, 10.25]));
@@ -1547,7 +2429,10 @@ mod tests {
     #[test]
     fn driving_on_the_example_arrives_exactly_and_forgets_the_path() {
         let mut state = RoadState::new();
-        state.network.borrow_mut().sync(&crossing(), &[None, None]);
+        state
+            .network
+            .borrow_mut()
+            .sync(&straight_forms(&crossing()), &[None, None]);
         let mut driver = Driver {
             position: [1.9, 9.7],
             size: [0.2, 0.6],
@@ -1579,7 +2464,10 @@ mod tests {
     #[test]
     fn a_moved_car_gets_a_new_path_from_where_it_stands() {
         let mut state = RoadState::new();
-        state.network.borrow_mut().sync(&crossing(), &[None, None]);
+        state
+            .network
+            .borrow_mut()
+            .sync(&straight_forms(&crossing()), &[None, None]);
         let mut driver = Driver {
             position: [1.9, 9.7],
             size: [0.2, 0.6],
@@ -1614,5 +2502,304 @@ mod tests {
         let network = network(&shapes, &speeds);
         assert_eq!(network.links_of(0).expect("дорога").links.len(), 20);
         assert_eq!(network.links_of(30).expect("дорога").links.len(), 30);
+    }
+
+    fn arc_road(bend: f64) -> Road {
+        Road::from_form(&bent(0, [0.0, 10.0], [20.0, 10.0], 1.0, bend, [0.0, 0.0]))
+    }
+
+    #[test]
+    fn an_arc_has_the_radius_and_length_of_its_chord_and_bend_and_keeps_its_ends() {
+        let road = arc_road(90.0);
+        let radius = 20.0 / (2.0 * (45.0_f64).to_radians().sin());
+        near(road.radius(), radius, 1e-9);
+        near(road.length(), radius * std::f64::consts::FRAC_PI_2, 1e-9);
+        near_point(road.end(0), [0.0, 10.0]);
+        near_point(road.end(1), [20.0, 10.0]);
+        let (start, end) = (road.tangent_at(0.0), road.tangent_at(road.length()));
+        let angle = |t: Vec2| libm::atan2(t[1], t[0]).to_degrees();
+        near(angle(start), -45.0, 1e-9);
+        near(angle(end), 45.0, 1e-9);
+        near(road.height_at(road.length()), 0.0, 1e-12);
+    }
+
+    #[test]
+    fn a_positive_bend_turns_the_axis_toward_a_positive_rotation_and_a_negative_one_away() {
+        let positive = arc_road(60.0);
+        let negative = arc_road(-60.0);
+        let middle = |road: &Road| road.point_at(road.length() / 2.0);
+        assert!(middle(&positive)[1] < 10.0, "ось прогнулась к меньшему y");
+        assert!(middle(&negative)[1] > 10.0);
+        near(
+            middle(&positive)[1] - 10.0,
+            -(10.0 - middle(&negative)[1] + 0.0).abs(),
+            1e-9,
+        );
+        assert_eq!(arc_road(0.0).tangent_at(3.0), [1.0, 0.0]);
+    }
+
+    #[test]
+    fn a_bend_is_taken_as_the_nearest_allowed_one() {
+        near(clamp_bend(200.0, 20.0, 1.0), MAX_BEND_DEGREES, 1e-12);
+        near(clamp_bend(-200.0, 20.0, 1.0), -MAX_BEND_DEGREES, 1e-12);
+        let narrow = clamp_bend(170.0, 1.2, 1.0);
+        let radius = 1.2 / (2.0 * (narrow.abs().to_radians() / 2.0).sin());
+        near(radius, 1.0, 1e-9);
+        assert_eq!(clamp_bend(f64::NAN, 20.0, 1.0), 0.0);
+        assert_eq!(clamp_bend(30.0, 20.0, 1.0), 30.0);
+        let road = Road::from_form(&bent(0, [0.0, 10.0], [2.0, 10.0], 1.0, 170.0, [0.0, 0.0]));
+        assert!(road.radius() >= 1.0 - 1e-9);
+    }
+
+    #[test]
+    fn the_closest_point_of_an_arc_and_its_strip_follow_the_circle() {
+        let road = arc_road(90.0);
+        let center = road.arc_center();
+        let radius = road.radius();
+        let probe = add_scaled(center, unit(sub(road.point_at(5.0), center)), radius + 0.3);
+        let near_axis = road.closest(probe);
+        near(near_axis.s, 5.0, 1e-9);
+        near(near_axis.distance, 0.3, 1e-9);
+        assert!(road.contains(probe));
+        let outside = add_scaled(center, unit(sub(road.point_at(5.0), center)), radius + 0.6);
+        assert!(!road.contains(outside));
+        let behind = add_scaled(road.end(0), road.tangent_at(0.0), -0.2);
+        assert!(!road.contains(behind), "торец поперёк оси");
+        let beyond = road.closest(add_scaled(road.end(1), road.tangent_at(road.length()), 3.0));
+        near(beyond.s, road.length(), 1e-9);
+    }
+
+    #[test]
+    fn an_arc_and_a_line_cross_where_they_meet_and_two_arcs_link_too() {
+        let street = bent(1, [10.0, 0.0], [10.0, 20.0], 1.0, 0.0, [0.0, 0.0]);
+        let arc = bent(0, [0.0, 10.0], [20.0, 10.0], 1.0, 90.0, [0.0, 0.0]);
+        let net = network_of(&[arc, street], &[None, None]);
+        let links = net.links_of(0).expect("дорога");
+        assert_eq!(links.links.len(), 1);
+        let (point, id) = links.links[0];
+        assert_eq!(id, 1);
+        near(point[0], 10.0, 1e-6);
+        let road = Road::from_form(&arc);
+        near(road.closest([point[0], point[1]]).distance, 0.0, 1e-6);
+        let second = bent(1, [10.0, 0.0], [10.0, 20.0], 1.0, -90.0, [0.0, 0.0]);
+        let two = network_of(&[arc, second], &[None, None]);
+        assert!(!two.links_of(0).expect("дорога").links.is_empty());
+    }
+
+    #[test]
+    fn heights_are_compared_at_the_link_point_not_by_one_height_per_road() {
+        // Одна дорога идёт вверх на 2 клетки; пересечение в её середине (высота 1), вторая — на высоте 1,2.
+        let climbing = bent(0, [0.0, 10.0], [20.0, 10.0], 1.0, 0.0, [0.0, 2.0]);
+        let level = bent(1, [10.0, 0.0], [10.0, 20.0], 1.0, 0.0, [1.2, 1.2]);
+        let net = network_of(&[climbing, level], &[None, None]);
+        assert_eq!(net.links_of(0).expect("дорога").links.len(), 1);
+        let low = bent(1, [10.0, 0.0], [10.0, 20.0], 1.0, 0.0, [0.0, 0.0]);
+        let net = network_of(&[climbing, low], &[None, None]);
+        assert!(net.links_of(0).expect("дорога").links.is_empty());
+    }
+
+    #[test]
+    fn the_route_along_an_arc_is_measured_along_the_arc_and_the_side_is_a_concentric_arc() {
+        let road = bent(0, [0.0, 10.0], [20.0, 10.0], 1.0, 90.0, [0.0, 0.0]);
+        let net = network_of(&[road], &[None]);
+        let arc_length = Road::from_form(&road).length();
+        let measure = net.measure([0.0, 10.0], [20.0, 10.0], 4.0).expect("мера");
+        near(measure.length, arc_length, 1e-6);
+        near(measure.time, arc_length / 4.0, 1e-6);
+        let route = net
+            .route([0.0, 10.0], [20.0, 10.0], 4.0, None)
+            .expect("путь");
+        let path = Path::new([0.0, 10.0], [20.0, 10.0], Some(&route), Side::Right);
+        let center = Road::from_form(&road).arc_center();
+        let mut cursor = Cursor::default();
+        let mut worst: f64 = 0.0;
+        while !cursor.advance(&path, 4.0, STEP) {
+            let at = cursor.position(&path);
+            if at[0] > 1.0 && at[0] < 19.0 {
+                worst = worst
+                    .max((distance(at, center) - (Road::from_form(&road).radius() - 0.25)).abs());
+            }
+        }
+        assert!(worst < 2e-3, "сторона отошла от дуги на {worst}");
+    }
+
+    #[test]
+    fn a_car_on_a_sloping_road_gets_the_height_and_the_tilt_of_its_point() {
+        let road = bent(0, [0.0, 10.0], [20.0, 10.0], 1.0, 0.0, [0.0, 2.0]);
+        let net = network_of(&[road], &[None]);
+        let route = net
+            .route([5.0, 10.0], [15.0, 10.0], 4.0, None)
+            .expect("путь");
+        let path = Path::new([5.0, 10.0], [15.0, 10.0], Some(&route), Side::Middle);
+        let mut cursor = Cursor::default();
+        cursor.advance(&path, 4.0, 1.0);
+        let lift = cursor.lift(&path).expect("на дороге");
+        near(lift.z, 0.1 * cursor.position(&path)[0], 1e-9);
+        near(lift.slope, 0.1, 1e-9);
+        let back = net
+            .route([15.0, 10.0], [5.0, 10.0], 4.0, None)
+            .expect("путь");
+        let path = Path::new([15.0, 10.0], [5.0, 10.0], Some(&back), Side::Middle);
+        let mut cursor = Cursor::default();
+        cursor.advance(&path, 4.0, 1.0);
+        near(cursor.lift(&path).expect("на дороге").slope, -0.1, 1e-9);
+    }
+
+    #[test]
+    fn the_approach_from_beside_the_road_has_no_lift() {
+        let road = bent(0, [0.0, 10.0], [20.0, 10.0], 1.0, 0.0, [0.0, 2.0]);
+        let net = network_of(&[road], &[None]);
+        let route = net
+            .route([5.0, 14.0], [15.0, 10.0], 4.0, None)
+            .expect("путь");
+        let path = Path::new([5.0, 14.0], [15.0, 10.0], Some(&route), Side::Middle);
+        let mut cursor = Cursor::default();
+        cursor.advance(&path, 4.0, 0.2);
+        assert_eq!(cursor.lift(&path), None);
+    }
+
+    #[test]
+    fn a_chain_of_two_roads_with_two_slopes_breaks_the_profile_at_their_link() {
+        let first = bent(0, [0.0, 10.0], [10.0, 10.0], 1.0, 0.0, [0.0, 1.0]);
+        let second = bent(1, [10.0, 10.0], [20.0, 10.0], 1.0, 0.0, [1.0, 1.5]);
+        let net = network_of(&[first, second], &[None, None]);
+        let route = net
+            .route([2.0, 10.0], [18.0, 10.0], 4.0, None)
+            .expect("путь");
+        assert_eq!(route.legs.len(), 2);
+        near(route.legs[0].rise[1].z, 1.0, 1e-9);
+        near(route.legs[0].rise[1].slope, 0.1, 1e-9);
+        near(route.legs[1].rise[0].slope, 0.05, 1e-9);
+    }
+
+    /// Ближайшая точка дуги и принадлежность полосе — как у перебора точек оси.
+    #[test]
+    fn the_closest_point_and_the_strip_of_arcs_agree_with_a_brute_force_walk_along_the_axis() {
+        for bend in [-170.0, -90.0, -20.0, 25.0, 90.0, 150.0] {
+            let road = arc_road(bend);
+            let walk: Vec<(f64, Vec2)> = (0..=4000)
+                .map(|k| {
+                    let s = road.length() * f64::from(k) / 4000.0;
+                    (s, road.point_at(s))
+                })
+                .collect();
+            let mut state = 12345_u64;
+            let mut random = || {
+                state = state
+                    .wrapping_mul(6364136223846793005)
+                    .wrapping_add(1442695040888963407);
+                (state >> 33) as f64 / (1_u64 << 31) as f64
+            };
+            for _ in 0..400 {
+                let point = [-10.0 + 40.0 * random(), -15.0 + 40.0 * random()];
+                let found = road.closest(point);
+                let best = walk
+                    .iter()
+                    .map(|(_, axis)| distance(point, *axis))
+                    .fold(f64::INFINITY, f64::min);
+                assert!(
+                    found.distance <= best + 1e-9 && found.distance >= best - 5e-3,
+                    "bend {bend}: {point:?} → {} против {best}",
+                    found.distance
+                );
+                near(
+                    distance(point, road.point_at(found.s)),
+                    found.distance,
+                    1e-9,
+                );
+                let (nearest, _) = walk
+                    .iter()
+                    .enumerate()
+                    .map(|(at, (_, axis))| (at, distance(point, *axis)))
+                    .fold((0, f64::INFINITY), |(known, least), (at, gap)| {
+                        if gap < least {
+                            (at, gap)
+                        } else {
+                            (known, least)
+                        }
+                    });
+                let interior = nearest > 0 && nearest < walk.len() - 1;
+                if interior && (best - 0.5).abs() > 5e-3 {
+                    assert_eq!(road.contains(point), best <= 0.5, "bend {bend}: {point:?}");
+                }
+            }
+        }
+    }
+
+    /// Пересечения осей совпадают с пересечением их ломаных, взятых мелко: прямая с дугой и дуга с дугой.
+    #[test]
+    fn crossings_of_arcs_and_lines_agree_with_the_crossings_of_their_fine_polylines() {
+        let mut state = 99_u64;
+        let mut random = || {
+            state = state
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            (state >> 33) as f64 / (1_u64 << 31) as f64
+        };
+        let polyline = |road: &Road| -> Vec<Vec2> {
+            (0..=500)
+                .map(|k| road.point_at(road.length() * f64::from(k) / 500.0))
+                .collect()
+        };
+        let crossing = |a: &[Vec2], b: &[Vec2]| {
+            a.windows(2).any(|first| {
+                b.windows(2).any(|second| {
+                    let (r, s) = (sub(first[1], first[0]), sub(second[1], second[0]));
+                    let denominator = cross(r, s);
+                    if denominator.abs() < 1e-12 {
+                        return false;
+                    }
+                    let between = sub(second[0], first[0]);
+                    let t = cross(between, s) / denominator;
+                    let u = cross(between, r) / denominator;
+                    (0.0..=1.0).contains(&t) && (0.0..=1.0).contains(&u)
+                })
+            })
+        };
+        let mut found = 0;
+        for _ in 0..100 {
+            let mut road = |id: u32| {
+                let from = [30.0 * random(), 30.0 * random()];
+                let to = [30.0 * random(), 30.0 * random()];
+                let bend = if random() < 0.25 {
+                    0.0
+                } else {
+                    200.0 * random() - 100.0
+                };
+                Road::from_form(&bent(id, from, to, 0.5, bend, [0.0, 0.0]))
+            };
+            let (first, second) = (road(0), road(1));
+            let reported = axes_cross(&first, &second);
+            for point in &reported {
+                assert!(first.closest(*point).distance < 1e-6);
+                assert!(second.closest(*point).distance < 1e-6);
+            }
+            let by_walk = crossing(&polyline(&first), &polyline(&second));
+            assert_eq!(
+                !reported.is_empty(),
+                by_walk,
+                "{:?} {:?}: оси {reported:?}",
+                first.axis(),
+                second.axis()
+            );
+            found += usize::from(by_walk);
+        }
+        assert!(found > 10, "слишком мало пересечений для проверки: {found}");
+    }
+
+    #[test]
+    fn the_axis_samples_of_an_arc_turn_no_more_than_the_step_and_carry_the_profile() {
+        let road = Road::from_form(&bent(0, [0.0, 10.0], [20.0, 10.0], 1.0, 90.0, [0.0, 1.0]));
+        let samples = road.axis_samples();
+        assert_eq!(samples.len(), 46);
+        near(samples[0][2], 0.0, 1e-12);
+        near(samples[45][2], 1.0, 1e-12);
+        near(
+            samples[22][2],
+            road.height_at(road.length() * 22.0 / 45.0),
+            1e-12,
+        );
+        let straight = Road::from_shape(&shape(0, [0.0, 9.5], [20.0, 1.0]));
+        assert_eq!(straight.axis_samples().len(), 2);
     }
 }

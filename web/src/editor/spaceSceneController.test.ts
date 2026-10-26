@@ -45,13 +45,15 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
   const terrainSets: { heights: Float64Array; water: unknown; stamps: unknown }[] = [];
   const fitCalls: unknown[] = [];
   const coverSets: { covers: unknown; masks: unknown }[] = [];
+  const propertyWrites: [number, string, unknown][] = [];
+  const propertyRemoves: [number, string][] = [];
   const state = {
     pickedId: undefined as number | undefined,
     fitted: START_CAMERA as EditorCameraState | undefined,
     /** Высота земли под указателем. */
     groundZ: 0,
-    /** Высота, на которую движок посадил бы объект: `from` `undefined` — как без `z` в данных. */
-    rest: (_id: number, _x: number, _y: number, _from: number | null | undefined): number => 0,
+    /** Высота, на которую движок посадил бы объект: `from` `undefined` — как без `z` в данных; `undefined` — как у дороги, чьё основание ставят концы. */
+    rest: (_id: number, _x: number, _y: number, _from: number | null | undefined): number | undefined => 0,
     /** Основание, на котором объект стоит в мире после `transform_object`; без значения — третье число `position`. */
     worldHeight: undefined as number | undefined,
     /** Луч мимо рельефа сцены (небо) — `terrain_at` ничего не отдаёт. */
@@ -102,6 +104,14 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     },
     stamp_at: () => state.pickedStamp,
     road_links: () => state.roadLinks,
+    set_property: (id: number, name: string, value: unknown) => {
+      propertyWrites.push([id, name, value]);
+      return { ok: true };
+    },
+    remove_property: (id: number, name: string) => {
+      propertyRemoves.push([id, name]);
+      return { ok: true };
+    },
     model_sizes: () => state.modelSizes,
     fit_camera: (id?: number | null) => {
       fitCalls.push(id);
@@ -149,7 +159,7 @@ function setup(overrides: Partial<SpaceSceneContext> = {}, objects: Record<numbe
     ...overrides,
   };
   const controller = createSpaceSceneController(() => context);
-  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, coverSets, terrainCommits, strokeStates, brushWheelClicks, imprintSelections, imprintPlaced, engine };
+  return { controller, context, moves, restCalls, transforms, cameras, fitCalls, commits, selections, modes, state, cameraStore, terrainSets, coverSets, propertyWrites, propertyRemoves, terrainCommits, strokeStates, brushWheelClicks, imprintSelections, imprintPlaced, engine };
 }
 
 describe("выбор щелчком", () => {
@@ -654,6 +664,80 @@ describe("поворот и масштаб не задают высоту", () =
     scene.controller.pointerMove(pointer(170, 130));
     scene.controller.keyDown(key("Escape"));
     expect(scene.transforms.at(-1)?.[1]).toMatchObject({ position: [3, 4, 1], rotation: 0 });
+  });
+});
+
+describe("перенос дороги без `z`", () => {
+  const ROAD = { position: [3, 4], size: [2, 2], road: true, color: "#8a8f94" };
+
+  function setupRoad(extra: Partial<SpaceSceneContext> = {}, road: Record<string, unknown> = ROAD) {
+    const scene = setup({ selectedIndex: null, ...extra }, { 7: road });
+    scene.state.rest = () => undefined;
+    scene.state.worldHeight = 1;
+    scene.state.pickedId = 7;
+    return scene;
+  }
+
+  it("за тело — без высоты: дорога садится сама, в файл идут два числа", () => {
+    const scene = setupRoad();
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.state.worldHeight = 1.5;
+    scene.controller.pointerMove(pointer(400, 100));
+    expect(scene.moves.at(-1)).toEqual([7, 33, 4, null]);
+    scene.controller.pointerUp(release(400, 100));
+    expect(scene.commits).toEqual([[7, [{ key: "position", value: [33, 4], previous: [3, 4] }]]]);
+  });
+
+  it("на паузе партии перенос тоже не пишет `z`", () => {
+    const scene = setupRoad({ isEditorCameraActive: false });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.pointerMove(pointer(400, 100));
+    scene.controller.pointerUp(release(400, 100));
+    expect(scene.commits).toEqual([[7, [{ key: "position", value: [33, 4], previous: [3, 4] }]]]);
+  });
+
+  it("поворот пишет только `rotation`, хотя нижний конец дороги сменил высоту", () => {
+    const scene = setupRoad({ selectedIndex: 7, handleMode: "rotate" });
+    expect(scene.controller.pointerDown(pointer(170, 90))).toBe(true);
+    scene.state.worldHeight = 1.5;
+    scene.controller.pointerMove(pointer(170, 130));
+    expect(scene.transforms.at(-1)?.[1]).toMatchObject({ position: [3, 4] });
+    scene.controller.pointerUp(release(170, 130));
+    expect(scene.commits[0]?.[1].map((change) => change.key)).toEqual(["rotation"]);
+  });
+
+  it("отмена возвращает дорогу без высоты: движок ставит концы на землю заново", () => {
+    const moved = setupRoad();
+    moved.controller.pointerDown(pointer(100, 100));
+    moved.controller.pointerMove(pointer(400, 100));
+    moved.controller.pointerCancel(pointer(400, 100));
+    expect(moved.moves.at(-1)).toEqual([7, 3, 4, null]);
+
+    const turned = setupRoad({ selectedIndex: 7, handleMode: "rotate" });
+    turned.controller.pointerDown(pointer(170, 90));
+    turned.controller.pointerMove(pointer(170, 130));
+    turned.controller.keyDown(key("Escape"));
+    expect(turned.transforms.at(-1)?.[1]).toMatchObject({ position: [3, 4], rotation: 0 });
+  });
+
+  it("вертикальная стрелка стоит на высоте нижнего конца и пишет `z`", () => {
+    const scene = setupRoad({ selectedIndex: 7 }, ROAD);
+    scene.state.worldHeight = 2;
+    expect(scene.controller.pointerDown(pointer(90, 30))).toBe(true);
+    scene.controller.pointerMove(pointer(90, -1.3));
+    expect(scene.moves.at(-1)?.[3]).toBeCloseTo(5.13, 5);
+    scene.controller.pointerUp(release(90, -1.3));
+    expect(scene.commits[0]?.[1]).toMatchObject([{ key: "position", previous: [3, 4] }]);
+    expect((scene.commits[0]?.[1][0]?.value as number[])[2]).toBeCloseTo(5.13, 5);
+  });
+
+  it("дорога с `z` в файле остаётся ровной на нём", () => {
+    const scene = setupRoad({}, { ...ROAD, position: [3, 4, 2] });
+    scene.controller.pointerDown(pointer(100, 100));
+    scene.controller.pointerMove(pointer(400, 100));
+    expect(scene.moves.at(-1)).toEqual([7, 33, 4, 2]);
+    scene.controller.pointerUp(release(400, 100));
+    expect(scene.commits).toEqual([[7, [{ key: "position", value: [33, 4, 2], previous: [3, 4, 2] }]]]);
   });
 });
 
@@ -1187,6 +1271,8 @@ describe("Ctrl+колесо", () => {
 describe("связи выбранной дороги", () => {
   const ROAD_LINKS = {
     axis: [[0, 10, 0], [20, 10, 0]],
+    bend: 0,
+    handle: [10, 10, 0],
     links: [{ point: [10, 10, 0], road: 3 }],
     ends: [[0, 10, 0]],
     neighbours: [{ road: 3, axis: [[10, 0, 0], [10, 20, 0]] }],
@@ -1225,5 +1311,161 @@ describe("связи выбранной дороги", () => {
     const roadLinks = vi.spyOn(scene.engine, "road_links");
     scene.controller.draw(recordingCanvasContext(), 1);
     expect(roadLinks).not.toHaveBeenCalled();
+  });
+});
+
+describe("ручка изгиба выбранной дороги", () => {
+  /** Дорога вдоль x от (0, 10) до (20, 10) шириной 2: ручка стоит в середине оси, на холсте это точка (150, 150). */
+  const ROAD = { position: [0, 9], size: [20, 2], road: true };
+  const LINKS = { axis: [[0, 10, 0], [20, 10, 0]], bend: 0, handle: [10, 10, 0], links: [], ends: [], neighbours: [] };
+  const HANDLE: [number, number] = [150, 150];
+
+  function roadScene(overrides: Partial<SpaceSceneContext> = {}, properties: Record<string, unknown> = {}) {
+    const scene = setup(overrides, { 7: { ...ROAD, ...properties } });
+    scene.state.roadLinks = LINKS;
+    return scene;
+  }
+
+  /** Тянет ручку к точке холста и отпускает; указатель движется один раз. */
+  function dragHandle(scene: ReturnType<typeof roadScene>, to: [number, number]): void {
+    expect(scene.controller.pointerDown(pointer(...HANDLE))).toBe(true);
+    scene.controller.pointerMove(pointer(...to));
+    scene.controller.pointerUp(release(...to));
+  }
+
+  it("тянешь ручку: ось проходит через точку под курсором, bend ложится в мир, отпускание — одно действие", () => {
+    const scene = roadScene();
+    dragHandle(scene, [150, 90]);
+
+    expect(scene.propertyWrites).toEqual([[7, "bend", 123.85]]);
+    expect(scene.commits).toEqual([[7, [{ key: "bend", value: 123.85, previous: undefined }]]]);
+    expect(scene.moves).toEqual([]);
+    expect(scene.transforms).toEqual([]);
+  });
+
+  it("по другую сторону хорды bend отрицательный", () => {
+    const scene = roadScene();
+    dragHandle(scene, [150, 210]);
+
+    expect(scene.propertyWrites).toEqual([[7, "bend", -123.85]]);
+  });
+
+  it("ближе 1% длины хорды к хорде bend — 0, прежний bend файла уходит в previous", () => {
+    const scene = roadScene({}, { bend: 30 });
+    dragHandle(scene, [150, 151]);
+
+    expect(scene.propertyWrites).toEqual([[7, "bend", 0]]);
+    expect(scene.commits).toEqual([[7, [{ key: "bend", value: 0, previous: 30 }]]]);
+  });
+
+  it("дальше допустимого — ближайшее допустимое: меньше 180 и радиус не меньше ширины", () => {
+    const far = roadScene();
+    dragHandle(far, [150, -200]);
+    expect(far.propertyWrites).toEqual([[7, "bend", 179.9]]);
+
+    const wide = roadScene({}, { size: [20, 15] });
+    dragHandle(wide, [150, 90]);
+    expect(wide.propertyWrites).toEqual([[7, "bend", 83.62]]);
+  });
+
+  it("нажал и отпустил, не сдвинув: ни записи, ни действия", () => {
+    const scene = roadScene();
+    dragHandle(scene, HANDLE);
+
+    expect(scene.propertyWrites).toEqual([]);
+    expect(scene.commits).toEqual([]);
+  });
+
+  it("вернул ручку к изгибу, что был в файле: действия нет, а в мир прежнее значение возвращено", () => {
+    const scene = roadScene();
+    scene.controller.pointerDown(pointer(...HANDLE));
+    scene.controller.pointerMove(pointer(150, 90));
+    scene.controller.pointerMove(pointer(150, 150));
+    scene.controller.pointerUp(release(150, 150));
+
+    expect(scene.commits).toEqual([]);
+    expect(scene.propertyWrites).toEqual([[7, "bend", 123.85], [7, "bend", 0]]);
+    expect(scene.propertyRemoves).toEqual([[7, "bend"]]);
+  });
+
+  it("Esc во время жеста возвращает прежний bend; свойства не было — убирает его, действия нет", () => {
+    const withBend = roadScene({}, { bend: 30 });
+    withBend.controller.pointerDown(pointer(...HANDLE));
+    withBend.controller.pointerMove(pointer(150, 90));
+    expect(withBend.controller.keyDown(key("Escape"))).toBe(true);
+    expect(withBend.propertyWrites).toEqual([[7, "bend", 123.85], [7, "bend", 30]]);
+    withBend.controller.pointerUp(release(150, 90));
+    expect(withBend.commits).toEqual([]);
+
+    const without = roadScene();
+    without.controller.pointerDown(pointer(...HANDLE));
+    without.controller.pointerMove(pointer(150, 90));
+    without.controller.keyDown(key("Escape"));
+    expect(without.propertyRemoves).toEqual([[7, "bend"]]);
+    expect(without.commits).toEqual([]);
+  });
+
+  it("сброс указателя возвращает прежний bend, как у ручек размера", () => {
+    const scene = roadScene({}, { bend: 30 });
+    scene.controller.pointerDown(pointer(...HANDLE));
+    scene.controller.pointerMove(pointer(150, 90));
+    scene.controller.pointerCancel(pointer(150, 90));
+
+    expect(scene.propertyWrites).toEqual([[7, "bend", 123.85], [7, "bend", 30]]);
+    expect(scene.commits).toEqual([]);
+  });
+
+  it("пока ручку тянут, клавиши режима и новое нажатие не мешают", () => {
+    const scene = roadScene();
+    scene.controller.pointerDown(pointer(...HANDLE));
+
+    expect(scene.controller.keyDown(key("KeyE"))).toBe(false);
+    expect(scene.controller.pointerDown(pointer(...HANDLE, { pointerId: 2 }))).toBe(false);
+  });
+
+  it("не дорога — ручки нет, нажатие идёт как прежде", () => {
+    const scene = roadScene();
+    scene.state.roadLinks = null;
+    scene.controller.pointerDown(pointer(...HANDLE));
+    scene.controller.pointerMove(pointer(170, 150));
+    scene.controller.pointerUp(release(170, 150));
+
+    expect(scene.propertyWrites).toEqual([]);
+    expect(scene.moves.length).toBeGreaterThan(0);
+  });
+
+  it("в повторе и при кисти ручки нет", () => {
+    for (const overrides of [{ areHandlesAvailable: false }, { brush: RAISE }]) {
+      const scene = roadScene(overrides);
+      scene.controller.pointerDown(pointer(...HANDLE));
+      scene.controller.pointerMove(pointer(150, 90));
+      scene.controller.pointerUp(release(150, 90));
+      expect(scene.propertyWrites).toEqual([]);
+    }
+  });
+
+  it("круглая ручка рисуется в середине оси поверх ручек переноса, под указателем светлеет", () => {
+    const scene = roadScene();
+    const arcs: unknown[][] = [];
+    const fills: unknown[] = [];
+    const state: Record<string, unknown> = {};
+    const canvas = new Proxy(state, {
+      get: (record, name: string) => {
+        if (name === "arc") return (...args: unknown[]) => arcs.push(args);
+        if (name === "fill") return () => fills.push(record.fillStyle);
+        return name in record ? record[name] : () => ({ width: 10 });
+      },
+      set: (record, name: string, value: unknown) => {
+        record[name] = value;
+        return true;
+      },
+    }) as unknown as CanvasRenderingContext2D;
+
+    scene.controller.draw(canvas, 1);
+    expect(arcs.at(-1)).toEqual([...HANDLE, 7, 0, Math.PI * 2]);
+    expect(fills.at(-1)).toBe("#ffc83d");
+    scene.controller.pointerMove(pointer(...HANDLE, { buttons: 0 }));
+    scene.controller.draw(canvas, 1);
+    expect(fills.at(-1)).toBe("#ffffff");
   });
 });

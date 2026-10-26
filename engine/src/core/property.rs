@@ -87,6 +87,8 @@ pub const FLUFF: PropertyId = 55;
 pub const FLUFF_COLOR: PropertyId = 56;
 pub const BUTTERFLIES: PropertyId = 57;
 pub const BUTTERFLY_COLOR: PropertyId = 58;
+/// «Правила игры» → «Езда по дорогам»: изгиб оси дороги в градусах — ось становится дугой окружности.
+pub const BEND: PropertyId = 59;
 
 /// Наибольшая скорость времени.
 pub const MAX_TIME_SCALE: f64 = 16.0;
@@ -175,6 +177,7 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("fluff_color", PropKind::Color),
     ("butterflies", PropKind::Number),
     ("butterfly_color", PropKind::Color),
+    ("bend", PropKind::Number),
 ];
 
 #[derive(Debug, Clone)]
@@ -417,6 +420,8 @@ mod tests {
         assert_eq!(table.kind(TIME_SCALE), PropKind::Number);
         assert_eq!(table.resolve("road_kind"), Some(ROAD_KIND));
         assert_eq!(table.kind(ROAD_KIND), PropKind::Text);
+        assert_eq!(table.resolve("bend"), Some(BEND));
+        assert_eq!(table.kind(BEND), PropKind::Number);
         assert_eq!(table.resolve("particles"), None);
     }
 

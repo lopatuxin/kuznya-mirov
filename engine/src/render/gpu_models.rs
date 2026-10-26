@@ -17,7 +17,7 @@ use crate::core::road_kinds::Junction;
 use super::gpu3d::MaterialOptions;
 use super::models::{
     BlendedDraw, ImageSlots, ImageStats, JunctionRun, ModelInstance, TextureUpload, image_upload,
-    junction_mesh, pixels_upload,
+    junction_mesh_of, pixels_upload,
 };
 
 /// Байт на вершину части: место, нормаль, точка карты, касательная и цвет.
@@ -94,6 +94,7 @@ pub struct ModelsFrame<'a> {
     pub objects: &'a [Vec<ModelInstance>],
     pub pieces: &'a [Vec<ModelInstance>],
     pub junctions: &'a Rc<Vec<Junction>>,
+    pub bent: &'a Rc<Vec<Junction>>,
     pub blended: &'a [BlendedDraw],
 }
 
@@ -105,10 +106,13 @@ struct JunctionBuffers {
     indices: wgpu::Buffer,
 }
 
-/// Изогнутые копии перекрёстков на видеокарте и список перекрёстков, с которого они залиты.
+/// Список изогнутых копий, общий с раскладкой.
+type Copies = Rc<Vec<Junction>>;
+
+/// Изогнутые копии перекрёстков и кусков дорог на видеокарте и списки, с которых они залиты.
 #[derive(Default)]
 struct JunctionsGpu {
-    source: Option<Rc<Vec<Junction>>>,
+    source: Option<(Copies, Copies)>,
     buffers: Option<JunctionBuffers>,
     runs: Vec<JunctionRun>,
 }
@@ -485,7 +489,7 @@ impl ModelsGpu {
     /// Пишет объекты кадра в буфер: объекты и куски дорог, в каждой группе — объекты каждой модели подряд, по
     /// порядку моделей. Копии перекрёстков заливаются заново, только если пришёл другой список перекрёстков.
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &ModelsFrame<'_>) {
-        self.sync_junctions(device, frame.junctions);
+        self.sync_junctions(device, frame.junctions, frame.bent);
         let groups = [frame.objects, frame.pieces];
         let total: usize = groups
             .iter()
@@ -520,16 +524,23 @@ impl ModelsGpu {
         }
     }
 
-    fn sync_junctions(&mut self, device: &wgpu::Device, source: &Rc<Vec<Junction>>) {
+    fn sync_junctions(
+        &mut self,
+        device: &wgpu::Device,
+        junctions: &Rc<Vec<Junction>>,
+        bent: &Rc<Vec<Junction>>,
+    ) {
         let held = self
             .junctions
             .source
             .as_ref()
-            .is_some_and(|held| Rc::ptr_eq(held, source));
+            .is_some_and(|(held, held_bent)| {
+                Rc::ptr_eq(held, junctions) && Rc::ptr_eq(held_bent, bent)
+            });
         if held {
             return;
         }
-        let mesh = junction_mesh(source);
+        let mesh = junction_mesh_of(&[junctions.as_slice(), bent.as_slice()]);
         let buffers = (!mesh.indices.is_empty()).then(|| JunctionBuffers {
             vertices: device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
                 label: Some("junction_vertices"),
@@ -547,7 +558,7 @@ impl ModelsGpu {
             }),
         });
         self.junctions = JunctionsGpu {
-            source: Some(Rc::clone(source)),
+            source: Some((Rc::clone(junctions), Rc::clone(bent))),
             buffers,
             runs: mesh.runs,
         };

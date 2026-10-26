@@ -462,11 +462,16 @@ fn bridge_scene() -> Vec<String> {
             r##"{{"position":[19.5,{y}],"size":[1,{length}],"deck":true,"shape":"box","height":{height},"color":"#777777"}}"##
         )
     };
-    let lane = |y: f64, length: f64| road([19.5, y], [1.0, length], "");
+    // Дорога без `z` встаёт концами на землю, а не на настил: полотно на настиле называет высоту само.
+    let lane = |y: f64, length: f64, z: f64| {
+        format!(
+            r##"{{"position":[19.5,{y},{z}],"size":[1,{length}],"color":"#8a8f96","road":true}}"##
+        )
+    };
     let mut scene = vec![
         r##"{"position":[0,14.5,0],"size":[40,1],"color":"#8a8f96","road":true}"##.to_string(),
-        lane(24.0, 6.0),
-        lane(0.0, 6.0),
+        road([19.5, 24.0], [1.0, 6.0], ""),
+        road([19.5, 0.0], [1.0, 6.0], ""),
     ];
     for (y, length, height) in [
         (22.5, 1.5, 0.3),
@@ -478,7 +483,7 @@ fn bridge_scene() -> Vec<String> {
         (6.0, 1.5, 0.3),
     ] {
         scene.push(deck(y, length, height));
-        scene.push(lane(y, length));
+        scene.push(lane(y, length, height));
     }
     scene
 }
@@ -547,12 +552,16 @@ fn road_links_tell_the_axis_the_links_the_dead_ends_and_the_neighbours() {
     ];
     let mut game = game_of(&scene, &[]);
     let links = game.road_links(0).expect("дорога");
-    assert_eq!(links.axis, [[0.0, 10.0], [20.0, 10.0]]);
-    assert_eq!(links.links, vec![([10.0, 10.0], 1)]);
-    assert_eq!(links.ends, vec![[0.0, 10.0], [20.0, 10.0]]);
+    assert_eq!(links.axis.points, [[0.0, 10.0, 0.0], [20.0, 10.0, 0.0]]);
+    assert_eq!(links.axis.bend, 0.0);
+    assert_eq!(links.links, vec![([10.0, 10.0, 0.0], 1)]);
+    assert_eq!(links.ends, vec![[0.0, 10.0, 0.0], [20.0, 10.0, 0.0]]);
     assert_eq!(links.neighbours.len(), 1);
     assert_eq!(links.neighbours[0].0, 1);
-    assert_eq!(links.neighbours[0].1, [[10.0, 0.0], [10.0, 20.0]]);
+    assert_eq!(
+        links.neighbours[0].1.points,
+        [[10.0, 0.0, 0.0], [10.0, 20.0, 0.0]]
+    );
     assert!(game.road_links(2).is_none(), "не дорога");
     assert!(game.road_links(99).is_none(), "нет такого объекта");
 }

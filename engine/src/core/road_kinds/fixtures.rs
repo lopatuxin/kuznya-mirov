@@ -175,10 +175,11 @@ pub(super) fn tables() -> (RoadKindTable, ModelTable) {
             pieces: vec![piece(2, MAIN_WIDTH)],
         },
     ];
-    let mut models: Vec<Model> = ["street_a", "street_b", "main_a"]
-        .iter()
-        .map(|name| Model::placeholder(name))
-        .collect();
+    let mut models: Vec<Model> = vec![
+        ribbon("street_a", STREET_WIDTH, STREET_WIDTH * 2.0, 2, 8),
+        ribbon("street_b", STREET_WIDTH, STREET_WIDTH * 2.0, 2, 8),
+        ribbon("main_a", MAIN_WIDTH, MAIN_WIDTH * 2.0, 2, 8),
+    ];
     let mut junctions = Vec::new();
     for (name, arms) in junction_specs() {
         let (model, described) = junction_model(name, &arms);
@@ -207,4 +208,43 @@ pub(super) fn tables_with(keep: &[&str]) -> (RoadKindTable, ModelTable) {
         .collect();
     let kinds = (0..2).filter_map(|index| all.get(index).cloned()).collect();
     (RoadKindTable::new(kinds, junctions), models)
+}
+
+/// Кусок дороги — плоская лента `width × length` из `across × along` ячеек, лежащая серединой в начале: так лежит
+/// модель куска после загрузки.
+pub(super) fn ribbon(name: &str, width: f64, length: f64, across: usize, along: usize) -> Model {
+    let mut vertices = Vec::new();
+    for row in 0..=along {
+        for column in 0..=across {
+            let (u, v) = (column as f64 / across as f64, row as f64 / along as f64);
+            vertices.push(ModelVertex {
+                position: [((u - 0.5) * width) as f32, ((v - 0.5) * length) as f32, 0.0],
+                normal: [0.0, 0.0, 1.0],
+                uv: [u as f32, v as f32],
+                tangent: [1.0, 0.0, 0.0, -1.0],
+                color: [1.0; 4],
+            });
+        }
+    }
+    let at = |row: usize, column: usize| (row * (across + 1) + column) as u32;
+    let mut indices = Vec::new();
+    for row in 0..along {
+        for column in 0..across {
+            let (a, b) = (at(row, column), at(row, column + 1));
+            let (c, d) = (at(row + 1, column), at(row + 1, column + 1));
+            indices.extend([a, c, b, b, c, d]);
+        }
+    }
+    Model {
+        name: name.to_string(),
+        parts: vec![Part {
+            vertices,
+            indices,
+            material: 0,
+        }],
+        materials: vec![Material::plain()],
+        images: Vec::new(),
+        size: [width, length, 0.0],
+        origin: [0.0; 2],
+    }
 }

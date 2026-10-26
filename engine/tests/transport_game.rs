@@ -228,8 +228,10 @@ fn width_of(kinds: &RoadKindTable, kind: usize) -> f64 {
     kinds.get(kind).expect("вид").width() * 0.05
 }
 
-/// Мест на карте Транспортной компании, где сходятся дороги видов: тупики, повороты, тройники, кресты.
-const JUNCTIONS_OF_THE_MAP: usize = 9;
+/// Мест на карте Транспортной компании, где сходятся дороги видов: тупики, повороты, тройники, кресты. Сейчас
+/// это восточный тупик улицы деревни, тройник тракта с проездом к складу и тупик этого проезда; тракт кончается на
+/// проезде по причалу без вида — там перекрёстка нет.
+const JUNCTIONS_OF_THE_MAP: usize = 3;
 
 const MEETING: [f64; 2] = [30.0, 30.0];
 
@@ -457,7 +459,11 @@ fn cases() -> Vec<Case> {
     }
     for &kind in &indices {
         for degrees in (0..=25).step_by(5) {
-            for sign in if degrees == 0 { vec![1.0] } else { vec![1.0, -1.0] } {
+            for sign in if degrees == 0 {
+                vec![1.0]
+            } else {
+                vec![1.0, -1.0]
+            } {
                 out.push(Case {
                     shape: "bend",
                     degrees: sign * f64::from(degrees),

@@ -19,7 +19,7 @@ export type ObjectPlacement = {
 };
 
 /** Свойства объекта, которые пишут ручки, — по одному ключу файла. */
-export type PlacementKey = "position" | "size" | "height" | "rotation";
+export type PlacementKey = "position" | "size" | "height" | "rotation" | "bend";
 
 /** Высота фигуры без `height` — «Редактор», требование 13. */
 export const DEFAULT_SHAPE_HEIGHT = 1;

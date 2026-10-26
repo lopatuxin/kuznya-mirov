@@ -946,12 +946,20 @@ struct ModelInstance {
     // x, y — середина основания на земле, z, w — косинус и синус поворота.
     @location(5) placement: vec4<f32>,
     // x — высота основания над нулём сцены, y — во сколько раз модель увеличена, z — во сколько раз она ещё
-    // растянута вдоль своей оси +Y (у кусков дороги; у остальных 1).
+    // растянута вдоль своей оси +Y (у кусков дороги; у остальных 1), w — угол наклона вдоль оси +Y в радианах:
+    // при положительном конец +Y выше (у машины на подъёме; у остальных 0).
     @location(6) base: vec4<f32>,
 };
 
+// Наклон вдоль локальной оси +Y: конец +Y поднимается при положительном угле.
+fn model_tilt(v: vec3<f32>, instance: ModelInstance) -> vec3<f32> {
+    let cs = cos(instance.base.w);
+    let sn = sin(instance.base.w);
+    return vec3<f32>(v.x, v.y * cs - v.z * sn, v.y * sn + v.z * cs);
+}
+
 fn model_world(vertex: ModelVertex, instance: ModelInstance) -> vec3<f32> {
-    let local = vertex.position * instance.base.y * vec3<f32>(1.0, instance.base.z, 1.0);
+    let local = model_tilt(vertex.position * instance.base.y * vec3<f32>(1.0, instance.base.z, 1.0), instance);
     let c = instance.placement.z;
     let s = instance.placement.w;
     return vec3<f32>(
@@ -963,9 +971,10 @@ fn model_world(vertex: ModelVertex, instance: ModelInstance) -> vec3<f32> {
 
 // Направление модели, повёрнутое вместе с объектом; увеличение его длины не меняет.
 fn model_direction(direction: vec3<f32>, instance: ModelInstance) -> vec3<f32> {
+    let tilted = model_tilt(direction, instance);
     let c = instance.placement.z;
     let s = instance.placement.w;
-    return vec3<f32>(c * direction.x - s * direction.y, s * direction.x + c * direction.y, direction.z);
+    return vec3<f32>(c * tilted.x - s * tilted.y, s * tilted.x + c * tilted.y, tilted.z);
 }
 
 @vertex

@@ -59,6 +59,7 @@ pub struct Frame3d {
     /// «Вид дороги»: куски дорог по номеру модели и перекрёстки; рисуются после моделей и до плоских объектов.
     pub road_pieces: Vec<Vec<ModelInstance>>,
     pub road_junctions: Rc<Vec<Junction>>,
+    pub road_bent: Rc<Vec<Junction>>,
     /// «Свет и материалы», прозрачность: объекты с частью `BLEND` от дальнего к ближнему.
     pub blended: Vec<BlendedDraw>,
     /// Плитки земли, затем плоские объекты в порядке рисования.
@@ -349,6 +350,7 @@ pub fn compose_frame3d(
         models: model_draws.instances,
         road_pieces: road_draws.pieces,
         road_junctions: road_draws.junctions,
+        road_bent: road_draws.bent,
         blended,
         ground,
         surface,

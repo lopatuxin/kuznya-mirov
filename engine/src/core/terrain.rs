@@ -3,6 +3,7 @@
 //! диагональ идёт от левой верхней точки к правой нижней. Высоты, ход, луч мыши и отрисовка считают
 //! одну и ту же поверхность.
 
+use std::ops::Range;
 use std::sync::OnceLock;
 
 use super::footprint::Footprint;
@@ -54,6 +55,8 @@ pub struct Terrain {
     heights: Vec<f64>,
     /// Высоты файла рельефа, без отпечатков.
     base: Vec<f64>,
+    /// Высоты до поправок дорог — отпечатки есть, дорог нет; `None`, пока дороги землю не правили и `heights` те же.
+    plain: Option<Vec<f64>>,
     imprints: Vec<Imprint>,
     water: Option<WaterState>,
     covers: Vec<Cover>,
@@ -86,6 +89,7 @@ static FLAT: Terrain = Terrain {
     density: 2,
     heights: Vec::new(),
     base: Vec::new(),
+    plain: None,
     imprints: Vec::new(),
     water: None,
     covers: Vec::new(),
@@ -147,6 +151,7 @@ impl Terrain {
             flat: heights.iter().all(|&h| h == 0.0),
             base: heights.clone(),
             heights,
+            plain: None,
             imprints: Vec::new(),
             water: None,
             covers: Vec::new(),
@@ -158,12 +163,16 @@ impl Terrain {
 
     /// Тот же рельеф с записью воды `spec`; гладь, течение и пена считаются по его высотам.
     fn with_water(mut self, spec: Option<WaterSpec>) -> Terrain {
+        self.set_water(spec);
+        self
+    }
+
+    fn set_water(&mut self, spec: Option<WaterSpec>) {
         let grid = self.grid();
         self.water = spec.map(|spec| {
             let field = WaterField::compute(&spec, &self.heights, grid);
             WaterState { spec, field }
         });
-        self
     }
 
     fn grid(&self) -> Grid {
@@ -198,6 +207,7 @@ impl Terrain {
             .collect();
         let changed = heights != self.heights;
         self.heights = heights;
+        self.plain = None;
         self.flat = self.heights.iter().all(|&h| h == 0.0);
         self.imprints = imprints;
         if changed {
@@ -233,6 +243,76 @@ impl Terrain {
     /// Отпечатки файла рельефа, в порядке записи.
     pub fn imprints(&self) -> &[Imprint] {
         &self.imprints
+    }
+
+    /// Высоты точек сетки без поправок дорог: итог с отпечатками, до того как дороги землю выправили.
+    pub fn ground_heights(&self) -> &[f64] {
+        self.plain.as_deref().unwrap_or(&self.heights)
+    }
+
+    /// Точки сетки, что лежат в прямоугольнике сцены от `low` до `high`: столбцы и строки.
+    pub fn points_in(&self, low: Vec2, high: Vec2) -> [Range<usize>; 2] {
+        [
+            self.lattice_span(low[0], high[0], self.columns()),
+            self.lattice_span(low[1], high[1], self.rows()),
+        ]
+    }
+
+    /// Самая низкая и самая высокая земля без поправок дорог в прямоугольнике сцены от `rect[0]` до `rect[1]`; без
+    /// точек сетки в нём — высота земли в его середине.
+    pub fn ground_range_in(&self, rect: [Vec2; 2]) -> (f64, f64) {
+        let [columns, rows] = self.points_in(rect[0], rect[1]);
+        let ground = self.ground_heights();
+        let width = self.columns();
+        let mut range = (f64::INFINITY, f64::NEG_INFINITY);
+        for row in rows {
+            for column in columns.clone() {
+                let height = ground[row * width + column];
+                range = (range.0.min(height), range.1.max(height));
+            }
+        }
+        if range.0 > range.1 {
+            let middle = self.ground_height_at(
+                (rect[0][0] + rect[1][0]) / 2.0,
+                (rect[0][1] + rect[1][1]) / 2.0,
+            );
+            return (middle, middle);
+        }
+        range
+    }
+
+    /// Ставит точки сетки участка `area` на высоты `lifted(столбец, строка)`, а те, где она ничего не говорит, —
+    /// на высоту земли без поправок; гладь воды, закрытые для ходьбы места и признак ровной земли пересчитываются, если
+    /// высоты изменились. `true`, если изменились.
+    pub fn adjust_for_roads(
+        &mut self,
+        area: [Range<usize>; 2],
+        mut lifted: impl FnMut(usize, usize) -> Option<f64>,
+    ) -> bool {
+        if self.heights.is_empty() {
+            return false;
+        }
+        let columns = self.columns();
+        let plain = self.plain.take().unwrap_or_else(|| self.heights.clone());
+        let mut changed = false;
+        for row in area[1].clone() {
+            for column in area[0].clone() {
+                let at = row * columns + column;
+                let height = lifted(column, row).unwrap_or(plain[at]);
+                if self.heights[at] != height {
+                    self.heights[at] = height;
+                    changed = true;
+                }
+            }
+        }
+        self.plain = Some(plain);
+        if changed {
+            self.flat = self.heights.iter().all(|&h| h == 0.0);
+            self.blocked = OnceLock::new();
+            let spec = self.water.take().map(|state| state.spec);
+            self.set_water(spec);
+        }
+        changed
     }
 
     /// Номер отпечатка с наибольшей высотой или глубиной `|штамп × height|` больше нуля в месте сцены;
@@ -366,12 +446,29 @@ impl Terrain {
 
     /// Высота земли в точке; за краем сцены — высота ближайшей точки края.
     pub fn height_at(&self, x: f64, y: f64) -> f64 {
-        if self.heights.is_empty() {
+        self.interpolate(&self.heights, x, y)
+    }
+
+    /// Высота земли без поправок дорог в точке: та же поверхность, что `height_at`, до того как дороги её
+    /// выправили.
+    pub fn ground_height_at(&self, x: f64, y: f64) -> f64 {
+        self.interpolate(self.ground_heights(), x, y)
+    }
+
+    /// Высота по плоским треугольникам сетки из `heights` в точке.
+    fn interpolate(&self, heights: &[f64], x: f64, y: f64) -> f64 {
+        if heights.is_empty() {
             return 0.0;
         }
         let [x, y] = self.clamp_point(x, y);
         let (column, row, u, v) = self.locate(x, y);
-        let h = |dc: usize, dr: usize| self.point_height(column + dc, row + dr);
+        let columns = self.columns();
+        let h = |dc: usize, dr: usize| {
+            heights
+                .get((row + dr) * columns + column + dc)
+                .copied()
+                .unwrap_or(0.0)
+        };
         let base = h(0, 0);
         if u >= v {
             base + u * (h(1, 0) - base) + v * (h(1, 1) - h(1, 0))

@@ -295,6 +295,18 @@
       "gaz_aa_van": {
         "path": "models/gaz_aa_van.glb"
       },
+      "port_warehouse": {
+        "path": "models/port_warehouse.glb"
+      },
+      "port_office": {
+        "path": "models/port_office.glb"
+      },
+      "port_pier": {
+        "path": "models/port_pier.glb"
+      },
+      "port_crane": {
+        "path": "models/port_crane.glb"
+      },
       "road_bend_drive_drive": {
         "path": "models/road_bend_drive_drive.glb"
       },

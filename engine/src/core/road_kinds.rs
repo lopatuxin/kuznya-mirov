@@ -1,21 +1,26 @@
-//! «Трёхмерная сцена» → «Вид дороги»: дорога выглядит дорогой — прямые куски своего вида вдоль оси и
-//! перекрёстки готовыми моделями на стыках, изломах и в тупиках. Модуль не знает о `World` и видеокарте: дороги
-//! ему приносят готовыми прямоугольниками (`RoadShape`) с видом, оси и связи он берёт у `roads`, куски кладёт по
+//! «Трёхмерная сцена» → «Вид дороги»: дорога выглядит дорогой — куски своего вида вдоль оси-прямой или оси-дуги
+//! по её уклону и перекрёстки готовыми моделями на стыках, изломах и в тупиках. Модуль не знает о `World` и
+//! видеокарте: дороги ему приносят готовыми (`RoadForm`) с видом, оси и связи он берёт у `roads`, куски кладёт по
 //! осям, а модель перекрёстка выбирает и изгибает `junction`.
 
 pub mod junction;
 
 #[cfg(test)]
 mod fixtures;
+#[cfg(test)]
+mod slope;
 
 use std::collections::HashMap;
 use std::f64::consts::{PI, TAU};
 use std::rc::Rc;
 
-use junction::SpotArm;
+use junction::{ArmAxis, SpotArm};
 
-use super::model::{ModelTable, Part};
-use super::roads::{Link, Road, RoadShape, add_scaled, cross, distance, dot, find_links, sub};
+use super::model::{Model, ModelTable, ModelVertex, Part};
+use super::roads::{
+    Link, Road, RoadForm, RoadShape, add_scaled, carriers_cross, cross, distance, dot, find_links,
+    sub,
+};
 use super::value::Vec2;
 
 /// Излом двух дорог одного вида и ширины, с которого на их стыке стоит перекрёсток, в градусах: меньше —
@@ -108,15 +113,32 @@ impl RoadKindTable {
     }
 }
 
-/// Дорога раскладки: прямоугольник и номер вида в `RoadKindTable`, если у дороги есть `road_kind`.
+/// Прямая ровная дорога раскладки: прямоугольник и номер вида в `RoadKindTable`, если у дороги есть `road_kind`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct LayoutRoad {
     pub shape: RoadShape,
     pub kind: Option<usize>,
 }
 
+/// Дорога раскладки: форма — хорда, изгиб оси и высоты обоих концов — и номер вида, если у дороги есть `road_kind`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct LayoutForm {
+    pub form: RoadForm,
+    pub kind: Option<usize>,
+}
+
+impl From<LayoutRoad> for LayoutForm {
+    fn from(road: LayoutRoad) -> LayoutForm {
+        LayoutForm {
+            form: RoadForm::straight(road.shape),
+            kind: road.kind,
+        }
+    }
+}
+
 /// Прямой кусок на месте: модель, середина, высота основания, косинус и синус поворота (локальная ось +Y
-/// модели — вдоль оси дороги, от начала к концу), увеличение модели и растяжение вдоль.
+/// модели — вдоль оси дороги, от начала к концу), увеличение модели и растяжение вдоль. Так лежат куски прямой
+/// ровной дороги; куски дуги и склона — изогнутые копии `Laid::bent`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PlacedPiece {
     pub model: usize,
@@ -140,7 +162,8 @@ pub struct PlacedArm {
 }
 
 /// Перекрёсток на месте: модель из `scene.road_junctions`, середина, высота основания и изогнутая копия её
-/// частей — вершины лежат в клетках мира относительно середины, у каждой части тот же материал, что в модели.
+/// частей — вершины лежат в клетках мира относительно середины, у каждой части тот же материал, что в модели. Так же
+/// лежит изогнутая копия куска дороги, но без рукавов.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Junction {
     /// Номер модели в таблице моделей игры.
@@ -203,27 +226,24 @@ struct Cluster {
     roads: Vec<usize>,
 }
 
-/// Точка стыка пары дорог, к которой относится связь `first`: пересечение их осевых прямых, если оси сходятся не
-/// меньше чем под `NEAR_PARALLEL_DEGREES` и пересечение не дальше ширины каждой дороги от её оси-отрезка; иначе —
-/// точка самой связи (на оси несущей дороги).
+/// Точка стыка пары дорог, к которой относится связь `first`: пересечение их осей (прямая с прямой, прямая с дугой,
+/// дуга с дугой), если оси сходятся не меньше чем под `NEAR_PARALLEL_DEGREES` и пересечение не дальше ширины каждой
+/// дороги от её оси-отрезка; иначе — точка самой связи (на оси несущей дороги).
 fn joint_of_pair(first: &Link, shapes: &[Road]) -> Vec2 {
     let (a, b) = (&shapes[first.a], &shapes[first.b]);
-    let turn = cross(a.dir, b.dir);
-    if turn.abs() >= NEAR_PARALLEL_DEGREES.to_radians().sin() {
-        let point = add_scaled(
-            a.end(0),
-            a.dir,
-            cross(sub(b.end(0), a.end(0)), b.dir) / turn,
-        );
-        let near_axis = |road: &Road| {
-            let along = dot(sub(point, road.end(0)), road.dir);
-            (-along).max(along - road.length()).max(0.0) <= width_of(road)
-        };
-        if near_axis(a) && near_axis(b) {
-            return point;
-        }
-    }
-    first.point_b
+    let crossings = carriers_cross(a, b);
+    let near_axis = |road: &Road, point: Vec2| road.closest(point).distance <= width_of(road);
+    let turn_sin = NEAR_PARALLEL_DEGREES.to_radians().sin();
+    crossings
+        .into_iter()
+        .filter(|&point| {
+            let (sa, sb) = (a.along(point), b.along(point));
+            cross(a.tangent_at(sa), b.tangent_at(sb)).abs() >= turn_sin
+                && near_axis(a, point)
+                && near_axis(b, point)
+        })
+        .min_by(|&x, &y| distance(x, first.point_b).total_cmp(&distance(y, first.point_b)))
+        .unwrap_or(first.point_b)
 }
 
 /// Точки связей, слитые по `MERGE_DISTANCE`, и номер точки у каждой связи. Все связи одной пары дорог — одна
@@ -256,16 +276,18 @@ fn cluster_links(links: &[Link], shapes: &[Road]) -> (Vec<Cluster>, Vec<usize>) 
 }
 
 fn width_of(road: &Road) -> f64 {
-    road.half_width * 2.0
+    road.width()
 }
 
 /// Рукав перекрёстка: дорога вида, направление, в котором она уходит от точки стыка, и начало рукава — ближайшая
-/// к точке стыка точка оси дороги.
+/// к точке стыка точка оси дороги, её расстояние `s` от начала оси и идёт ли рукав в сторону роста `s`.
 #[derive(Debug, Clone, Copy)]
 struct Branch {
     road: usize,
     dir: Vec2,
     origin: Vec2,
+    s: f64,
+    forward: bool,
 }
 
 /// Что стоит в точке стыка.
@@ -306,12 +328,10 @@ fn branches_at(
             continue;
         };
         let shape = &shapes[road];
-        let origin = add_scaled(
-            shape.end(0),
-            shape.dir,
-            dot(sub(cluster.point, shape.end(0)), shape.dir),
-        );
-        let backward = [-shape.dir[0], -shape.dir[1]];
+        let s = shape.along(cluster.point);
+        let origin = shape.point_at(s);
+        let forward = shape.tangent_at(s);
+        let backward = [-forward[0], -forward[1]];
         let ends_here = road_ends.each_ref().map(|end| end.cluster == Some(index));
         if ends_here == [true, true] {
             continue;
@@ -319,8 +339,10 @@ fn branches_at(
         if ends_here != [false, true] {
             branches.push(Branch {
                 road,
-                dir: shape.dir,
+                dir: forward,
                 origin,
+                s,
+                forward: true,
             });
         }
         if ends_here != [true, false] {
@@ -328,6 +350,8 @@ fn branches_at(
                 road,
                 dir: backward,
                 origin,
+                s,
+                forward: false,
             });
         }
     }
@@ -337,7 +361,7 @@ fn branches_at(
 fn joint_at(
     index: usize,
     cluster: &Cluster,
-    roads: &[LayoutRoad],
+    roads: &[LayoutForm],
     shapes: &[Road],
     ends: &[Option<[LayoutEnd; 2]>],
 ) -> Joint {
@@ -387,7 +411,7 @@ fn layout_end(
     let mut best: Option<(f64, LayoutEnd)> = None;
     for &link in own_links {
         let cluster = of_link[link];
-        let along = dot(sub(clusters[cluster].point, road.end(0)), road.dir);
+        let along = road.along(clusters[cluster].point);
         let gap = (along - target).abs();
         if gap <= width + EPS && best.as_ref().is_none_or(|(known, _)| gap < known - EPS) {
             best = Some((
@@ -414,15 +438,133 @@ fn rotation_along(dir: Vec2) -> (f64, f64) {
     (dir[1], -dir[0])
 }
 
-/// Прямые куски дороги `road` на отрезке раскладки `span` — расстояниях от начала оси до начала и до конца
+/// Что выложено на дорогах: куски прямых ровных дорог, перекрёстки, изогнутые копии кусков дуг и склонов.
+#[derive(Debug, Default)]
+struct Laid {
+    pieces: Vec<PlacedPiece>,
+    junctions: Vec<Junction>,
+    bent: Vec<Junction>,
+    bare: usize,
+}
+
+/// Единичный вектор.
+fn normalized(v: [f64; 3]) -> [f64; 3] {
+    let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if len < EPS {
+        [0.0, 0.0, 1.0]
+    } else {
+        [v[0] / len, v[1] / len, v[2] / len]
+    }
+}
+
+/// Куда встают точка и направления модели куска в точке оси `s`: в мировых осях поперёк оси вправо по модели, вдоль
+/// оси по уклону и вверх по нормали полотна.
+struct Frame {
+    across: [f64; 3],
+    along: [f64; 3],
+    up: [f64; 3],
+}
+
+impl Frame {
+    fn at(road: &Road, s: f64) -> Frame {
+        let tangent = road.tangent_at(s);
+        let (sin, cos) = libm::sincos(libm::atan(road.slope()));
+        Frame {
+            across: [tangent[1], -tangent[0], 0.0],
+            along: [tangent[0] * cos, tangent[1] * cos, sin],
+            up: [-tangent[0] * sin, -tangent[1] * sin, cos],
+        }
+    }
+
+    /// Направление модели `local` (оси модели: поперёк, вдоль, вверх) в мировых осях.
+    fn carry(&self, local: [f64; 3]) -> [f32; 3] {
+        let mut world = [0.0_f32; 3];
+        for (axis, slot) in world.iter_mut().enumerate() {
+            *slot = (local[0] * self.across[axis]
+                + local[1] * self.along[axis]
+                + local[2] * self.up[axis]) as f32;
+        }
+        world
+    }
+}
+
+/// Один кусок вдоль оси: где он, во сколько раз модель увеличена и растянута вдоль.
+struct PieceFit {
+    s: f64,
+    scale: f64,
+    stretch: f64,
+}
+
+/// Изогнутая копия вершины куска: точка модели `(x, y, z)` встаёт в точку оси на длине `s + y · scale · stretch`,
+/// сдвинутую поперёк оси на `x · scale`, на высоту профиля там плюс `z · scale`. Направления поворачиваются вместе с
+/// осью и уклоном.
+fn bend_vertex(road: &Road, vertex: &ModelVertex, fit: &PieceFit, origin: [f64; 3]) -> ModelVertex {
+    let along = fit.s + f64::from(vertex.position[1]) * fit.scale * fit.stretch;
+    let frame = Frame::at(road, along);
+    let point = add_scaled(
+        road.point_at(along),
+        [frame.across[0], frame.across[1]],
+        f64::from(vertex.position[0]) * fit.scale,
+    );
+    let height = road.height_at(along) + f64::from(vertex.position[2]) * fit.scale;
+    let local = |v: [f32; 3], stretch: f64| {
+        normalized([f64::from(v[0]), f64::from(v[1]) * stretch, f64::from(v[2])])
+    };
+    let tangent = [vertex.tangent[0], vertex.tangent[1], vertex.tangent[2]];
+    let tangent = frame.carry(local(tangent, fit.stretch));
+    ModelVertex {
+        position: [
+            (point[0] - origin[0]) as f32,
+            (point[1] - origin[1]) as f32,
+            (height - origin[2]) as f32,
+        ],
+        normal: frame.carry(local(vertex.normal, 1.0 / fit.stretch)),
+        uv: vertex.uv,
+        tangent: [tangent[0], tangent[1], tangent[2], vertex.tangent[3]],
+        color: vertex.color,
+    }
+}
+
+/// Изогнутая копия куска `model` (номер `index` в таблице моделей) на дороге `road`.
+fn bent_piece(road: &Road, index: usize, model: &Model, fit: &PieceFit) -> Junction {
+    let center = road.point_at(fit.s);
+    let base = road.height_at(fit.s);
+    let origin = [center[0], center[1], base];
+    Junction {
+        model: index,
+        center,
+        width: width_of(road),
+        z: base,
+        scale: fit.scale,
+        mirrored: false,
+        arms: Vec::new(),
+        parts: model
+            .parts
+            .iter()
+            .map(|part| Part {
+                vertices: part
+                    .vertices
+                    .iter()
+                    .map(|vertex| bend_vertex(road, vertex, fit, origin))
+                    .collect(),
+                indices: part.indices.clone(),
+                material: part.material,
+            })
+            .collect(),
+    }
+}
+
+/// Куски дороги `road` на отрезке раскладки `span` — расстояниях от начала оси до начала и до конца
 /// отрезка: `n` кусков подряд, каждый растянут вдоль до `L / n`. `first` — номер первого куска от начала
-/// раскладки дороги; возвращает, сколько кусков положено.
+/// раскладки дороги; возвращает, сколько кусков положено. Куски прямой ровной дороги — экземпляры модели, остальные
+/// — изогнутые копии по оси и профилю.
 fn pieces_of(
     road: &Road,
     kind_pieces: &[PieceModel],
+    models: &ModelTable,
     span: [f64; 2],
     first: usize,
-    out: &mut Vec<PlacedPiece>,
+    out: &mut Laid,
 ) -> usize {
     let length = span[1] - span[0];
     if length <= EPS {
@@ -433,21 +575,30 @@ fn pieces_of(
     let unit_length = lead.length * width / lead.width;
     let count = ((length / unit_length + 0.5 + EPS).floor() as usize).max(1);
     let each = length / count as f64;
-    let (cos, sin) = rotation_along(road.dir);
+    let plain = road.is_straight() && road.is_level();
     for k in 0..count {
         let variant = &kind_pieces[(first + k + road.id as usize) % kind_pieces.len()];
         let scale = width / variant.width;
-        let along = span[0] + (k as f64 + 0.5) * each;
-        out.push(PlacedPiece {
-            model: variant.model,
-            center: add_scaled(road.end(0), road.dir, along),
-            z: road.z,
-            cos,
-            sin,
+        let fit = PieceFit {
+            s: span[0] + (k as f64 + 0.5) * each,
             scale,
             stretch: each / (variant.length * scale),
-            length: each,
-        });
+        };
+        if plain {
+            let (cos, sin) = rotation_along(road.tangent_at(fit.s));
+            out.pieces.push(PlacedPiece {
+                model: variant.model,
+                center: road.point_at(fit.s),
+                z: road.z[0],
+                cos,
+                sin,
+                scale,
+                stretch: fit.stretch,
+                length: each,
+            });
+        } else if let Some(model) = models.get(variant.model).filter(|m| !m.parts.is_empty()) {
+            out.bent.push(bent_piece(road, variant.model, model, &fit));
+        }
     }
     count
 }
@@ -473,7 +624,7 @@ fn remaining(span: [f64; 2], cuts: &mut [[f64; 2]]) -> Vec<[f64; 2]> {
 /// Вырез раскладки: дорога и отрезок её оси, занятый перекрёстком.
 type Cut = (usize, [f64; 2]);
 
-/// Место перекрёстка: точка, самая широкая дорога (по ней высота и ширина) и рукава.
+/// Место перекрёстка: точка, самая широкая дорога (по ней ширина) и рукава.
 struct Spot {
     point: Vec2,
     lead: usize,
@@ -485,30 +636,48 @@ fn angle_of(dir: Vec2) -> f64 {
     libm::atan2(-dir[1], dir[0]).rem_euclid(TAU)
 }
 
+/// Высота середины перекрёстка: высота той из его дорог, что раньше в сцене, в точке её рукава. Высоты дорог
+/// в точке стыка расходятся не больше чем на `MAX_HEIGHT_GAP`.
+fn spot_height(spot: &Spot, shapes: &[Road]) -> f64 {
+    spot.branches
+        .iter()
+        .min_by_key(|branch| branch.road)
+        .map_or(0.0, |branch| shapes[branch.road].height_at(branch.s))
+}
+
 /// Перекрёсток в месте `spot` с моделью из набора и вырезы раскладки у его рукавов: для каждого рукава — дорога
 /// и отрезок оси от точки стыка до конца гаснущей полосы. `None`, если модели с таким числом рукавов нет.
 fn junction_at(
     spot: &Spot,
-    roads: &[LayoutRoad],
+    roads: &[LayoutForm],
     shapes: &[Road],
     kinds: &RoadKindTable,
     models: &ModelTable,
 ) -> Option<(Junction, Vec<Cut>)> {
-    let mut arms: Vec<(Branch, SpotArm)> = spot
+    let height = spot_height(spot, shapes);
+    let mut arms: Vec<(Branch, SpotArm, ArmAxis)> = spot
         .branches
         .iter()
         .map(|&branch| {
+            let road = &shapes[branch.road];
+            let outward = if branch.forward { 1.0 } else { -1.0 };
             let arm = SpotArm {
                 angle: angle_of(branch.dir),
                 kind: roads[branch.road].kind?,
-                width: width_of(&shapes[branch.road]),
+                width: width_of(road),
                 offset: cross(sub(branch.origin, spot.point), branch.dir),
             };
-            Some((branch, arm))
+            let axis = ArmAxis {
+                bend: -road.curvature() * outward,
+                slope: road.slope() * outward,
+                rise: road.height_at(branch.s) - height,
+            };
+            Some((branch, arm, axis))
         })
         .collect::<Option<_>>()?;
     arms.sort_by(|a, b| a.1.angle.total_cmp(&b.1.angle));
-    let spot_arms: Vec<SpotArm> = arms.iter().map(|(_, arm)| *arm).collect();
+    let spot_arms: Vec<SpotArm> = arms.iter().map(|(_, arm, _)| *arm).collect();
+    let axes: Vec<ArmAxis> = arms.iter().map(|(_, _, axis)| *axis).collect();
     let crowded = spot_arms.len() > 1
         && spot_arms.iter().enumerate().any(|(index, arm)| {
             let next = spot_arms[(index + 1) % spot_arms.len()];
@@ -518,22 +687,20 @@ fn junction_at(
         return None;
     }
     let fit = junction::select(kinds, models, &spot_arms)?;
-    let placed = junction::place(kinds, models, &fit, &spot_arms)?;
+    let placed = junction::place_on_axes(kinds, models, &fit, &spot_arms, &axes)?;
     let cuts = arms
         .iter()
         .zip(&placed.mouths)
-        .map(|((branch, _), mouth)| {
-            let road = &shapes[branch.road];
-            let at = dot(sub(branch.origin, road.end(0)), road.dir);
-            let far = at + dot(branch.dir, road.dir).signum() * mouth;
-            (branch.road, [at.min(far), at.max(far)])
+        .map(|((branch, _, _), mouth)| {
+            let far = branch.s + if branch.forward { *mouth } else { -mouth };
+            (branch.road, [branch.s.min(far), branch.s.max(far)])
         })
         .collect();
     let junction = Junction {
         model: kinds.junctions()[fit.model].model,
         center: spot.point,
         width: width_of(&shapes[spot.lead]),
-        z: shapes[spot.lead].z,
+        z: height,
         scale: placed.scale,
         mirrored: fit.mirrored,
         arms: spot_arms
@@ -553,29 +720,38 @@ fn junction_at(
 
 /// Раскладка видов дорог по дорогам мира: куски вдоль осей дорог с видом, вырезанные у рукавов перекрёстков, и
 /// сами перекрёстки — готовые модели на стыках, изломах и в тупиках. Связи берутся со всех дорог, в том числе
-/// закрытых и без вида.
+/// закрытых и без вида. Здесь прямые ровные дороги; о дугах и склонах — `lay_out_forms`.
 pub fn lay_out(
     roads: &[LayoutRoad],
     kinds: &RoadKindTable,
     models: &ModelTable,
 ) -> (Vec<PlacedPiece>, Vec<Junction>) {
-    let (pieces, junctions, _) = lay_out_counting_bare(roads, kinds, models);
-    (pieces, junctions)
+    let forms: Vec<LayoutForm> = roads.iter().copied().map(LayoutForm::from).collect();
+    let laid = lay_out_laid(&forms, kinds, models);
+    (laid.pieces, laid.junctions)
 }
 
-/// `lay_out` и сколько мест стыка осталось без модели (требование 7 фазы 46: нет модели с таким числом рукавов или
-/// два соседних рукава теснее 30°): куски их дорог идут до самой точки стыка.
-fn lay_out_counting_bare(
-    roads: &[LayoutRoad],
+/// Раскладка по дорогам любой формы: прямые ровные дороги дают экземпляры кусков, дуги и склоны — изогнутые копии
+/// кусков, перекрёстки ложатся на оси своих дорог в плане и по высоте.
+#[cfg(test)]
+fn lay_out_forms(
+    roads: &[LayoutForm],
     kinds: &RoadKindTable,
     models: &ModelTable,
-) -> (Vec<PlacedPiece>, Vec<Junction>, usize) {
+) -> (Vec<PlacedPiece>, Vec<Junction>, Vec<Junction>) {
+    let laid = lay_out_laid(roads, kinds, models);
+    (laid.pieces, laid.junctions, laid.bent)
+}
+
+/// `lay_out_forms` и сколько мест стыка осталось без модели (требование 7 фазы 46: нет модели с таким числом рукавов или
+/// два соседних рукава теснее 30°): куски их дорог идут до самой точки стыка.
+fn lay_out_laid(roads: &[LayoutForm], kinds: &RoadKindTable, models: &ModelTable) -> Laid {
     if roads.iter().all(|road| road.kind.is_none()) {
-        return (Vec::new(), Vec::new(), 0);
+        return Laid::default();
     }
     let shapes: Vec<Road> = roads
         .iter()
-        .map(|road| Road::from_shape(&road.shape))
+        .map(|road| Road::from_form(&road.form))
         .collect();
     let links = find_links(&shapes);
     let (clusters, of_link) = cluster_links(&links, &shapes);
@@ -628,10 +804,11 @@ fn lay_out_counting_bare(
             if found.cluster.is_some() {
                 continue;
             }
+            let tangent = shape.tangent_at(found.along);
             let inward = if end == 0 {
-                shape.dir
+                tangent
             } else {
-                [-shape.dir[0], -shape.dir[1]]
+                [-tangent[0], -tangent[1]]
             };
             spots.push(Spot {
                 point: shape.point_at(found.along),
@@ -640,26 +817,26 @@ fn lay_out_counting_bare(
                     road: index,
                     dir: inward,
                     origin: shape.point_at(found.along),
+                    s: found.along,
+                    forward: end == 0,
                 }],
             });
         }
     }
 
-    let mut junctions = Vec::with_capacity(spots.len());
-    let mut bare = 0;
+    let mut laid = Laid::default();
     let mut cuts: Vec<Vec<[f64; 2]>> = vec![Vec::new(); roads.len()];
     for spot in &spots {
         let Some((junction, spot_cuts)) = junction_at(spot, roads, &shapes, kinds, models) else {
-            bare += 1;
+            laid.bare += 1;
             continue;
         };
         for (road, cut) in spot_cuts {
             cuts[road].push(cut);
         }
-        junctions.push(junction);
+        laid.junctions.push(junction);
     }
 
-    let mut pieces = Vec::new();
     for (index, road) in roads.iter().enumerate() {
         let (Some(span), Some(kind)) = (spans[index], road.kind.and_then(|kind| kinds.get(kind)))
         else {
@@ -667,23 +844,31 @@ fn lay_out_counting_bare(
         };
         let mut placed = 0;
         for segment in remaining(span, &mut cuts[index]) {
-            placed += pieces_of(&shapes[index], &kind.pieces, segment, placed, &mut pieces);
+            placed += pieces_of(
+                &shapes[index],
+                &kind.pieces,
+                models,
+                segment,
+                placed,
+                &mut laid,
+            );
         }
     }
-    (pieces, junctions, bare)
+    laid
 }
 
 /// Раскладка, что держится между кадрами: пересобирается, только когда сменились дороги мира —
-/// появились, исчезли, сдвинулись, сменили размер, поворот, высоту, признак `road` или вид. Скорость на
-/// дороге в `LayoutRoad` не входит, поэтому её смена раскладку не трогает.
+/// появились, исчезли, сдвинулись, сменили размер, поворот, изгиб, высоту, признак `road` или вид, или земля под
+/// ними. Скорость на дороге в `LayoutForm` не входит, поэтому её смена раскладку не трогает.
 #[derive(Debug, Default)]
 pub struct RoadKindLayout {
-    roads: Vec<LayoutRoad>,
+    roads: Vec<LayoutForm>,
     pieces: Vec<PlacedPiece>,
     junctions: Rc<Vec<Junction>>,
+    bent: Rc<Vec<Junction>>,
     bare_spots: usize,
     version: u64,
-    fresh: Vec<LayoutRoad>,
+    fresh: Vec<LayoutForm>,
 }
 
 impl RoadKindLayout {
@@ -707,23 +892,29 @@ impl RoadKindLayout {
         &self.junctions
     }
 
+    /// Изогнутые копии кусков дорог по дугам и склонам; новый общий список — при каждой пересборке.
+    pub fn bent_pieces(&self) -> &Rc<Vec<Junction>> {
+        &self.bent
+    }
+
     /// Приводит раскладку к дорогам, которые `fill` кладёт в переданный буфер; `true`, если пересобрана.
     /// Буфер живёт между вызовами: кадр без перемен ничего не выделяет.
     pub fn sync_with(
         &mut self,
         kinds: &RoadKindTable,
         models: &ModelTable,
-        fill: impl FnOnce(&mut Vec<LayoutRoad>),
+        fill: impl FnOnce(&mut Vec<LayoutForm>),
     ) -> bool {
         let mut fresh = std::mem::take(&mut self.fresh);
         fill(&mut fresh);
         let changed = fresh != self.roads;
         if changed {
             std::mem::swap(&mut self.roads, &mut fresh);
-            let (pieces, junctions, bare) = lay_out_counting_bare(&self.roads, kinds, models);
-            self.pieces = pieces;
-            self.junctions = Rc::new(junctions);
-            self.bare_spots = bare;
+            let laid = lay_out_laid(&self.roads, kinds, models);
+            self.pieces = laid.pieces;
+            self.junctions = Rc::new(laid.junctions);
+            self.bent = Rc::new(laid.bent);
+            self.bare_spots = laid.bare;
             self.version += 1;
         }
         self.fresh = fresh;
@@ -754,6 +945,10 @@ mod tests {
             },
             kind,
         }
+    }
+
+    fn forms(roads: &[LayoutRoad]) -> Vec<LayoutForm> {
+        roads.iter().copied().map(LayoutForm::from).collect()
     }
 
     fn near(a: f64, b: f64) -> bool {
@@ -830,7 +1025,7 @@ mod tests {
             segment(2, [20.0, 0.0], [20.0, 10.0], 1.0, STREET),
         ];
         let mut layout = RoadKindLayout::default();
-        layout.sync_with(&kinds, &models, |buffer| buffer.extend(roads));
+        layout.sync_with(&kinds, &models, |buffer| buffer.extend(forms(&roads)));
         assert_eq!(layout.bare_spots(), 0, "место без модели");
         let (_, junctions) = lay_out(&roads, &kinds, &models);
         let at_joint: Vec<&Junction> = junctions
@@ -1402,17 +1597,17 @@ mod tests {
         let (kinds, models) = world();
         let mut layout = RoadKindLayout::default();
         let roads = vec![road(0, [0.0, 0.0], [9.0, 1.0], Some(STREET))];
-        assert!(layout.sync_with(&kinds, &models, |out| out.clone_from(&roads)));
+        assert!(layout.sync_with(&kinds, &models, |out| *out = forms(&roads)));
         let built = layout.version();
         let junctions = Rc::clone(layout.junctions());
-        assert!(!layout.sync_with(&kinds, &models, |out| out.clone_from(&roads)));
+        assert!(!layout.sync_with(&kinds, &models, |out| *out = forms(&roads)));
         assert_eq!(layout.version(), built, "те же дороги — раскладка та же");
         assert!(
             Rc::ptr_eq(&junctions, layout.junctions()),
             "перекрёстки те же"
         );
         let moved = vec![road(0, [0.0, 1.0], [9.0, 1.0], Some(STREET))];
-        assert!(layout.sync_with(&kinds, &models, |out| out.clone_from(&moved)));
+        assert!(layout.sync_with(&kinds, &models, |out| *out = forms(&moved)));
         assert!(layout.version() > built);
         assert!(!Rc::ptr_eq(&junctions, layout.junctions()));
         assert!(near(layout.pieces()[0].center[1], 1.5));
@@ -1694,7 +1889,9 @@ mod tests {
                 "{degrees}°: у тесных рукавов нет модели"
             );
             let mut layout = RoadKindLayout::default();
-            layout.sync_with(&kinds, &models, |buffer| buffer.extend(case.roads()));
+            layout.sync_with(&kinds, &models, |buffer| {
+                buffer.extend(forms(&case.roads()))
+            });
             assert_eq!(layout.bare_spots(), 1, "{degrees}°: одно место без модели");
             // Вторая дорога доходит до точки стыка: ближайший конец её кусков — в ней.
             let (sin, cos) = degrees.to_radians().sin_cos();
@@ -1730,7 +1927,9 @@ mod tests {
                 "{degrees}°: на 30° и шире модель есть"
             );
             let mut layout = RoadKindLayout::default();
-            layout.sync_with(&kinds, &models, |buffer| buffer.extend(case.roads()));
+            layout.sync_with(&kinds, &models, |buffer| {
+                buffer.extend(forms(&case.roads()))
+            });
             assert_eq!(
                 layout.bare_spots(),
                 0,

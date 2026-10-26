@@ -24,7 +24,8 @@ use super::materials::{linear_to_srgb, srgb_to_linear};
 pub struct ModelInstance {
     /// `[x, y, cos, sin]`.
     pub placement: [f32; 4],
-    /// `[z, scale, stretch, 0]`; `stretch` — единица у всего, кроме кусков дороги.
+    /// `[z, scale, stretch, tilt]`; `stretch` — единица у всего, кроме кусков дороги, `tilt` — наклон вдоль длины
+    /// модели в радианах, нос выше при положительном, ноль у всего, кроме машины на подъёме.
     pub base: [f32; 4],
 }
 
@@ -65,6 +66,8 @@ impl ModelDraws {
 pub struct RoadDraws {
     pub pieces: Vec<Vec<ModelInstance>>,
     pub junctions: Rc<Vec<Junction>>,
+    /// Изогнутые копии кусков дорог по дугам и склонам; рисуются теми же буферами, что перекрёстки.
+    pub bent: Rc<Vec<Junction>>,
 }
 
 /// «Вид дороги»: куски раскладки `game` по моделям и её перекрёстки.
@@ -90,6 +93,7 @@ pub fn road_draws(game: &Game) -> RoadDraws {
     RoadDraws {
         pieces,
         junctions: Rc::clone(layout.junctions()),
+        bent: Rc::clone(layout.bent_pieces()),
     }
 }
 
@@ -116,7 +120,12 @@ const JUNCTION_VERTEX_FLOATS: usize = 16;
 
 /// «Вид дороги»: части `junctions` для видеокарты.
 pub fn junction_mesh(junctions: &[Junction]) -> JunctionMesh {
-    let mut order: Vec<&Junction> = junctions.iter().collect();
+    junction_mesh_of(&[junctions])
+}
+
+/// Части всех списков `lists` для видеокарты: перекрёстки и изогнутые копии кусков дорог одним набором буферов.
+pub fn junction_mesh_of(lists: &[&[Junction]]) -> JunctionMesh {
+    let mut order: Vec<&Junction> = lists.iter().flat_map(|list| list.iter()).collect();
     order.sort_by_key(|junction| junction.model);
     let mut mesh = JunctionMesh::default();
     let mut bases: Vec<Vec<u32>> = Vec::with_capacity(order.len());
@@ -217,7 +226,7 @@ pub fn model_draws(game: &Game) -> ModelDraws {
         }
         draws.instances[index].push(ModelInstance {
             placement: [middle[0] as f32, middle[1] as f32, cos as f32, sin as f32],
-            base: [base as f32, scale as f32, 1.0, 0.0],
+            base: [base as f32, scale as f32, 1.0, world.tilt(id) as f32],
         });
     }
     draws

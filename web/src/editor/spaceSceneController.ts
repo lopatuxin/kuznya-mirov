@@ -27,7 +27,8 @@ import {
 import { createImprintSceneController, type ImprintContext } from "./imprintSceneController";
 import { createPaintSceneController, type PaintContext } from "./paintSceneController";
 import { readModelSizes } from "./projectModels";
-import { drawRoadLinks, readRoadLinks } from "./roadLinks";
+import { createRoadBendSceneController } from "./roadBendSceneController";
+import { drawRoadLinks, readRoadLinks, type RoadLinks } from "./roadLinks";
 import { drawSelectionQuad } from "./selectionDrawing";
 import { applyBrushFrame, brushPathPoints, syncFileHeights, type BrushGrid, type BrushSettings } from "./terrainBrush";
 import { differsInHundredths, type ImprintEntry, type TerrainGrid } from "./terrainFile";
@@ -45,6 +46,8 @@ export type SpaceSceneEngine = Pick<
   | "rest_height"
   | "screen_point"
   | "road_links"
+  | "set_property"
+  | "remove_property"
   | "move_object"
   | "transform_object"
   | "editor_camera"
@@ -111,6 +114,8 @@ type ObjectGesture = {
   /** Высота основания на начало жеста и как её поставил последний вызов движка («Рельеф», требования 41–44). */
   startHeight: number;
   lastHeight: number;
+  /** Дорога без `z`, которую жест не поднимает стрелкой: движок сам ставит её концы на землю, высоты жест ей не шлёт и `z` не пишет («Рельеф», требование 7). */
+  seatsItself: boolean;
   startPoint: Vec2;
   startGround: Vec3 | null;
   /** Вертикальная стрелка: вертикаль через середину, как её видит камера на начало жеста. */
@@ -191,9 +196,14 @@ function worldHeight(engine: SpaceSceneEngine, objectId: number): number | undef
   return typeof height === "number" ? height : undefined;
 }
 
-/** Высота основания объекта в покое: записанная или та, на которую он садится без `z` («Рельеф», требование 8). */
+/** Высота основания объекта в покое: записанная, та, на которую он садится без `z`, или у дороги без `z` — высота её нижнего конца в мире («Рельеф», требования 7, 8). */
 function restingHeight(engine: SpaceSceneEngine, objectId: number, placement: ObjectPlacement): number {
-  return placement.z ?? restHeight(engine, objectId, placement.position[0], placement.position[1]) ?? 0;
+  return placement.z ?? restHeight(engine, objectId, placement.position[0], placement.position[1]) ?? worldHeight(engine, objectId) ?? 0;
+}
+
+/** Дорога без `z` и без настила: `rest_height` о ней молчит, потому что её основание ставят концы на землю. */
+function isGradedRoad(engine: SpaceSceneEngine, objectId: number, placement: ObjectPlacement): boolean {
+  return placement.z === null && restHeight(engine, objectId, placement.position[0], placement.position[1]) === undefined;
 }
 
 function roundToHundredth(value: number): number {
@@ -253,6 +263,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   let hoverPoint: Vec2 | null = null;
   const imprintController = createImprintSceneController();
   const paintController = createPaintSceneController();
+  const bendController = createRoadBendSceneController();
 
   function projectionOf(engine: SpaceSceneEngine): SpaceProjection {
     return { screenPoint: (x, y, z) => toVec2(engine.screen_point(x, y, z)) };
@@ -283,6 +294,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     const mode: HandleMode = hit === null ? "translate" : context.handleMode;
     const startHeight = restingHeight(context.engine, objectIndex, placement);
     const isVertical = mode === "translate" && hit === "axis-z";
+    const seatsItself = !isVertical && isGradedRoad(context.engine, objectIndex, placement);
     let channel: PlacementChannel = "position";
     if (mode === "rotate") channel = "rotation";
     if (mode === "scale") {
@@ -306,6 +318,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
       last: placement,
       startHeight,
       lastHeight: startHeight,
+      seatsItself,
       startPoint: point,
       startGround,
       verticalGrab,
@@ -396,7 +409,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   function pointerDown(input: PointerInput): boolean {
     const context = getContext();
-    if (context.isInputLocked || gesture !== null || imprintController.isActive() || paintController.isActive()) return false;
+    if (context.isInputLocked || gesture !== null || imprintController.isActive() || paintController.isActive() || bendController.isActive()) return false;
     if (input.button === MIDDLE_BUTTON) {
       const camera = context.cameraStore.current();
       if (!context.isEditorCameraActive || camera === null) return false;
@@ -421,6 +434,8 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     }
 
     const point: Vec2 = [input.x, input.y];
+    // Круглая ручка изгиба стоит поверх центра ручек переноса: у прямой дороги они совпадают, и берётся она.
+    if (bendController.start(context, input)) return true;
     if (context.areHandlesAvailable && context.selectedIndex !== null) {
       const placement = readPlacement(context.engine, context.getObjectProperties(context.selectedIndex));
       const baseHeight = placement === null ? 0 : restingHeight(context.engine, context.selectedIndex, placement);
@@ -464,7 +479,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
    * Новые значения жеста и высота основания, на которую их надо поставить («Рельеф», требования
    * 41–43): перенос за тело садит объект так, будто он сдвинулся с высоты точки под указателем;
    * стрелки `x` и `y` — с высоты начала жеста; вертикальная стрелка меняет одну высоту; поворот и
-   * масштаб высоту не задают (`null`) — объект садится сам.
+   * масштаб высоту не задают (`null`) — объект садится сам; дорога без `z` садится сама и при переносе.
    */
   function nextPlacement(
     context: SpaceSceneContext,
@@ -496,6 +511,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (active.hit === "axis-x") axis = "x";
     if (active.hit === "axis-y") axis = "y";
     const position = computeTranslate(start.position, delta, axis, ctrlKey);
+    if (active.seatsItself) return { placement: { ...start, position }, height: null };
     const fromHeight = axis === "free" ? ground[2] : active.startHeight;
     const height = restHeight(context.engine, active.objectIndex, position[0], position[1], fromHeight) ?? active.lastHeight;
     return { placement: { ...start, position }, height };
@@ -516,6 +532,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     hoverPoint = [input.x, input.y];
     if (imprintController.pointerMove(context, input)) return;
     if (paintController.pointerMove(input)) return;
+    if (bendController.pointerMove(context, input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId) {
       if (active === null) updateHover(context, input);
@@ -545,6 +562,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   function pointerUp(input: PointerInput): void {
     if (imprintController.pointerUp(getContext(), input)) return;
     if (paintController.pointerUp(input)) return;
+    if (bendController.pointerUp(getContext(), input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId || (input.buttons & BUTTON_BITS[active.button]) !== 0) return;
     gesture = null;
@@ -562,10 +580,11 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
    * Что жест пишет в `position` — «Рельеф», требование 44: ни место, ни высота не сменились — как
    * было записано. Иначе на паузе партии — всегда три числа; вне партии движок спрашивается, на какую
    * высоту он поставил бы объект без `z` на новом месте: совпало с высотой объекта — два числа
-   * (третье, если было, убирается), нет — три, `z` до сотой клетки.
+   * (третье, если было, убирается), нет — три, `z` до сотой клетки. Дорога без `z` остаётся без `z` («Рельеф», требование 7).
    */
   function placementToWrite(context: SpaceSceneContext, active: ObjectGesture): ObjectPlacement {
     const { start, last, lastHeight } = active;
+    if (active.seatsItself) return { ...last, z: null };
     const isSamePlace = start.position[0] === last.position[0] && start.position[1] === last.position[1];
     if (isSamePlace && Math.abs(lastHeight - active.startHeight) < HEIGHT_TOLERANCE) return { ...last, z: start.z };
     if (!context.isEditorCameraActive) return { ...last, z: roundToHundredth(lastHeight) };
@@ -575,12 +594,13 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
 
   function restoreStart(active: ObjectGesture): void {
     if (!active.hasStarted) return;
-    sendPlacement(getContext().engine, active.objectIndex, active.channel, active.start, active.startHeight);
+    sendPlacement(getContext().engine, active.objectIndex, active.channel, active.start, active.seatsItself ? null : active.startHeight);
   }
 
   function pointerCancel(input: PointerInput): void {
     if (imprintController.pointerCancel(getContext(), input)) return;
     if (paintController.pointerCancel(getContext(), input)) return;
+    if (bendController.pointerCancel(getContext(), input)) return;
     const active = gesture;
     if (active === null || active.pointerId !== input.pointerId) return;
     gesture = null;
@@ -620,6 +640,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (input.code === "Escape") {
       if (imprintController.cancel(context)) return true;
       if (paintController.cancel(context)) return true;
+      if (bendController.cancel(context)) return true;
       const active = gesture;
       if (isStrokeGesture(active)) {
         gesture = null;
@@ -638,7 +659,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     }
     const mode = MODE_KEYS[input.code];
     if (mode !== undefined && !input.shiftKey) {
-      if (!context.areHandlesAvailable || isStrokeGesture(gesture) || imprintController.isActive() || paintController.isActive()) return false;
+      if (!context.areHandlesAvailable || isStrokeGesture(gesture) || imprintController.isActive() || paintController.isActive() || bendController.isActive()) return false;
       hovered = null;
       context.onHandleModeChange(mode);
       return true;
@@ -668,12 +689,13 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
   }
 
   /** Связи выбранной дороги — «Редактор», Фаза 38, требования 32–33: вне партии и на паузе, по нынешнему миру, каждый кадр. */
-  function drawSelectedRoadLinks(context: SpaceSceneContext, context2d: CanvasRenderingContext2D, pixelRatio: number): void {
-    if (context.isInputLocked || context.selectedIndex === null) return;
+  function drawSelectedRoadLinks(context: SpaceSceneContext, context2d: CanvasRenderingContext2D, pixelRatio: number): RoadLinks | null {
+    if (context.isInputLocked || context.selectedIndex === null) return null;
     const links = readRoadLinks(context.engine.road_links(context.selectedIndex));
-    if (links === null) return;
+    if (links === null) return null;
     const projection = projectionOf(context.engine);
     drawRoadLinks(context2d, links, (point) => projection.screenPoint(point[0], point[1], point[2]), pixelRatio);
+    return links;
   }
 
   function draw(context2d: CanvasRenderingContext2D, pixelRatio: number): void {
@@ -683,12 +705,12 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
     if (context.selectedIndex === null) return;
     const rect = context.engine.object_rect(context.selectedIndex) as { corners?: Vec2[] } | undefined;
     if (rect?.corners !== undefined) drawSelectionQuad(context2d, rect.corners, context.selectedLabel, pixelRatio);
-    drawSelectedRoadLinks(context, context2d, pixelRatio);
+    const links = drawSelectedRoadLinks(context, context2d, pixelRatio);
     if (!context.areHandlesAvailable || context.brush !== null || context.paint !== null) return;
     const subject = selectedHandleSubject(context);
-    if (subject === null) return;
-    const geometry = computeHandleGeometry(projectionOf(context.engine), subject.placement, context.handleMode, subject.baseHeight);
+    const geometry = subject === null ? undefined : computeHandleGeometry(projectionOf(context.engine), subject.placement, context.handleMode, subject.baseHeight);
     if (geometry !== undefined) drawHandles(context2d, geometry, context.handleMode, hovered, pixelRatio);
+    if (links !== null) bendController.drawHandle(context, context2d, links, hoverPoint, pixelRatio);
   }
 
   return {
@@ -715,6 +737,7 @@ export function createSpaceSceneController(getContext: () => SpaceSceneContext):
       gesture = null;
       if (isStrokeGesture(active)) active.onActiveChange(false);
       paintController.abandon();
+      bendController.abandon();
       imprintController.abandon();
     },
   };

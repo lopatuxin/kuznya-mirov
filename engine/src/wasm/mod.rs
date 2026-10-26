@@ -10,7 +10,7 @@ use crate::core::math3::Vec3;
 use crate::core::model::ModelTable;
 use crate::core::property::{self, PropertyTable};
 use crate::core::report::{DeleteCause, RuleFired, StepReport};
-use crate::core::roads::RoadLinks;
+use crate::core::roads::{AxisView, RoadLinks};
 use crate::core::rules::Outcome;
 use crate::core::run_jump::{self, OutlineKind};
 use crate::core::runner::{Runner, STEP_SECONDS, UiClock};
@@ -872,36 +872,53 @@ fn js_point3(point: Vec3) -> JsValue {
     triple.into()
 }
 
-/// «Редактор», «Вызовы движка», `road_links`: связи дороги — ось, точки связей с номерами связанных
-/// дорог, концы без связи и оси соседей, везде с высотой дороги.
+/// «Рельеф» → «Дороги на рельефе»: сетку рельефа для рисования строят заново, когда дороги изменили землю или мир
+/// собран заново.
+fn refresh_terrain_mesh(mesh: &mut Option<TerrainMesh>, revision: &mut u64, game: &Game) {
+    let now = game.world.terrain_revision();
+    if now != *revision {
+        *revision = now;
+        *mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
+    }
+}
+
+/// Ось дороги для `road_links`: ломаная точек `[x, y, z]` и изгиб оси в градусах.
+fn js_axis(axis: &AxisView) -> (Array, JsValue) {
+    let points = Array::new();
+    for point in &axis.points {
+        points.push(&js_point3(*point));
+    }
+    (points, JsValue::from_f64(axis.bend))
+}
+
+/// «Редактор», «Вызовы движка», `road_links`: связи дороги — ось ломаной точек с высотой профиля, изгиб оси,
+/// ручка изгиба, точки связей с номерами связанных дорог, концы без связи и оси соседей.
 fn js_road_links(links: &RoadLinks) -> JsValue {
-    let with_height = |point: [f64; 2], z: f64| js_point3([point[0], point[1], z]);
-    let axis = |ends: [[f64; 2]; 2], z: f64| {
-        let pair = Array::new();
-        pair.push(&with_height(ends[0], z));
-        pair.push(&with_height(ends[1], z));
-        pair
-    };
     let obj = Object::new();
-    set(&obj, "axis", &axis(links.axis, links.z));
+    let (points, bend) = js_axis(&links.axis);
+    set(&obj, "axis", &points);
+    set(&obj, "bend", &bend);
+    set(&obj, "handle", &js_point3(links.handle));
     let linked = Array::new();
     for (point, road) in &links.links {
         let item = Object::new();
-        set(&item, "point", &with_height(*point, links.z));
+        set(&item, "point", &js_point3(*point));
         set(&item, "road", &JsValue::from_f64(f64::from(*road)));
         linked.push(&item);
     }
     set(&obj, "links", &linked);
     let ends = Array::new();
     for end in &links.ends {
-        ends.push(&with_height(*end, links.z));
+        ends.push(&js_point3(*end));
     }
     set(&obj, "ends", &ends);
     let neighbours = Array::new();
-    for (road, ends, z) in &links.neighbours {
+    for (road, axis) in &links.neighbours {
         let item = Object::new();
+        let (points, bend) = js_axis(axis);
         set(&item, "road", &JsValue::from_f64(f64::from(*road)));
-        set(&item, "axis", &axis(*ends, *z));
+        set(&item, "axis", &points);
+        set(&item, "bend", &bend);
         neighbours.push(&item);
     }
     set(&obj, "neighbours", &neighbours);
@@ -1827,6 +1844,7 @@ fn render_world(
                     objects: &frame.models,
                     pieces: &frame.road_pieces,
                     junctions: &frame.road_junctions,
+                    bent: &frame.road_bent,
                     blended: &frame.blended,
                 },
             };
@@ -1930,6 +1948,8 @@ pub struct Engine {
     /// «Рельеф» → «Вид»: сетка рельефа и воды, построенная при загрузке; `None`, пока в сцене нет файла
     /// высот.
     terrain_mesh: Option<TerrainMesh>,
+    /// Номер состояния высот земли, по которому построена `terrain_mesh` (`World::terrain_revision`).
+    terrain_revision: u64,
     /// «Рельеф» → «Вид»: готовые формы плоских объектов на земле, от кадра к кадру.
     flat_shapes: FlatShapes,
     /// «Свет и материалы»: `files.materials` загруженной игры — слои покрытий, которые ставит `set_covers`,
@@ -1988,6 +2008,7 @@ impl Engine {
             images: Vec::new(),
             atlas_rects: Vec::new(),
             terrain_mesh: None,
+            terrain_revision: 0,
             flat_shapes: FlatShapes::default(),
             material_decls: Vec::new(),
             rules_path: String::new(),
@@ -2312,6 +2333,7 @@ impl Engine {
                 self.screen_state = Some(ScreenState::new(screens_config.start_screen));
                 self.screens_config = Some(screens_config);
                 self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
+                self.terrain_revision = game.world.terrain_revision();
                 self.flat_shapes = FlatShapes::default();
                 self.game = Some(game);
                 self.motion.world_rebuilt();
@@ -2506,6 +2528,7 @@ impl Engine {
         );
         self.renderer
             .set_videos_playing(self.motion.clock_running(dt));
+        refresh_terrain_mesh(&mut self.terrain_mesh, &mut self.terrain_revision, game);
         let ui = match (
             show_ui,
             self.screens_config.as_ref(),
@@ -2664,9 +2687,11 @@ impl Engine {
     }
 
     /// «Редактор», «Вызовы движка», `road_links`: связи дороги `id` по нынешнему миру —
-    /// `{axis: [[x, y, z], [x, y, z]], links: [{point: [x, y, z], road}], ends: [[x, y, z]],
-    /// neighbours: [{road, axis}]}`: ось дороги, точки связей с номерами связанных дорог, концы оси
-    /// без связи и оси связанных дорог. `null`, если `id` не дорога или игры нет.
+    /// `{axis: [[x, y, z], ...], bend, handle: [x, y, z], links: [{point: [x, y, z], road}], ends: [[x, y, z]],
+    /// neighbours: [{road, axis, bend}]}`: ось дороги ломаной от начала к концу — прямая даёт две точки, дуга
+    /// столько, что соседние точки оси поворачивают не больше чем на 2° — с высотой профиля в каждой точке, изгиб
+    /// оси в градусах (после допустимых пределов), середина оси — ручка изгиба, точки связей с номерами связанных
+    /// дорог, концы оси без связи и оси связанных дорог с их изгибом. `null`, если `id` не дорога или игры нет.
     pub fn road_links(&mut self, id: u32) -> JsValue {
         self.game
             .as_mut()
@@ -2783,6 +2808,7 @@ impl Engine {
             return Some(message);
         }
         self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
+        self.terrain_revision = game.world.terrain_revision();
         None
     }
 
@@ -3169,6 +3195,7 @@ impl Engine {
             self.renderer
                 .set_videos_playing(self.motion.clock_running(dt_seconds));
         }
+        refresh_terrain_mesh(&mut self.terrain_mesh, &mut self.terrain_revision, game);
         let ui = compose_ui(
             &mut self.renderer,
             &mut self.motion,

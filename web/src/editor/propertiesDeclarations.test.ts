@@ -77,11 +77,12 @@ describe("suggestPropertyNames", () => {
   });
 
   it("дороги и езда Фазы 38 — среди подсказок обеих сцен, пока их нет у объекта", () => {
-    const names = ["road", "road_speed", "drive_to", "drive_speed"];
+    const names = ["road", "road_speed", "drive_to", "drive_speed", "bend"];
     expect(suggestPropertyNames([], {}, true)).toEqual(expect.arrayContaining(names));
     expect(suggestPropertyNames(["road", "drive_speed"], {}, true)).not.toContain("road");
     expect(suggestPropertyNames(["road", "drive_speed"], {}, true)).not.toContain("drive_speed");
     expect(suggestPropertyNames(["road", "drive_speed"], {}, true)).toContain("road_speed");
+    expect(suggestPropertyNames(["road", "bend"], {}, true)).not.toContain("bend");
   });
 
   it("model Фазы 25 — среди подсказок, пока её нет у объекта", () => {

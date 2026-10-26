@@ -7,6 +7,7 @@ const ERROR_KEY_LABELS: Readonly<Record<string, string>> = {
   jump_time: "время подъёма",
   on_ground: "стоит на земле",
   road: "дорога",
+  bend: "изгиб",
   road_speed: "скорость на дороге",
   drive_speed: "скорость езды",
   drive_to: "куда ехать",
