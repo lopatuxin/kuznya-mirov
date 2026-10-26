@@ -14,13 +14,16 @@ use gltf::{Gltf, Node};
 use serde_json::Value as Json;
 
 use crate::core::model::{
-    AlphaMode, DEFAULT_ALPHA_CUTOFF, Image, Material, Model, ModelVertex, Part, Sampler, Texture,
-    Wrap,
+    AlphaMode, DEFAULT_ALPHA_CUTOFF, Material, Model, ModelImage, ModelVertex, Part, Sampler,
+    Texture, Wrap,
 };
 
 type Vec3 = [f32; 3];
 /// Матрица 4 × 4 по столбцам, как в glTF.
 type Mat4 = [[f32; 4]; 4];
+
+/// `mimeType` картинки, которую служба сжатия положила рядом с облегчённой моделью.
+const KTX2_MIME_TYPE: &str = "image/ktx2";
 
 /// Сжатие сеток, которого движок не читает.
 const COMPRESSIONS: [&str; 2] = ["KHR_draco_mesh_compression", "EXT_meshopt_compression"];
@@ -98,12 +101,26 @@ struct FileVertex {
     color: [f32; 4],
 }
 
-/// Читает `bytes` как модель `name`. `image` отдаёт картинку по её номеру в файле — страница уже разжала
-/// каждую; она нужна, только если на неё ссылается материал части.
-pub fn parse_model(
+/// Картинка файла, на которую ссылается материал части: PNG или JPEG внутри файла или сжатый файл службы
+/// сжатия рядом с ним.
+#[derive(Debug, Clone, Copy)]
+pub enum FileImage<'a> {
+    /// Картинка внутри файла под номером `index` в его `images`.
+    Embedded(usize),
+    /// Картинка лежит в файле KTX2 по `uri` — как он записан в файле модели.
+    Linked { uri: &'a str },
+}
+
+fn outside_the_file(index: usize) -> String {
+    format!("картинка {index} лежит вне файла: нужен glTF одним файлом")
+}
+
+/// Читает `bytes` как модель `name`; `image` отдаёт картинку, на которую ссылается материал части, — она нужна,
+/// только если на неё ссылается материал.
+pub fn parse_model_images(
     name: &str,
     bytes: &[u8],
-    image: impl FnMut(usize) -> Result<Image, String>,
+    image: impl FnMut(FileImage<'_>) -> Result<ModelImage, String>,
 ) -> Result<Model, String> {
     let glb = read_container(bytes)?;
     if let Some(compression) = compression_used(&glb.json) {
@@ -224,13 +241,13 @@ struct Builder<'a, F> {
     blob: Option<&'a [u8]>,
     materials: Vec<Material>,
     material_of: HashMap<Option<usize>, usize>,
-    images: Vec<Image>,
+    images: Vec<ModelImage>,
     image_of: HashMap<usize, usize>,
     parts: Vec<(usize, Vec<FileVertex>, Vec<[u32; 3]>)>,
     load_image: F,
 }
 
-impl<F: FnMut(usize) -> Result<Image, String>> Builder<'_, F> {
+impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
     fn visit(&mut self, node: &Node<'_>, parent: &Mat4) -> Result<(), String> {
         let matrix = multiply(parent, &node.transform().matrix());
         if let Some(mesh) = node.mesh() {
@@ -380,22 +397,24 @@ impl<F: FnMut(usize) -> Result<Image, String>> Builder<'_, F> {
         let image = match self.image_of.get(&file_index) {
             Some(&image) => image,
             None => {
-                let label = file_index;
-                match source.source() {
+                let requested = match source.source() {
                     ImageSource::View { mime_type, .. }
-                        if mime_type == "image/png" || mime_type == "image/jpeg" => {}
+                        if mime_type == "image/png" || mime_type == "image/jpeg" =>
+                    {
+                        FileImage::Embedded(file_index)
+                    }
                     ImageSource::View { mime_type, .. } => {
                         return Err(format!(
-                            "картинка {label} внутри модели — {mime_type}, а берутся только PNG и JPEG"
+                            "картинка {file_index} внутри модели — {mime_type}, а берутся только PNG и JPEG"
                         ));
                     }
-                    ImageSource::Uri { .. } => {
-                        return Err(format!(
-                            "картинка {label} лежит вне файла: нужен glTF одним файлом"
-                        ));
-                    }
-                }
-                let decoded = (self.load_image)(file_index)?;
+                    ImageSource::Uri {
+                        uri,
+                        mime_type: Some(KTX2_MIME_TYPE),
+                    } => FileImage::Linked { uri },
+                    ImageSource::Uri { .. } => return Err(outside_the_file(file_index)),
+                };
+                let decoded = (self.load_image)(requested)?;
                 self.images.push(decoded);
                 self.image_of.insert(file_index, self.images.len() - 1);
                 self.images.len() - 1
@@ -569,6 +588,19 @@ fn sampler_of(sampler: &gltf::texture::Sampler<'_>) -> Sampler {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::Image;
+
+    /// Модель, чьи картинки лежат внутри файла: `image` отдаёт точки, что разжала страница, по номеру картинки.
+    fn parse_model(
+        name: &str,
+        bytes: &[u8],
+        mut image: impl FnMut(usize) -> Result<Image, String>,
+    ) -> Result<Model, String> {
+        parse_model_images(name, bytes, |source| match source {
+            FileImage::Embedded(index) => image(index).map(ModelImage::Pixels),
+            FileImage::Linked { .. } => Err("картинка лежит вне файла".to_string()),
+        })
+    }
 
     /// Одна сетка тестового файла: вершины, номера и необязательные карты вершин.
     #[derive(Default, Clone)]

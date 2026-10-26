@@ -1096,7 +1096,9 @@ fn model_point(in: ModelOutput) -> vec4<f32> {
     }
     tangent = normalize(tangent);
     let bitangent = cross(n, tangent) * in.tangent.w;
-    let tilt = (normal_sample.xyz * 2.0 - vec3<f32>(1.0)) * vec3<f32>(model_material.factors.z, model_material.factors.z, 1.0);
+    // Карта хранит X и Y мелкого рельефа в красном и зелёном каналах (BC5 синего не имеет): Z досчитывается, `scale` растягивает X и Y.
+    let raw_tilt = normal_sample.xy * 2.0 - vec2<f32>(1.0);
+    let tilt = vec3<f32>(raw_tilt * model_material.factors.z, sqrt(max(0.0, 1.0 - dot(raw_tilt, raw_tilt))));
     let normal = normalize(tangent * tilt.x + bitangent * tilt.y + n * tilt.z);
 
     let visible = shadow_lit(in.world, normal);

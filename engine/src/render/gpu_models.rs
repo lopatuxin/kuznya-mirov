@@ -5,16 +5,20 @@
 //! своими буферами изогнутых копий, что заливаются заново только вместе с новой раскладкой. Картинки моделей в атлас игры не
 //! идут: у моделей свои текстуры.
 
-use std::collections::HashMap;
 use std::rc::Rc;
 
 use wgpu::util::{DeviceExt, TextureDataOrder};
 
-use crate::core::model::{AlphaMode, Image, Material, Model, ModelTable, Sampler, Texture, Wrap};
+use crate::core::model::{
+    AlphaMode, Image, Material, Model, ModelImage, ModelTable, PackedFormat, Sampler, Texture, Wrap,
+};
 use crate::core::road_kinds::Junction;
 
 use super::gpu3d::MaterialOptions;
-use super::models::{BlendedDraw, JunctionRun, ModelInstance, junction_mesh, mip_chain};
+use super::models::{
+    BlendedDraw, ImageSlots, ImageStats, JunctionRun, ModelInstance, TextureUpload, image_upload,
+    junction_mesh, pixels_upload,
+};
 
 /// Байт на вершину части: место, нормаль, точка карты, касательная и цвет.
 pub const VERTEX_STRIDE: u64 = 64;
@@ -122,6 +126,7 @@ pub struct ModelsGpu {
     /// Объекты с частью `BLEND` от дальнего к ближнему.
     blended: Vec<BlendedDraw>,
     scratch: Vec<u8>,
+    image_stats: ImageStats,
 }
 
 fn texture_entry(binding: u32) -> [wgpu::BindGroupLayoutEntry; 2] {
@@ -202,42 +207,41 @@ fn sampler(device: &wgpu::Device, options: MaterialOptions, sampler: Sampler) ->
     })
 }
 
-/// Картинка модели на видеокарте со всеми ступенями уменьшения, что влезают в `max_side`.
+fn texture_format(format: PackedFormat) -> wgpu::TextureFormat {
+    match format {
+        PackedFormat::Bc7Srgb => wgpu::TextureFormat::Bc7RgbaUnormSrgb,
+        PackedFormat::Bc7 => wgpu::TextureFormat::Bc7RgbaUnorm,
+        PackedFormat::Bc5 => wgpu::TextureFormat::Bc5RgUnorm,
+        PackedFormat::Rgba8Srgb => wgpu::TextureFormat::Rgba8UnormSrgb,
+        PackedFormat::Rgba8 => wgpu::TextureFormat::Rgba8Unorm,
+    }
+}
+
+/// Картинка модели на видеокарте: все её ступени уменьшения одной текстурой.
 fn image_view(
     device: &wgpu::Device,
     queue: &wgpu::Queue,
-    image: &Image,
-    srgb: bool,
+    upload: &TextureUpload,
 ) -> wgpu::TextureView {
-    let chain = mip_chain(image, srgb, device.limits().max_texture_dimension_2d);
-    let (width, height) = chain.first().map_or((1, 1), |top| (top.width, top.height));
-    let data: Vec<u8> = chain
-        .iter()
-        .flat_map(|level| level.pixels.iter().copied())
-        .collect();
     device
         .create_texture_with_data(
             queue,
             &wgpu::TextureDescriptor {
                 label: Some("model_image"),
                 size: wgpu::Extent3d {
-                    width,
-                    height,
+                    width: upload.width,
+                    height: upload.height,
                     depth_or_array_layers: 1,
                 },
-                mip_level_count: chain.len().max(1) as u32,
+                mip_level_count: upload.levels,
                 sample_count: 1,
                 dimension: wgpu::TextureDimension::D2,
-                format: if srgb {
-                    wgpu::TextureFormat::Rgba8UnormSrgb
-                } else {
-                    wgpu::TextureFormat::Rgba8Unorm
-                },
+                format: texture_format(upload.format),
                 usage: wgpu::TextureUsages::TEXTURE_BINDING,
                 view_formats: &[],
             },
             TextureDataOrder::LayerMajor,
-            &data,
+            &upload.data,
         )
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
@@ -249,7 +253,7 @@ fn solid_view(device: &wgpu::Device, queue: &wgpu::Queue, pixel: [u8; 4]) -> wgp
         height: 1,
         pixels: pixel.to_vec(),
     };
-    image_view(device, queue, &image, false)
+    image_view(device, queue, &pixels_upload(&image, false, 1))
 }
 
 fn floats_to_bytes(values: &[f32]) -> Vec<u8> {
@@ -263,21 +267,25 @@ struct Maps<'a> {
     default_sampler: &'a wgpu::Sampler,
 }
 
+/// Строит модели игры; картинки всех моделей делят одни текстуры: `slots` решает, какая картинка уже на видеокарте.
 struct ModelBuilder<'a> {
     device: &'a wgpu::Device,
     queue: &'a wgpu::Queue,
     options: MaterialOptions,
     layout: &'a wgpu::BindGroupLayout,
     maps: Maps<'a>,
+    max_side: u32,
+    slots: ImageSlots<'a>,
+    views: Vec<wgpu::TextureView>,
+    stats: ImageStats,
 }
 
-impl ModelBuilder<'_> {
-    fn model(&self, model: &Model) -> ModelGpu {
-        let mut views: HashMap<(usize, bool), wgpu::TextureView> = HashMap::new();
+impl<'a> ModelBuilder<'a> {
+    fn model(&mut self, model: &'a Model) -> ModelGpu {
         let materials: Vec<wgpu::BindGroup> = model
             .materials
             .iter()
-            .map(|material| self.material(model, material, &mut views))
+            .map(|material| self.material(model, material))
             .collect();
         let parts = model
             .parts
@@ -323,26 +331,39 @@ impl ModelBuilder<'_> {
         ModelGpu { parts }
     }
 
+    /// Текстура картинки `image` в роли `srgb`: создаётся при первом упоминании на всю игру.
+    fn image_view(&mut self, image: &'a ModelImage, srgb: bool) -> wgpu::TextureView {
+        let (slot, new) = self.slots.slot(image, srgb);
+        if new {
+            let upload = image_upload(image, srgb, self.options.compressed, self.max_side);
+            self.stats.textures += 1;
+            self.stats.bytes += upload.data.len() as u64;
+            self.views
+                .push(image_view(self.device, self.queue, &upload));
+        }
+        self.views[slot].clone()
+    }
+
+    /// Карта материала и её выборка; нет карты — `fallback` и выборка по умолчанию.
+    fn map_of(
+        &mut self,
+        model: &'a Model,
+        texture: Option<&Texture>,
+        srgb: bool,
+        fallback: &wgpu::TextureView,
+    ) -> (wgpu::TextureView, wgpu::Sampler) {
+        match texture {
+            Some(texture) => {
+                let view = self.image_view(&model.images[texture.image], srgb);
+                (view, sampler(self.device, self.options, texture.sampler))
+            }
+            None => (fallback.clone(), self.maps.default_sampler.clone()),
+        }
+    }
+
     /// Привязка материала: числа и четыре карты с их выборками.
-    fn material(
-        &self,
-        model: &Model,
-        material: &Material,
-        views: &mut HashMap<(usize, bool), wgpu::TextureView>,
-    ) -> wgpu::BindGroup {
-        let mut view_of =
-            |texture: Option<&Texture>, srgb: bool, fallback: &wgpu::TextureView| match texture {
-                Some(texture) => {
-                    let view = views
-                        .entry((texture.image, srgb))
-                        .or_insert_with(|| {
-                            image_view(self.device, self.queue, &model.images[texture.image], srgb)
-                        })
-                        .clone();
-                    (view, sampler(self.device, self.options, texture.sampler))
-                }
-                None => (fallback.clone(), self.maps.default_sampler.clone()),
-            };
+    fn material(&mut self, model: &'a Model, material: &Material) -> wgpu::BindGroup {
+        let (white, flat_normal) = (self.maps.white, self.maps.flat_normal);
         let (normal_texture, normal_scale) = match &material.normal_texture {
             Some((texture, scale)) => (Some(texture), *scale),
             None => (None, 1.0),
@@ -351,14 +372,10 @@ impl ModelBuilder<'_> {
             Some((texture, strength)) => (Some(texture), *strength),
             None => (None, 0.0),
         };
-        let base = view_of(material.base_texture.as_ref(), true, self.maps.white);
-        let metal = view_of(
-            material.metal_rough_texture.as_ref(),
-            false,
-            self.maps.white,
-        );
-        let normal = view_of(normal_texture, false, self.maps.flat_normal);
-        let occlusion = view_of(occlusion_texture, false, self.maps.white);
+        let base = self.map_of(model, material.base_texture.as_ref(), true, white);
+        let metal = self.map_of(model, material.metal_rough_texture.as_ref(), false, white);
+        let normal = self.map_of(model, normal_texture, false, flat_normal);
+        let occlusion = self.map_of(model, occlusion_texture, false, white);
         let factors = self
             .device
             .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -424,7 +441,7 @@ impl ModelsGpu {
         let white = solid_view(device, queue, [255; 4]);
         let flat_normal = solid_view(device, queue, [128, 128, 255, 255]);
         let default_sampler = sampler(device, options, Sampler::default());
-        let builder = ModelBuilder {
+        let mut builder = ModelBuilder {
             device,
             queue,
             options,
@@ -434,8 +451,13 @@ impl ModelsGpu {
                 flat_normal: &flat_normal,
                 default_sampler: &default_sampler,
             },
+            max_side: device.limits().max_texture_dimension_2d,
+            slots: ImageSlots::default(),
+            views: Vec::new(),
+            stats: ImageStats::default(),
         };
         let models: Vec<ModelGpu> = table.iter().map(|model| builder.model(model)).collect();
+        let image_stats = builder.stats;
         let capacity = 256;
         ModelsGpu {
             models,
@@ -446,12 +468,18 @@ impl ModelsGpu {
             junctions: JunctionsGpu::default(),
             blended: Vec::new(),
             scratch: Vec::new(),
+            image_stats,
             material_layout: layout,
         }
     }
 
     pub fn material_layout(&self) -> &wgpu::BindGroupLayout {
         &self.material_layout
+    }
+
+    /// Сколько текстур заняли картинки моделей и сколько байт они весят на видеокарте.
+    pub fn image_stats(&self) -> ImageStats {
+        self.image_stats
     }
 
     /// Пишет объекты кадра в буфер: объекты и куски дорог, в каждой группе — объекты каждой модели подряд, по

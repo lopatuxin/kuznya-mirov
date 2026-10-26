@@ -36,6 +36,7 @@ use crate::core::world::World;
 use super::error::ErrorSink;
 use super::wav;
 
+mod imported;
 mod materials;
 mod models;
 mod road_kinds;
@@ -43,6 +44,7 @@ mod stamps;
 mod water;
 
 pub use super::error::{GameError, LoadFailure};
+pub use imported::ImportedPlan;
 pub use materials::{
     CoverMask, MaterialDecl, check_cover_masks, parse_edit_covers, terrain_image_paths,
 };
@@ -2771,8 +2773,10 @@ pub struct NeededMedia {
     pub materials: Vec<String>,
     /// Пути масок `covers` по порядку слоёв.
     pub masks: Vec<String>,
-    /// `(имя, путь)` каждой модели `files.models`.
+    /// `(имя, путь)` каждой модели `files.models`: у сжатой — путь облегчённой модели, а не исходного `.glb`.
     pub models: Vec<(String, String)>,
+    /// Пути сжатых файлов картинок сжатых моделей — каждый один раз на игру, в порядке `ImportedPlan::textures`.
+    pub model_textures: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -2856,6 +2860,20 @@ pub fn read_texts(
     screens_json: Option<&str>,
     terrain_json: Option<&str>,
 ) -> NeededMedia {
+    read_texts_with_imported(config, properties_json, screens_json, terrain_json, None)
+}
+
+/// Same as `read_texts`, additionally accepting the text of `imported/index.json` — «Трёхмерная сцена» →
+/// «Загрузка и проверка»: по каждой модели, у которой в нём есть запись, читаются облегчённая модель и сжатые файлы
+/// её картинок, а не исходный `.glb`. `None` — файла нет, сжатых моделей нет.
+pub fn read_texts_with_imported(
+    config: &GameConfig,
+    properties_json: Option<&str>,
+    screens_json: Option<&str>,
+    terrain_json: Option<&str>,
+    imported_index: Option<&str>,
+) -> NeededMedia {
+    let plan = ImportedPlan::new(&config.files.models, imported_index);
     let mut scratch = ErrorSink::new();
     let properties = match properties_json {
         Some(text) => parse_properties_json(text, &config.files.properties, &mut scratch),
@@ -2923,8 +2941,13 @@ pub fn read_texts(
             .files
             .models
             .iter()
-            .map(|decl| (decl.name.clone(), decl.path.clone()))
+            .enumerate()
+            .map(|(at, decl)| {
+                let path = plan.model_path(at).unwrap_or(&decl.path);
+                (decl.name.clone(), path.to_string())
+            })
             .collect(),
+        model_textures: plan.textures().to_vec(),
     }
 }
 
@@ -12019,6 +12042,54 @@ pub fn load_rest_with_stamps(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest_with_models(
     game_json: &str,
+    config: GameConfig,
+    properties_json: Option<&str>,
+    scene_json: Option<&str>,
+    rules_json: Option<&str>,
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
+    skip_media_validation: bool,
+    table_texts: &[(String, Option<String>)],
+    terrain_text: Option<&str>,
+    material_data: &[(String, ImageVerdict)],
+    mask_data: &[(String, ImageVerdict)],
+    stamp_texts: &[(String, Option<String>)],
+    model_files: &[(String, ModelFile)],
+) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
+    load_rest_with_imports(
+        game_json,
+        config,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        font_bytes,
+        sound_bytes,
+        music_verdicts,
+        image_data,
+        code_json,
+        skip_media_validation,
+        table_texts,
+        terrain_text,
+        material_data,
+        mask_data,
+        stamp_texts,
+        model_files,
+        None,
+        &[],
+    )
+}
+
+/// Same as `load_rest_with_models`, additionally accepting the text of `imported/index.json` and the bytes of the
+/// compressed files `read_texts_with_imported` named, by path — «Трёхмерная сцена» → «Загрузка и проверка»: a model
+/// the index lists is read from its light file, `None` bytes or none at all is a file the page did not find.
+#[allow(clippy::too_many_arguments)]
+pub fn load_rest_with_imports(
+    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -12036,6 +12107,8 @@ pub fn load_rest_with_models(
     mask_data: &[(String, ImageVerdict)],
     stamp_texts: &[(String, Option<String>)],
     model_files: &[(String, ModelFile)],
+    imported_index: Option<&str>,
+    imported_textures: &[(String, Option<Vec<u8>>)],
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -12088,9 +12161,12 @@ pub fn load_rest_with_models(
         _ => {}
     }
     properties.set_stamps(stamp_table);
+    let imported = ImportedPlan::new(&config.files.models, imported_index);
     let models = load_models(
         &config.files.models,
         model_files,
+        &imported,
+        imported_textures,
         skip_media_validation,
         &mut errors,
     );

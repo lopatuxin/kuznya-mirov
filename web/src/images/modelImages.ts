@@ -3,6 +3,10 @@ import type { ImageFileEntry, LoadedImage } from "./imagePayload";
 
 /** Модель из `read_texts().models`: номер, имя и путь файла `.glb` от папки игры; читается тем же `fetchImageBytes`, что картинки. */
 export type ModelEntry = { name: string } & ImageFileEntry;
+/** Сжатый файл картинки модели из `read_texts().model_textures`: номер и путь `.ktx2` от папки игры — «Трёхмерная сцена», «Загрузка и проверка». */
+export type ModelTextureEntry = ImageFileEntry;
+/** Ответ страницы по одному сжатому файлу для `load`: байты как есть, без разжатия; `null` — файла нет или он пуст. */
+export type ModelTexturePayloadEntry = { index: number; bytes: Uint8Array | null };
 /** Ответ страницы по одной модели для `load`: файл целиком и по каждой картинке из его `images` её номер в этом списке. */
 export type ModelPayloadEntry = { index: number; bytes: Uint8Array | null; images: ({ index: number } & DecodedImage)[] };
 
@@ -86,4 +90,9 @@ export async function buildModelPayload(loaded: LoadedImage[]): Promise<ModelPay
       images: model.bytes === null ? [] : await decodeModelImages(model.bytes),
     })),
   );
+}
+
+/** Сжатые файлы картинок моделей уходят в `load` как есть: BC и уменьшенные копии лежат в файле, разжимать браузеру нечего. */
+export function buildModelTexturePayload(loaded: LoadedImage[]): ModelTexturePayloadEntry[] {
+  return loaded.map((texture) => ({ index: texture.index, bytes: texture.bytes === null || texture.bytes.length === 0 ? null : texture.bytes }));
 }

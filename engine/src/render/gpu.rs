@@ -5,6 +5,7 @@ use super::atlas::{self, ATLAS_SIZE};
 use super::gpu_models::ModelsGpu;
 use super::gpu3d;
 use super::materials::Relief;
+use super::models::ImageStats;
 use super::text_area;
 use super::video::{PanelInput, VideoSource, Videos};
 use super::wind;
@@ -349,18 +350,26 @@ impl Renderer {
             _ => GpuBackend::WebGl2,
         };
 
+        let compressed = adapter
+            .features()
+            .contains(wgpu::Features::TEXTURE_COMPRESSION_BC);
         let material_options = gpu3d::MaterialOptions {
             webgl2: backend == GpuBackend::WebGl2,
             anisotropic: adapter
                 .get_downlevel_capabilities()
                 .flags
                 .contains(wgpu::DownlevelFlags::ANISOTROPIC_FILTERING),
+            compressed,
         };
 
         let (device, queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("kuznya-mirov device"),
-                required_features: wgpu::Features::empty(),
+                required_features: if compressed {
+                    wgpu::Features::TEXTURE_COMPRESSION_BC
+                } else {
+                    wgpu::Features::empty()
+                },
                 required_limits: wgpu::Limits::downlevel_webgl2_defaults()
                     .using_resolution(adapter.limits()),
                 ..Default::default()
@@ -915,10 +924,12 @@ impl Renderer {
     }
 
     /// «Трёхмерная сцена» → «Модели и движения»: отправляет на видеокарту модели игры и заменяет ими прежние.
-    /// Ресурсы трёхмерной сцены пересоздаются: конвейеры моделей ссылаются на раскладку материала.
-    pub fn set_models(&mut self, table: &ModelTable) {
+    /// Ресурсы трёхмерной сцены пересоздаются: конвейеры моделей ссылаются на раскладку материала. Отдаёт, сколько
+    /// места заняли картинки моделей.
+    pub fn set_models(&mut self, table: &ModelTable) -> ImageStats {
         self.models = ModelsGpu::new(&self.device, &self.queue, self.material_options, table);
         self.scene3d = None;
+        self.models.image_stats()
     }
 
     /// «Свет и материалы», `set_covers`: таблица слоёв и маски покрытий на видеокарте заменяются новыми,

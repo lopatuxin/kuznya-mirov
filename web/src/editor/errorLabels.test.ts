@@ -131,4 +131,13 @@ describe("withErrorLabels", () => {
 
     expect(labelled(message)).toBe(message);
   });
+
+  it("предупреждение о несжатой модели и ошибка сжатой картинки уже по-русски и остаются как есть", () => {
+    const warning = "модель house не сжата: её картинки занимают на видеокарте в 4 раза больше; служба сжатия стенда сожмёт её сама";
+    const error =
+      "imported/models/house.glb — сжатая картинка imported/textures/a.ktx2 модели house испорчена — служба сжатия пересожмёт её, если исходная модель на месте. Причина: размер";
+
+    expect(withErrorLabels({ file: "game.json", path: "files → models → house", message: warning, line: null, column: null }).message).toBe(warning);
+    expect(labelled(error)).toBe(error);
+  });
 });

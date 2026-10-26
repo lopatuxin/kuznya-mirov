@@ -6,11 +6,12 @@ use std::collections::HashSet;
 use serde_json::Value as Json;
 
 use crate::core::keys::{EditValue, KeyEdit};
-use crate::core::model::{Image, Model, ModelTable};
+use crate::core::model::{Image, Model, ModelImage, ModelTable};
 use crate::core::property::PropertyId;
 use crate::core::value::Value;
-use crate::data::glb;
+use crate::data::glb::{self, FileImage};
 
+use super::imported::{ImportedPlan, PackedFault, PackedFiles, resolve_uri};
 use super::materials::pixel_problem;
 use super::{
     ErrorSink, ImageVerdict, ParsedObject, code_mentions_word, expect_object, expect_string,
@@ -144,19 +145,27 @@ fn model_image(file: &ModelFile, index: usize) -> Result<Image, String> {
     }
 }
 
-/// Все модели игры из ответов страницы `files`, по имени модели, в порядке объявления. Модель, чей файл не
-/// читается, остаётся пустой заглушкой, а причина записывается ошибкой; без ошибки заглушкой остаётся модель,
-/// чьего файла нет, когда файлы не читаются (`skip_media`).
+/// Все модели игры из ответов страницы `files`, по имени модели, в порядке объявления. Сжатая модель (`plan`)
+/// читается из своего облегчённого файла, а её картинки — из сжатых файлов `packed`; остальные — из исходных
+/// файлов с картинками, что разжала страница. Модель, чей файл не читается, остаётся пустой заглушкой, а причина
+/// записывается ошибкой; без ошибки заглушкой остаётся модель, чьего файла нет, когда файлы не читаются
+/// (`skip_media`) — и тогда же нет предупреждения о несжатой модели.
 pub(super) fn load_models(
     decls: &[ModelDecl],
     files: &[(String, ModelFile)],
+    plan: &ImportedPlan,
+    packed: &[(String, Option<Vec<u8>>)],
     skip_media: bool,
     errors: &mut ErrorSink,
 ) -> ModelTable {
+    let mut packed = PackedFiles::new(packed);
     let models = decls
         .iter()
-        .map(|decl| {
+        .enumerate()
+        .map(|(at, decl)| {
             let field = format!("files → models → {}", decl.name);
+            let imported = plan.model_path(at);
+            let path = imported.unwrap_or(&decl.path);
             let loaded = files
                 .iter()
                 .find(|(name, _)| name == &decl.name)
@@ -167,22 +176,56 @@ pub(super) fn load_models(
                         "game.json",
                         &field,
                         format!(
-                            "файл \"{}\" не найден; ожидалась модель, названная в game.json → files → models",
-                            decl.path
+                            "файл \"{path}\" не найден; ожидалась модель, названная в game.json → files → models"
                         ),
                     );
                 }
                 return Model::placeholder(&decl.name);
             };
-            glb::parse_model(&decl.name, bytes, |index| model_image(file, index)).unwrap_or_else(
-                |message| {
-                    errors.push("game.json", &field, format!("{} — {message}", decl.path));
+            let parsed = glb::parse_model_images(&decl.name, bytes, |source| match source {
+                FileImage::Embedded(index) => model_image(file, index).map(ModelImage::Pixels),
+                FileImage::Linked { uri, .. } => {
+                    let packed_path = resolve_uri(path, uri);
+                    packed
+                        .get(&packed_path)
+                        .map(ModelImage::Packed)
+                        .map_err(|fault| packed_problem(&fault, &packed_path, &decl.name))
+                }
+            });
+            match parsed {
+                Ok(model) => {
+                    if imported.is_none() && !skip_media && !model.images.is_empty() {
+                        errors.push_warning(
+                            "game.json",
+                            &field,
+                            format!(
+                                "модель {} не сжата: её картинки занимают на видеокарте в 4 раза больше; служба сжатия стенда сожмёт её сама",
+                                decl.name
+                            ),
+                        );
+                    }
+                    model
+                }
+                Err(message) => {
+                    errors.push("game.json", &field, format!("{path} — {message}"));
                     Model::placeholder(&decl.name)
-                },
-            )
+                }
+            }
         })
         .collect();
     ModelTable::new(models)
+}
+
+/// Ошибка требования 17: сжатый файл картинки модели не найден или не читается.
+fn packed_problem(fault: &PackedFault, path: &str, model: &str) -> String {
+    match fault {
+        PackedFault::Missing => format!(
+            "сжатая картинка {path} модели {model} не найдена или пуста — служба сжатия пересожмёт её, если исходная модель на месте"
+        ),
+        PackedFault::Broken(reason) => format!(
+            "сжатая картинка {path} модели {model} испорчена — служба сжатия пересожмёт её, если исходная модель на месте. Причина: {reason}"
+        ),
+    }
 }
 
 /// Имена, которые объекты `scene.json` дают текстовому свойству `prop` (`model`, `road_kind`): в значении

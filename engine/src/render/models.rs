@@ -1,10 +1,16 @@
 //! «Трёхмерная сцена» → «Модели и движения», «Отрисовка»: где в кадре стоит каждый объект с `model`. Ни
 //! видеокарты, ни браузера: `wasm::mod` переводит это в данные для `render::gpu_models`.
 
+use std::collections::HashMap;
+use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
+use std::sync::Arc;
+
+use block_compression::decode::decompress_blocks_as_rgba8;
+use block_compression::{BC7Settings, CompressionVariant};
 
 use crate::core::game::Game;
-use crate::core::model::Image;
+use crate::core::model::{Image, ModelImage, PackedFormat, PackedImage};
 use crate::core::property;
 use crate::core::road_kinds::Junction;
 use crate::core::value::Rotation;
@@ -291,10 +297,186 @@ fn shrink(level: &MipLevel, srgb: bool) -> MipLevel {
     }
 }
 
+/// Картинка модели, как она ляжет в текстуру видеокарты: все ступени уменьшения подряд от самой крупной.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TextureUpload {
+    pub format: PackedFormat,
+    pub width: u32,
+    pub height: u32,
+    pub levels: u32,
+    pub data: Vec<u8>,
+}
+
+/// Точки, что разжала страница, со ступенями уменьшения до одной точки, начиная с первой, что влезает в `max_side`.
+pub fn pixels_upload(image: &Image, srgb: bool, max_side: u32) -> TextureUpload {
+    let chain = mip_chain(image, srgb, max_side);
+    let (width, height) = chain.first().map_or((1, 1), |top| (top.width, top.height));
+    TextureUpload {
+        format: if srgb {
+            PackedFormat::Rgba8Srgb
+        } else {
+            PackedFormat::Rgba8
+        },
+        width,
+        height,
+        levels: chain.len().max(1) as u32,
+        data: chain.into_iter().flat_map(|level| level.pixels).collect(),
+    }
+}
+
+/// Сжатый файл со своими ступенями из файла, начиная с первой, что влезает в `max_side`. Видеокарта читает BC
+/// (`bc`) — блоки ложатся как есть; нет — каждая ступень разжимается на процессоре в четыре байта на точку.
+pub fn packed_upload(image: &PackedImage, bc: bool, max_side: u32) -> TextureUpload {
+    let kept: Vec<(u32, u32, &Vec<u8>)> = image
+        .levels
+        .iter()
+        .enumerate()
+        .map(|(level, data)| {
+            let side = |full: u32| (full >> level).max(1);
+            (side(image.width), side(image.height), data)
+        })
+        .filter(|&(width, height, _)| width <= max_side && height <= max_side)
+        .collect();
+    let (width, height) = kept
+        .first()
+        .map_or((1, 1), |&(width, height, _)| (width, height));
+    let unpack = image.format.is_block() && !bc;
+    let format = match (unpack, image.format.is_srgb()) {
+        (false, _) => image.format,
+        (true, true) => PackedFormat::Rgba8Srgb,
+        (true, false) => PackedFormat::Rgba8,
+    };
+    let data = kept
+        .iter()
+        .flat_map(|&(width, height, data)| {
+            if unpack {
+                unpack_level(image.format, width, height, data)
+            } else {
+                data.clone()
+            }
+        })
+        .collect();
+    TextureUpload {
+        format,
+        width,
+        height,
+        levels: kept.len().max(1) as u32,
+        data,
+    }
+}
+
+/// Блоки одной ступени BC в четыре байта на точку; у BC5 синий и прозрачность нули. Ступень, чьи стороны не кратны
+/// четырём, разжимается до целых блоков и обрезается.
+fn unpack_level(format: PackedFormat, width: u32, height: u32, blocks: &[u8]) -> Vec<u8> {
+    let (padded_width, padded_height) = (width.next_multiple_of(4), height.next_multiple_of(4));
+    let variant = match format {
+        PackedFormat::Bc5 => CompressionVariant::BC5,
+        _ => CompressionVariant::BC7(BC7Settings::alpha_basic()),
+    };
+    let mut padded = vec![0u8; padded_width as usize * padded_height as usize * 4];
+    decompress_blocks_as_rgba8(variant, padded_width, padded_height, blocks, &mut padded);
+    if padded_width == width && padded_height == height {
+        return padded;
+    }
+    let row = width as usize * 4;
+    padded
+        .chunks_exact(padded_width as usize * 4)
+        .take(height as usize)
+        .flat_map(|line| &line[..row])
+        .copied()
+        .collect()
+}
+
+/// Что ляжет в текстуру видеокарты для `image` в роли `srgb`: сжатый файл — со своим форматом, остальное — точки.
+pub fn image_upload(image: &ModelImage, srgb: bool, bc: bool, max_side: u32) -> TextureUpload {
+    match image {
+        ModelImage::Pixels(image) => pixels_upload(image, srgb, max_side),
+        ModelImage::Packed(image) => packed_upload(image, bc, max_side),
+    }
+}
+
+/// Ширина, высота, роль цвета и хеш точек: по ним ищутся одинаковые картинки страницы.
+type PixelsKey = (u32, u32, bool, u64);
+
+/// Номера текстур картинок моделей игры: сжатый файл — одна текстура, сколько бы моделей и материалов на него ни
+/// ссылалось, а одинаковые точки в одной роли цвета (sRGB или нет) — тоже одна.
+#[derive(Default)]
+pub struct ImageSlots<'a> {
+    /// Картинка, уже названная по адресу в таблице моделей и роли: её точки второй раз не хешируются.
+    visited: HashMap<(usize, bool), usize>,
+    packed: HashMap<usize, usize>,
+    pixels: HashMap<PixelsKey, Vec<(&'a Image, usize)>>,
+    count: usize,
+}
+
+impl<'a> ImageSlots<'a> {
+    /// Номер текстуры картинки `image` в роли `srgb` и признак, что номер новый — текстуру под него ещё не создавали.
+    pub fn slot(&mut self, image: &'a ModelImage, srgb: bool) -> (usize, bool) {
+        let address = (std::ptr::from_ref(image) as usize, srgb);
+        if let Some(&slot) = self.visited.get(&address) {
+            return (slot, false);
+        }
+        let known = match image {
+            ModelImage::Packed(file) => self.packed.get(&(Arc::as_ptr(file) as usize)).copied(),
+            ModelImage::Pixels(pixels) => self
+                .pixels
+                .get(&pixels_key(pixels, srgb))
+                .and_then(|same| same.iter().find(|(other, _)| *other == pixels))
+                .map(|&(_, slot)| slot),
+        };
+        let slot = known.unwrap_or(self.count);
+        if known.is_none() {
+            self.count += 1;
+            match image {
+                ModelImage::Packed(file) => {
+                    self.packed.insert(Arc::as_ptr(file) as usize, slot);
+                }
+                ModelImage::Pixels(pixels) => self
+                    .pixels
+                    .entry(pixels_key(pixels, srgb))
+                    .or_default()
+                    .push((pixels, slot)),
+            }
+        }
+        self.visited.insert(address, slot);
+        (slot, known.is_none())
+    }
+}
+
+fn pixels_key(image: &Image, srgb: bool) -> PixelsKey {
+    let mut hasher = DefaultHasher::new();
+    image.pixels.hash(&mut hasher);
+    (image.width, image.height, srgb, hasher.finish())
+}
+
+/// Сколько текстур картинок моделей на видеокарте и сколько байт они занимают со всеми ступенями уменьшения.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ImageStats {
+    pub textures: usize,
+    pub bytes: u64,
+}
+
+impl ImageStats {
+    /// Строка консоли браузера после загрузки игры: «картинки моделей: 47 на видеокарте, 212 МБ».
+    pub fn line(&self) -> String {
+        let megabytes = self.bytes as f64 / (1024.0 * 1024.0);
+        let size = if megabytes < 10.0 {
+            format!("{megabytes:.1}").replace('.', ",")
+        } else {
+            format!("{}", megabytes.round() as u64)
+        };
+        format!(
+            "картинки моделей: {} на видеокарте, {size} МБ",
+            self.textures
+        )
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::model::{ModelVertex, Part};
+    use block_compression::encode::compress_rgba8;
 
     fn image(width: u32, height: u32, pixel: [u8; 4]) -> Image {
         Image {
@@ -446,5 +628,199 @@ mod tests {
     fn odd_sides_do_not_read_past_the_edge() {
         let chain = mip_chain(&image(3, 5, [200; 4]), false, 64);
         assert_eq!(chain.last().map(|l| (l.width, l.height)), Some((1, 1)));
+    }
+    /// Рисунок с плавным переходом по обеим осям: красный и зелёный идут в разные стороны.
+    fn gradient(width: u32, height: u32) -> Image {
+        let mut pixels = Vec::new();
+        for y in 0..height {
+            for x in 0..width {
+                pixels.extend([
+                    (x * 255 / (width - 1).max(1)) as u8,
+                    (y * 255 / (height - 1).max(1)) as u8,
+                    128,
+                    255,
+                ]);
+            }
+        }
+        Image {
+            width,
+            height,
+            pixels,
+        }
+    }
+
+    /// Сжатый файл из `image`: каждая ступень `mip_chain` сжимается отдельно, меньшие блока — целым блоком с краем.
+    fn pack(image: &Image, format: PackedFormat) -> PackedImage {
+        let variant = if format == PackedFormat::Bc5 {
+            CompressionVariant::BC5
+        } else {
+            CompressionVariant::BC7(BC7Settings::opaque_basic())
+        };
+        let levels = mip_chain(image, format.is_srgb(), 1 << 16)
+            .into_iter()
+            .map(|level| {
+                let width = level.width.next_multiple_of(4);
+                let height = level.height.next_multiple_of(4);
+                let mut padded = Vec::new();
+                for y in 0..height {
+                    for x in 0..width {
+                        let (sx, sy) = (x.min(level.width - 1), y.min(level.height - 1));
+                        let at = (sy * level.width + sx) as usize * 4;
+                        padded.extend(&level.pixels[at..at + 4]);
+                    }
+                }
+                let mut blocks = vec![0u8; variant.blocks_byte_size(width, height)];
+                compress_rgba8(variant, &padded, &mut blocks, width, height, width * 4);
+                blocks
+            })
+            .collect();
+        PackedImage {
+            format,
+            width: image.width,
+            height: image.height,
+            levels,
+        }
+    }
+
+    #[test]
+    fn a_card_that_reads_bc_gets_the_blocks_of_the_file_as_they_are() {
+        let packed = pack(&gradient(16, 8), PackedFormat::Bc7);
+        let upload = packed_upload(&packed, true, 64);
+        assert_eq!(upload.format, PackedFormat::Bc7);
+        assert_eq!((upload.width, upload.height, upload.levels), (16, 8, 5));
+        assert_eq!(upload.data, packed.levels.concat());
+        assert_eq!(upload.data.len(), (4 * 2 + 2 + 1 + 1 + 1) * 16);
+    }
+
+    #[test]
+    fn levels_that_do_not_fit_the_limit_are_dropped_from_the_top_of_a_packed_file() {
+        let packed = pack(&gradient(16, 8), PackedFormat::Bc7Srgb);
+        let upload = packed_upload(&packed, true, 8);
+        assert_eq!((upload.width, upload.height, upload.levels), (8, 4, 4));
+        assert_eq!(upload.data, packed.levels[1..].concat());
+    }
+
+    #[test]
+    fn without_bc_every_level_is_unpacked_to_four_bytes_a_point_close_to_the_source() {
+        let source = gradient(16, 8);
+        let packed = pack(&source, PackedFormat::Bc7);
+        let upload = packed_upload(&packed, false, 64);
+        assert_eq!(upload.format, PackedFormat::Rgba8);
+        assert_eq!((upload.width, upload.height, upload.levels), (16, 8, 5));
+        let expected = pixels_upload(&source, false, 64);
+        assert_eq!(
+            upload.data.len(),
+            expected.data.len(),
+            "16×8, 8×4, 4×2, 2×1, 1×1"
+        );
+        let worst = upload
+            .data
+            .iter()
+            .zip(&expected.data)
+            .map(|(a, b)| a.abs_diff(*b))
+            .max()
+            .unwrap_or(0);
+        assert!(worst <= 8, "BC7 отличается от исходной на {worst}");
+    }
+
+    #[test]
+    fn an_unpacked_colour_keeps_its_srgb_role_and_a_bc5_map_its_two_channels() {
+        let colour = packed_upload(&pack(&gradient(8, 8), PackedFormat::Bc7Srgb), false, 64);
+        assert_eq!(colour.format, PackedFormat::Rgba8Srgb);
+        let source = gradient(8, 8);
+        let normal = packed_upload(&pack(&source, PackedFormat::Bc5), false, 64);
+        assert_eq!(normal.format, PackedFormat::Rgba8);
+        let top = &normal.data[..8 * 8 * 4];
+        for (point, original) in top.chunks(4).zip(source.pixels.chunks(4)) {
+            assert!(
+                point[0].abs_diff(original[0]) <= 8 && point[1].abs_diff(original[1]) <= 8,
+                "{point:?} {original:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_file_with_uncompressed_levels_is_not_touched_with_or_without_bc() {
+        let source = gradient(5, 3);
+        let levels: Vec<Vec<u8>> = mip_chain(&source, false, 64)
+            .into_iter()
+            .map(|level| level.pixels)
+            .collect();
+        let packed = PackedImage {
+            format: PackedFormat::Rgba8,
+            width: 5,
+            height: 3,
+            levels,
+        };
+        for bc in [true, false] {
+            let upload = packed_upload(&packed, bc, 64);
+            assert_eq!(upload.format, PackedFormat::Rgba8);
+            assert_eq!(upload.data, packed.levels.concat());
+        }
+    }
+
+    #[test]
+    fn page_pixels_get_the_chain_of_the_engine_and_their_role() {
+        let source = gradient(4, 4);
+        let upload = image_upload(&ModelImage::Pixels(source.clone()), true, true, 64);
+        assert_eq!(upload, pixels_upload(&source, true, 64));
+        assert_eq!(upload.format, PackedFormat::Rgba8Srgb);
+        assert_eq!(upload.levels, 3);
+    }
+
+    fn packed_image() -> ModelImage {
+        ModelImage::Packed(Arc::new(pack(&gradient(4, 4), PackedFormat::Bc7)))
+    }
+
+    #[test]
+    fn one_packed_file_is_one_texture_however_many_materials_name_it() {
+        let file = packed_image();
+        let other = packed_image();
+        let mut slots = ImageSlots::default();
+        assert_eq!(slots.slot(&file, true), (0, true));
+        assert_eq!(slots.slot(&file, true), (0, false));
+        assert_eq!(
+            slots.slot(&file, false),
+            (0, false),
+            "роль у сжатого файла своя, в нём"
+        );
+        assert_eq!(
+            slots.slot(&other, true),
+            (1, true),
+            "другой файл — другая текстура"
+        );
+    }
+
+    #[test]
+    fn equal_page_pixels_in_one_role_are_one_texture_and_a_new_role_or_point_is_another() {
+        let one = ModelImage::Pixels(gradient(4, 4));
+        let same = ModelImage::Pixels(gradient(4, 4));
+        let mut changed = gradient(4, 4);
+        changed.pixels[0] ^= 1;
+        let changed = ModelImage::Pixels(changed);
+        let mut slots = ImageSlots::default();
+        assert_eq!(slots.slot(&one, true), (0, true));
+        assert_eq!(slots.slot(&same, true), (0, false));
+        assert_eq!(
+            slots.slot(&one, false),
+            (1, true),
+            "цвет и данные — две текстуры"
+        );
+        assert_eq!(slots.slot(&changed, true), (2, true));
+        assert_eq!(slots.slot(&same, false), (1, false));
+    }
+
+    #[test]
+    fn the_console_line_counts_textures_and_megabytes_of_the_card() {
+        let line = |textures, bytes| ImageStats { textures, bytes }.line();
+        assert_eq!(
+            line(47, 212 * 1024 * 1024 + 300_000),
+            "картинки моделей: 47 на видеокарте, 212 МБ"
+        );
+        assert_eq!(
+            line(1, 5_872_025),
+            "картинки моделей: 1 на видеокарте, 5,6 МБ"
+        );
+        assert_eq!(line(0, 0), "картинки моделей: 0 на видеокарте, 0,0 МБ");
     }
 }
