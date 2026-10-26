@@ -250,6 +250,11 @@ fn js_needed_media_ok(needed: &NeededMedia, all_music: &[(String, String)]) -> J
         "models",
         &js_indexed_media_table(&needed.models, &needed.models),
     );
+    set(
+        &obj,
+        "model_textures",
+        &js_numbered_paths(&needed.model_textures),
+    );
     obj.into()
 }
 
@@ -2024,6 +2029,10 @@ impl Engine {
     /// материала, `color`, `normal`, `roughness`, `height`, `ao`; `masks` — маски `covers` файла рельефа
     /// `terrain_json` по порядку слоёв, пусто, если файла нет или он не читается; an empty answer if
     /// called before a successful `read_entry()`.
+    /// «Трёхмерная сцена» → «Загрузка и проверка»: `imported_index` — текст `imported/index.json` игры, `null` — файла
+    /// нет. По каждой модели, чья запись в нём есть, `models[i].path` — её облегчённая модель, а не исходный `.glb`, а
+    /// `model_textures: [{index, path}]` — сжатые файлы картинок таких моделей, каждый один раз на игру.
+    #[allow(clippy::too_many_arguments)]
     pub fn read_texts(
         &self,
         properties_json: Option<String>,
@@ -2035,15 +2044,17 @@ impl Engine {
         _code_json: Option<String>,
         // «Свет и материалы»: текст файла рельефа — из него берутся пути масок покрытий.
         terrain_json: Option<String>,
+        imported_index: Option<String>,
     ) -> JsValue {
         let Some(config) = self.pending_config.peek() else {
             return js_needed_media_ok(&NeededMedia::default(), &[]);
         };
-        let needed = load::read_texts(
+        let needed = load::read_texts_with_imported(
             config,
             properties_json.as_deref(),
             screens_json.as_deref(),
             terrain_json.as_deref(),
+            imported_index.as_deref(),
         );
         js_needed_media_ok(&needed, &config.files.music)
     }
@@ -2072,7 +2083,10 @@ impl Engine {
     /// «Трёхмерная сцена» → «Модели и движения»: `models` — ответы страницы по файлам `.glb`, `[{index,
     /// bytes: Uint8Array|null, images: [{index, verdict: "ok"|"missing"|"rejected", width?, height?, pixels?}]}]`,
     /// по номерам из `read_texts()`'s `models`; `images` — картинки PNG и JPEG из файла, разжатые браузером,
-    /// по номеру картинки в списке `images` самого файла, как `images` игры.
+    /// по номеру картинки в списке `images` самого файла, как `images` игры. У сжатой модели `bytes` — её облегчённая
+    /// модель, а `images` не читается. `model_textures` — `[{index, bytes: Uint8Array|null}]`, байты сжатых файлов как
+    /// есть, по номерам из `read_texts()`'s `model_textures`; нет файла или он пуст — `null`. `imported_index` — тот же текст
+    /// `imported/index.json`, что был в `read_texts()`, или `null`.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -2092,6 +2106,8 @@ impl Engine {
         stamps: JsValue,
         videos: JsValue,
         models: JsValue,
+        model_textures: JsValue,
+        imported_index: Option<String>,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -2142,7 +2158,16 @@ impl Engine {
             .map(|decl| (decl.name.clone(), decl.path.clone()))
             .collect();
         let model_files = parse_model_files(&models, &model_table);
-        match load::load_rest_with_models(
+        let model_texture_paths =
+            load::ImportedPlan::new(&config.files.models, imported_index.as_deref())
+                .textures()
+                .to_vec();
+        let model_texture_bytes = if model_textures.is_undefined() || model_textures.is_null() {
+            Vec::new()
+        } else {
+            parse_sound_bytes(&model_textures, &path_table(&model_texture_paths))
+        };
+        match load::load_rest_with_imports(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -2161,6 +2186,8 @@ impl Engine {
             &mask_verdicts,
             &stamp_texts,
             &model_files,
+            imported_index.as_deref(),
+            &model_texture_bytes,
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -2251,7 +2278,10 @@ impl Engine {
                     [game.scene.width, game.scene.height],
                 );
                 self.renderer.set_relief(relief.as_ref());
-                self.renderer.set_models(game.properties.models());
+                let image_stats = self.renderer.set_models(game.properties.models());
+                if !game.properties.models().is_empty() {
+                    web_sys::console::log_1(&JsValue::from_str(&image_stats.line()));
+                }
                 self.images = image_order;
                 self.material_decls = material_decls;
                 self.rules_path = rules_path;

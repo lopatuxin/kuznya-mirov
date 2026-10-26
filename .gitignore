@@ -8,3 +8,5 @@ tools/art/.build/
 tools/stamps/.cache/
 tools/city/.cache/
 __pycache__/
+importer/target/
+games/*/imported/

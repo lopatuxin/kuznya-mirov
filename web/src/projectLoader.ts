@@ -1,12 +1,13 @@
 import type { Engine } from "engine";
 import { GAME_FILE_FETCH, fetchText } from "./gameOptions";
 import { buildImagePayload, buildVideoPayload, fetchImageBytes, isVideoPath, type ImageEntry, type ImageFileEntry } from "./images/imagePayload";
-import { buildModelPayload, type ModelEntry } from "./images/modelImages";
+import { buildModelPayload, buildModelTexturePayload, type ModelEntry, type ModelTextureEntry } from "./images/modelImages";
 import { releaseDecodedVideos, releaseVideoPlayer, type DecodedReverseVideo, type VideoPlayerKeeper } from "./images/videoLoader";
 import { probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import type { EngineError } from "./engineErrors";
 
 const RGBA_CHANNELS = 4;
+const IMPORTED_INDEX_PATH = "imported/index.json";
 
 type FontEntry = { name: string; path: string };
 type SoundEntry = { index: number; name: string; path: string };
@@ -38,6 +39,8 @@ type ReadTextsResult = {
   materials: ImageFileEntry[];
   masks: ImageFileEntry[];
   models: ModelEntry[];
+  /** Сжатые файлы картинок сжатых моделей — каждый один раз на игру; нет `imported/index.json` — пусто. */
+  model_textures: ModelTextureEntry[];
 };
 
 type LoadResult =
@@ -173,7 +176,7 @@ export async function loadProject(
     return { status: "rejected", errors: entryResult.errors, warnings: entryResult.warnings, gameJsonText, sceneText: null };
   }
 
-  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText, stamps] = await Promise.all([
+  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText, stamps, importedIndexText] = await Promise.all([
     reader.readText(entryResult.files.properties),
     reader.readText(entryResult.files.scene),
     reader.readText(entryResult.files.rules),
@@ -184,13 +187,16 @@ export async function loadProject(
     // `undefined`, а не `null` — `null` он читает как «файл назван, но не найден».
     entryResult.files.terrain !== undefined ? reader.readText(entryResult.files.terrain) : Promise.resolve(undefined),
     fetchStampTexts(reader, entryResult.files.stamps),
+    // «Трёхмерная сцена», «Загрузка и проверка»: какие модели службой сжаты — `null`, если `imported/index.json` нет; путь
+    // читается всегда, поэтому опрос файлов редактора заметит и появление файла после сжатия.
+    reader.readText(IMPORTED_INDEX_PATH),
   ]);
 
-  const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText, terrainText) as ReadTextsResult;
+  const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText, terrainText, importedIndexText) as ReadTextsResult;
 
   const audioContext = createAudioContext();
 
-  const [fonts, loadedSounds, loadedMusic, loadedImages, loadedMaterials, loadedMasks, loadedModels] = await Promise.all([
+  const [fonts, loadedSounds, loadedMusic, loadedImages, loadedMaterials, loadedMasks, loadedModels, loadedModelTextures] = await Promise.all([
     fetchFonts(reader, needed.fonts),
     fetchSoundBytes(reader, needed.sounds),
     fetchMusicBytes(reader, needed.music),
@@ -198,6 +204,7 @@ export async function loadProject(
     fetchImageBytes(needed.materials, reader.readBinary),
     fetchImageBytes(needed.masks, reader.readBinary),
     fetchImageBytes(needed.models, reader.readBinary),
+    fetchImageBytes(needed.model_textures, reader.readBinary),
   ]);
   const videosPayloadPromise = buildVideoPayload(loadedImages.filter((image) => isVideoPath(image.path)));
   const [musicTracks, imagesPayload, videosPayload, materialMapsPayload, coverMasksPayload, modelsPayload] = await Promise.all([
@@ -250,6 +257,8 @@ export async function loadProject(
       stamps,
       videoAnswers,
       modelsPayload,
+      buildModelTexturePayload(loadedModelTextures),
+      importedIndexText,
     ) as LoadResult;
   } catch (error) {
     for (const player of players) releaseVideoPlayer(player);

@@ -125,6 +125,9 @@ pub struct MaterialOptions {
     pub webgl2: bool,
     /// Видеокарта умеет анизотропную выборку (`DownlevelFlags::ANISOTROPIC_FILTERING`).
     pub anisotropic: bool,
+    /// Видеокарта читает блоки BC (`Features::TEXTURE_COMPRESSION_BC`): сжатые картинки моделей ложатся на неё как
+    /// есть, иначе их разжимает процессор.
+    pub compressed: bool,
 }
 
 /// Карта цвета рельефа, какой её разжала страница: её слой в массиве масок собирается заново, когда

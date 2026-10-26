@@ -3,6 +3,8 @@
 //! начале, низ — на нуле: так объекту остаётся сдвинуть, повернуть и масштабировать модель одним
 //! числом на объект. Ни видеокарты, ни браузера: файл разбирает `data::glb`.
 
+use std::sync::Arc;
+
 /// Вершина части модели.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelVertex {
@@ -116,12 +118,63 @@ pub struct Image {
     pub pixels: Vec<u8>,
 }
 
+/// Как лежат точки сжатой картинки: блоки BC по 16 байт на 4 × 4 точки или четыре байта на точку.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackedFormat {
+    Bc7Srgb,
+    Bc7,
+    Bc5,
+    Rgba8Srgb,
+    Rgba8,
+}
+
+impl PackedFormat {
+    pub fn is_block(self) -> bool {
+        matches!(
+            self,
+            PackedFormat::Bc7Srgb | PackedFormat::Bc7 | PackedFormat::Bc5
+        )
+    }
+
+    pub fn is_srgb(self) -> bool {
+        matches!(self, PackedFormat::Bc7Srgb | PackedFormat::Rgba8Srgb)
+    }
+
+    /// Сколько байт занимает ступень `width` × `height`: блоки целиком у BC, у остальных — четыре байта на точку.
+    pub fn level_bytes(self, width: u32, height: u32) -> usize {
+        let (width, height) = (width as usize, height as usize);
+        if self.is_block() {
+            width.div_ceil(4) * height.div_ceil(4) * 16
+        } else {
+            width * height * 4
+        }
+    }
+}
+
+/// Картинка модели из файла KTX2 службы сжатия: все ступени уменьшения от полного размера до одной точки.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PackedImage {
+    pub format: PackedFormat,
+    pub width: u32,
+    pub height: u32,
+    /// Ступень `i` — `max(1, width >> i)` × `max(1, height >> i)`, как её читает видеокарта.
+    pub levels: Vec<Vec<u8>>,
+}
+
+/// Картинка файла модели: точки, что разжала страница, или файл службы сжатия. Один сжатый файл — один `Arc` на
+/// все модели игры.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ModelImage {
+    Pixels(Image),
+    Packed(Arc<PackedImage>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
     pub name: String,
     pub parts: Vec<Part>,
     pub materials: Vec<Material>,
-    pub images: Vec<Image>,
+    pub images: Vec<ModelImage>,
     /// Коробка вокруг модели при масштабе 1: ширина по x, глубина по y и высота.
     pub size: [f64; 3],
     /// Где в осях модели лежит начало координат файла: загрузка ставит в начало середину коробки, а перекрёсток

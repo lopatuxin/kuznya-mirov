@@ -55,6 +55,16 @@ dev`/`build` without deleting `pkg` by hand. In the container build (`Dockerfile
 check finds no source files to compare and never re-triggers `wasm-pack` in a stage that has no
 `cargo`.
 
+`importer/` is the model-image compression service (Phase 51), a separate Cargo crate without a
+workspace that depends on `engine/` by path (it builds natively, no GPU). `importer watch <games dir>`
+runs as the `importer` service in `docker-compose.yml` next to `web` (`./games` mounted read-write,
+polls every 2 s); `importer once <games dir>` does one pass and exits, and the `Dockerfile` runs it over
+its copy of `games/` before `npm run build` so the published image carries the result. For every
+`.glb` of a game it writes `games/<game>/imported/` (`index.json`, light models without images,
+`textures/<hash>.ktx2` in BC7/BC5 with mip levels). `games/*/imported/` is derived data, gitignored:
+a clean clone gets it from the first pass of the service. Run `cargo test` in `importer/` after
+changing it.
+
 # Common Mistakes
 
 [Empty]

@@ -43,12 +43,43 @@ COPY cosmic-text/src/ /app/cosmic-text/src/
 
 RUN wasm-pack build --target web --release -- --locked
 
-# --- Stage 2: собрать страницу (Vite) ---
+# --- Stage 2: собрать службу сжатия картинок моделей (importer/) ---
+# `importer/` зависит от `engine/` по пути `../engine` (тот — от `../luars`), поэтому сюда же копируются
+# исходники движка и luars. `[patch.crates-io]` из `engine/Cargo.toml` для зависимости не действует —
+# `cosmic-text` службе не нужен (он нужен только wasm-сборке).
+FROM rust:1-bookworm AS importer-builder
+WORKDIR /app/importer
+
+COPY importer/Cargo.toml importer/Cargo.lock ./
+COPY importer/src/ src/
+
+COPY engine/Cargo.toml /app/engine/Cargo.toml
+COPY engine/src/ /app/engine/src/
+COPY engine/shaders/ /app/engine/shaders/
+COPY luars/Cargo.toml /app/luars/Cargo.toml
+COPY luars/src/ /app/luars/src/
+
+RUN cargo build --release --locked
+
+# --- Stage 3: служба сжатия (docker compose, служба importer) ---
+# Не последняя стадия: `docker build .` по-прежнему собирает nginx со страницей, службу compose
+# берёт по `target: importer`.
+FROM debian:bookworm-slim AS importer
+COPY --from=importer-builder /app/importer/target/release/importer /usr/local/bin/importer
+CMD ["importer", "watch", "/games"]
+
+# --- Stage 4: собрать страницу (Vite) ---
 FROM node:22-bookworm AS web-builder
 WORKDIR /app
 
 COPY --from=wasm-builder /app/engine/pkg ./engine/pkg
 COPY games/ ./games/
+
+# Публикуемый образ несёт готовые `games/*/imported/` (Фаза 51, требование 14): проход службы по своей
+# копии `games/` до сборки страницы — vite копирует games/ в dist уже с `imported/`. Папка
+# `imported/` с рабочей копии в образ тоже попадает, но проход сверяет хеши и дожимает только нужное.
+COPY --from=importer-builder /app/importer/target/release/importer /usr/local/bin/importer
+RUN importer once /app/games
 
 WORKDIR /app/web
 COPY web/package.json web/package-lock.json ./
@@ -57,7 +88,7 @@ RUN npm ci
 COPY web/ ./
 RUN npm run build
 
-# --- Stage 3: раздать статику ---
+# --- Stage 5: раздать статику ---
 FROM nginx:1.27-alpine
 COPY deploy/nginx.conf /etc/nginx/nginx.conf
 COPY --from=web-builder /app/web/dist /usr/share/nginx/html

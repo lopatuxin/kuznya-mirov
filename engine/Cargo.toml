@@ -11,6 +11,7 @@ opt-level = "s"
 lto = true
 
 [dependencies]
+block_compression = { version = "0.11.0", default-features = false, features = ["bc7", "bc15"] }
 gltf = { version = "1.4.1", default-features = false, features = ["utils"] }
 libm = "0.2.16"
 luars = { path = "../luars", features = ["sandbox", "serde"] }

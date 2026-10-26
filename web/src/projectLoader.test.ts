@@ -90,7 +90,7 @@ describe("loadProject", () => {
       images: [{ index: 9, name: "head", path: "images/head.png" }],
       materials: [],
       masks: [],
-      models: [],
+      models: [], model_textures: [],
     }));
     const load = vi.fn(() => ({
       ok: true,
@@ -109,6 +109,7 @@ describe("loadProject", () => {
       files["screens.json"],
       files["code.lua"],
       undefined,
+      null,
     );
     // load получает шрифты, звуки, приговоры музыке, картинки и код — «Редактор», требование 11.
     expect(load).toHaveBeenCalledWith(
@@ -128,6 +129,8 @@ describe("loadProject", () => {
       [],
       [],
       [],
+      [],
+      null,
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -159,7 +162,7 @@ describe("loadProject", () => {
         },
         warnings: NO_WARNINGS,
       })),
-      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [] })),
+      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [], model_textures: [] })),
       load,
     };
     const reader = createReader(files);
@@ -183,6 +186,8 @@ describe("loadProject", () => {
       [],
       [],
       [],
+      [],
+      null,
     );
   });
 
@@ -204,7 +209,7 @@ describe("loadProject", () => {
           files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [], terrain: terrainPath },
           warnings: NO_WARNINGS,
         })),
-        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [] })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [], model_textures: [] })),
         load,
       };
       return { engine, load };
@@ -227,7 +232,7 @@ describe("loadProject", () => {
 
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext, createVideoPlayerKeeper());
 
-      expect(load.mock.calls[0]).toHaveLength(16);
+      expect(load.mock.calls[0]).toHaveLength(18);
       expect(load.mock.calls[0]?.[10]).toBeUndefined();
       expect(readText).not.toHaveBeenCalledWith("terrain.json");
     });
@@ -242,7 +247,7 @@ describe("loadProject", () => {
   });
 
   describe("частицы без файла видов", () => {
-    it("particles.json не читается, а load получает ровно шестнадцать аргументов", async () => {
+    it("particles.json не читается, а load получает ровно восемнадцать аргументов", async () => {
       const load = vi.fn(() => ({ ok: true, warnings: NO_WARNINGS }));
       const engine: ProjectLoadEngine = {
         read_entry: vi.fn(() => ({
@@ -250,7 +255,7 @@ describe("loadProject", () => {
           files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] },
           warnings: NO_WARNINGS,
         })),
-        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [] })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [], model_textures: [] })),
         load,
       };
       const readText = vi.fn(async () => null);
@@ -258,7 +263,7 @@ describe("loadProject", () => {
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(readText).not.toHaveBeenCalledWith("particles.json");
-      expect(load.mock.calls[0]).toHaveLength(16);
+      expect(load.mock.calls[0]).toHaveLength(18);
     });
   });
 
@@ -299,7 +304,7 @@ describe("loadProject", () => {
           { index: 2, path: "materials/grass/normal.jpg" },
         ],
         masks: [{ index: 7, path: "terrain/earth.png" }],
-        models: [],
+        models: [], model_textures: [],
       }));
       const load = vi.fn((..._args: unknown[]) => ({ ok: true, warnings: NO_WARNINGS }));
       const engine: ProjectLoadEngine = {
@@ -341,7 +346,7 @@ describe("loadProject", () => {
             { index: 0, path: "terrain/earth.png" },
             { index: 1, path: "terrain/absent.png" },
           ],
-          models: [],
+          models: [], model_textures: [],
         })),
         load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
       };
@@ -369,7 +374,7 @@ describe("loadProject", () => {
           ],
           materials: [],
           masks: [],
-          models: [],
+          models: [], model_textures: [],
         })),
         load: vi.fn(() => ({ ok: true, warnings: NO_WARNINGS })),
       };
@@ -380,7 +385,7 @@ describe("loadProject", () => {
     });
 
     it("без файла рельефа в read_texts идёт undefined", async () => {
-      const readTexts = vi.fn((..._args: unknown[]) => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [] }));
+      const readTexts = vi.fn((..._args: unknown[]) => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [], model_textures: [] }));
       const engine: ProjectLoadEngine = {
         read_entry: vi.fn(() => ({
           ok: true,
@@ -393,7 +398,7 @@ describe("loadProject", () => {
 
       await loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper());
 
-      expect(readTexts.mock.calls[0]).toHaveLength(6);
+      expect(readTexts.mock.calls[0]).toHaveLength(7);
       expect(readTexts.mock.calls[0]?.[5]).toBeUndefined();
     });
   });
@@ -427,7 +432,7 @@ describe("loadProject", () => {
           },
           warnings: NO_WARNINGS,
         })),
-        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [] })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [], model_textures: [] })),
         load,
       };
       return { engine, load };
@@ -505,7 +510,7 @@ describe("loadProject", () => {
           ],
           materials: [],
           masks: [],
-          models: [],
+          models: [], model_textures: [],
         })),
         load,
       };
@@ -547,7 +552,7 @@ describe("loadProject", () => {
           ],
           materials: [],
           masks: [],
-          models: [],
+          models: [], model_textures: [],
         }));
         return { engine, load };
       }
@@ -681,6 +686,7 @@ describe("loadProject", () => {
           { index: 3, name: "house", path: "models/house.glb" },
           { index: 1, name: "birch", path: "models/birch.glb" },
         ],
+        model_textures: [],
       })),
       load,
     };
@@ -691,6 +697,83 @@ describe("loadProject", () => {
       { index: 3, bytes: houseBytes, images: [] },
       { index: 1, bytes: null, images: [] },
     ]);
+  });
+
+  describe("сжатые модели — imported/", () => {
+    const INDEX_TEXT = JSON.stringify({ version: 1, models: { "models/house.glb": { model: "imported/models/house.glb", images: ["imported/textures/a.ktx2", null] } } });
+    const ENTRY_FILES = { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] };
+
+    function createEngine(models: unknown[], modelTextures: unknown[]): { engine: ProjectLoadEngine; readTexts: ReturnType<typeof vi.fn>; load: ReturnType<typeof vi.fn> } {
+      const readTexts = vi.fn((..._args: unknown[]) => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models, model_textures: modelTextures }));
+      const load = vi.fn((..._args: unknown[]) => ({ ok: true, warnings: NO_WARNINGS }));
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({ ok: true, files: ENTRY_FILES, warnings: NO_WARNINGS })),
+        read_texts: readTexts,
+        load,
+      };
+      return { engine, readTexts, load };
+    }
+
+    it("текст imported/index.json идёт в read_texts седьмым и в load последним; сжатые файлы читаются байтами по номерам из read_texts и уходят как есть, нет файла или он пуст — bytes null", async () => {
+      const lightBytes = new Uint8Array([1, 2, 3]);
+      const textureA = new Uint8Array([10, 11]);
+      const textureB = new Uint8Array([12]);
+      const { engine, readTexts, load } = createEngine(
+        [{ index: 4, name: "house", path: "imported/models/house.glb" }],
+        [
+          { index: 7, path: "imported/textures/a.ktx2" },
+          { index: 2, path: "imported/textures/b.ktx2" },
+          { index: 5, path: "imported/textures/missing.ktx2" },
+          { index: 6, path: "imported/textures/empty.ktx2" },
+        ],
+      );
+      const reader = createReader({
+        "imported/index.json": INDEX_TEXT,
+        "imported/models/house.glb": lightBytes,
+        "imported/textures/a.ktx2": textureA,
+        "imported/textures/b.ktx2": textureB,
+        "imported/textures/empty.ktx2": new Uint8Array(),
+      });
+
+      await loadProject(engine, reader, "{}", stubAudioContext, createVideoPlayerKeeper());
+
+      expect(readTexts.mock.calls[0]?.[6]).toBe(INDEX_TEXT);
+      expect(load.mock.calls[0]?.[15]).toEqual([{ index: 4, bytes: lightBytes, images: [] }]);
+      const modelTextures = load.mock.calls[0]?.[16] as { index: number; bytes: Uint8Array | null }[];
+      expect(modelTextures).toEqual([
+        { index: 7, bytes: textureA },
+        { index: 2, bytes: textureB },
+        { index: 5, bytes: null },
+        { index: 6, bytes: null },
+      ]);
+      expect(modelTextures[0]?.bytes).toBe(textureA);
+      expect(load.mock.calls[0]?.[17]).toBe(INDEX_TEXT);
+    });
+
+    it("без imported/index.json в read_texts и load уходит null, моделей-текстур нет, исходная модель читается как прежде", async () => {
+      const houseBytes = new Uint8Array([1, 2, 3]);
+      const { engine, readTexts, load } = createEngine([{ index: 0, name: "house", path: "models/house.glb" }], []);
+
+      await loadProject(engine, createReader({ "models/house.glb": houseBytes }), "{}", stubAudioContext, createVideoPlayerKeeper());
+
+      expect(readTexts.mock.calls[0]?.[6]).toBeNull();
+      expect(load.mock.calls[0]?.[15]).toEqual([{ index: 0, bytes: houseBytes, images: [] }]);
+      expect(load.mock.calls[0]?.[16]).toEqual([]);
+      expect(load.mock.calls[0]?.[17]).toBeNull();
+    });
+
+    it("опрос файлов редактора видит imported/index.json даже без файла, а с ним — облегчённую модель и сжатые файлы, но не исходную модель", async () => {
+      const withoutIndex = createEngine([{ index: 0, name: "house", path: "models/house.glb" }], []);
+      const missingRecording = createRecordingProjectFileReader(createReader({ "models/house.glb": new Uint8Array([1]) }));
+      await loadProject(withoutIndex.engine, missingRecording.reader, "{}", stubAudioContext, createVideoPlayerKeeper());
+      expect(missingRecording.getReadPaths()).toContain("imported/index.json");
+
+      const withIndex = createEngine([{ index: 0, name: "house", path: "imported/models/house.glb" }], [{ index: 0, path: "imported/textures/a.ktx2" }]);
+      const recording = createRecordingProjectFileReader(createReader({ "imported/index.json": INDEX_TEXT }));
+      await loadProject(withIndex.engine, recording.reader, "{}", stubAudioContext, createVideoPlayerKeeper());
+      expect(recording.getReadPaths()).toEqual(expect.arrayContaining(["imported/index.json", "imported/models/house.glb", "imported/textures/a.ktx2"]));
+      expect(recording.getReadPaths()).not.toContain("models/house.glb");
+    });
   });
 
   it("отдаёт rejected с текстом сцены, когда read_entry прошёл, а load отказал", async () => {
@@ -708,7 +791,7 @@ describe("loadProject", () => {
         files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] },
         warnings: NO_WARNINGS,
       })),
-      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [] })),
+      read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models: [], model_textures: [] })),
       load: vi.fn(() => ({ ok: false, errors, warnings: NO_WARNINGS })),
     };
     const reader = createReader(files);

@@ -45,6 +45,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 
 [[package]]
+name = "block_compression"
+version = "0.11.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f5ca8c67a97492f3c8263ce18d307053f8aa657e8ecbf191484676bb25ae5f4a"
+dependencies = [
+ "bytemuck",
+]
+
+[[package]]
 name = "bumpalo"
 version = "3.20.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -197,6 +206,7 @@ dependencies = [
 name = "engine"
 version = "0.1.0"
 dependencies = [
+ "block_compression",
  "bytemuck",
  "console_error_panic_hook",
  "gltf",

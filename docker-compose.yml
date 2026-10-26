@@ -19,3 +19,15 @@ services:
       retries: 5
       start_period: 10s
     restart: unless-stopped
+
+  # Служба сжатия картинок моделей (Фаза 51, требование 14): сама следит за games/ и пишет
+  # games/<игра>/imported/ — производное от моделей, в git его нет. web раздаёт ту же папку, поэтому
+  # сжатое видно сразу, а редактор (Фаза 08) сам перезагружает проект, когда служба дописала index.json.
+  importer:
+    build:
+      context: .
+      target: importer
+    volumes:
+      # На запись: служба пишет в imported/ каждой игры и ничего вне него (исходные модели не трогает).
+      - ./games:/games
+    restart: unless-stopped
