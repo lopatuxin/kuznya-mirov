@@ -477,15 +477,7 @@ fn play_on_hover_on_a_panel_without_a_video_a_button_a_label_or_a_bar_is_an_erro
 }
 
 #[test]
-fn a_video_on_a_panel_without_play_on_hover_or_on_a_button_is_still_an_error() {
-    let errors = errors_of(try_load(
-        VIDEO_IMAGES,
-        NO_OBJECTS,
-        r##"{"kind":"panel","anchor":"top_left","size":[100,100],"image":"hero"}"##,
-        &files(Some(same_reverse())),
-    ));
-    assert_error(&errors, "image", "панель и кнопка её не берут");
-
+fn a_video_on_a_button_is_still_an_error() {
     let button = r##"{"kind":"button","anchor":"top_left","size":[10,10],"text":"","font":"ui","image":"hero",
         "on_click":["quit"]}"##;
     let errors = errors_of(try_load(
@@ -494,7 +486,7 @@ fn a_video_on_a_panel_without_play_on_hover_or_on_a_button_is_still_an_error() {
         button,
         &files(Some(same_reverse())),
     ));
-    assert_error(&errors, "image", "панель и кнопка её не берут");
+    assert_error(&errors, "image", "кнопка и шкала её не берут");
 }
 
 #[test]

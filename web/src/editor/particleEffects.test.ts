@@ -8,6 +8,7 @@ import {
   normalizeDegrees,
   PARTICLE_COLOR_NAMES,
   PARTICLE_DEFAULTS,
+  PARTICLE_EFFECTS,
   PARTICLE_PROPERTY_NAMES,
   particleEffectById,
   presentEffectKeys,
@@ -17,7 +18,7 @@ import {
 } from "./particleEffects";
 
 describe("свойства и эффекты", () => {
-  it("четырнадцать встроенных свойств частиц и огня, у каждого эффекта своё главное", () => {
+  it("восемнадцать встроенных свойств частиц и огня, у каждого эффекта своё главное", () => {
     expect(PARTICLE_PROPERTY_NAMES).toEqual([
       "smoke",
       "smoke_height",
@@ -28,18 +29,23 @@ describe("свойства и эффекты", () => {
       "sparks_spread",
       "leaf_fall",
       "leaf_color",
+      "fluff",
+      "fluff_color",
+      "butterflies",
+      "butterfly_color",
       "fire",
       "fire_color",
       "fire_glow",
       "fire_coals",
       "fire_smolder",
     ]);
-    expect(["smoke", "sparks", "leaves", "fire"].map((id) => particleEffectById(id)?.mainKey)).toEqual(["smoke", "sparks", "leaf_fall", "fire"]);
+    expect(["smoke", "sparks", "leaves", "fluff", "butterflies", "fire"].map((id) => particleEffectById(id)?.mainKey)).toEqual(["smoke", "sparks", "leaf_fall", "fluff", "butterflies", "fire"]);
     expect(particleEffectById("snow")).toBeUndefined();
   });
 
-  it("эффекты объекта идут по порядку «Дым», «Искры», «Листья», «Огонь», а группа с нулём в главном свойстве остаётся", () => {
+  it("эффекты объекта идут по порядку «Дым», «Искры», «Листья», «Пух», «Бабочки», «Огонь», а группа с нулём в главном свойстве остаётся", () => {
     expect(effectsOfObject({ fire: 0.5, leaf_fall: 0.3, smoke: 0 }).map((effect) => effect.id)).toEqual(["smoke", "leaves", "fire"]);
+    expect(effectsOfObject({ butterflies: 0.3, fluff: 0, fire: 0.5 }).map((effect) => effect.id)).toEqual(["fluff", "butterflies", "fire"]);
     expect(effectsOfObject({ fire: 0 }).map((effect) => effect.id)).toEqual(["fire"]);
     expect(effectsOfObject({ position: [1, 1] })).toEqual([]);
     expect(effectsOfObject(null)).toEqual([]);
@@ -58,6 +64,30 @@ describe("свойства и эффекты", () => {
   it("«Убрать» берёт только те ключи эффекта, что есть у объекта", () => {
     const sparks = particleEffectById("sparks");
     expect(sparks && presentEffectKeys(sparks, { position: [1, 1], sparks: 0.5, sparks_spread: 10, smoke: 0.5 })).toEqual(["sparks", "sparks_spread"]);
+  });
+});
+
+describe("пух и бабочки", () => {
+  it("карточки «пух» и «бабочки» отпускаются на объект со значением 0,3 и берут только свои ключи; листья отпускаются так же, остальные создают источник", () => {
+    const fluff = particleEffectById("fluff");
+    const butterflies = particleEffectById("butterflies");
+
+    expect(fluff).toMatchObject({ cardLabel: "пух", title: "Пух", mainKey: "fluff", dropValue: 0.3, isDroppedOnObject: true });
+    expect(butterflies).toMatchObject({ cardLabel: "бабочки", title: "Бабочки", mainKey: "butterflies", dropValue: 0.3, isDroppedOnObject: true });
+    expect(fluff && presentEffectKeys(fluff, { fluff: 0.3, fluff_color: "#ffffff", butterflies: 0.3 })).toEqual(["fluff", "fluff_color"]);
+    expect(butterflies && presentEffectKeys(butterflies, { butterflies: 0.3, butterfly_color: "#ffcc00", fluff: 0.3 })).toEqual(["butterflies", "butterfly_color"]);
+    expect(PARTICLE_EFFECTS.filter((effect) => effect.isDroppedOnObject).map((effect) => effect.id)).toEqual(["leaves", "fluff", "butterflies"]);
+  });
+
+  it("fluff_color и butterfly_color правятся палитрой; пух по умолчанию белый с тёплым отливом", () => {
+    expect(PARTICLE_COLOR_NAMES).toEqual(expect.arrayContaining(["fluff_color", "butterfly_color"]));
+    expect(PARTICLE_DEFAULTS.fluff_color).toBe("#fff5db");
+  });
+
+  it("в тексте ошибки fluff, butterflies и их цвета названы русскими подписями", () => {
+    expect(translateParticleKeys("fluff: нужно от 0 до 1 включительно, получено 2")).toBe("плотность: нужно от 0 до 1 включительно, получено 2");
+    expect(translateParticleKeys("butterflies: нужно от 0 до 1 включительно, получено 2")).toBe("сколько бабочек: нужно от 0 до 1 включительно, получено 2");
+    expect(translateParticleKeys("fluff_color: цвет должен быть вида #rrggbb; butterfly_color: цвет должен быть вида #rrggbb")).toBe("цвет пуха: цвет должен быть вида #rrggbb; цвет бабочек: цвет должен быть вида #rrggbb");
   });
 });
 

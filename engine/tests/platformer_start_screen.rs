@@ -1,6 +1,8 @@
 //! Фаза 07 платформера — начальный экран `games/platformer`: игра грузится без ошибок и предупреждений,
 //! стартует с экрана `menu`, «Новая игра» ведёт на уровень, «Выход» просит страницу уйти к списку игр, три
-//! героя — места наведения с видео и горящей строкой. Видео и курсор в браузере — только QA на стенде.
+//! героя — места наведения с видео героя и его имени и горящей строкой. Фаза 08 — живой фон: вся картина
+//! роликом по кругу, листья с берёзы, пух и бабочки при ветре экрана. Видео и курсор в браузере — только QA
+//! на стенде.
 
 use std::fs;
 
@@ -161,7 +163,7 @@ fn continue_and_settings_do_not_press() {
 }
 
 #[test]
-fn each_hero_is_a_place_with_a_video_and_a_glowing_line() {
+fn each_hero_is_a_place_with_videos_of_him_and_his_name_and_a_glowing_line() {
     let (ui, _, images) = load();
     let elements = &ui.config.screens[ui.state.active()].elements;
     for hero in HEROES {
@@ -177,14 +179,37 @@ fn each_hero_is_a_place_with_a_video_and_a_glowing_line() {
             .iter()
             .filter(|element| element.show_on_hover() == Some(place))
             .count();
-        assert_eq!(plays, 1, "{hero}: видео");
+        assert_eq!(plays, 2, "{hero}: видео героя и его имени");
         assert_eq!(glows, 1, "{hero}: высеченная строка горит золотом");
     }
     let videos = ui.config.panel_videos();
-    assert_eq!(videos.len(), 3);
+    assert_eq!(videos.len(), 6);
     for video in videos {
         assert!(images[video].reverse.is_some(), "{}", images[video].name);
     }
+}
+
+#[test]
+fn the_menu_background_lives_with_loops_wind_and_particles() {
+    let (ui, _, images) = load();
+    let menu = &ui.config.screens[ui.state.active()];
+    let loops: Vec<&str> = ui
+        .config
+        .loop_videos(|id| images[id].path.ends_with(".mp4"))
+        .into_iter()
+        .map(|id| images[id].name.as_str())
+        .collect();
+    assert_eq!(loops, ["living_bg", "river"]);
+    assert!(menu.wind[0] > 0.0, "ветер вправо: {:?}", menu.wind);
+    assert!(menu.cell_pixels.is_some());
+    let sources: Vec<_> = menu
+        .elements
+        .iter()
+        .filter_map(Element::particles)
+        .collect();
+    assert!(sources.iter().any(|s| s.leaf_fall > 0.0), "листья с берёзы");
+    assert!(sources.iter().any(|s| s.fluff > 0.0), "пух");
+    assert!(sources.iter().any(|s| s.butterflies > 0.0), "бабочки");
 }
 
 #[test]

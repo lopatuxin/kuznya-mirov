@@ -6,7 +6,7 @@ use engine::core::game::Game;
 use engine::core::scene::LayerView;
 use engine::core::screens::ScreensConfig;
 use engine::data::error::{GameError, LoadFailure};
-use engine::data::load::{ImageDecl, ImageVerdict, load_rest, read_entry};
+use engine::data::load::{ImageDecl, ImageVerdict, ReverseVerdict, load_rest, read_entry};
 use engine::render::atlas::{
     ATLAS_SIZE, AtlasImage, SHEET_BYTES, WHITE_PIXEL, compose_world_paints, fill_sheet, pack,
 };
@@ -270,17 +270,30 @@ fn screens_with(element: &str) -> String {
 }
 
 #[test]
-fn a_video_on_a_panel_is_a_usage_error() {
+fn a_video_on_a_panel_without_play_on_hover_goes_round_and_is_no_error() {
     let screens = screens_with(
         r#"{"kind":"panel","anchor":"top_left","offset":[0,0],"size":[10,10],"image":"grass"}"#,
     );
-    let errors = errors_of(load_in(
+    let played_twice = ImageVerdict::Video {
+        width: 1280,
+        height: 996,
+        seconds: 1.0,
+        reverse: Some(ReverseVerdict::Ok {
+            width: 1280,
+            height: 996,
+            seconds: 1.0,
+        }),
+    };
+    let (_, config, warnings, _) = load_in(
         &game_json("", GRASS),
         NO_OBJECTS,
         &screens,
-        &[("grass", video(1280, 996))],
-    ));
-    assert_error(&errors, "image", "панель и кнопка её не берут");
+        &[("grass", played_twice)],
+    )
+    .unwrap_or_else(|e| panic!("видео по кругу — не ошибка: {:#?}", e.errors));
+    assert_eq!(warnings, Vec::new());
+    assert_eq!(config.loop_videos(|_| true), [0]);
+    assert_eq!(config.panel_videos(), Vec::<usize>::new());
 }
 
 #[test]
@@ -302,7 +315,7 @@ fn a_video_in_any_of_the_three_button_images_is_a_usage_error() {
             &screens,
             &[("grass", video(1280, 996)), ("head", picture(8, 8))],
         ));
-        assert_error(&errors, "image", "панель и кнопка её не берут");
+        assert_error(&errors, "image", "кнопка и шкала её не берут");
     }
 }
 

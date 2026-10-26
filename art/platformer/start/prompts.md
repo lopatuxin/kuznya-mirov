@@ -158,3 +158,41 @@ Keep the frog, the young woman, their colors and the hand-painted animated film 
 Smooth, magical, graceful motion. No morphing outside the glow, no extra objects, no other people or animals,
 no text.
 ```
+
+## Имена героев (программа, без нейросети)
+
+Имя проявляется по буквам тем же волшебством, что превращение Василисы: дымка, полоса света снизу вверх, искры.
+Задержка — когда герой вышел: Илья шагает, Алёша сразу, Василиса после превращения.
+
+```
+node tools/art/materialize.mjs games/platformer/fonts/Monomakh.ttf art/platformer/start/ilya_name.mp4 --text "Илья|Муромец" --delay 0.5 --reverse
+node tools/art/materialize.mjs games/platformer/fonts/Monomakh.ttf art/platformer/start/alyosha_name.mp4 --text "Алёша|Попович" --delay 0.2 --reverse
+node tools/art/materialize.mjs games/platformer/fonts/Monomakh.ttf art/platformer/start/vasilisa_name.mp4 --text "Василиса|Премудрая" --delay 2.6 --reverse
+```
+
+## Живой фон (фаза 08)
+
+Сначала фон оживляли кусками: река и облака программой, листва берёзы роликом syntx поверх картины. За качающимися листьями виднелась неподвижная листва картины, а края кусков спорили между собой — хозяин 2026-10-26 выбрал оживить всю картину одним роликом.
+
+Листопад с берёзы: `games/platformer/images/birch_leaves.png` — точки кроны берёзы из `start_bg.png` (многоугольник (1520,0)–(2048,0)–(2048,330)–(1900,300)–(1760,250)–(1700,140)–(1560,90)–(1520,60), точка зелёнее синего больше чем на 25), остальное прозрачно; панель с ней невидима (`opacity` 0), листья срываются с этих точек.
+
+### Ролик всей картины (syntx, Seedance, Keyframes; 21:9, 5 секунд, 1080p; первый и последний кадр — `live/whole_frame.png`)
+
+Хозяин 2026-10-26: оживить всю картину разом вместо кусков. Кадр — `background_wide.png` без строк камня (0, 26, 2072 × 888), увеличенный до 2520 × 1080. Пришёл 2200 × 940 (`live/whole_syntx.mp4`). Камень, дороги и крепость стоят; тёмный лес слева нейросеть не качает, а перерисовывает — там и на камне со строками остаётся картина (`hold` в `live/whole.json`). Нейросеть к началу не вернулась: лучшая пара кадров отличается в восемь раз сильнее соседних, и склейка смешиванием видна (хозяин, 2026-10-26). Поэтому круг — туда и обратно (`pingpong`): листва, трава и туман качаются назад естественно. Река назад течь не может — поверх неё свой кусок `flow.mjs`, сделанный из первого кадра ролика той же нарезкой, что у живого фона (`node tools/art/living.mjs art/platformer/start/live/whole.json --first art/platformer/start/live/whole_first.png`), чтобы вода и берега легли на ролик точка в точку. Неподвижные лес и камень — тоже из первого кадра ролика, строки высечены в нём (`node tools/art/carve.mjs art/platformer/start/live/whole_first.png art/platformer/start/inscriptions.json art/platformer/start/live/carved`, свечения оттуда не нужны), чтобы на краях цвет ролика встречался с тем же цветом. Сборка: `node tools/art/living.mjs art/platformer/start/live/whole.json art/platformer/start/live/whole.mp4`, готовое копируется в `games/platformer/images/living_bg.mp4`; река — `node tools/art/flow.mjs art/platformer/start/live/whole_first.png art/platformer/start/live/river.json art/platformer/start/live/river.mp4`, готовое — в `games/platformer/images/river.mp4`. Живой фон — размера всей картины: вне кадра ролика (полоски по 25 точек сверху и снизу) неподвижный кадр, у края ролика движение мягко сходит на нет — в окне 16:10 шва нет.
+
+```
+Static camera: locked off, no zoom, no pan, no camera movement at all. The first image and the last image are the
+same frame, so the video loops seamlessly.
+
+Bring this still painting to life with gentle natural motion, as a calm living picture: the leaves of the birch on
+the right flutter and its hanging branches sway in a light summer breeze blowing to the right; the grass, the
+wildflowers, the ferns and the bushes sway softly in slow waves; the river and the rapids on the right flow and
+foam; the clouds drift slowly to the right; thin mist moves over the valley; the tops of the fir trees sway very
+slightly. Then everything settles back exactly to the first frame.
+
+The big grey standing stone in the middle, the boulders, the dirt roads, the castle and its towers, the hills and
+the tree trunks stay perfectly still and unchanged.
+
+Keep the hand-painted style, the colors, the light and every detail exactly as in the image. Subtle, calm motion.
+No people, no animals, no birds, no insects, no new objects, no text.
+```

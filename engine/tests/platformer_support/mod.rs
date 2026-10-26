@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::PathBuf;
 
-use engine::data::load::{ImageDecl, ImageVerdict, ReverseVerdict};
+use engine::data::load::{ImageDecl, ImageVerdict, ReverseVerdict, read_entry, read_texts};
 
 pub fn platformer_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
@@ -65,14 +65,15 @@ fn blank_image(path: &str) -> ImageVerdict {
     }
 }
 
-/// Что страница ответила бы про файл картинки: у PNG — размер и пустые точки, у видео — размер и длина файла
-/// и такие же сведения о его `reverse`.
-pub fn file_verdict(decl: &ImageDecl) -> ImageVerdict {
+/// Что страница ответила бы про файл картинки: у PNG — размер и пустые точки, у видео — размер и длину файла
+/// и такие же сведения о втором файле `second`, который она прочитала для видео (`None` — второго файла не
+/// просили).
+pub fn file_verdict(decl: &ImageDecl, second: Option<&str>) -> ImageVerdict {
     if !decl.video {
         return blank_image(&decl.path);
     }
     let (width, height, seconds) = mp4_file(&decl.path);
-    let reverse = decl.reverse.as_deref().map(|path| {
+    let reverse = second.map(|path| {
         let (width, height, seconds) = mp4_file(path);
         ReverseVerdict::Ok {
             width,
@@ -88,9 +89,25 @@ pub fn file_verdict(decl: &ImageDecl) -> ImageVerdict {
     }
 }
 
+/// Ответы страницы по всем картинкам игры. Второй файл она читает ровно там, где его просит движок:
+/// `reverse` видео по наведению и тот же ролик ещё раз у видео по кругу.
 pub fn image_verdicts(images: &[ImageDecl]) -> Vec<(String, ImageVerdict)> {
+    let (config, _) = read_entry(&read("game.json")).expect("game.json разобран");
+    let asked = read_texts(
+        &config,
+        Some(&read("properties.json")),
+        Some(&read("screens.json")),
+        None,
+    )
+    .reverses;
     images
         .iter()
-        .map(|decl| (decl.name.clone(), file_verdict(decl)))
+        .map(|decl| {
+            let second = asked
+                .iter()
+                .find(|(name, _)| *name == decl.name)
+                .map(|(_, path)| path.as_str());
+            (decl.name.clone(), file_verdict(decl, second))
+        })
         .collect()
 }

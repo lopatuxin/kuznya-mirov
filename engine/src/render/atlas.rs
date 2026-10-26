@@ -10,10 +10,11 @@
 
 use crate::core::clouds::Settings as CloudSettings;
 use crate::core::fire::Settings as FireSettings;
+use crate::core::interface::Part;
 use crate::core::particles::{ParticleShape, Settings};
 use crate::core::property;
 use crate::core::scene::{self, CellRange, GroundLayer, LayerView, SceneConfig};
-use crate::core::screens::Fill;
+use crate::core::screens::{Element, Fill, PanelFill};
 use crate::core::time::frame_index;
 use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
@@ -21,8 +22,10 @@ use crate::data::load::ImageDecl;
 
 use super::clouds::{Sky, Sprite as CloudSprite};
 use super::fire::{Coals, Drawing as FireDrawing, FireObject, Flame, Halo};
-use super::particle_shapes::{self, HALO_SIZE, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE};
-use super::particles::{Emitter, OpaqueMask, Picture, Sprite};
+use super::particle_shapes::{
+    self, BUTTERFLY_SIZE, FLUFF_SIZE, HALO_SIZE, LEAF_SIZE, SMOKE_SIZE, SPARK_SIZE,
+};
+use super::particles::{Emitter, OpaqueMask, Particles, Picture, Sprite};
 use super::wind::{Motion, SwayObject, swaying_frame};
 
 /// «Картинки» → «Атлас», требование 14: the canvas is this size in every browser, so the game
@@ -129,12 +132,32 @@ pub const HALO_RECT: AtlasRect = AtlasRect {
     sheet: 0,
 };
 
-const BUILT_IN_SHAPES: [(ParticleShape, AtlasRect); 5] = [
+/// «Ветер и частицы» → «Пух»: пушинка — мягкое ядро с тонкими лучиками.
+pub const FLUFF_RECT: AtlasRect = AtlasRect {
+    x: HALO_RECT.x + HALO_RECT.w + PADDING,
+    y: 0,
+    w: FLUFF_SIZE,
+    h: FLUFF_SIZE,
+    sheet: 0,
+};
+
+/// «Ветер и частицы» → «Бабочки»: кадры взмаха крыльев в ряд, слева направо.
+pub const BUTTERFLY_RECT: AtlasRect = AtlasRect {
+    x: FLUFF_RECT.x + FLUFF_RECT.w + PADDING,
+    y: 0,
+    w: BUTTERFLY_SIZE * ParticleShape::Butterfly.frames(),
+    h: BUTTERFLY_SIZE,
+    sheet: 0,
+};
+
+const BUILT_IN_SHAPES: [(ParticleShape, AtlasRect); 7] = [
     (ParticleShape::Smoke, SMOKE_RECT),
     (ParticleShape::Spark, SPARK_RECT),
     (ParticleShape::Leaf, LEAF_RECT),
     (ParticleShape::WhiteLeaf, WHITE_LEAF_RECT),
     (ParticleShape::Halo, HALO_RECT),
+    (ParticleShape::Fluff, FLUFF_RECT),
+    (ParticleShape::Butterfly, BUTTERFLY_RECT),
 ];
 
 /// Место кадра `frame` встроенного рисунка `shape`; кадр больше числа кадров берётся по кругу.
@@ -145,6 +168,8 @@ fn shape_frame_rect(shape: ParticleShape, frame: u32) -> AtlasRect {
         ParticleShape::Leaf => LEAF_RECT,
         ParticleShape::WhiteLeaf => WHITE_LEAF_RECT,
         ParticleShape::Halo => HALO_RECT,
+        ParticleShape::Fluff => FLUFF_RECT,
+        ParticleShape::Butterfly => BUTTERFLY_RECT,
     };
     let frame_w = whole.w / shape.frames();
     AtlasRect {
@@ -250,7 +275,7 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
         images.len()
     ];
     let mut sheet = 0u32;
-    let mut cursor_x = HALO_RECT.x + HALO_RECT.w + PADDING;
+    let mut cursor_x = BUTTERFLY_RECT.x + BUTTERFLY_RECT.w + PADDING;
     let mut shelf_y = 0u32;
     let mut shelf_height = BUILT_IN_SHAPES
         .iter()
@@ -1165,6 +1190,7 @@ fn particle_paint(sprite: &Sprite, layers: &LayerView) -> RectPaint {
     ];
     RectPaint {
         angle: sprite.angle as f32,
+        flip_x: sprite.flip_x,
         ..RectPaint::flat(
             [middle[0] - width / 2.0, middle[1] - height / 2.0],
             [width, height],
@@ -1176,9 +1202,100 @@ fn particle_paint(sprite: &Sprite, layers: &LayerView) -> RectPaint {
             ],
             atlas_rect,
             true,
-            sprite.shape == ParticleShape::Spark,
+            matches!(sprite.shape, ParticleShape::Spark | ParticleShape::Fluff),
         )
     }
+}
+
+/// «Ветер и частицы» → «На экране»: прямоугольник частицы экрана в точках `screens.json` — клетки
+/// частицы, умноженные на клетку экрана `cell_pixels`; слоёв глубины на экране нет.
+pub fn screen_particle_paint(sprite: &Sprite, cell_pixels: f64) -> RectPaint {
+    let cell = cell_pixels as f32;
+    let paint = particle_paint(sprite, &LayerView::default());
+    RectPaint {
+        position: paint.position.map(|axis| axis * cell),
+        size: paint.size.map(|side| side * cell),
+        ..paint
+    }
+}
+
+/// «Ветер и частицы» → «На экране», требование 10: частицы панелей экрана с номером той части раскладки
+/// `parts`, после которой их рисовать, — сразу после панели, до следующего элемента списка. Частицы
+/// панели с `show_on_hover`, пока курсор не над местом `place`, не рисуются, как и сама панель.
+pub fn screen_particle_paints<'a>(
+    parts: &'a [Part<'a>],
+    place: Option<usize>,
+    particles: &'a Particles,
+    cell_pixels: f64,
+) -> impl Iterator<Item = (usize, RectPaint)> + 'a {
+    parts
+        .iter()
+        .enumerate()
+        .filter_map(move |(index, part)| {
+            let Part::Element(placed) = part else {
+                return None;
+            };
+            (placed.element.particles().is_some() && placed.element.visible_over(place))
+                .then_some((index, placed.key.element))
+        })
+        .flat_map(move |(index, element)| {
+            particles
+                .live_sprites(element as u32, 0)
+                .map(move |sprite| (index, screen_particle_paint(&sprite, cell_pixels)))
+        })
+}
+
+/// «Ветер и частицы» → «На экране»: панели активного экрана со свойствами частиц, у которых идёт хоть
+/// один эффект, — источники экрана. Номер элемента — номер источника; прямоугольник панели из точек
+/// `screens.json` переводится в клетки экрана делением на `cell_pixels`. Листья рвутся из
+/// непрозрачных точек первого кадра картинки панели, у панели с цветом — из любой точки. Слоя глубины
+/// на экране нет, и источник стоит на месте.
+pub fn screen_emitters<'a>(
+    parts: &'a [Part<'a>],
+    cell_pixels: f64,
+) -> impl Iterator<Item = Emitter> + 'a {
+    parts.iter().filter_map(move |part| {
+        let Part::Element(placed) = part else {
+            return None;
+        };
+        let Element::Panel {
+            fill,
+            particles: Some(settings),
+            ..
+        } = placed.element
+        else {
+            return None;
+        };
+        if !settings.any_runs() {
+            return None;
+        }
+        let [x, y, width, height] = placed.rect.map(f64::from);
+        let rect = (
+            [x / cell_pixels, y / cell_pixels],
+            [width / cell_pixels, height / cell_pixels],
+        );
+        let picture = match fill {
+            PanelFill::Fixed(Fill::Image { image, .. }) if settings.leaf_fall > 0.0 => {
+                Some(Picture {
+                    image: *image,
+                    area: rect.1[0] * rect.1[1],
+                    origin: rect.0,
+                    across: [rect.1[0], 0.0],
+                    down: [0.0, rect.1[1]],
+                })
+            }
+            _ => None,
+        };
+        Some(Emitter {
+            id: placed.key.element as u32,
+            generation: 0,
+            rect: Some(rect),
+            layer: 0,
+            parallax: 1.0,
+            settings: *settings,
+            picture,
+        })
+    })
 }
 
 /// «Ветер и частицы» → «Частицы»: объекты плоской сцены, у которых идёт хоть один эффект, — с
@@ -1542,6 +1659,8 @@ mod tests {
             LEAF_RECT,
             WHITE_LEAF_RECT,
             HALO_RECT,
+            FLUFF_RECT,
+            BUTTERFLY_RECT,
         ];
         for (i, a) in rects.iter().enumerate() {
             for b in &rects[i + 1..] {
@@ -1549,7 +1668,9 @@ mod tests {
             }
         }
         let first = pack(&[img(4, 4)]).expect("умещается").rects[0];
-        assert!(!overlap(first, HALO_RECT), "{first:?}");
+        for built_in in rects {
+            assert!(!overlap(first, built_in), "{first:?} задевает {built_in:?}");
+        }
         let sheet = sheet_pixels(&pack(&[]).unwrap(), &[], 0);
         let middle = pixel_at(
             &sheet,
@@ -1557,6 +1678,27 @@ mod tests {
             HALO_RECT.y + HALO_RECT.h / 2,
         );
         assert!(middle[3] > 240, "{middle:?}");
+    }
+
+    #[test]
+    fn the_fluff_and_the_butterfly_frames_are_drawn_into_their_places_in_the_atlas() {
+        let sheet = sheet_pixels(&pack(&[]).unwrap(), &[], 0);
+        let fluff = pixel_at(
+            &sheet,
+            FLUFF_RECT.x + FLUFF_RECT.w / 2,
+            FLUFF_RECT.y + FLUFF_RECT.h / 2,
+        );
+        assert!(fluff[3] > 200, "ядро пушинки: {fluff:?}");
+        let frame = BUTTERFLY_RECT.w / ParticleShape::Butterfly.frames();
+        for index in 0..ParticleShape::Butterfly.frames() {
+            let rect = shape_frame_rect(ParticleShape::Butterfly, index);
+            assert_eq!(
+                (rect.x, rect.w, rect.h),
+                (BUTTERFLY_RECT.x + index * frame, frame, frame)
+            );
+            let body = pixel_at(&sheet, rect.x + rect.w / 2, rect.y + rect.h * 64 / 100);
+            assert!(body[3] > 200, "тельце в кадре {index}: {body:?}");
+        }
     }
 
     /// Один буфер на все листы: лист, заполненный поверх прежнего, не хранит его картинок — только

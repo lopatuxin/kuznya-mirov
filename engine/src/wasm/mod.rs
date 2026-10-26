@@ -39,7 +39,7 @@ use crate::render::{
     DrawRect, Globals3d, GroundVertex, ModelsFrame, Renderer, Scene3dFrame, ShapeInstance,
     TextDraw, UiLayers, WorldOverlay, WorldRun, WorldTextDraw,
 };
-use crate::render::{PanelInput, VideoSource};
+use crate::render::{PanelInput, PanelPlay, VideoRole, VideoSource};
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
     let _ = Reflect::set(obj, &JsValue::from_str(key), value);
@@ -181,8 +181,8 @@ fn js_indexed_media_table(subset: &[(String, String)], full: &[(String, String)]
     arr
 }
 
-/// `read_texts()`'s `images`: `{index, name, path}` на каждую картинку, а у видео с `reverse` ещё `reverse` — путь
-/// файла того же ролика задом наперёд, «Картинки» → «Видео на панели».
+/// `read_texts()`'s `images`: `{index, name, path}` на каждую картинку, а у видео панели ещё `reverse` — путь
+/// второго файла: у видео по наведению ролик задом наперёд, у видео по кругу тот же файл, «Картинки» → «Видео на панели».
 fn js_image_table(images: &[(String, String)], reverses: &[(String, String)]) -> Array {
     let arr = js_indexed_media_table(images, images);
     for (item, (name, _)) in arr.iter().zip(images) {
@@ -815,12 +815,13 @@ fn parse_video_answers(
 
 /// «Картинки» → «Видео»: проигрыватели видео игры с местом каждого в атласе. `atlas_images` и
 /// `atlas_rects` идут в порядке `images`; размер файла — кадр, удвоенный по высоте. `panel_videos` — номера
-/// картинок, которые играют панели с `play_on_hover`.
+/// картинок, которые играют панели с `play_on_hover`, `loop_videos` — которые панели крутят по кругу.
 fn video_sources(
     images: &[ImageDecl],
     atlas_images: &[atlas::AtlasImage],
     atlas_rects: &[AtlasRect],
     panel_videos: &[usize],
+    loop_videos: &[usize],
     mut players: Vec<VideoPlayer>,
 ) -> Vec<VideoSource> {
     let mut sources = Vec::new();
@@ -836,7 +837,13 @@ fn video_sources(
             image: index,
             player,
             reverse,
-            panel: panel_videos.contains(&index),
+            role: if panel_videos.contains(&index) {
+                VideoRole::Hover
+            } else if loop_videos.contains(&index) {
+                VideoRole::Loop
+            } else {
+                VideoRole::World
+            },
             width: atlas_images[index].width,
             height: atlas_images[index].height * 2,
             place: atlas_rects[index],
@@ -1261,9 +1268,12 @@ fn push_fill(
 /// place in the order — «Элемент при объекте», «Список». «Картинки» → «Кадры»: `ui_elapsed_steps` is
 /// window time, already converted to steps — never frozen, unlike the world's own frame in
 /// `compose_instances`. «Раскладка экрана»: the renderer gets this window's interface scale here.
+/// «Ветер и частицы» → «На экране»: the screen's own particles are brought up to window time here, from the
+/// same layout, and each panel's particles are drawn right over it — the next element in the list covers them.
 #[allow(clippy::too_many_arguments)]
 fn compose_ui(
     renderer: &mut Renderer,
+    motion: &mut Motion,
     config: &ScreensConfig,
     state: &ScreenState,
     world: &World,
@@ -1286,8 +1296,18 @@ fn compose_ui(
     let mut paints = Vec::new();
     let parts = interface::layout(screen, screen_id, world, state, frame.viewport);
     let place = screens::hover_place(&parts, tooltip.pointer.map(|pointer| frame.point(pointer)));
+    let cell = screen.cell_pixels.unwrap_or(1.0);
+    motion.update_screen_particles(
+        state.opened(),
+        ui_elapsed_steps,
+        screen.wind,
+        atlas::screen_emitters(&parts, cell),
+    );
+    let screen_particles = motion.screen_particles();
     let mut panel_videos = Vec::new();
-    for part in &parts {
+    let mut particle_paints =
+        atlas::screen_particle_paints(&parts, place, screen_particles, cell).peekable();
+    for (index, part) in parts.iter().enumerate() {
         let placed = match part {
             Part::ScrollBar { rect, color } => {
                 layers.rects.push(draw_rect(&RectPaint::flat(
@@ -1302,19 +1322,32 @@ fn compose_ui(
             }
             Part::Element(placed) => placed,
         };
-        // «Видео на панели»: видео панели ведёт ход, пока панель на экране, видна она сейчас или нет.
+        // «Видео на панели»: видео панели ведёт ход, пока панель на экране, видна она сейчас или нет. Без
+        // `play_on_hover` — по кругу временем окна.
         if let screens::Element::Panel {
             fill: PanelFill::Fixed(Fill::Image { image, .. }),
-            play_on_hover: Some(target),
+            play_on_hover,
             rest_at,
             ..
         } = placed.element
         {
-            panel_videos.push(PanelInput {
-                image: *image,
-                hovering: place == Some(*target),
-                rest_at: *rest_at,
-            });
+            let play = match play_on_hover {
+                Some(target) => Some(PanelPlay::Hover {
+                    hovering: place == Some(*target),
+                    rest_at: *rest_at,
+                }),
+                None if images[*image].video => Some(PanelPlay::Loop {
+                    now: ui_elapsed_steps * STEP_SECONDS,
+                    opened: state.opened(),
+                }),
+                None => None,
+            };
+            if let Some(play) = play {
+                panel_videos.push(PanelInput {
+                    image: *image,
+                    play,
+                });
+            }
         }
         // «Наведение»: элемент с `show_on_hover` рисуется, только пока курсор над его местом.
         if !placed.element.visible_over(place) {
@@ -1428,7 +1461,17 @@ fn compose_ui(
             }
             screens::Element::List { .. } => {}
         }
+        // «На экране»: частицы панели — сразу поверх неё, до следующего элемента списка.
+        while let Some((_, paint)) = particle_paints.next_if(|(at, _)| *at == index) {
+            layers.rects.push(draw_rect(&paint));
+        }
     }
+    // Частицы ушедших источников доживают поверх элементов, под текстом.
+    layers.rects.extend(
+        screen_particles
+            .orphan_sprites()
+            .map(|(_, sprite)| draw_rect(&atlas::screen_particle_paint(&sprite, cell))),
+    );
     renderer.set_panel_videos(&panel_videos);
     if let Some(style) = &config.tooltip {
         let shown = tooltip.hover.show(
@@ -2194,6 +2237,7 @@ impl Engine {
                     &atlas_images,
                     &atlas_rects,
                     &screens_config.panel_videos(),
+                    &screens_config.loop_videos(|image| image_order[image].video),
                     video_players,
                 ));
                 self.atlas_rects = atlas_rects;
@@ -2436,6 +2480,7 @@ impl Engine {
         ) {
             (true, Some(config), Some(state)) => compose_ui(
                 &mut self.renderer,
+                &mut self.motion,
                 config,
                 state,
                 &game.world,
@@ -3093,6 +3138,7 @@ impl Engine {
         }
         let ui = compose_ui(
             &mut self.renderer,
+            &mut self.motion,
             config,
             state,
             &game.world,

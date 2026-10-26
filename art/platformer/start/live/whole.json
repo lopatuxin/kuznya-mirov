@@ -1,0 +1,11 @@
+{
+  "video": "art/platformer/start/live/whole_syntx.mp4",
+  "rect": [0, 25, 2048, 880],
+  "hold": [
+    [[0, 0], [720, 0], [700, 380], [640, 600], [560, 930], [0, 930]],
+    [[1010, 8], [1110, 4], [1230, 120], [1300, 300], [1330, 480], [1320, 525], [850, 525], [870, 330], [900, 180], [950, 60]]
+  ],
+  "feather": 10,
+  "still": "art/platformer/start/live/carved/whole_first.png",
+  "picture": "art/platformer/start/start_bg.png"
+}

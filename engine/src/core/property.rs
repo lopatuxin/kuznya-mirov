@@ -42,7 +42,7 @@ pub const REPEAT_X: PropertyId = 23;
 /// «Ветер и частицы» → «Качание»: гибкость объекта в клетках — на сколько уходит вбок верх рисунка
 /// при ровном ветре в одну клетку в секунду.
 pub const SWAY: PropertyId = 24;
-/// «Ветер и частицы» → «Частицы»: девять свойств дыма, искр и листопада.
+/// «Ветер и частицы» → «Частицы»: девять свойств дыма, искр и листопада; пух и бабочки — в конце списка.
 pub const SMOKE: PropertyId = 25;
 pub const SMOKE_HEIGHT: PropertyId = 26;
 pub const SMOKE_COLOR: PropertyId = 27;
@@ -82,12 +82,17 @@ pub const MODEL: PropertyId = 52;
 pub const TIME_SCALE: PropertyId = 53;
 /// «Трёхмерная сцена» → «Вид дороги»: имя вида из `scene.road_kinds`, кусками которого рисуется дорога.
 pub const ROAD_KIND: PropertyId = 54;
+/// «Ветер и частицы» → «Пух», «Бабочки»: плотность и цвет пуха, сколько бабочек и их цвет.
+pub const FLUFF: PropertyId = 55;
+pub const FLUFF_COLOR: PropertyId = 56;
+pub const BUTTERFLIES: PropertyId = 57;
+pub const BUTTERFLY_COLOR: PropertyId = 58;
 
 /// Наибольшая скорость времени.
 pub const MAX_TIME_SCALE: f64 = 16.0;
 
 /// Свойства частиц: только плоская сцена, только объекту с `position` и `size`, без `repeat_x`.
-pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
+pub const PARTICLE_PROPERTIES: [PropertyId; 13] = [
     SMOKE,
     SMOKE_HEIGHT,
     SMOKE_COLOR,
@@ -97,6 +102,10 @@ pub const PARTICLE_PROPERTIES: [PropertyId; 9] = [
     SPARKS_SPREAD,
     LEAF_FALL,
     LEAF_COLOR,
+    FLUFF,
+    FLUFF_COLOR,
+    BUTTERFLIES,
+    BUTTERFLY_COLOR,
 ];
 
 /// Свойства облаков: только плоская сцена, только объекту с `position`, `size` и `repeat_x`.
@@ -162,6 +171,10 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("model", PropKind::Text),
     ("time_scale", PropKind::Number),
     ("road_kind", PropKind::Text),
+    ("fluff", PropKind::Number),
+    ("fluff_color", PropKind::Color),
+    ("butterflies", PropKind::Number),
+    ("butterfly_color", PropKind::Color),
 ];
 
 #[derive(Debug, Clone)]
@@ -353,6 +366,10 @@ mod tests {
             ("sparks_spread", SPARKS_SPREAD, PropKind::Number),
             ("leaf_fall", LEAF_FALL, PropKind::Number),
             ("leaf_color", LEAF_COLOR, PropKind::Color),
+            ("fluff", FLUFF, PropKind::Number),
+            ("fluff_color", FLUFF_COLOR, PropKind::Color),
+            ("butterflies", BUTTERFLIES, PropKind::Number),
+            ("butterfly_color", BUTTERFLY_COLOR, PropKind::Color),
         ] {
             assert_eq!(table.resolve(name), Some(id), "{name}");
             assert_eq!(table.kind(id), kind, "{name}");
