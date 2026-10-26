@@ -450,14 +450,14 @@ pub fn transform_object(world: &mut World, id: u32, transform: ObjectTransform) 
     {
         world.set_rotation(id, property::ROTATION, rotation);
     }
-    world.set_position_exact(id, transform.position, previous_z);
+    world.set_position_keeping_grade(id, transform.position, previous_z);
     if !world.three_d() {
         return;
     }
     let shifted = previous != Some(transform.position)
         || world.rotation(id, property::ROTATION) != previous_rotation;
     match transform.z {
-        Some(z) => world.set_base_z(id, z),
+        Some(z) => world.set_level_z(id, z),
         None if shifted => surface::seat_after_shift(world, id),
         None => {}
     }
@@ -625,7 +625,12 @@ fn nearest_along_ray(
         let Some(distance) = ray_distance(world, scene, id, origin, direction) else {
             continue;
         };
-        if distance > blocked_from + RAY_TIE {
+        let tie = if world.flag(id, property::ROAD) {
+            ROAD_RAY_TIE
+        } else {
+            RAY_TIE
+        };
+        if distance > blocked_from + tie {
             continue;
         }
         let replace = match best {
@@ -646,6 +651,10 @@ fn nearest_along_ray(
 /// Равная дальность для `nearest_along_ray`: плоские объекты на одной земле.
 const RAY_TIE: f64 = 1e-9;
 
+/// Дорога на дуге лежит над землёй, которую поправки правят по точкам сетки, с расхождением до сотых долей клетки:
+/// земля, что на столько ближе дороги по лучу, дорогу не заслоняет.
+const ROAD_RAY_TIE: f64 = 0.05;
+
 /// Расстояние вдоль луча до объекта: до объёма фигуры или до поверхности, на которой лежит плоский
 /// объект, — рельефа или верха настила — в пределах его прямоугольника.
 fn ray_distance(
@@ -655,6 +664,9 @@ fn ray_distance(
     origin: super::math3::Vec3,
     direction: super::math3::Vec3,
 ) -> Option<f64> {
+    if let Some(form) = world.road_form(id) {
+        return super::roads::Road::from_form(form).ray_hit(origin, direction);
+    }
     if let Some(body) = super::shapes::Body::of_object(world, id)
         .or_else(|| super::shapes::Body::of_model(world, id))
     {

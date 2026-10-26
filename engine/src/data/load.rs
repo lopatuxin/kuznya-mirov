@@ -371,6 +371,9 @@ pub(crate) fn parse_scalar_value(
             {
                 return None;
             }
+            if prop == property::BEND && !validate_bend(n, properties, file, path, errors) {
+                return None;
+            }
             if (property::PARTICLE_PROPERTIES.contains(&prop)
                 || property::FIRE_PROPERTIES.contains(&prop)
                 || prop == property::CLOUDS)
@@ -1123,6 +1126,33 @@ fn validate_run_jump_number(
     false
 }
 
+/// «Езда по дорогам» → «Проверка перед запуском»: изгиб оси `bend` — число меньше 180° по модулю и только в
+/// трёхмерной сцене.
+fn validate_bend(
+    n: f64,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    if !properties.three_d() {
+        errors.push(file, path, BEND_IN_FLAT_SCENE);
+        return false;
+    }
+    if n.abs() < 180.0 {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!("свойство \"bend\" должно быть меньше 180 градусов по модулю, получено {n}"),
+    );
+    false
+}
+
+const BEND_IN_FLAT_SCENE: &str =
+    "свойство \"bend\" есть только в трёхмерной сцене: у scene в game.json нет camera";
+
 /// «Езда по дорогам» → «Проверка перед запуском»: `drive_speed` и `road_speed` не меньше нуля.
 const DRIVE_NUMBERS: [PropertyId; 2] = [property::DRIVE_SPEED, property::ROAD_SPEED];
 
@@ -1417,6 +1447,49 @@ fn validate_road_shape(
     let missing_position = check_position && !shape.contains(&property::POSITION);
     if missing_size || missing_position {
         errors.push(file, path, "road разрешён только объекту с position и size");
+    }
+}
+
+/// «Езда по дорогам» → «Проверка перед запуском»: `bend` — только дороге (`road`).
+fn validate_bend_shape(
+    shape: &std::collections::HashSet<PropertyId>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    if shape.contains(&property::BEND) && !shape.contains(&property::ROAD) {
+        errors.push(
+            file,
+            path,
+            "свойство \"bend\" задано объекту без road: изгиб есть только у дороги",
+        );
+    }
+}
+
+/// «Езда по дорогам» → «Проверка перед запуском»: радиус дуги оси — хорда, делённая на два синуса половины
+/// изгиба, — не меньше ширины дороги.
+fn validate_bend_radius(
+    values: &[(PropertyId, Value)],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    let (Some(Value::Number(bend)), Some(Value::Vec2([long, short]))) = (
+        find_value(values, property::BEND),
+        find_value(values, property::SIZE),
+    ) else {
+        return;
+    };
+    let (chord, width) = (long.max(*short), long.min(*short));
+    let radius = chord / (2.0 * libm::sin(bend.abs().to_radians() / 2.0));
+    if *bend != 0.0 && bend.abs() < 180.0 && radius < width {
+        errors.push(
+            file,
+            path,
+            format!(
+                "радиус дуги {radius} меньше ширины дороги {width}: изгиб {bend} слишком велик для дороги длиной {chord}"
+            ),
+        );
     }
 }
 
@@ -1752,6 +1825,8 @@ fn parse_scene_object(
     validate_deck_shape(&shape, true, file, &path, errors);
     validate_road_shape(&shape, true, file, &path, errors);
     validate_road_kind_shape(&shape, true, file, &path, errors);
+    validate_bend_shape(&shape, file, &path, errors);
+    validate_bend_radius(&values, file, &path, errors);
     validate_particles_shape(&shape, true, file, &path, errors);
     validate_fire_shape(&shape, true, file, &path, errors);
     validate_clouds_shape(&shape, true, file, &path, errors);
@@ -5064,6 +5139,7 @@ fn parse_template(
     validate_deck_shape(&shape, false, file, path, errors);
     validate_road_shape(&shape, false, file, path, errors);
     validate_road_kind_shape(&shape, false, file, path, errors);
+    validate_bend_shape(&shape, file, path, errors);
     validate_particles_shape(&shape, false, file, path, errors);
     validate_fire_shape(&shape, false, file, path, errors);
     validate_clouds_shape(&shape, false, file, path, errors);

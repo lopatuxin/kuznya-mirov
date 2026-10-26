@@ -1212,7 +1212,7 @@ fn install_vec2_metatable(
                 "z" => {
                     check_height_write(&newindex_properties, pair.prop, value)?;
                     match pair.prop {
-                        property::POSITION => ctx.world.set_base_z(id, value),
+                        property::POSITION => ctx.world.set_level_z(id, value),
                         _ => ctx.world.set_walk_to(id, current, Some(value)),
                     }
                     return Ok(());

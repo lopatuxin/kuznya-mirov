@@ -189,6 +189,9 @@ pub fn set_property(
     }
     let value = parse_edit_value(value_json, prop, properties, images)?;
     let present_after = !matches!(value, Value::Flag(false));
+    if prop == property::BEND && !world.flag(id, property::ROAD) {
+        return Err("свойство \"bend\" есть только у дороги: у объекта нет road".to_string());
+    }
     check_particles_shape(world, properties, id, prop, present_after)?;
     world.set_value(id, prop, &value);
     Ok(())
@@ -346,7 +349,7 @@ pub struct TerrainHeights {
     pub rows: usize,
     /// `heights` файла рельефа, без отпечатков.
     pub heights: Vec<f64>,
-    /// Итоговые высоты с отпечатками, той же сетки.
+    /// Итоговые высоты с отпечатками, той же сетки, без поправок дорог: их в файл рельефа не пишут.
     pub effective: Vec<f64>,
     /// `water` в виде файла рельефа, с теми полями, что записаны.
     pub water: Option<Json>,
@@ -374,7 +377,10 @@ fn readings_of(scene: &SceneConfig, terrain: &Terrain) -> TerrainHeights {
     let (heights, effective) = if terrain.heights().is_empty() {
         (vec![0.0; columns * rows], vec![0.0; columns * rows])
     } else {
-        (terrain.base_heights().to_vec(), terrain.heights().to_vec())
+        (
+            terrain.base_heights().to_vec(),
+            terrain.ground_heights().to_vec(),
+        )
     };
     TerrainHeights {
         density,

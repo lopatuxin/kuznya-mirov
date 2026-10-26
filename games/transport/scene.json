@@ -1,6 +1,10 @@
 {
   "objects": [
     {"name":"Улица","position":[201.1471,83.3598],"size":[12.35,0.6],"rotation":1.87,"road_kind":"main","layer":5,"road":true,"main_road":true,"road_speed":11.111},
+    {"name":"Тракт к порту","position":[195.1906,80.6129],"size":[7.0892,0.6],"rotation":225.935,"bend":88.13,"road_kind":"main","layer":5,"road":true,"main_road":true,"road_speed":11.111},
+    {"name":"Тракт к порту","position":[194.587,76.433],"size":[3.366,0.6],"rotation":270,"road_kind":"main","layer":5,"road":true,"main_road":true,"road_speed":11.111},
+    {"name":"Проезд к складу","position":[194.3,75.9375],"size":[2,0.225],"rotation":0,"road_kind":"drive","layer":5,"road":true,"road_speed":5.556},
+    {"name":"Проезд по причалу","position":[195.375,74.4125,0.1125],"size":[1.65,0.225],"rotation":270,"layer":5,"road":true,"road_speed":2.778},
     {"name":"Гараж","position":[202.6072,81.7219],"size":[1.5045,1.6851],"rotation":1.87,"model":"garage","height":0.4837},
     {"name":"Контора","position":[201.9322,81.6897],"size":[0.8846,1.6248],"rotation":1.87,"model":"kontora","height":0.5439},
     {"name":"Двор","position":[204.9318,81.4278],"size":[1.0094,1.9858],"rotation":1.87,"model":"yard_middle","height":0.3422},
@@ -9,6 +13,10 @@
     {"name":"Двор","position":[205.9545,83.8163],"size":[1.0094,1.9858],"rotation":181.87,"model":"yard_middle","height":0.3422},
     {"name":"Двор","position":[207.7035,83.8734],"size":[1.0094,1.986],"rotation":181.87,"model":"yard_middle_mirror","height":0.3422},
     {"name":"Двор","position":[211.2017,83.9876],"size":[1.0094,1.9858],"rotation":181.87,"model":"yard_middle","height":0.3422},
+    {"name":"Склад порта","position":[194.37,75.1385],"size":[1.56,0.693],"rotation":0,"model":"port_warehouse","height":0.355},
+    {"name":"Контора порта","position":[196.617,75.634],"size":[0.466,0.3615],"rotation":0,"model":"port_office","height":0.284},
+    {"name":"Причал","position":[195.9668,72.9972,-0.11],"size":[0.4665,2.0025],"rotation":0,"model":"port_pier","height":0.285},
+    {"name":"Кран","position":[196.0585,73.2985,0.1125],"size":[0.5435,0.3005],"rotation":0,"model":"port_crane","height":0.424},
     {"name":"game","game":true,"time_scale":1,"ticks":0,"minute":420,"day":1,"money":20000,"debt":0,"clock_text":"","money_text":"","debt_text":"","goal_text":"Цель: второй ГАЗ-АА (90 000 ₽) и водитель","summary_text":"","firm_text":"","show_help":true,"follow_on":true,"unread":0,"unread_text":"0","orders_text":"Заказы · 0"},
     {"name":"ГАЗ-АА","car":true,"size":[0.168,0.427],"model":"gaz_aa","height":0.158,"drive_speed":16.67,"capacity":1.5,"body":"бортовая","load":0,"state":"idle","state_text":"ждёт заказы","driver":"Вы","has_driver":true,"on_click":[["clicked",true]],"car_id":1,"side_icon":"icon_truck_big","position":[203.1846,82.5085],"selected":true,"odo":48000,"wear":45,"fuel":20,"to_at":48250,"selected_mark":"","rotation":1.87}
   ]

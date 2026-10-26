@@ -673,6 +673,8 @@ const MAX_NAVIGATIONS: usize = 8;
 pub struct WalkCaches {
     paths: HashMap<u32, WalkCache>,
     navigation: Vec<Rc<SurfaceNav>>,
+    /// Номер состояния высот земли, при котором построены сети (`World::terrain_revision`).
+    terrain_revision: u64,
 }
 
 impl WalkCaches {
@@ -690,6 +692,15 @@ impl WalkCaches {
     /// лечь на адрес прежнего.
     pub fn clear_navigation(&mut self) {
         self.navigation.clear();
+    }
+
+    /// Земля изменилась под дорогами — сети земли и пути строятся заново; тот же номер — ничего.
+    pub fn sync_terrain(&mut self, revision: u64) {
+        if self.terrain_revision != revision {
+            self.terrain_revision = revision;
+            self.navigation.clear();
+            self.paths.clear();
+        }
     }
 
     pub fn is_empty(&self) -> bool {

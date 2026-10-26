@@ -112,9 +112,10 @@ pub fn deck_rest_height(world: &World, footprint: &Footprint) -> f64 {
 
 /// Основание объекта `id` на новом месте `position` (с его нынешними `size` и `rotation`): с `from`
 /// — как после сдвига с этого основания, настил — на нынешнем; без `from` — как объект без `z` в
-/// данных. `None` в плоской сцене и без `position` и `size`.
+/// данных. `None` в плоской сцене, без `position` и `size` и у дороги без настила: её основание ставят концы
+/// на землю.
 pub fn rest_height_at(world: &World, id: u32, position: Vec2, from: Option<f64>) -> Option<f64> {
-    if !world.three_d() || !world.is_alive(id) {
+    if !world.three_d() || !world.is_alive(id) || is_graded_road(world, id) {
         return None;
     }
     let size = world.vec2(id, property::SIZE)?;
@@ -138,10 +139,15 @@ fn seating_place(world: &World, id: u32) -> Option<Footprint> {
     ))
 }
 
+/// Дорога без настила сама ставит основание: концами на землю, а с `z` — ровно на него → `core::road_ground`.
+pub fn is_graded_road(world: &World, id: u32) -> bool {
+    world.flag(id, property::ROAD) && !world.flag(id, property::DECK)
+}
+
 /// Сдвиг: объект, кроме настила, у которого сменились `x`, `y` или `rotation`, встаёт заново от
 /// своего прежнего основания.
 pub fn seat_after_shift(world: &mut World, id: u32) {
-    if !world.three_d() || kind(world, id) == Kind::Deck {
+    if !world.three_d() || kind(world, id) == Kind::Deck || is_graded_road(world, id) {
         return;
     }
     let Some(place) = seating_place(world, id) else {
@@ -153,7 +159,7 @@ pub fn seat_after_shift(world: &mut World, id: u32) {
 
 /// Сборка мира и создание без `z`: объект встаёт как в данных без третьего числа.
 pub fn seat_fresh(world: &mut World, id: u32) {
-    if !world.three_d() {
+    if !world.three_d() || is_graded_road(world, id) {
         return;
     }
     let Some(place) = seating_place(world, id) else {
@@ -169,7 +175,7 @@ pub fn seat_fresh(world: &mut World, id: u32) {
 
 /// `at_parent`: созданный объект встаёт так, будто сдвинулся с основания `from` родителя.
 pub fn seat_from(world: &mut World, id: u32, from: f64) {
-    if !world.three_d() || kind(world, id) == Kind::Deck {
+    if !world.three_d() || kind(world, id) == Kind::Deck || is_graded_road(world, id) {
         return;
     }
     let Some(place) = seating_place(world, id) else {

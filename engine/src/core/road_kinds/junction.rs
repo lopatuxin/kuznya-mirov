@@ -5,6 +5,7 @@
 use std::f64::consts::{FRAC_PI_2, PI, TAU};
 
 use super::super::model::{ModelTable, ModelVertex, Part};
+use super::super::value::Vec2;
 use super::{JunctionArm, JunctionModel, RoadKindTable};
 
 /// Цена рукава, чей вид не совпал с видом рукава модели, — как изгиб на 45° (по сумме изгибов всех рукавов): модель
@@ -36,6 +37,16 @@ pub struct SpotArm {
     pub width: f64,
     /// Насколько ось дороги сдвинута от прямой через середину вдоль рукава; положительный — влево от рукава.
     pub offset: f64,
+}
+
+/// Как ось дороги рукава уходит от середины перекрёстка: поворот оси на единицу длины, уходя вдоль рукава, — против
+/// часовой, если смотреть сверху, плюс, у прямой ноль; подъём оси на единицу длины; высота оси дороги в её ближайшей
+/// к середине точке над серединой перекрёстка. У прямой ровной дороги, лежащей на середине, всё ноль.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct ArmAxis {
+    pub bend: f64,
+    pub slope: f64,
+    pub rise: f64,
 }
 
 /// Выбранная модель: её номер в `RoadKindTable::junctions`, отражена ли она и какой рукав модели (по номеру в
@@ -177,6 +188,9 @@ struct Knot {
     extension: f64,
     mouth: f64,
     offset: f64,
+    bend: f64,
+    slope: f64,
+    rise: f64,
 }
 
 /// Наибольшая сумма углов полос двух соседних рукавов у устий, при которой они помещаются в угол между рукавами в
@@ -212,6 +226,55 @@ fn smoothstep(along: f64, mouth: f64) -> f64 {
     }
     let t = (along / mouth).clamp(0.0, 1.0);
     t * t * (3.0 - 2.0 * t)
+}
+
+/// Наклон одного рукава: направление рукава на плоскости, угол подъёма его оси и доля рукава в точке.
+#[derive(Debug, Clone, Copy, Default)]
+struct Pitch {
+    dir: Vec2,
+    angle: f64,
+    weight: f64,
+}
+
+/// Что добавляют оси рукавов к точке модели: сдвиг на плоскости, высота, поворот сечения и наклон направлений.
+#[derive(Debug, Default)]
+struct Lay {
+    shift: Vec2,
+    z: f64,
+    turn: f64,
+    arms: [Pitch; 2],
+}
+
+impl Lay {
+    /// Направление с составляющими `plane` на плоскости (против часовой, если смотреть сверху) и `z` вверх, наклонённое
+    /// подъёмами рукавов, в осях сцены, где `y` идёт к игроку.
+    fn tilt(&self, plane: Vec2, z: f32) -> [f32; 3] {
+        let z = f64::from(z);
+        if self.arms.iter().all(|pitch| pitch.angle == 0.0) {
+            return [plane[0] as f32, -plane[1] as f32, z as f32];
+        }
+        let mut sum = [0.0; 3];
+        for pitch in &self.arms {
+            let (sin, cos) = libm::sincos(pitch.angle);
+            let along = plane[0] * pitch.dir[0] + plane[1] * pitch.dir[1];
+            let raised = along * cos - z * sin;
+            let moved = [
+                plane[0] + (raised - along) * pitch.dir[0],
+                plane[1] + (raised - along) * pitch.dir[1],
+                along * sin + z * cos,
+            ];
+            for (total, part) in sum.iter_mut().zip(moved) {
+                *total += pitch.weight * part;
+            }
+        }
+        let len = (sum[0] * sum[0] + sum[1] * sum[1] + sum[2] * sum[2]).sqrt();
+        let len = if len < 1e-12 { 1.0 } else { len };
+        [
+            (sum[0] / len) as f32,
+            (-sum[1] / len) as f32,
+            (sum[2] / len) as f32,
+        ]
+    }
 }
 
 /// Перевод точек модели на карту: отражение, масштаб, поворот рукавов вокруг середины с изгибом грунта в углах и
@@ -328,7 +391,7 @@ impl Warp {
     /// принадлежит тому из двух соседних рукавов, к чьей полосе она ближе: граница — середина свободного грунта
     /// между полосами. Сжатие полно в полосе рукава и до `FIT_SHARE` угла до границы, дальше оно плавно сходит на
     /// нет, поэтому соседние рукава не сходят друг на друга и не рвутся. Множитель не больше единицы.
-    fn fit(&self, radius: f64, angle: f64) -> [f64; 2] {
+    fn fit(&self, radius: f64, angle: f64) -> (Vec2, usize, f64) {
         let count = self.knots.len();
         let sector = (0..count)
             .min_by(|&a, &b| {
@@ -366,19 +429,30 @@ impl Warp {
         };
         let moved = delta + weight * (squeezed - delta);
         let (sin, cos) = libm::sincos(arm.to + moved.copysign(apart));
-        let [shift_x, shift_y] = self.shift(sector, radius, angle, (first_strip, next_strip));
-        [radius * cos + shift_x, radius * sin + shift_y]
+        let share = self.blend(sector, angle, (first_strip, next_strip));
+        let [shift_x, shift_y] = self.shift(sector, radius, angle, share);
+        (
+            [radius * cos + shift_x, radius * sin + shift_y],
+            sector,
+            share,
+        )
+    }
+
+    /// Доля следующего рукава в точке между рукавом `sector` и следующим: рукава плавно сменяют друг друга по всему
+    /// свободному грунту между их полосами.
+    fn blend(&self, sector: usize, angle: f64, strips: (f64, f64)) -> f64 {
+        let first = &self.knots[sector];
+        let image = self.gaps(sector).1;
+        let passed = (angle - first.to).rem_euclid(TAU);
+        smoothstep(passed - strips.0, image - strips.0 - strips.1)
     }
 
     /// Сдвиг осей дорог точки между рукавом `sector` и следующим: сдвиг каждого рукава (ось дороги против оси рукава
     /// модели) полностью держится в его полосе, растёт от нуля в середине до полного в устье и сходит на нет по всему
     /// свободному грунту до полосы соседа, а не на узком участке сжатия: тогда сдвиг сходит на столько, на сколько
     /// грунта хватает, и сетка не сминается в складки, пока сдвиг не больше свободного грунта.
-    fn shift(&self, sector: usize, radius: f64, angle: f64, strips: (f64, f64)) -> [f64; 2] {
+    fn shift(&self, sector: usize, radius: f64, angle: f64, share: f64) -> [f64; 2] {
         let (first, next) = (&self.knots[sector], self.next(sector));
-        let image = self.gaps(sector).1;
-        let passed = (angle - first.to).rem_euclid(TAU);
-        let share = smoothstep(passed - strips.0, image - strips.0 - strips.1);
         let push = |knot: &Knot, weight: f64| {
             if knot.offset == 0.0 || weight == 0.0 {
                 return [0.0, 0.0];
@@ -414,35 +488,39 @@ impl Warp {
             moved[0].hypot(moved[1]),
             libm::atan2(moved[1], moved[0]).rem_euclid(TAU),
         );
-        let placed = self.fit(radius, bent);
+        let (placed, sector, share) = self.fit(radius, bent);
         let turn = if radius > 0.0 {
             libm::atan2(placed[1], placed[0]) - angle
         } else {
             bent - angle
         };
-        let (turn_sin, turn_cos) = libm::sincos(turn);
+        let lay = self.lay(placed, sector, share);
+        let (turn_sin, turn_cos) = libm::sincos(turn + lay.turn);
         let rotate = |x: f32, y: f32| {
             let v = self.plane(x, y);
             let turned = [
                 v[0] * turn_cos - v[1] * turn_sin,
                 v[0] * turn_sin + v[1] * turn_cos,
             ];
-            [turned[0] as f32, -turned[1] as f32]
+            [turned[0], turned[1]]
         };
-        let normal = rotate(vertex.normal[0], vertex.normal[1]);
-        let tangent = rotate(vertex.tangent[0], vertex.tangent[1]);
+        let normal = lay.tilt(rotate(vertex.normal[0], vertex.normal[1]), vertex.normal[2]);
+        let tangent = lay.tilt(
+            rotate(vertex.tangent[0], vertex.tangent[1]),
+            vertex.tangent[2],
+        );
         ModelVertex {
             position: [
-                placed[0] as f32,
-                -placed[1] as f32,
-                (f64::from(vertex.position[2]) * self.scale) as f32,
+                (placed[0] + lay.shift[0]) as f32,
+                -(placed[1] + lay.shift[1]) as f32,
+                (f64::from(vertex.position[2]) * self.scale + lay.z) as f32,
             ],
-            normal: [normal[0], normal[1], vertex.normal[2]],
+            normal,
             uv: vertex.uv,
             tangent: [
                 tangent[0],
                 tangent[1],
-                vertex.tangent[2],
+                tangent[2],
                 if self.mirrored {
                     -vertex.tangent[3]
                 } else {
@@ -451,6 +529,49 @@ impl Warp {
             ],
             color: vertex.color,
         }
+    }
+
+    /// Как точка `placed` ложится на оси своих рукавов, когда оси — дуги и подъёмы: у каждого из двух рукавов, чьи
+    /// доли `1 − share` и `share`, точка на расстоянии `u` от середины вдоль рукава встаёт в точку оси на длине `u` от
+    /// устья, сдвинутую поперёк оси на свой отступ от неё, на высоту оси там. Ось сходится с моделью плавно: у середины
+    /// модель не тронута, у устья точка лежит на оси.
+    fn lay(&self, placed: Vec2, sector: usize, share: f64) -> Lay {
+        let mut lay = Lay::default();
+        let arms = [
+            (&self.knots[sector], 1.0 - share),
+            (self.next(sector), share),
+        ];
+        for (slot, (knot, weight)) in arms.into_iter().enumerate() {
+            let (sin, cos) = libm::sincos(knot.to);
+            let (dir, perp) = ([cos, sin], [-sin, cos]);
+            let along = placed[0] * dir[0] + placed[1] * dir[1];
+            let across = placed[0] * perp[0] + placed[1] * perp[1];
+            let travelled = along.max(0.0);
+            let reach = smoothstep(along, knot.mouth);
+            let turn = knot.bend * travelled;
+            let curved = if knot.bend.abs() < 1e-12 {
+                [0.0, 0.0]
+            } else {
+                [
+                    libm::sin(turn) / knot.bend - travelled,
+                    (1.0 - libm::cos(turn)) / knot.bend,
+                ]
+            };
+            let off_axis = across - knot.offset * reach;
+            let (turn_sin, turn_cos) = libm::sincos(reach * turn);
+            let along_shift = reach * curved[0] - off_axis * turn_sin;
+            let across_shift = reach * curved[1] + off_axis * (turn_cos - 1.0);
+            lay.shift[0] += weight * (along_shift * dir[0] + across_shift * perp[0]);
+            lay.shift[1] += weight * (along_shift * dir[1] + across_shift * perp[1]);
+            lay.z += weight * (knot.slope * along + reach * knot.rise);
+            lay.turn += weight * reach * turn;
+            lay.arms[slot] = Pitch {
+                dir,
+                angle: libm::atan(knot.slope),
+                weight,
+            };
+        }
+        lay
     }
 
     fn part(&self, part: &Part) -> Part {
@@ -520,6 +641,24 @@ pub fn place(
     fit: &Fit,
     arms: &[SpotArm],
 ) -> Option<Placed> {
+    place_on_axes(
+        kinds,
+        models,
+        fit,
+        arms,
+        &vec![ArmAxis::default(); arms.len()],
+    )
+}
+
+/// То же, что `place`, для дорог, чьи оси — дуги и подъёмы: `axes` — ось каждого рукава `arms`. Точка полосы рукава
+/// ложится на ось своей дороги в плане и по высоте.
+pub fn place_on_axes(
+    kinds: &RoadKindTable,
+    models: &ModelTable,
+    fit: &Fit,
+    arms: &[SpotArm],
+    axes: &[ArmAxis],
+) -> Option<Placed> {
     let candidate = &kinds.junctions()[fit.model];
     let model = models.get(candidate.model)?;
     let scale = arms
@@ -542,6 +681,9 @@ pub fn place(
             extension: 0.0,
             mouth,
             offset: arm.offset,
+            bend: axes[number].bend,
+            slope: axes[number].slope,
+            rise: axes[number].rise,
         });
     }
     knots.sort_by(|a, b| a.from.total_cmp(&b.from));

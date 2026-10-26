@@ -329,7 +329,7 @@ pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec3>, scene: &Scene
         }
         match height {
             Some(z) if axis.affects_x() && axis.affects_y() => {
-                world.set_position_exact(id, new_pos, z);
+                world.set_position_keeping_grade(id, new_pos, z);
             }
             _ => world.set_vec2(id, property::POSITION, new_pos),
         }
@@ -511,7 +511,7 @@ fn restore_group(world: &mut World, snapshot: &[GroupState]) {
             Some(r) => world.set_rotation(s.id, property::ROTATION, r),
             None => world.clear_property(s.id, property::ROTATION),
         }
-        world.set_position_exact(s.id, s.position, s.z);
+        world.set_position_keeping_grade(s.id, s.position, s.z);
     }
 }
 
@@ -827,6 +827,7 @@ fn apply_walk_rule(
     rule_index: usize,
     walk_paths: &mut WalkCaches,
 ) {
+    walk_paths.sync_terrain(world.terrain_revision());
     let walkers: Vec<u32> = world
         .ids()
         .filter(|&id| selector_matches(for_, world, id))
@@ -1002,6 +1003,7 @@ pub fn prepare_walkers(
     scene: &SceneConfig,
     walk_paths: &mut WalkCaches,
 ) {
+    walk_paths.sync_terrain(world.terrain_revision());
     if !surface::walks_on_surfaces(world) {
         return;
     }
@@ -1104,7 +1106,7 @@ fn apply_drive_rule(
     if drivers.is_empty() {
         return;
     }
-    roads.sync_with(|shapes, speeds| world.collect_roads(shapes, speeds));
+    roads.sync_with(|forms, speeds| world.collect_roads(forms, speeds));
     let mut moved_objects: Vec<u32> = Vec::new();
     for id in drivers {
         let (Some(position), Some(size), Some(target)) = (
@@ -1116,6 +1118,7 @@ fn apply_drive_rule(
         };
         let speed = world.number_like(id, property::DRIVE_SPEED).unwrap_or(0.0);
         if speed.is_nan() || speed <= 0.0 || !target.iter().all(|c| c.is_finite()) {
+            world.set_tilt(id, 0.0);
             continue;
         }
         let driver = Driver {
@@ -1127,6 +1130,7 @@ fn apply_drive_rule(
             side,
         };
         let result = roads.drive(id, &driver, STEP_SECONDS);
+        let on_road = result.lift;
         if result.position != position {
             let shift = [
                 result.position[0] - position[0],
@@ -1138,6 +1142,14 @@ fn apply_drive_rule(
             }
             moved[id as usize] = true;
             moved_objects.push(id);
+        }
+        match on_road {
+            Some(lift) => {
+                world.set_base_z(id, lift.z);
+                let slope = if result.arrived { 0.0 } else { lift.slope };
+                world.set_tilt(id, libm::atan(slope));
+            }
+            None => world.set_tilt(id, 0.0),
         }
         if result.arrived {
             world.clear_property(id, property::DRIVE_TO);
@@ -1223,6 +1235,7 @@ pub fn apply_stage4(
     }
     if let Some(driving) = driving {
         roads.prune(&driving);
+        world.level_tilts_except(&driving);
     }
     Ok(())
 }

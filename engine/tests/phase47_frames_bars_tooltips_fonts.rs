@@ -505,11 +505,18 @@ fn another_element_in_the_same_place_without_a_click_waits_again() {
     tooltip_at(&ui, &mut hover, close, 2.0);
     ui.press(close[0], close[1]);
     ui.release();
-    assert!(ui.state.is_live(&ui.config), "кнопка закрытия вернула основной экран");
+    assert!(
+        ui.state.is_live(&ui.config),
+        "кнопка закрытия вернула основной экран"
+    );
     ui.move_to(ON_BUTTON[0], ON_BUTTON[1]);
     tooltip_at(&ui, &mut hover, ON_BUTTON, 2.1);
     ui.press(ON_BUTTON[0], ON_BUTTON[1]);
-    assert_eq!(tooltip_at(&ui, &mut hover, ON_BUTTON, 2.6), None, "нажатие спрятало подсказку");
+    assert_eq!(
+        tooltip_at(&ui, &mut hover, ON_BUTTON, 2.6),
+        None,
+        "нажатие спрятало подсказку"
+    );
     ui.release();
     tooltip_at(&ui, &mut hover, ON_BUTTON, 2.7);
     ui.show("main");

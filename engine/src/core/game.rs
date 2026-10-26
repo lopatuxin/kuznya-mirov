@@ -164,10 +164,12 @@ pub struct Game {
 pub(crate) fn world_from_scene(properties: &PropertyTable, scene_objects: &[ObjectSpec]) -> World {
     let mut world = World::new(properties);
     let mut seated_by_data = Vec::with_capacity(scene_objects.len());
+    world.suspend_roads();
     for spec in scene_objects {
         let id = world.create();
         seated_by_data.push(fill_object(&mut world, id, spec));
     }
+    world.settle_roads();
     if world.three_d() {
         seat_scene(&mut world, &seated_by_data);
     }
