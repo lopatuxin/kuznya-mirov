@@ -8,7 +8,7 @@ export const MODEL_DRAG_TYPE = "application/x-kuznya-model";
 export const PARTICLES_DRAG_TYPE = "application/x-kuznya-particles";
 
 /**
- * Карточку листьев тянут к объекту, которому достанется листопад («Редактор», требование 35): сцена обводит его рамкой.
+ * Карточку листьев, пуха или бабочек тянут к объекту, которому достанется эффект («Редактор», требование 35): сцена обводит его рамкой.
  * Данные перетаскивания над сценой браузер не отдаёт, виден только список типов, поэтому карточка ставит ещё и этот тип.
  */
 export const LEAVES_DRAG_TYPE = "application/x-kuznya-particles-leaves";

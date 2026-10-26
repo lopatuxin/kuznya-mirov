@@ -381,19 +381,19 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
 
   // Карточку частиц отпустили на плоскую сцену — «Редактор», требования 34–35. Дым и искры над объектом без картинки и цвета
   // дописываются ему, иначе встаёт новый источник 1×1 с слоем и глубиной объекта под указателем, мимо объектов — выбранного.
-  // Листья достаются объекту, которому их можно дописать, мимо таких объектов ничего не происходит. Получивший эффект объект становится выбранным.
+  // Листья, пух и бабочки достаются объекту, которому их можно дописать, мимо таких объектов ничего не происходит. Получивший эффект объект становится выбранным.
   function handleDropParticles(effectId: string, x: number, y: number): void {
     const effect = particleEffectById(effectId);
     if (engine === null || effect === undefined) return;
     const objectProperties = isLive ? liveObjectProperties : sceneObjectProperties;
     // Источник без картинки и цвета `object_at` не видит — его ищем сами, иначе дым над ним всегда рождал бы новый объект.
     const underPointer =
-      effect.id === "leaves"
+      effect.isDroppedOnObject
         ? leavesTargetAt(x, y)
         : (fillLessObjectAt(x, y, displayedObjectSummaries.map(({ index }) => index), objectProperties, (id) => engine.object_rect(id) as CanvasRect | undefined) ??
           (engine.object_at(x, y) as number | undefined));
     const under = underPointer === undefined ? null : objectProperties(underPointer);
-    if (underPointer !== undefined && under !== null && (effect.id === "leaves" || (under.image === undefined && under.color === undefined))) {
+    if (underPointer !== undefined && under !== null && (effect.isDroppedOnObject || (under.image === undefined && under.color === undefined))) {
       if (effect.mainKey in under) return;
       if (isLive) {
         battle.setLiveSelectedId(underPointer);
@@ -404,7 +404,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
       }
       return;
     }
-    if (effect.id === "leaves") return;
+    if (effect.isDroppedOnObject) return;
     const target = under ?? (displayedSelectedIndex === null ? null : objectProperties(displayedSelectedIndex));
     const middle = toVec2(engine.scene_point(x, y, newObjectParallax(target)));
     if (middle === undefined) return;

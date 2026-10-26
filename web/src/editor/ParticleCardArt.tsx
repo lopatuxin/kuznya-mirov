@@ -55,6 +55,34 @@ export function ParticleCardArt({ effectId }: { effectId: ParticleEffectId }): R
       </svg>
     );
   }
+  if (effectId === "fluff") {
+    return (
+      <svg className="particles-card__shape" viewBox="0 0 40 40" aria-hidden="true">
+        <defs>
+          <radialGradient id={`${id}-core`}>
+            <stop offset="0" stopColor="#ffffff" />
+            <stop offset="0.35" stopColor="#fff5db" stopOpacity="0.9" />
+            <stop offset="1" stopColor="#fff5db" stopOpacity="0" />
+          </radialGradient>
+        </defs>
+        <circle cx="20" cy="20" r="11" fill={`url(#${id}-core)`} />
+        <g stroke="#fff5db" strokeWidth="0.9" strokeLinecap="round">
+          <path d="M20 20 L20 5 M20 20 L31 9 M20 20 L35 20 M20 20 L31 31 M20 20 L20 35 M20 20 L9 31 M20 20 L5 20 M20 20 L9 9" />
+        </g>
+      </svg>
+    );
+  }
+  if (effectId === "butterflies") {
+    return (
+      <svg className="particles-card__shape" viewBox="0 0 40 40" aria-hidden="true">
+        <path d="M20 20 C 16 8, 6 8, 5 14 C 4 19, 12 22, 20 20 Z" fill="#f2c230" />
+        <path d="M20 20 C 16 32, 9 33, 9 28 C 9 24, 14 21, 20 20 Z" fill="#e8892b" />
+        <path d="M20 20 C 24 8, 34 8, 35 14 C 36 19, 28 22, 20 20 Z" fill="#f2c230" />
+        <path d="M20 20 C 24 32, 31 33, 31 28 C 31 24, 26 21, 20 20 Z" fill="#e8892b" />
+        <ellipse cx="20" cy="20" rx="1.4" ry="6" fill="#3a2a1a" />
+      </svg>
+    );
+  }
   return (
     <svg className="particles-card__shape" viewBox="0 0 40 40" aria-hidden="true">
       <path d="M8 31 C 9 18, 19 8, 33 8 C 32 21, 22 31, 8 31 Z" fill="#7da33a" />

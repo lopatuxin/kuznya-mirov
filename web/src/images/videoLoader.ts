@@ -121,6 +121,8 @@ function readFirstFrame(player: HTMLVideoElement): VideoFirstFrame | null {
 function openVideoPlayer(bytes: Uint8Array): { player: HTMLVideoElement; hasFirstFrame: Promise<boolean> } {
   const player = document.createElement("video");
   player.muted = true;
+  // Запасной круг для видео без длины. У видео панели по кругу движок сам снимает `loop` и ведёт два проигрывателя
+  // того же файла по очереди, поэтому своего обработчика `timeupdate`/`ended` здесь нет: он боролся бы с этим ходом.
   player.loop = true;
   player.playsInline = true;
   player.preload = "auto";

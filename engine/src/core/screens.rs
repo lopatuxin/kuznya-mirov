@@ -4,10 +4,12 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::game::Game;
 use super::input::{ButtonKey, MouseEvent, MouseState, UiEvent, UiQueue};
 use super::interface::{self, Part, Placed, SCROLL_POINTS_PER_ROW};
+use super::particles::Settings;
 use super::property::{self, PropertyId, PropertyTable};
 use super::rules::{Outcome, Selector};
 use super::value::{ImageId, PropKind, Value};
@@ -317,6 +319,9 @@ pub enum Element {
         play_on_hover: Option<usize>,
         /// «Видео на панели»: секунда ролика, где поза та же, что на последнем кадре; `None` — назад играет весь ролик.
         rest_at: Option<f32>,
+        /// «Ветер и частицы» → «На экране»: свойства частиц панели; `Some` — панель названа источником,
+        /// даже если ни один эффект не включён.
+        particles: Option<Settings>,
     },
     Label {
         placement: Placement,
@@ -436,6 +441,20 @@ impl Element {
         }
     }
 
+    /// «Ветер и частицы» → «На экране»: свойства частиц панели-источника.
+    pub fn particles(&self) -> Option<&Settings> {
+        match self {
+            Element::Panel { particles, .. } => particles.as_ref(),
+            _ => None,
+        }
+    }
+
+    /// «Интерфейс игры» → «Мышь»: панель-источник частиц без `name` прозрачна для мыши — туча пуха не
+    /// отнимает курсор у героев под ней. С `name` панель — место наведения, как всякая.
+    pub fn passes_mouse(&self) -> bool {
+        self.particles().is_some() && self.place_name().is_none()
+    }
+
     /// Отбор `for` элемента при объекте; у списка свой отбор строк, он не в счёт.
     pub fn selector(&self) -> Option<&Selector> {
         match self {
@@ -460,6 +479,11 @@ pub struct Screen {
     pub keys: ScreenKeyTable,
     /// «Звук» → «Два вида звука»: `None` is silence, same as the pause screen.
     pub music: Option<MusicId>,
+    /// «Ветер и частицы» → «На экране»: клетка экрана — сколько точек `screens.json` в одной клетке частиц;
+    /// `None`, когда у экрана её нет (частиц на нём тогда быть не может).
+    pub cell_pixels: Option<f64>,
+    /// «Ветер и частицы» → «На экране»: ровный ветер частиц экрана, клеток экрана в секунду.
+    pub wind: [f64; 2],
 }
 
 #[derive(Debug, Clone, Default)]
@@ -516,13 +540,29 @@ impl UiFrame {
 impl ScreensConfig {
     /// «Видео на панели»: картинки-видео, которые играют панели с `play_on_hover`.
     pub fn panel_videos(&self) -> Vec<ImageId> {
+        self.panel_video_images(true, |_| true)
+    }
+
+    /// «Видео на панели»: картинки-видео, которые панели крутят по кругу, — без `play_on_hover`.
+    /// `is_video` говорит, какая картинка игры видео: экран этого не знает.
+    pub fn loop_videos(&self, is_video: impl Fn(ImageId) -> bool) -> Vec<ImageId> {
+        self.panel_video_images(false, is_video)
+    }
+
+    fn panel_video_images(
+        &self,
+        on_hover: bool,
+        is_video: impl Fn(ImageId) -> bool,
+    ) -> Vec<ImageId> {
         let mut videos = Vec::new();
         for element in self.screens.iter().flat_map(|screen| &screen.elements) {
             if let Element::Panel {
                 fill: PanelFill::Fixed(Fill::Image { image, .. }),
-                play_on_hover: Some(_),
+                play_on_hover,
                 ..
             } = element
+                && play_on_hover.is_some() == on_hover
+                && is_video(*image)
                 && !videos.contains(image)
             {
                 videos.push(*image);
@@ -657,7 +697,16 @@ pub struct ScreenState {
     scrolls: HashMap<(ScreenId, usize), ListScroll>,
     /// «Экраны и состояние» → «Команды»: `exit` сработал — игра просит страницу уйти к списку игр.
     exit_requested: bool,
+    /// Номер последнего открытия экрана: частицы и видео экрана начинаются заново при каждом открытии, и
+    /// номер говорит об этом, даже когда экран открыт заново между двумя кадрами.
+    opened: u64,
 }
+
+/// Следующий свободный номер открытия для нового `ScreenState`: у каждого состояния свой отрезок номеров, так что
+/// новая партия не совпадает по номеру с экраном, открытым в прежней.
+static NEXT_OPENED: AtomicU64 = AtomicU64::new(0);
+/// Размер отрезка номеров одного `ScreenState`.
+const OPENINGS_PER_STATE: u64 = 1 << 32;
 
 /// Прокрутка одного списка: первая видимая строка и накопленная доля следующей строки. Строка
 /// сменяется, только когда колесо набрало целую строку в одну сторону — и вниз, и вверх.
@@ -675,7 +724,15 @@ impl ScreenState {
             sound_enabled: true,
             scrolls: HashMap::new(),
             exit_requested: false,
+            opened: NEXT_OPENED.fetch_add(OPENINGS_PER_STATE, Ordering::Relaxed),
         }
+    }
+
+    /// Номер последнего открытия экрана: растёт при каждой смене экрана, в том числе на тот же, а у нового
+    /// `ScreenState` начинается с номера, которого не было ни у одного прежнего. Значим только
+    /// порядок и равенство двух номеров, не само число.
+    pub fn opened(&self) -> u64 {
+        self.opened
     }
 
     /// На сколько строк прокручен список `element` экрана `screen`; не больше, чем позволяют его строки,
@@ -729,6 +786,7 @@ impl ScreenState {
     fn switch(&mut self, target: ScreenId, remember: bool) {
         self.previous = if remember { Some(self.active) } else { None };
         self.active = target;
+        self.opened += 1;
     }
 }
 
@@ -969,8 +1027,8 @@ pub fn handle_screen_key_up(
 
 /// «Мышь в мире», требование 13: что под точкой — самая верхняя кнопка (её ключ) или, когда кнопки
 /// под точкой нет, панель (она забирает нажатие у мира и никому его не отдаёт). Панель поверх кнопки,
-/// как значок на табличке, нажатие у кнопки не отнимает. Надписи, шкалы и панели с `show_on_hover`
-/// прозрачны для мыши и сюда не попадают.
+/// как значок на табличке, нажатие у кнопки не отнимает. Надписи, шкалы, панели с `show_on_hover` и
+/// панели-источники частиц без `name` прозрачны для мыши и сюда не попадают.
 enum InterfaceHit<'a> {
     Button(Placed<'a>),
     /// Верхняя из панелей под точкой.
@@ -989,10 +1047,11 @@ fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<Inte
         match placed.element {
             Element::Button { .. } => return Some(InterfaceHit::Button(*placed)),
             // «Наведение»: панель с `show_on_hover` прозрачна для мыши, видна она сейчас или нет.
+            // «На экране»: и панель-источник частиц без `name`.
             Element::Panel {
                 show_on_hover: None,
                 ..
-            } => {
+            } if !placed.element.passes_mouse() => {
                 topmost_panel.get_or_insert(*placed);
             }
             _ => {}
@@ -1376,6 +1435,27 @@ pub fn button_fill<'a>(
         fill_hover
     } else {
         fill
+    }
+}
+
+#[cfg(test)]
+mod opened_tests {
+    use super::*;
+
+    #[test]
+    fn a_fresh_state_never_shares_an_opening_with_another_one() {
+        let mut old = ScreenState::new(0);
+        let fresh = ScreenState::new(0);
+        assert_ne!(old.opened(), fresh.opened());
+        old.switch(0, false);
+        assert_ne!(old.opened(), fresh.opened());
+        let before = fresh.opened();
+        let mut fresh = fresh;
+        fresh.switch(0, false);
+        assert!(
+            fresh.opened() > before,
+            "каждая смена экрана — новое открытие"
+        );
     }
 }
 

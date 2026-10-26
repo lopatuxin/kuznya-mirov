@@ -16,11 +16,11 @@ type ParticlesPanelProps = {
   onGestureActiveChange: ParticleEditing["onGestureActiveChange"];
 };
 
-const EMPTY_HINT = "Дым, искры и огонь перетащите туда, откуда они идут, — на трубу, костёр или горн. Листья — на дерево";
+const EMPTY_HINT = "Дым, искры и огонь перетащите туда, откуда они идут, — на трубу, костёр или горн. Листья — на дерево, пух и бабочки — на луг или поляну";
 
 /**
- * Вкладка «Эффекты» — «Редактор», «Окно редактора», требования 28–32: слева четыре карточки с рисунками движка — дым, искры,
- * листья и огонь, их тащат на сцену; справа группы эффектов выбранного объекта, а у объекта без эффектов и без выбора — подсказка.
+ * Вкладка «Эффекты» — «Редактор», «Окно редактора», требования 28–32: слева шесть карточек с рисунками движка — дым, искры,
+ * листья, пух, бабочки и огонь, их тащат на сцену; справа группы эффектов выбранного объекта, а у объекта без эффектов и без выбора — подсказка.
  */
 export function ParticlesPanel({ properties, isEditable, onPreview, onCommit, onRemove, onGestureActiveChange }: ParticlesPanelProps): React.JSX.Element {
   const effects = effectsOfObject(properties);
@@ -52,7 +52,7 @@ export function ParticlesPanel({ properties, isEditable, onPreview, onCommit, on
               title={isEditable ? "Перетащите на сцену" : undefined}
               onDragStart={(event) => {
                 event.dataTransfer.setData(PARTICLES_DRAG_TYPE, effect.id);
-                if (effect.id === "leaves") event.dataTransfer.setData(LEAVES_DRAG_TYPE, effect.id);
+                if (effect.isDroppedOnObject) event.dataTransfer.setData(LEAVES_DRAG_TYPE, effect.id);
                 event.dataTransfer.effectAllowed = "copy";
               }}
             >

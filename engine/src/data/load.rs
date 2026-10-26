@@ -10,6 +10,7 @@ use crate::core::footprint::Footprint;
 use crate::core::game::{self, Game};
 use crate::core::imprints::StampTable;
 use crate::core::keys::{EditValue, KeyBinding, KeyEdit, KeyTable};
+use crate::core::particles::Settings;
 use crate::core::property::{self, PropertyId, PropertyTable};
 use crate::core::roads::Side;
 use crate::core::rules::{
@@ -129,9 +130,22 @@ fn reject_unknown_keys(
     path: &str,
     errors: &mut ErrorSink,
 ) {
+    reject_unknown_keys_except(obj, known, &[], file, path, errors);
+}
+
+/// То же, но ключи `tolerated` не считаются неизвестными и среди ожидаемых не названы: их разбирает
+/// и отвергает отдельная проверка со своим текстом.
+fn reject_unknown_keys_except(
+    obj: &serde_json::Map<String, Json>,
+    known: &[&str],
+    tolerated: &[&str],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
     let unknown_keys: Vec<&String> = obj
         .keys()
-        .filter(|key| !known.contains(&key.as_str()))
+        .filter(|key| !known.contains(&key.as_str()) && !tolerated.contains(&key.as_str()))
         .collect();
     if unknown_keys.is_empty() {
         return;
@@ -1152,9 +1166,10 @@ fn engine_alone_writes_ok(
 }
 
 /// «Ветер и частицы» → «Проверка перед запуском», «Огонь» → «Проверка перед запуском»: числовое свойство
-/// частиц, облаков и огня — только в плоской сцене; `smoke`, `sparks`, `leaf_fall`, `clouds`, `fire`,
-/// `fire_glow`, `fire_coals` и `fire_smolder` — от 0 до 1, `smoke_height` и `sparks_reach` — больше нуля,
-/// `sparks_spread` — от 0 до 180, `sparks_direction` — любое число.
+/// частиц, облаков и огня — только в плоской сцене; `smoke`, `sparks`, `leaf_fall`, `fluff`,
+/// `butterflies`, `clouds`, `fire`, `fire_glow`, `fire_coals` и `fire_smolder` — от 0 до 1,
+/// `smoke_height` и `sparks_reach` — больше нуля, `sparks_spread` — от 0 до 180, `sparks_direction` —
+/// любое число.
 fn validate_particle_number(
     prop: PropertyId,
     n: f64,
@@ -1163,14 +1178,26 @@ fn validate_particle_number(
     path: &str,
     errors: &mut ErrorSink,
 ) -> bool {
-    if !depth_layer_fits_the_scene(prop, properties, file, path, errors) {
-        return false;
-    }
-    let name = properties.name(prop);
+    depth_layer_fits_the_scene(prop, properties, file, path, errors)
+        && particle_number_fits(prop, n, properties.name(prop), file, path, errors)
+}
+
+/// Значение числового свойства частиц, облаков или огня `name` лежит в своих пределах — у объекта сцены и
+/// у панели экрана одни и те же.
+fn particle_number_fits(
+    prop: PropertyId,
+    n: f64,
+    name: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
     let range = match prop {
         property::SMOKE
         | property::SPARKS
         | property::LEAF_FALL
+        | property::FLUFF
+        | property::BUTTERFLIES
         | property::CLOUDS
         | property::FIRE
         | property::FIRE_GLOW
@@ -2736,7 +2763,8 @@ pub struct NeededMedia {
     pub sounds: Vec<(String, String)>,
     pub music: Vec<(String, String)>,
     pub images: Vec<(String, String)>,
-    /// `(имя видео, путь его reverse)` — «Картинки» → «Видео на панели»: страница читает и этот файл.
+    /// `(имя видео, путь второго файла)` — «Картинки» → «Видео на панели»: страница читает и этот файл. У видео
+    /// по наведению это его `reverse`, у видео по кругу — он сам: два проигрывателя одного файла играют по очереди.
     pub reverses: Vec<(String, String)>,
     /// Пути карт всех материалов: материал за материалом, в каждом `color`, `normal`, `roughness`,
     /// `height`, `ao`.
@@ -2843,6 +2871,7 @@ pub fn read_texts(
         .iter()
         .filter_map(|s| s.music.as_deref())
         .collect();
+    let looped = looped_video_names(&config.files.images, &parsed_screens);
     let music = config
         .files
         .music
@@ -2873,7 +2902,14 @@ pub fn read_texts(
             .files
             .images
             .iter()
-            .filter_map(|decl| Some((decl.name.clone(), decl.reverse.clone()?)))
+            .filter_map(|decl| {
+                let path = if looped.contains(&decl.name.as_str()) {
+                    decl.path.clone()
+                } else {
+                    decl.reverse.clone()?
+                };
+                Some((decl.name.clone(), path))
+            })
             .collect(),
         // «Свет и материалы»: каждая карта каждого материала и каждая маска покрытий.
         materials: config
@@ -2890,6 +2926,31 @@ pub fn read_texts(
             .map(|decl| (decl.name.clone(), decl.path.clone()))
             .collect(),
     }
+}
+
+/// «Картинки» → «Видео на панели»: имена видео, которые панели экранов крутят по кругу, — `image` панели
+/// без `play_on_hover`, названное видео из `files.images`.
+fn looped_video_names<'a>(images: &'a [ImageDecl], screens: &[ParsedScreen]) -> Vec<&'a str> {
+    let mut names = Vec::new();
+    let panels = screens
+        .iter()
+        .flat_map(|screen| &screen.elements)
+        .filter_map(|(_, element)| match element {
+            ParsedElementData::Panel {
+                image_name: Some(name),
+                hover,
+                ..
+            } if hover.play_on_hover.is_none() => Some(name.as_str()),
+            _ => None,
+        });
+    for name in panels {
+        if let Some(decl) = images.iter().find(|decl| decl.video && decl.name == name)
+            && !names.contains(&decl.name.as_str())
+        {
+            names.push(decl.name.as_str());
+        }
+    }
+    names
 }
 
 fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
@@ -7602,6 +7663,8 @@ enum ParsedElementData {
         for_: Option<Selector>,
         hover: HoverFields,
         rest_at: Option<f32>,
+        /// «На экране»: свойства частиц панели-источника.
+        particles: Option<Settings>,
     },
     /// «Шкала»: в коробке, как кнопка, — вид элемента не раздувается.
     Bar(Box<ParsedBar>),
@@ -7645,10 +7708,14 @@ enum ParsedElementData {
         gap: f32,
         sort_by: Option<PropertyId>,
         descending: bool,
-        row: Vec<ParsedElementData>,
+        row: ParsedElements,
         scroll_color: [f32; 4],
     },
 }
+
+/// Разобранные элементы списка или экрана с номерами, под которыми они стоят в файле: элемент с ошибкой
+/// разбора выпал, а ошибки следующих называют номер из файла.
+type ParsedElements = Vec<(usize, ParsedElementData)>;
 
 /// Где стоит элемент: прямо на экране (якорь и, может быть, отбор `for`) или в строке списка (сдвиг от
 /// угла строки, без якоря и отбора).
@@ -7751,6 +7818,145 @@ const LIST_KEYS: &[&str] = &[
     "show_on_hover",
     "play_on_hover",
 ];
+
+/// «Ветер и частицы» → «На экране»: свойства частиц панели — те же имена, что у свойств объекта.
+const PARTICLE_KEYS: [&str; 13] = [
+    "smoke",
+    "smoke_height",
+    "smoke_color",
+    "sparks",
+    "sparks_reach",
+    "sparks_direction",
+    "sparks_spread",
+    "leaf_fall",
+    "leaf_color",
+    "fluff",
+    "fluff_color",
+    "butterflies",
+    "butterfly_color",
+];
+
+/// «На экране»: свойства частиц бывают только у панели. Любой из них у надписи, кнопки, шкалы или
+/// списка — ошибка со своим текстом.
+fn reject_foreign_particle_keys(
+    obj: &serde_json::Map<String, Json>,
+    owner: HoverOwner,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    for key in PARTICLE_KEYS.iter().filter(|key| obj.contains_key(**key)) {
+        errors.push(
+            file,
+            &join(path, key),
+            format!(
+                "у {} нет \"{key}\": свойства частиц бывают только у панели экрана",
+                owner.genitive()
+            ),
+        );
+    }
+}
+
+/// «На экране»: свойства частиц панели. `Some(None)` — их нет. Источник частиц стоит на экране всегда:
+/// у панели с `for` и у панели в строке списка они — ошибка. Значения проверяются как у объекта.
+/// Внешний `None` — ошибка уже названа.
+fn parse_panel_particles(
+    obj: &serde_json::Map<String, Json>,
+    scope: Scope,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<Settings>> {
+    let present: Vec<&str> = PARTICLE_KEYS
+        .into_iter()
+        .filter(|key| obj.contains_key(*key))
+        .collect();
+    if present.is_empty() {
+        return Some(None);
+    }
+    let misplaced = if scope == Scope::Row {
+        Some("в строке списка")
+    } else if obj.contains_key("for") {
+        Some("с for")
+    } else {
+        None
+    };
+    if let Some(place) = misplaced {
+        for key in present {
+            errors.push(
+                file,
+                &join(path, key),
+                format!(
+                    "у панели {place} нет \"{key}\": источник частиц стоит на экране всегда, а не при объекте"
+                ),
+            );
+        }
+        return None;
+    }
+    let mut settings = Settings::default();
+    let mut ok = true;
+    for key in present {
+        ok &= parse_particle_field(
+            &mut settings,
+            key,
+            &obj[key],
+            properties,
+            file,
+            path,
+            errors,
+        );
+    }
+    ok.then_some(Some(settings))
+}
+
+/// Одно свойство частиц панели: число в пределах свойства объекта или цвет.
+fn parse_particle_field(
+    settings: &mut Settings,
+    key: &str,
+    value: &Json,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    let Some(prop) = properties.resolve(key) else {
+        return false;
+    };
+    let key_path = join(path, key);
+    if properties.kind(prop) == PropKind::Color {
+        let Some([r, g, b, _]) = expect_ui_color(value, file, &key_path, errors) else {
+            return false;
+        };
+        match prop {
+            property::SMOKE_COLOR => settings.smoke_color = [r, g, b],
+            property::LEAF_COLOR => settings.leaf_color = Some([r, g, b]),
+            property::FLUFF_COLOR => settings.fluff_color = [r, g, b],
+            property::BUTTERFLY_COLOR => settings.butterfly_color = Some([r, g, b]),
+            _ => unreachable!("PARTICLE_KEYS: цвет частиц — одно из четырёх свойств цвета"),
+        }
+        return true;
+    }
+    let Some(n) = expect_number(value, file, &key_path, errors) else {
+        return false;
+    };
+    if !particle_number_fits(prop, n, key, file, &key_path, errors) {
+        return false;
+    }
+    match prop {
+        property::SMOKE => settings.smoke = n,
+        property::SMOKE_HEIGHT => settings.smoke_height = n,
+        property::SPARKS => settings.sparks = n,
+        property::SPARKS_REACH => settings.sparks_reach = n,
+        property::SPARKS_DIRECTION => settings.sparks_direction = n,
+        property::SPARKS_SPREAD => settings.sparks_spread = n,
+        property::LEAF_FALL => settings.leaf_fall = n,
+        property::FLUFF => settings.fluff = n,
+        property::BUTTERFLIES => settings.butterflies = n,
+        _ => unreachable!("PARTICLE_KEYS: число частиц — одно из девяти свойств-чисел"),
+    }
+    true
+}
 
 /// «Наведение»: `name`, `show_on_hover` и `play_on_hover` одного элемента, места ещё по именам.
 #[derive(Debug, Clone, Default)]
@@ -8005,7 +8211,8 @@ fn parse_bar(
     path: &str,
     errors: &mut ErrorSink,
 ) -> Option<ParsedElementData> {
-    reject_unknown_keys(obj, BAR_KEYS, file, path, errors);
+    reject_unknown_keys_except(obj, BAR_KEYS, &PARTICLE_KEYS, file, path, errors);
+    reject_foreign_particle_keys(obj, HoverOwner::Bar, file, path, errors);
     let properties = context.properties;
     let (placement, for_) = parse_element_place(obj, scope, properties, file, path, errors)?;
     if scope == Scope::Screen && for_.is_none() {
@@ -8221,7 +8428,8 @@ fn parse_list(
     errors: &mut ErrorSink,
 ) -> Option<ParsedElementData> {
     let properties = context.properties;
-    reject_unknown_keys(obj, LIST_KEYS, file, path, errors);
+    reject_unknown_keys_except(obj, LIST_KEYS, &PARTICLE_KEYS, file, path, errors);
+    reject_foreign_particle_keys(obj, HoverOwner::List, file, path, errors);
     let placement = parse_placement(obj, file, path, errors)?;
     let for_json = require_field(obj, "for", file, path, errors)?;
     let for_path = join(path, "for");
@@ -8287,6 +8495,7 @@ fn parse_list(
                 Scope::Row,
                 errors,
             )
+            .map(|element| (i, element))
         })
         .collect();
     Some(ParsedElementData::List {
@@ -8315,8 +8524,10 @@ fn parse_element(
     let kind = expect_string(kind_json, file, &join(path, "kind"), errors)?;
     match kind.as_str() {
         "panel" => {
-            reject_unknown_keys(obj, PANEL_KEYS, file, path, errors);
+            let known: Vec<&str> = PANEL_KEYS.iter().chain(&PARTICLE_KEYS).copied().collect();
+            reject_unknown_keys(obj, &known, file, path, errors);
             let hover = parse_hover_fields(obj, HoverOwner::Panel, scope, file, path, errors);
+            let particles = parse_panel_particles(obj, scope, properties, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
             let color = match obj.get("color") {
@@ -8366,10 +8577,12 @@ fn parse_element(
                 for_,
                 hover: hover?,
                 rest_at: rest_at?,
+                particles: particles?,
             })
         }
         "label" => {
-            reject_unknown_keys(obj, LABEL_KEYS, file, path, errors);
+            reject_unknown_keys_except(obj, LABEL_KEYS, &PARTICLE_KEYS, file, path, errors);
+            reject_foreign_particle_keys(obj, HoverOwner::Label, file, path, errors);
             let hover = parse_hover_fields(obj, HoverOwner::Label, scope, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
@@ -8422,7 +8635,8 @@ fn parse_element(
             })
         }
         "button" => {
-            reject_unknown_keys(obj, BUTTON_KEYS, file, path, errors);
+            reject_unknown_keys_except(obj, BUTTON_KEYS, &PARTICLE_KEYS, file, path, errors);
+            reject_foreign_particle_keys(obj, HoverOwner::Button, file, path, errors);
             let hover = parse_hover_fields(obj, HoverOwner::Button, scope, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
@@ -8608,10 +8822,14 @@ fn parse_screen_keys(
 struct ParsedScreen {
     name: String,
     world_runs: bool,
-    elements: Vec<ParsedElementData>,
+    elements: ParsedElements,
     keys: Vec<(String, ParsedCommand)>,
     /// Raw `music` name, not yet resolved against `files.music` — «Звук» →«Два вида звука». Resolution happens in `resolve_screens`, same as `font` on an element.
     music: Option<String>,
+    /// «Ветер и частицы» → «На экране»: клетка частиц экрана в точках `screens.json`.
+    cell_pixels: Option<f64>,
+    /// «Ветер и частицы» → «На экране»: ровный ветер частиц экрана.
+    wind: Vec2,
     path: String,
 }
 
@@ -8626,7 +8844,15 @@ fn parse_screen(
     let obj = expect_object(value, file, &path, errors)?;
     reject_unknown_keys(
         obj,
-        &["name", "world_runs", "elements", "keys", "music"],
+        &[
+            "name",
+            "world_runs",
+            "elements",
+            "keys",
+            "music",
+            "cell_pixels",
+            "wind",
+        ],
         file,
         &path,
         errors,
@@ -8659,6 +8885,7 @@ fn parse_screen(
                         Scope::Screen,
                         errors,
                     )
+                    .map(|element| (i, element))
                 })
                 .collect::<Vec<_>>()
         })
@@ -8681,12 +8908,24 @@ fn parse_screen(
         }
         Some(v) => expect_string(v, file, &join(&path, "music"), errors),
     };
+    let cell_pixels = obj
+        .get("cell_pixels")
+        .and_then(|v| parse_screen_cell_pixels(v, file, &join(&path, "cell_pixels"), errors));
+    if !obj.contains_key("cell_pixels") {
+        require_screen_cell_pixels(name.as_deref(), &path, &elements, file, errors);
+    }
+    let wind = obj
+        .get("wind")
+        .and_then(|v| parse_vec2(v, file, &join(&path, "wind"), errors))
+        .unwrap_or_default();
     Some(ParsedScreen {
         name: name?,
         world_runs: world_runs?,
         elements,
         keys,
         music,
+        cell_pixels,
+        wind,
         path,
     })
 }
@@ -8740,7 +8979,7 @@ fn parse_screens_json(
     let Some(arr) = expect_array(screens_json, file, "screens", errors) else {
         return ParsedScreensFile::default();
     };
-    let screens = arr
+    let screens: Vec<ParsedScreen> = arr
         .iter()
         .enumerate()
         .filter_map(|(i, v)| parse_screen(v, i, file, context, errors))
@@ -8769,6 +9008,57 @@ fn parse_screens_json(
         world_elements,
         tooltip,
         ui_reference,
+    }
+}
+
+/// «Ветер и частицы» → «На экране»: `cell_pixels` экрана — число больше нуля, сколько точек
+/// `screens.json` в одной клетке частиц.
+fn parse_screen_cell_pixels(
+    value: &Json,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<f64> {
+    let n = expect_number(value, file, path, errors)?;
+    if n > 0.0 {
+        return Some(n);
+    }
+    errors.push(
+        file,
+        path,
+        format!(
+            "свойство \"cell_pixels\" — сколько точек экрана в одной клетке частиц, число больше нуля; получено {n}"
+        ),
+    );
+    None
+}
+
+/// «Ветер и частицы» → «На экране»: панель со свойствами частиц меряет их клетками экрана, а клетку
+/// называет только `cell_pixels` самого экрана: без него частицам не во что мериться.
+fn require_screen_cell_pixels(
+    screen_name: Option<&str>,
+    screen_path: &str,
+    elements: &ParsedElements,
+    file: &str,
+    errors: &mut ErrorSink,
+) {
+    for (index, element) in elements {
+        if matches!(
+            element,
+            ParsedElementData::Panel {
+                particles: Some(_),
+                ..
+            }
+        ) {
+            errors.push(
+                file,
+                &join(&join(screen_path, "elements"), &format!("[{index}]")),
+                format!(
+                    "у панели свойства частиц, а у экрана \"{}\" нет cell_pixels: частицы меряются клетками, а клетку задаёт cell_pixels экрана — сколько точек экрана в одной клетке",
+                    screen_name.unwrap_or_default()
+                ),
+            );
+        }
     }
 }
 
@@ -9172,7 +9462,7 @@ fn resolve_fill(
                     file,
                     image_path,
                     format!(
-                        "\"{name}\" объявлена видео: панель и кнопка её не берут; панель берёт видео только с play_on_hover"
+                        "\"{name}\" объявлена видео: кнопка и шкала её не берут; видео играет только панель"
                     ),
                 );
                 return None;
@@ -9218,7 +9508,7 @@ fn screen_hover_places(
     errors: &mut ErrorSink,
 ) -> HoverPlaces {
     let mut places = HoverPlaces::new();
-    for (index, data) in screen.elements.iter().enumerate() {
+    for (index, (file_index, data)) in screen.elements.iter().enumerate() {
         let name = match data {
             ParsedElementData::Panel { hover, .. } | ParsedElementData::Button { hover, .. } => {
                 hover.name.as_deref()
@@ -9231,7 +9521,7 @@ fn screen_hover_places(
         if places.insert(name.to_string(), index).is_some() {
             errors.push(
                 file,
-                &join(&join(elements_path, &format!("[{index}]")), "name"),
+                &join(&join(elements_path, &format!("[{file_index}]")), "name"),
                 format!(
                     "имя места наведения \"{name}\" повторяется на экране \"{}\": имя единственное на экране",
                     screen.name
@@ -9329,6 +9619,7 @@ fn resolve_element(
             for_,
             hover,
             rest_at,
+            particles,
         } => {
             let image_path = join(path, "image");
             let show_on_hover = resolve_hover_place(
@@ -9366,6 +9657,11 @@ fn resolve_element(
                     resolve_panel_video(image, *opacity, images, file, &image_path, errors)
                         .map(PanelFill::Fixed)
                 }
+                // «Видео на панели»: видео без `play_on_hover` крутится по кругу, `reverse` ему не нужен.
+                (None, Some(image)) => Some(PanelFill::Fixed(Fill::Image {
+                    image,
+                    opacity: opacity.unwrap_or(1.0),
+                })),
                 (None, _) => resolve_fill(
                     *color,
                     image_name.as_deref(),
@@ -9394,19 +9690,31 @@ fn resolve_element(
                     "rest_at у панели без видео: позы покоя нет, в image нужна картинка, объявленная в files.images путём на .mp4",
                 );
             }
+            let rests_in_a_loop =
+                rest_at.is_some() && video.is_some() && hover.play_on_hover.is_none();
+            if rests_in_a_loop {
+                errors.push(
+                    file,
+                    &join(path, "rest_at"),
+                    "rest_at у панели с видео по кругу: поза покоя нужна только видео по наведению, а это идёт без play_on_hover",
+                );
+            }
             let tooltip_ok =
                 validate_tooltip_refs(tooltip, scene_names, file, scene_file, path, errors);
             let (fill, show_on_hover, play_on_hover) = (fill?, show_on_hover?, play_on_hover?);
-            (tooltip_ok && !plays_nothing && !rests_nowhere).then(|| Element::Panel {
-                placement: *placement,
-                fill,
-                image_scale: image_scale.unwrap_or(1.0),
-                tooltip: tooltip.clone(),
-                for_: for_.clone(),
-                name: hover.name.clone(),
-                show_on_hover,
-                play_on_hover,
-                rest_at: *rest_at,
+            (tooltip_ok && !plays_nothing && !rests_nowhere && !rests_in_a_loop).then(|| {
+                Element::Panel {
+                    placement: *placement,
+                    fill,
+                    image_scale: image_scale.unwrap_or(1.0),
+                    tooltip: tooltip.clone(),
+                    for_: for_.clone(),
+                    name: hover.name.clone(),
+                    show_on_hover,
+                    play_on_hover,
+                    rest_at: *rest_at,
+                    particles: *particles,
+                }
             })
         }
         ParsedElementData::Bar(bar) => {
@@ -9567,7 +9875,6 @@ fn resolve_element(
             let row_path = join(path, "row");
             let resolved: Vec<Option<Element>> = row
                 .iter()
-                .enumerate()
                 .map(|(i, item)| {
                     resolve_element(
                         item,
@@ -10366,7 +10673,6 @@ fn resolve_screens(
             let elements = screen
                 .elements
                 .iter()
-                .enumerate()
                 .filter_map(|(i, data)| {
                     resolve_element(
                         data,
@@ -10426,6 +10732,8 @@ fn resolve_screens(
                 elements,
                 keys,
                 music,
+                cell_pixels: screen.cell_pixels,
+                wind: screen.wind,
             }
         })
         .collect();
@@ -10716,6 +11024,7 @@ fn resolve_image_frame_by(
 fn validate_image_files(
     images: &[ImageDecl],
     image_data: &[(String, ImageVerdict)],
+    looped: &[&str],
     errors: &mut ErrorSink,
 ) {
     for decl in images {
@@ -10725,7 +11034,8 @@ fn validate_image_files(
             .find(|(n, _)| n == &decl.name)
             .map(|(_, v)| v);
         if decl.video {
-            validate_video_file(decl, verdict, &field_path, errors);
+            let twin = looped.contains(&decl.name.as_str());
+            validate_video_file(decl, verdict, twin, &field_path, errors);
             continue;
         }
         match verdict {
@@ -10875,6 +11185,7 @@ const MAX_VIDEO_FRAME_SIDE: u32 = 2048;
 fn validate_video_file(
     decl: &ImageDecl,
     verdict: Option<&ImageVerdict>,
+    looped: bool,
     field_path: &str,
     errors: &mut ErrorSink,
 ) {
@@ -10885,6 +11196,14 @@ fn validate_video_file(
             seconds,
             reverse,
         }) => video_size_problem(&decl.path, *width, *height).or_else(|| {
+            if looped {
+                return loop_twin_problem(
+                    &decl.path,
+                    [*width, *height],
+                    *seconds,
+                    reverse.as_ref(),
+                );
+            }
             let reverse_path = decl.reverse.as_deref()?;
             reverse_problem(reverse_path, [*width, *height], *seconds, reverse.as_ref())
         }),
@@ -10942,6 +11261,30 @@ fn reverse_problem(
         )),
         Some(ReverseVerdict::Missing) | None => Some(format!(
             "файл reverse \"{path}\" не найден; ожидалось видео MP4 — тот же ролик задом наперёд"
+        )),
+    }
+}
+
+/// «Картинки» → «Видео на панели»: что не так со вторым проигрывателем видео `path` по кругу: страница читает тот
+/// же файл второй раз, и браузер должен взяться играть его так же, с тем же размером и длиной.
+fn loop_twin_problem(
+    path: &str,
+    size: [u32; 2],
+    seconds: f64,
+    verdict: Option<&ReverseVerdict>,
+) -> Option<String> {
+    match verdict {
+        Some(ReverseVerdict::Ok {
+            width,
+            height,
+            seconds: twin_seconds,
+        }) if [*width, *height] == size
+            && (twin_seconds - seconds).abs() <= REVERSE_LENGTH_SLACK_SECONDS =>
+        {
+            None
+        }
+        _ => Some(format!(
+            "{path} — видео по кругу играют два проигрывателя по очереди, а браузер не взялся играть этот файл вторым проигрывателем"
         )),
     }
 }
@@ -11175,8 +11518,9 @@ fn collect_used_images(
     used
 }
 
-/// «Картинки» → «Видео на панели»: одно видео — на одной панели. Видео панели с `play_on_hover`, которое
-/// называет ещё и другая панель, объект мира, картинка над объектом или земля, — ошибка использования.
+/// «Картинки» → «Видео на панели»: одно видео — на одной панели. Видео панели — по наведению или по
+/// кругу, — которое называет ещё и другая панель, объект мира, картинка над объектом или земля, — ошибка
+/// использования.
 #[allow(clippy::too_many_arguments)]
 fn validate_panel_videos(
     images: &[ImageDecl],
@@ -11194,12 +11538,14 @@ fn validate_panel_videos(
         for (element_index, element) in screen.elements.iter().enumerate() {
             let Element::Panel {
                 fill: PanelFill::Fixed(Fill::Image { image, .. }),
-                play_on_hover: Some(_),
                 ..
             } = element
             else {
                 continue;
             };
+            if !images[*image].video {
+                continue;
+            }
             let path = format!("screens[{screen_index}].elements[{element_index}].image");
             let name = &images[*image].name;
             if outside_screens.contains(image) {
@@ -11898,7 +12244,12 @@ pub fn load_rest_with_models(
     if !skip_media_validation {
         validate_font_files(&config.files.fonts, font_bytes, &mut errors);
         validate_sound_files(&config.files.sounds, sound_bytes, &mut errors);
-        validate_image_files(&config.files.images, image_data, &mut errors);
+        validate_image_files(
+            &config.files.images,
+            image_data,
+            &looped_video_names(&config.files.images, &parsed_screens),
+            &mut errors,
+        );
         validate_material_files(&config.files.materials, material_data, &mut errors);
     }
     // «Звук» → «Загрузка и проверка»: captured from the raw parse,

@@ -1,4 +1,4 @@
-export type ParticleEffectId = "smoke" | "sparks" | "leaves" | "fire";
+export type ParticleEffectId = "smoke" | "sparks" | "leaves" | "fluff" | "butterflies" | "fire";
 
 export type ParticleEffect = {
   id: ParticleEffectId;
@@ -14,26 +14,30 @@ export type ParticleEffect = {
   keys: readonly string[];
   /** Какое значение главного свойства получает источник, на который карточку отпустили. */
   dropValue: number;
+  /** Карточку отпускают на объект, которому дописывается свойство (листья, пух, бабочки); мимо объектов она не ставится и нового источника не рождает. */
+  isDroppedOnObject: boolean;
   /** Подписи концов главного ползунка. */
   densityLabels: readonly [string, string];
 };
 
-/** Четыре эффекта вкладки «Эффекты» в порядке карточек и групп — «Редактор», требования 25 и 28. */
+/** Шесть эффектов вкладки «Эффекты» в порядке карточек и групп — «Редактор», требования 25 и 28. */
 export const PARTICLE_EFFECTS: readonly ParticleEffect[] = [
-  { id: "smoke", cardLabel: "дым", title: "Дым", mainKey: "smoke", keys: ["smoke", "smoke_height", "smoke_color"], dropValue: 0.5, densityLabels: ["струйка", "густой столб"] },
-  { id: "sparks", cardLabel: "искры", title: "Искры", mainKey: "sparks", keys: ["sparks", "sparks_reach", "sparks_direction", "sparks_spread"], dropValue: 0.5, densityLabels: ["редкие", "густые"] },
-  { id: "leaves", cardLabel: "листья", title: "Листья", mainKey: "leaf_fall", keys: ["leaf_fall", "leaf_color"], dropValue: 0.3, densityLabels: ["изредка", "сильный"] },
-  { id: "fire", cardLabel: "огонь", title: "Огонь", mainKey: "fire", alsoOpenedBy: "fire_coals", keys: ["fire", "fire_color", "fire_glow", "fire_coals", "fire_smolder"], dropValue: 0.5, densityLabels: ["тлеет", "бушует"] },
+  { id: "smoke", cardLabel: "дым", title: "Дым", mainKey: "smoke", keys: ["smoke", "smoke_height", "smoke_color"], dropValue: 0.5, isDroppedOnObject: false, densityLabels: ["струйка", "густой столб"] },
+  { id: "sparks", cardLabel: "искры", title: "Искры", mainKey: "sparks", keys: ["sparks", "sparks_reach", "sparks_direction", "sparks_spread"], dropValue: 0.5, isDroppedOnObject: false, densityLabels: ["редкие", "густые"] },
+  { id: "leaves", cardLabel: "листья", title: "Листья", mainKey: "leaf_fall", keys: ["leaf_fall", "leaf_color"], dropValue: 0.3, isDroppedOnObject: true, densityLabels: ["изредка", "сильный"] },
+  { id: "fluff", cardLabel: "пух", title: "Пух", mainKey: "fluff", keys: ["fluff", "fluff_color"], dropValue: 0.3, isDroppedOnObject: true, densityLabels: ["редкий", "метелью"] },
+  { id: "butterflies", cardLabel: "бабочки", title: "Бабочки", mainKey: "butterflies", keys: ["butterflies", "butterfly_color"], dropValue: 0.3, isDroppedOnObject: true, densityLabels: ["изредка", "стайка"] },
+  { id: "fire", cardLabel: "огонь", title: "Огонь", mainKey: "fire", alsoOpenedBy: "fire_coals", keys: ["fire", "fire_color", "fire_glow", "fire_coals", "fire_smolder"], dropValue: 0.5, isDroppedOnObject: false, densityLabels: ["тлеет", "бушует"] },
 ];
 
-/** Четырнадцать встроенных свойств частиц и огня плоской сцены. */
+/** Восемнадцать встроенных свойств частиц и огня плоской сцены. */
 export const PARTICLE_PROPERTY_NAMES: readonly string[] = PARTICLE_EFFECTS.flatMap((effect) => effect.keys);
 
 /** Свойства-цвета эффектов: правятся палитрой, как `color`. */
-export const PARTICLE_COLOR_NAMES: readonly string[] = ["smoke_color", "leaf_color", "fire_color"];
+export const PARTICLE_COLOR_NAMES: readonly string[] = ["smoke_color", "leaf_color", "fluff_color", "butterfly_color", "fire_color"];
 
-/** Что движок берёт без свойства — «Ветер и частицы», «Дым и искры», «Огонь»; во вкладке это бледное значение поля. */
-export const PARTICLE_DEFAULTS = { smoke_height: 4, sparks_reach: 1.5, sparks_direction: 0, sparks_spread: 30, smoke_color: "#a6a6ac", fire_color: "#ff8c1a", fire_glow: 0.5, fire_coals: 0, fire_smolder: 0 } as const;
+/** Что движок берёт без свойства — «Ветер и частицы», «Дым и искры», «Пух», «Огонь»; во вкладке это бледное значение поля. */
+export const PARTICLE_DEFAULTS = { smoke_height: 4, sparks_reach: 1.5, sparks_direction: 0, sparks_spread: 30, smoke_color: "#a6a6ac", fluff_color: "#fff5db", fire_color: "#ff8c1a", fire_glow: 0.5, fire_coals: 0, fire_smolder: 0 } as const;
 
 /** Русские подписи свойств частиц и огня: так ключи называются во вкладке «Эффекты» — у полей и в тексте ошибки под ними. */
 export const PARTICLE_LABELS = {
@@ -46,6 +50,10 @@ export const PARTICLE_LABELS = {
   sparks_direction: "направление",
   sparks_spread: "разброс",
   leaf_color: "цвет листьев",
+  fluff: "плотность",
+  fluff_color: "цвет пуха",
+  butterflies: "сколько бабочек",
+  butterfly_color: "цвет бабочек",
   fire: "сила огня",
   fire_color: "цвет пламени",
   fire_glow: "яркость ореола",
@@ -65,6 +73,9 @@ export function translateParticleKeys(message: string): string {
 /** Цвет, который получают листья, когда снимают «осенние вперемешку»: палитре нужен цвет, а не его отсутствие. */
 export const LEAF_COLOR_START = "#d9a531";
 
+/** Цвет, который получают бабочки, когда снимают «разные»: палитре нужен цвет, а не его отсутствие. */
+export const BUTTERFLY_COLOR_START = "#f2c230";
+
 export const DENSITY_STEP = 0.05;
 
 export const MAX_SPARKS_SPREAD = 180;
@@ -76,7 +87,7 @@ export function particleEffectById(id: string): ParticleEffect | undefined {
   return PARTICLE_EFFECTS.find((effect) => effect.id === id);
 }
 
-/** Эффекты объекта в порядке «Дым», «Искры», «Листья», «Огонь»: у кого есть главное свойство (или то, что тоже открывает группу), даже если оно 0 — группа остаётся, пока ползунок тянут до нуля. */
+/** Эффекты объекта в порядке «Дым», «Искры», «Листья», «Пух», «Бабочки», «Огонь»: у кого есть главное свойство (или то, что тоже открывает группу), даже если оно 0 — группа остаётся, пока ползунок тянут до нуля. */
 export function effectsOfObject(properties: Readonly<Record<string, unknown>> | null): ParticleEffect[] {
   if (properties === null) return [];
   return PARTICLE_EFFECTS.filter(

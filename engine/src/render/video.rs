@@ -12,29 +12,54 @@ use web_sys::{HtmlMediaElement, HtmlVideoElement};
 use super::atlas::AtlasRect;
 use super::gpu::ATLAS_FORMAT;
 use super::video_play::{
-    self, PanelCourse, PanelStep, PlayRequest, PlayerAction, PlayerReading, Roll,
+    self, LoopCourse, LoopStep, PanelCourse, PanelStep, PlayRequest, PlayerAction, PlayerReading,
+    Roll, Slot,
 };
 
+/// Кто играет видео игры: часы кадров мира, панель по наведению или панель по кругу.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VideoRole {
+    World,
+    /// Панель с `play_on_hover`: её ведёт ход видео панели, а не часы кадров, и у видео есть второй
+    /// проигрыватель — файл `reverse`.
+    Hover,
+    /// Панель без `play_on_hover`: идёт по кругу временем окна, пока экран с панелью активен. Второй
+    /// проигрыватель того же файла — `reverse` источника, который страница прочитала вторым разом: они
+    /// играют по очереди.
+    Loop,
+}
+
 /// Видео игры, как его отдаёт загрузка: проигрыватель, размер файла (оба слоя вместе) и место одного
-/// кадра в атласе. `panel` — видео панели с `play_on_hover`: его ведёт ход видео панели, а не часы кадров, и
-/// у него есть второй проигрыватель — файл `reverse`.
+/// кадра в атласе.
 pub struct VideoSource {
     pub image: usize,
     pub player: HtmlVideoElement,
     pub reverse: Option<HtmlVideoElement>,
-    pub panel: bool,
+    pub role: VideoRole,
     pub width: u32,
     pub height: u32,
     pub place: AtlasRect,
 }
 
-/// «Видео на панели»: панель с видео `image` стоит на экране; `hovering` — курсор над её местом наведения,
-/// `rest_at` — секунда ролика с позой последнего кадра.
+/// Как панель играет своё видео в этом кадре.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PanelPlay {
+    /// «Видео на панели»: `hovering` — курсор над местом наведения панели, `rest_at` — секунда ролика с
+    /// позой последнего кадра.
+    Hover {
+        hovering: bool,
+        rest_at: Option<f32>,
+    },
+    /// «Видео на панели»: по кругу; `now` — время окна в секундах, `opened` — сколько раз открывали экран:
+    /// открыли заново — видео снова с первого кадра.
+    Loop { now: f64, opened: u64 },
+}
+
+/// «Видео на панели»: панель с видео `image` стоит на экране.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct PanelInput {
     pub image: usize,
-    pub hovering: bool,
-    pub rest_at: Option<f32>,
+    pub play: PanelPlay,
 }
 
 /// Ход видео панели и второй проигрыватель — тот же ролик задом наперёд.
@@ -46,11 +71,21 @@ struct PanelVideo {
     show: Option<Roll>,
 }
 
+/// Ход видео по кругу и второй проигрыватель того же файла.
+struct LoopVideo {
+    twin: HtmlVideoElement,
+    twin_request: Rc<Cell<PlayRequest>>,
+    course: LoopCourse,
+    /// Чей кадр писать в атлас в этом кадре; `None` — оставить показанный.
+    show: Option<Slot>,
+}
+
 struct Video {
     image: usize,
     player: HtmlVideoElement,
     play_request: Rc<Cell<PlayRequest>>,
     panel: Option<PanelVideo>,
+    looped: Option<LoopVideo>,
     width: u32,
     height: u32,
     place: AtlasRect,
@@ -94,6 +129,9 @@ impl Videos {
             if let Some(panel) = &video.panel {
                 let _ = panel.reverse.pause();
             }
+            if let Some(looped) = &video.looped {
+                let _ = looped.twin.pause();
+            }
         }
     }
 
@@ -132,14 +170,19 @@ impl Videos {
 
     fn drive_panels(&mut self) {
         for video in &mut self.items {
-            let Some(panel) = &mut video.panel else {
-                continue;
-            };
             let input = self
                 .panel_inputs
                 .iter()
-                .find(|input| input.image == video.image);
-            let Some(input) = input else {
+                .find(|input| input.image == video.image)
+                .map(|input| input.play);
+            if video.looped.is_some() {
+                drive_loop(video, input);
+                continue;
+            }
+            let Some(panel) = &mut video.panel else {
+                continue;
+            };
+            let Some(PanelPlay::Hover { hovering, rest_at }) = input else {
                 panel.show = None;
                 if panel.course.reset() {
                     let _ = video.player.pause();
@@ -154,20 +197,22 @@ impl Videos {
                 Roll::Forward => &video.player,
                 Roll::Backward => &panel.reverse,
             };
-            let step = panel.course.step(
-                input.hovering,
-                input.rest_at.map(f64::from),
-                reading_of(current),
-            );
+            let step = panel
+                .course
+                .step(hovering, rest_at.map(f64::from), reading_of(current));
             panel.show = step.show;
             apply_panel_step(&step, video);
         }
     }
 
     /// Часы кадров идут (`playing`) — проигрыватели играют, стоят — на паузе; когда просить играть,
-    /// решает [`video_play::next_step`].
+    /// решает [`video_play::next_step`]. Видео панелей ведут их ходы.
     pub fn set_playing(&self, playing: bool) {
-        for video in self.items.iter().filter(|video| video.panel.is_none()) {
+        for video in self
+            .items
+            .iter()
+            .filter(|video| video.panel.is_none() && video.looped.is_none())
+        {
             let (action, request) =
                 video_play::next_step(playing, video.player.paused(), video.play_request.get());
             video.play_request.set(request);
@@ -277,25 +322,41 @@ impl Video {
             array_layer_count: Some(1),
             ..Default::default()
         });
-        let panel = source
-            .panel
-            .then_some(source.reverse)
-            .flatten()
-            .map(|reverse| {
-                source.player.set_loop(false);
-                reverse.set_loop(false);
-                PanelVideo {
-                    reverse,
-                    reverse_request: Rc::new(Cell::new(PlayRequest::None)),
-                    course: PanelCourse::new(source.player.duration()),
-                    show: None,
-                }
-            });
+        let (hover_reverse, loop_twin) = match source.role {
+            VideoRole::Hover => (source.reverse, None),
+            VideoRole::Loop => (None, source.reverse),
+            VideoRole::World => (None, None),
+        };
+        let panel = hover_reverse.map(|reverse| {
+            source.player.set_loop(false);
+            reverse.set_loop(false);
+            PanelVideo {
+                reverse,
+                reverse_request: Rc::new(Cell::new(PlayRequest::None)),
+                course: PanelCourse::new(source.player.duration()),
+                show: None,
+            }
+        });
+        let looped = loop_twin.map(|twin| {
+            let length = source.player.duration();
+            // Стык ведут два проигрывателя по очереди. Ролик без длины браузер крутит сам.
+            source
+                .player
+                .set_loop(!(length.is_finite() && length > 0.0));
+            twin.set_loop(false);
+            LoopVideo {
+                twin,
+                twin_request: Rc::new(Cell::new(PlayRequest::None)),
+                course: LoopCourse::new(length),
+                show: None,
+            }
+        });
         Video {
             image: source.image,
             player: source.player,
             play_request: Rc::new(Cell::new(PlayRequest::None)),
             panel,
+            looped,
             width: source.width,
             height: source.height,
             place: source.place,
@@ -308,6 +369,12 @@ impl Video {
     /// Проигрыватель, чей кадр писать в атлас в этом кадре: у обычного видео свой, у видео панели тот, что ход
     /// выбрал, а пока он переходит на новое место, — никакой.
     fn shown_player(&self) -> Option<&HtmlVideoElement> {
+        if let Some(looped) = &self.looped {
+            return match looped.show? {
+                0 => Some(&self.player),
+                _ => Some(&looped.twin),
+            };
+        }
         match &self.panel {
             None => Some(&self.player),
             Some(panel) => match panel.show? {
@@ -403,6 +470,28 @@ fn request_play(player: &HtmlVideoElement, request: &Rc<Cell<PlayRequest>>) {
     });
 }
 
+/// Шаг видео по кругу: панель на экране — ход следит за двумя проигрывателями по времени окна `now` и счёту
+/// открытий экрана `opened`, панели нет — видео стоит на первом кадре и ждёт следующего открытия экрана.
+fn drive_loop(video: &mut Video, input: Option<PanelPlay>) {
+    let Some(looped) = &video.looped else {
+        return;
+    };
+    let ready = [
+        video.has_frame(&video.player),
+        video.has_frame(&looped.twin),
+    ];
+    let readings = [reading_of(&video.player), reading_of(&looped.twin)];
+    let Some(looped) = video.looped.as_mut() else {
+        return;
+    };
+    let step = match input {
+        Some(PanelPlay::Loop { now, opened }) => looped.course.step(now, opened, ready, readings),
+        _ => looped.course.leave().unwrap_or_default(),
+    };
+    looped.show = step.show;
+    apply_loop_step(&step, video);
+}
+
 fn reading_of(player: &HtmlVideoElement) -> PlayerReading {
     PlayerReading {
         time: player.current_time(),
@@ -417,9 +506,32 @@ fn seek(player: &HtmlVideoElement, time: f64) {
     player.set_current_time(if end.is_finite() { time.min(end) } else { time });
 }
 
-/// Выполняет шаг хода видео панели: пауза, переход на место, просьба играть. Просьбу, на которую браузер
-/// ещё не ответил или отказал, не повторяют; отказ забывается, когда проигрыватель встаёт или уходит на
-/// другое место.
+/// Забывает отказ браузера играть: проигрыватель встал или ушёл на другое место, и просьбу можно повторить.
+fn forget_refusal(request: &Rc<Cell<PlayRequest>>) {
+    if request.get() == PlayRequest::Refused {
+        request.set(PlayRequest::None);
+    }
+}
+
+fn pause_player(player: &HtmlVideoElement, request: &Rc<Cell<PlayRequest>>) {
+    let _ = player.pause();
+    forget_refusal(request);
+}
+
+fn seek_player(player: &HtmlVideoElement, request: &Rc<Cell<PlayRequest>>, time: f64) {
+    seek(player, time);
+    forget_refusal(request);
+}
+
+/// Просьбу, на которую браузер ещё не ответил или отказал, не повторяют.
+fn play_player(player: &HtmlVideoElement, request: &Rc<Cell<PlayRequest>>) {
+    if request.get() == PlayRequest::None {
+        request.set(PlayRequest::Pending);
+        request_play(player, request);
+    }
+}
+
+/// Выполняет шаг хода видео панели: пауза, переход на место, просьба играть.
 fn apply_panel_step(step: &PanelStep, video: &Video) {
     let Some(panel) = &video.panel else {
         return;
@@ -428,26 +540,38 @@ fn apply_panel_step(step: &PanelStep, video: &Video) {
         Roll::Forward => (&video.player, &video.play_request),
         Roll::Backward => (&panel.reverse, &panel.reverse_request),
     };
-    let forget_refusal = |request: &Rc<Cell<PlayRequest>>| {
-        if request.get() == PlayRequest::Refused {
-            request.set(PlayRequest::None);
-        }
-    };
     if let Some(roll) = step.pause {
         let (player, request) = part(roll);
-        let _ = player.pause();
-        forget_refusal(request);
+        pause_player(player, request);
     }
     if let Some((roll, time)) = step.seek {
         let (player, request) = part(roll);
-        seek(player, time);
-        forget_refusal(request);
+        seek_player(player, request, time);
     }
     if let Some(roll) = step.play {
         let (player, request) = part(roll);
-        if request.get() == PlayRequest::None {
-            request.set(PlayRequest::Pending);
-            request_play(player, request);
+        play_player(player, request);
+    }
+}
+
+/// Выполняет шаг хода видео по кругу с каждым из двух проигрывателей.
+fn apply_loop_step(step: &LoopStep, video: &Video) {
+    let Some(looped) = &video.looped else {
+        return;
+    };
+    let players = [
+        (&video.player, &video.play_request),
+        (&looped.twin, &looped.twin_request),
+    ];
+    for (order, (player, request)) in step.orders.iter().zip(players) {
+        if order.pause {
+            pause_player(player, request);
+        }
+        if let Some(time) = order.seek {
+            seek_player(player, request, time);
+        }
+        if order.play {
+            play_player(player, request);
         }
     }
 }

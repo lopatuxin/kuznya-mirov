@@ -1850,14 +1850,14 @@ body.is-resizing-panel {
 
 .particles-panel__cards-area {
   flex: none;
-  width: 270px;
+  width: 380px;
   padding: 10px 12px 12px 14px;
   border-right: 1px solid var(--editor-border);
 }
 
 .particles-panel__cards {
   display: grid;
-  grid-template-columns: repeat(4, 56px);
+  grid-template-columns: repeat(6, 56px);
   gap: 6px;
   margin: 0;
   padding: 0;

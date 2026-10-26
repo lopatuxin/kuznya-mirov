@@ -1,4 +1,4 @@
-import { LEAF_COLOR_START, PARTICLE_DEFAULTS, PARTICLE_LABELS, presentEffectKeys, type ParticleEffect, type ParticleEffectId } from "./particleEffects";
+import { BUTTERFLY_COLOR_START, LEAF_COLOR_START, PARTICLE_DEFAULTS, PARTICLE_LABELS, presentEffectKeys, type ParticleEffect, type ParticleEffectId } from "./particleEffects";
 import { ColorField, ColorSwatch, DensityField, NumberField, type ParticleEditing } from "./ParticleFieldControls";
 import { SparksDirectionDial } from "./SparksDirectionDial";
 
@@ -22,25 +22,40 @@ function SparksFields({ editing }: EffectBodyProps): React.JSX.Element {
   );
 }
 
-function LeavesFields({ editing }: EffectBodyProps): React.JSX.Element {
-  const isAutumn = editing.properties.leaf_color === undefined;
+type VariedColorFieldProps = { label: string; propertyKey: string; startColor: string; variedLabel: string; editing: ParticleEditing };
+
+/** Цвет эффекта, у которого без свойства цвета разные: галочка «вперемешку» стоит, пока свойства нет; снять её — записать начальный цвет. */
+function VariedColorField({ label, propertyKey, startColor, variedLabel, editing }: VariedColorFieldProps): React.JSX.Element {
+  const isVaried = editing.properties[propertyKey] === undefined;
   return (
     <div className="particles-field">
-      <span className="particles-field__label">{PARTICLE_LABELS.leaf_color}</span>
+      <span className="particles-field__label">{label}</span>
       <div className="particles-leaf-color">
-        <ColorSwatch propertyKey="leaf_color" fallback={LEAF_COLOR_START} editing={editing} />
+        <ColorSwatch propertyKey={propertyKey} fallback={startColor} editing={editing} />
         <label className="particles-leaf-color__autumn">
           <input
             type="checkbox"
-            checked={isAutumn}
+            checked={isVaried}
             disabled={editing.isDisabled}
-            onChange={(event) => (event.target.checked ? editing.onRemove(["leaf_color"]) : editing.onCommit("leaf_color", LEAF_COLOR_START, undefined))}
+            onChange={(event) => (event.target.checked ? editing.onRemove([propertyKey]) : editing.onCommit(propertyKey, startColor, undefined))}
           />
-          осенние вперемешку
+          {variedLabel}
         </label>
       </div>
     </div>
   );
+}
+
+function LeavesFields({ editing }: EffectBodyProps): React.JSX.Element {
+  return <VariedColorField label={PARTICLE_LABELS.leaf_color} propertyKey="leaf_color" startColor={LEAF_COLOR_START} variedLabel="осенние вперемешку" editing={editing} />;
+}
+
+function FluffFields({ editing }: EffectBodyProps): React.JSX.Element {
+  return <ColorField label={PARTICLE_LABELS.fluff_color} propertyKey="fluff_color" fallback={PARTICLE_DEFAULTS.fluff_color} editing={editing} />;
+}
+
+function ButterfliesFields({ editing }: EffectBodyProps): React.JSX.Element {
+  return <VariedColorField label={PARTICLE_LABELS.butterfly_color} propertyKey="butterfly_color" startColor={BUTTERFLY_COLOR_START} variedLabel="разные" editing={editing} />;
 }
 
 function FireFields({ editing }: EffectBodyProps): React.JSX.Element {
@@ -58,6 +73,8 @@ const EFFECT_BODIES: Record<ParticleEffectId, (props: EffectBodyProps) => React.
   smoke: SmokeFields,
   sparks: SparksFields,
   leaves: LeavesFields,
+  fluff: FluffFields,
+  butterflies: ButterfliesFields,
   fire: FireFields,
 };
 

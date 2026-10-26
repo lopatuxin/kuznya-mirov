@@ -2,7 +2,7 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { LEAVES_DRAG_TYPE, PARTICLES_DRAG_TYPE } from "./imageDrag";
-import { LEAF_COLOR_START } from "./particleEffects";
+import { BUTTERFLY_COLOR_START, LEAF_COLOR_START } from "./particleEffects";
 import { ParticlesPanel } from "./ParticlesPanel";
 
 type PanelProps = Parameters<typeof ParticlesPanel>[0];
@@ -33,10 +33,10 @@ function type(input: HTMLElement, text: string): void {
 afterEach(cleanup);
 
 describe("ParticlesPanel: карточки", () => {
-  it("четыре карточки — дым, искры, листья, огонь, без «Копировать» и «Удалить»", () => {
+  it("шесть карточек — дым, искры, листья, пух, бабочки, огонь, без «Копировать» и «Удалить»", () => {
     renderPanel(null);
 
-    expect(within(screen.getByRole("list", { name: "Эффекты" })).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья", "огонь"]);
+    expect(within(screen.getByRole("list", { name: "Эффекты" })).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья", "пух", "бабочки", "огонь"]);
     expect(screen.queryByRole("button", { name: "Копировать" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Удалить" })).toBeNull();
   });
@@ -60,7 +60,7 @@ describe("ParticlesPanel: карточки", () => {
     renderPanel(null);
     const setData = vi.fn();
 
-    fireEvent.dragStart(screen.getAllByRole("listitem")[3] as HTMLElement, { dataTransfer: { setData, effectAllowed: "" } });
+    fireEvent.dragStart(screen.getAllByRole("listitem")[5] as HTMLElement, { dataTransfer: { setData, effectAllowed: "" } });
 
     expect(setData).toHaveBeenCalledTimes(1);
     expect(setData).toHaveBeenCalledWith(PARTICLES_DRAG_TYPE, "fire");
@@ -83,7 +83,7 @@ describe("ParticlesPanel: группы выбранного объекта", () 
 
   it("объект без частиц и без выбора — подсказка", () => {
     renderPanel({ position: [1, 1], size: [1, 1] });
-    expect(screen.getByText("Дым, искры и огонь перетащите туда, откуда они идут, — на трубу, костёр или горн. Листья — на дерево")).toBeTruthy();
+    expect(screen.getByText("Дым, искры и огонь перетащите туда, откуда они идут, — на трубу, костёр или горн. Листья — на дерево, пух и бабочки — на луг или поляну")).toBeTruthy();
     cleanup();
 
     renderPanel(null);
@@ -729,5 +729,90 @@ describe("ParticlesPanel: круг направления и разброса", 
     expect(screen.getByRole("alert").textContent).toBe("направление не принято");
     expect(props.onCommit).not.toHaveBeenCalled();
     expect(onPreview).toHaveBeenLastCalledWith("sparks_direction", undefined);
+  });
+});
+
+describe("ParticlesPanel: пух и бабочки", () => {
+  const FLUFF_AND_BUTTERFLIES = { position: [1, 1], size: [8, 3], fluff: 0.3, butterflies: 0.3 };
+
+  it("карточки «пух» и «бабочки» отдают свой ключ и тип для рамки над целью", () => {
+    renderPanel(null);
+    const cards = screen.getAllByRole("listitem");
+
+    for (const [card, effectId] of [
+      [cards[3], "fluff"],
+      [cards[4], "butterflies"],
+    ] as const) {
+      const setData = vi.fn();
+      fireEvent.dragStart(card as HTMLElement, { dataTransfer: { setData, effectAllowed: "" } });
+      expect(setData).toHaveBeenCalledWith(PARTICLES_DRAG_TYPE, effectId);
+      expect(setData).toHaveBeenCalledWith(LEAVES_DRAG_TYPE, effectId);
+    }
+  });
+
+  it("объект с пухом и бабочками — группы «Пух» и «Бабочки» по порядку, ползунки со своими ключами, подписи без английских ключей", () => {
+    const { props } = renderPanel(FLUFF_AND_BUTTERFLIES);
+
+    expect(screen.getAllByRole("heading", { level: 3 }).map((heading) => heading.textContent)).toEqual(["Пух", "Бабочки"]);
+    const fluffSlider = within(screen.getByRole("region", { name: "Пух" })).getByRole("slider", { name: "плотность" });
+    const butterfliesSlider = within(screen.getByRole("region", { name: "Бабочки" })).getByRole("slider", { name: "сколько бабочек" });
+
+    fireEvent.input(fluffSlider, { target: { value: "0.6" } });
+    fireEvent.change(fluffSlider);
+    expect(props.onPreview).toHaveBeenLastCalledWith("fluff", 0.6);
+    expect(props.onCommit).toHaveBeenLastCalledWith("fluff", 0.6, 0.3);
+
+    fireEvent.input(butterfliesSlider, { target: { value: "0.8" } });
+    fireEvent.change(butterfliesSlider);
+    expect(props.onPreview).toHaveBeenLastCalledWith("butterflies", 0.8);
+    expect(props.onCommit).toHaveBeenLastCalledWith("butterflies", 0.8, 0.3);
+
+    for (const text of ["редкий", "метелью", "изредка", "стайка", "цвет пуха", "цвет бабочек", "разные"]) {
+      expect(screen.getByText(text)).toBeTruthy();
+    }
+    expect(document.body.textContent).not.toMatch(/fluff|butterfl|butterfly_color/);
+  });
+
+  it("цвет пуха правится палитрой; без цвета палитра бледная и стоит на белом с тёплым отливом", () => {
+    const { props } = renderPanel({ fluff: 0.3 });
+    const picker = screen.getByRole("region", { name: "Пух" }).querySelector("input[type=color]") as HTMLInputElement;
+
+    expect(picker.value).toBe("#fff5db");
+    expect(picker.closest(".particles-color--default")).not.toBeNull();
+
+    picker.value = "#ddeeff";
+    fireEvent.change(picker);
+
+    expect(props.onCommit).toHaveBeenCalledWith("fluff_color", "#ddeeff", undefined);
+  });
+
+  it("бабочки по умолчанию разные: галочка стоит; снять её — начальный цвет записывается", () => {
+    const { props } = renderPanel({ butterflies: 0.3 });
+    const varied = screen.getByLabelText("разные") as HTMLInputElement;
+    expect(varied.checked).toBe(true);
+
+    fireEvent.click(varied);
+
+    expect(props.onCommit).toHaveBeenCalledWith("butterfly_color", BUTTERFLY_COLOR_START, undefined);
+  });
+
+  it("с цветом бабочек галочка снята; поставить её — butterfly_color снимается", () => {
+    const { props } = renderPanel({ butterflies: 0.3, butterfly_color: "#ffaa00" });
+    const varied = screen.getByLabelText("разные") as HTMLInputElement;
+    expect(varied.checked).toBe(false);
+
+    fireEvent.click(varied);
+
+    expect(props.onRemove).toHaveBeenCalledWith(["butterfly_color"]);
+  });
+
+  it("«Убрать» снимает у пуха fluff и fluff_color, у бабочек butterflies и butterfly_color — каждая группа только свои", () => {
+    const { props } = renderPanel({ ...FLUFF_AND_BUTTERFLIES, fluff_color: "#ffffff", butterfly_color: "#ffaa00", smoke: 0.5 });
+
+    fireEvent.click(within(screen.getByRole("region", { name: "Пух" })).getByRole("button", { name: "Убрать" }));
+    expect(props.onRemove).toHaveBeenLastCalledWith(["fluff", "fluff_color"]);
+
+    fireEvent.click(within(screen.getByRole("region", { name: "Бабочки" })).getByRole("button", { name: "Убрать" }));
+    expect(props.onRemove).toHaveBeenLastCalledWith(["butterflies", "butterfly_color"]);
   });
 });

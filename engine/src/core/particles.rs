@@ -1,6 +1,6 @@
-//! «Ветер и частицы» → «Частицы», «Дым и искры», «Листопад»: девять свойств объекта и то, что движок
-//! из них считает про каждый эффект, — частоту, жизнь, размер, скорость, тяжесть, долю ветра,
-//! просвечивание и цвет частиц.
+//! «Ветер и частицы» → «Частицы», «Дым и искры», «Листопад», «Пух», «Бабочки»: тринадцать свойств
+//! объекта и то, что движок из них считает про каждый эффект, — частоту, жизнь, размер, скорость,
+//! тяжесть, долю ветра, просвечивание и цвет частиц.
 
 use super::property;
 use super::world::World;
@@ -27,8 +27,8 @@ impl Span {
 }
 
 /// Встроенный рисунок частиц: движок рисует его сам при сборке атласа, в список картинок игры он не
-/// входит. Дым, искра и белый лист окрашиваются цветом прямоугольника; осенний лист рисуется своими
-/// цветами.
+/// входит. Дым, искра, пух, бабочка и белый лист окрашиваются цветом прямоугольника; осенний лист
+/// рисуется своими цветами.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ParticleShape {
     Smoke,
@@ -36,14 +36,20 @@ pub enum ParticleShape {
     Leaf,
     WhiteLeaf,
     Halo,
+    Fluff,
+    Butterfly,
 }
 
 impl ParticleShape {
-    /// Кадров в рисунке: частица листа берёт кадр наугад при вылете и держит его всю жизнь.
+    /// Кадров в рисунке: частица листа берёт кадр наугад при вылете и держит его всю жизнь, кадры
+    /// бабочки — взмах крыльев.
     pub const fn frames(self) -> u32 {
         match self {
-            ParticleShape::Leaf | ParticleShape::WhiteLeaf => 4,
-            ParticleShape::Smoke | ParticleShape::Spark | ParticleShape::Halo => 1,
+            ParticleShape::Leaf | ParticleShape::WhiteLeaf | ParticleShape::Butterfly => 4,
+            ParticleShape::Smoke
+            | ParticleShape::Spark
+            | ParticleShape::Halo
+            | ParticleShape::Fluff => 1,
         }
     }
 }
@@ -53,10 +59,18 @@ pub enum Effect {
     Smoke,
     Sparks,
     Leaves,
+    Fluff,
+    Butterflies,
 }
 
 impl Effect {
-    pub const ALL: [Effect; 3] = [Effect::Smoke, Effect::Sparks, Effect::Leaves];
+    pub const ALL: [Effect; 5] = [
+        Effect::Smoke,
+        Effect::Sparks,
+        Effect::Leaves,
+        Effect::Fluff,
+        Effect::Butterflies,
+    ];
 }
 
 pub type Rgb = [f32; 3];
@@ -123,6 +137,100 @@ pub const LEAF_BRIGHTNESS: Span = Span {
     from: 0.8,
     to: 1.15,
 };
+/// Секунд на один размах качания листа, от и до.
+const LEAF_RHYTHM: Span = Span { from: 1.2, to: 2.0 };
+
+/// Белый с тёплым отливом.
+const DEFAULT_FLUFF_COLOR: Rgb = [1.0, 0.96, 0.86];
+/// Пушинок на клетку площади прямоугольника одновременно при `fluff` 1.
+const FLUFF_PER_CELL: f64 = 3.0;
+pub const FLUFF_LIFETIME: Span = Span {
+    from: 6.0,
+    to: 10.0,
+};
+/// Секунд, за которые пушинка проявляется.
+pub const FLUFF_FADE_IN_SECONDS: f64 = 0.5;
+/// За последние сколько секунд жизни пушинка тает.
+pub const FLUFF_FADE_OUT_SECONDS: f64 = 1.0;
+const FLUFF_SIZE: Span = Span {
+    from: 0.18,
+    to: 0.3,
+};
+/// Установившаяся скорость падения: тяжесть мала, сопротивление велико.
+const FLUFF_FALL_SPEED: Span = Span {
+    from: 0.03,
+    to: 0.08,
+};
+/// Пух уносит ветер сильнее всех частиц: пушинка летит вровень с ветром и чуть быстрее.
+const FLUFF_WIND: f64 = 1.05;
+const FLUFF_SPIN: Span = Span {
+    from: -45.0,
+    to: 45.0,
+};
+/// Блуждание: размах вбок и вверх-вниз в клетках.
+const FLUFF_SWAY: f64 = 0.35;
+const FLUFF_BOB: f64 = 0.25;
+/// Секунд на один размах блуждания, от и до.
+const FLUFF_RHYTHM: Span = Span { from: 2.5, to: 5.5 };
+/// Просвечивание пуха: он светится слегка.
+const FLUFF_GLOW: f64 = 0.7;
+
+/// Клеток ширины прямоугольника на одну бабочку одновременно при `butterflies` 1.
+const BUTTERFLY_CELLS_PER_ONE: f64 = 3.0;
+/// Секунд, за которые бабочка проявляется у края и тает за противоположным.
+pub const BUTTERFLY_FADE_SECONDS: f64 = 0.5;
+/// На сколько клеток за краем прямоугольника бабочка влетает и начинает таять.
+pub const BUTTERFLY_EDGE: f64 = 0.25;
+/// За сколько секунд бабочка пролетает десять клеток ширины, не считая посадок, — своё у каждой.
+pub const BUTTERFLY_TEN_CELLS_SECONDS: Span = Span {
+    from: 6.0,
+    to: 12.0,
+};
+pub const BUTTERFLY_FLAP_HZ: Span = Span {
+    from: 8.0,
+    to: 12.0,
+};
+pub const BUTTERFLY_SIT_SECONDS: Span = Span { from: 1.0, to: 3.0 };
+pub const BUTTERFLY_SIT_FLAP_HZ: Span = Span { from: 1.0, to: 2.0 };
+/// Секунд, за которые бабочка опускается на место посадки, и за которые взлетает.
+pub const BUTTERFLY_LANDING_SECONDS: f64 = 0.7;
+pub const BUTTERFLY_TAKEOFF_SECONDS: f64 = 0.7;
+/// Посадок за пролёт не больше двух, и каждая случается с вероятностью ½: в среднем одна.
+pub const BUTTERFLY_MAX_LANDINGS: usize = 2;
+pub const BUTTERFLY_LANDING_CHANCE: f64 = 0.5;
+/// Ширина кадра бабочки в клетках: нарисованные крылья занимают около половины кадра, и размах выходит
+/// около половины клетки.
+const BUTTERFLY_SIZE: Span = Span {
+    from: 0.85,
+    to: 1.0,
+};
+/// Ветер сносит бабочку слабо.
+const BUTTERFLY_WIND: f64 = 0.1;
+/// Цвета бабочек, когда `butterfly_color` не задан: белый, жёлтый, оранжевый.
+pub const BUTTERFLY_COLORS: [Rgb; 3] = [[1.0, 1.0, 1.0], [1.0, 0.88, 0.25], [1.0, 0.6, 0.15]];
+
+fn mean(span: Span) -> f64 {
+    span.at(0.5)
+}
+
+/// Секунд, которые бабочка в среднем проводит над прямоугольником шириной `width`: пролёт вместе с
+/// краями, таяние и посадки. По ней считается частота вылета, чтобы бабочек было нужное число.
+pub fn butterfly_mean_life(width: f64) -> f64 {
+    let crossing = (width + 2.0 * BUTTERFLY_EDGE) * mean(BUTTERFLY_TEN_CELLS_SECONDS) / 10.0;
+    let landings = BUTTERFLY_MAX_LANDINGS as f64 * BUTTERFLY_LANDING_CHANCE;
+    crossing
+        + BUTTERFLY_FADE_SECONDS
+        + landings * (BUTTERFLY_LANDING_SECONDS + mean(BUTTERFLY_SIT_SECONDS))
+}
+
+/// Самая долгая жизнь бабочки над прямоугольником шириной `width`: медленный пролёт и обе посадки
+/// самыми долгими. Столько источник прогревается.
+pub fn butterfly_longest_life(width: f64) -> f64 {
+    let crossing = (width + 2.0 * BUTTERFLY_EDGE) * BUTTERFLY_TEN_CELLS_SECONDS.to / 10.0;
+    crossing
+        + BUTTERFLY_FADE_SECONDS
+        + BUTTERFLY_MAX_LANDINGS as f64 * (BUTTERFLY_LANDING_SECONDS + BUTTERFLY_SIT_SECONDS.to)
+}
 
 /// Настройки частиц объекта, прочитанные из его свойств. Значения вне допустимых отрезков
 /// подтягиваются к ним: рисование данные не отвергает.
@@ -138,6 +246,32 @@ pub struct Settings {
     pub leaf_fall: f64,
     /// `None` — осенние листья вперемешку.
     pub leaf_color: Option<Rgb>,
+    pub fluff: f64,
+    pub fluff_color: Rgb,
+    pub butterflies: f64,
+    /// `None` — белые, жёлтые и оранжевые вперемешку.
+    pub butterfly_color: Option<Rgb>,
+}
+
+impl Default for Settings {
+    /// Ничего не включено, настройки — по умолчанию.
+    fn default() -> Settings {
+        Settings {
+            smoke: 0.0,
+            smoke_height: DEFAULT_SMOKE_HEIGHT,
+            smoke_color: DEFAULT_SMOKE_COLOR,
+            sparks: 0.0,
+            sparks_reach: DEFAULT_SPARKS_REACH,
+            sparks_direction: 0.0,
+            sparks_spread: DEFAULT_SPARKS_SPREAD,
+            leaf_fall: 0.0,
+            leaf_color: None,
+            fluff: 0.0,
+            fluff_color: DEFAULT_FLUFF_COLOR,
+            butterflies: 0.0,
+            butterfly_color: None,
+        }
+    }
 }
 
 impl Settings {
@@ -162,6 +296,10 @@ impl Settings {
                 .map_or(DEFAULT_SPARKS_SPREAD, |n| n.clamp(0.0, 180.0)),
             leaf_fall: number(property::LEAF_FALL).map_or(0.0, |n| n.clamp(0.0, 1.0)),
             leaf_color: color(property::LEAF_COLOR),
+            fluff: number(property::FLUFF).map_or(0.0, |n| n.clamp(0.0, 1.0)),
+            fluff_color: color(property::FLUFF_COLOR).unwrap_or(DEFAULT_FLUFF_COLOR),
+            butterflies: number(property::BUTTERFLIES).map_or(0.0, |n| n.clamp(0.0, 1.0)),
+            butterfly_color: color(property::BUTTERFLY_COLOR),
         }
     }
 
@@ -171,6 +309,8 @@ impl Settings {
             Effect::Smoke => self.smoke,
             Effect::Sparks => self.sparks,
             Effect::Leaves => self.leaf_fall,
+            Effect::Fluff => self.fluff,
+            Effect::Butterflies => self.butterflies,
         }
     }
 
@@ -188,6 +328,8 @@ impl Settings {
             Effect::Smoke => self.smoke_kind(),
             Effect::Sparks => self.sparks_kind(),
             Effect::Leaves => self.leaves_kind(),
+            Effect::Fluff => self.fluff_kind(),
+            Effect::Butterflies => self.butterflies_kind(),
         }
     }
 
@@ -208,6 +350,8 @@ impl Settings {
             opacity: [density, 0.6 * density, 0.0],
             spin: SMOKE_SPIN,
             wobble: 0.0,
+            wander: 0.0,
+            rhythm: LEAF_RHYTHM,
             tint: Some(self.smoke_color),
         }
     }
@@ -232,6 +376,8 @@ impl Settings {
             opacity: [1.0, 1.0, 0.0],
             spin: Span::single(0.0),
             wobble: 0.0,
+            wander: 0.0,
+            rhythm: LEAF_RHYTHM,
             tint: None,
         }
     }
@@ -252,7 +398,53 @@ impl Settings {
             opacity: [1.0, 1.0, 1.0],
             spin: LEAF_SPIN,
             wobble: LEAF_WOBBLE,
+            wander: 0.0,
+            rhythm: LEAF_RHYTHM,
             tint: self.leaf_color,
+        }
+    }
+
+    fn fluff_kind(&self) -> Kind {
+        Kind {
+            effect: Effect::Fluff,
+            rate: FLUFF_PER_CELL * self.fluff,
+            lifetime: FLUFF_LIFETIME,
+            size: FLUFF_SIZE,
+            grow: 1.0,
+            speed: FLUFF_FALL_SPEED,
+            rise: 0.0,
+            direction: 0.0,
+            spread: 0.0,
+            gravity: 0.0,
+            wind: FLUFF_WIND,
+            opacity: [FLUFF_GLOW; 3],
+            spin: FLUFF_SPIN,
+            wobble: FLUFF_SWAY,
+            wander: FLUFF_BOB,
+            rhythm: FLUFF_RHYTHM,
+            tint: Some(self.fluff_color),
+        }
+    }
+
+    fn butterflies_kind(&self) -> Kind {
+        Kind {
+            effect: Effect::Butterflies,
+            rate: self.butterflies / BUTTERFLY_CELLS_PER_ONE,
+            lifetime: Span::single(0.0),
+            size: BUTTERFLY_SIZE,
+            grow: 1.0,
+            speed: Span::single(0.0),
+            rise: 0.0,
+            direction: 0.0,
+            spread: 0.0,
+            gravity: 0.0,
+            wind: BUTTERFLY_WIND,
+            opacity: [1.0; 3],
+            spin: Span::single(0.0),
+            wobble: 0.0,
+            wander: 0.0,
+            rhythm: LEAF_RHYTHM,
+            tint: self.butterfly_color,
         }
     }
 }
@@ -261,9 +453,12 @@ impl Settings {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Kind {
     pub effect: Effect,
-    /// Частиц в секунду; у листьев — в секунду на клетку площади непрозрачной части.
+    /// Частиц в секунду; у листьев — в секунду на клетку площади непрозрачной части; у пуха — число
+    /// пушинок на клетку площади одновременно, у бабочек — число бабочек на клетку ширины
+    /// одновременно: частоту вылета по ним считает источник, зная прямоугольник.
     pub rate: f64,
-    /// Секунды жизни; у искр — доли времени подъёма до верхней точки.
+    /// Секунды жизни; у искр — доли времени подъёма до верхней точки; у бабочек не читается: жизнь
+    /// кончается там, где бабочка улетает за край.
     pub lifetime: Span,
     /// Ширина в клетках до поправки на `parallax`.
     pub size: Span,
@@ -281,9 +476,14 @@ pub struct Kind {
     /// Просвечивание через равные доли жизни.
     pub opacity: [f64; 3],
     pub spin: Span,
-    /// Размах качания листа вбок в клетках до поправки на `parallax`.
+    /// Размах качания листа и пушинки вбок в клетках до поправки на `parallax`.
     pub wobble: f64,
-    /// Цвет, которым окрашен рисунок; `None` — у искры цвет идёт по жизни, у листа осенние цвета.
+    /// Размах блуждания пушинки вверх-вниз в клетках до поправки на `parallax`.
+    pub wander: f64,
+    /// Секунд на один размах качания и блуждания, от и до — своё у каждой частицы.
+    pub rhythm: Span,
+    /// Цвет, которым окрашен рисунок; `None` — у искры цвет идёт по жизни, у листа осенние цвета, у
+    /// бабочки один из трёх на жизнь.
     pub tint: Option<Rgb>,
 }
 
@@ -294,15 +494,19 @@ impl Kind {
             (Effect::Sparks, _) => ParticleShape::Spark,
             (Effect::Leaves, Some(_)) => ParticleShape::WhiteLeaf,
             (Effect::Leaves, None) => ParticleShape::Leaf,
+            (Effect::Fluff, _) => ParticleShape::Fluff,
+            (Effect::Butterflies, _) => ParticleShape::Butterfly,
         }
     }
 
     /// Сколько секунд источник должен простоять на месте, чтобы выпустить всё, что успеет жить:
-    /// столько он прогревается.
-    pub fn warm_seconds(&self) -> f64 {
+    /// столько он прогревается. `width` — ширина прямоугольника источника в клетках: от неё зависит
+    /// жизнь бабочки.
+    pub fn warm_seconds(&self, width: f64) -> f64 {
         match self.effect {
             Effect::Sparks => self.lifetime.to * self.speed.to / self.gravity,
-            Effect::Smoke | Effect::Leaves => self.lifetime.to,
+            Effect::Smoke | Effect::Leaves | Effect::Fluff => self.lifetime.to,
+            Effect::Butterflies => butterfly_longest_life(width),
         }
     }
 }
@@ -339,7 +543,67 @@ mod tests {
         assert_eq!(settings.sparks_direction, 0.0);
         assert_eq!(settings.sparks_spread, 30.0);
         assert_eq!(settings.leaf_color, None);
+        assert_eq!(settings.fluff_color, [1.0, 0.96, 0.86]);
+        assert_eq!(settings.butterfly_color, None);
         assert!(!settings.any_runs());
+        assert_eq!(settings, Settings::default());
+    }
+
+    #[test]
+    fn fluff_and_butterflies_run_on_their_own_main_property_and_are_clamped_to_zero_and_one() {
+        let world = world_with(|world| {
+            world.set_number(0, property::FLUFF, 4.0);
+            world.set_number(0, property::BUTTERFLIES, -2.0);
+            world.set_color(0, property::FLUFF_COLOR, [0.1, 0.2, 0.3, 1.0]);
+            world.set_color(0, property::BUTTERFLY_COLOR, [0.9, 0.8, 0.7, 0.5]);
+        });
+        let settings = Settings::read(&world, 0);
+        assert_eq!(settings.fluff, 1.0);
+        assert_eq!(settings.butterflies, 0.0);
+        assert_eq!(settings.fluff_color, [0.1, 0.2, 0.3]);
+        assert_eq!(settings.butterfly_color, Some([0.9, 0.8, 0.7]));
+        assert!(settings.runs(Effect::Fluff));
+        assert!(!settings.runs(Effect::Butterflies));
+        assert!(settings.any_runs());
+    }
+
+    #[test]
+    fn the_fluff_and_the_butterfly_have_their_own_pictures_and_their_own_numbers() {
+        let settings = Settings {
+            fluff: 1.0,
+            butterflies: 1.0,
+            ..defaults()
+        };
+        let fluff = settings.kind(Effect::Fluff);
+        let butterflies = settings.kind(Effect::Butterflies);
+        assert_eq!(fluff.shape(), ParticleShape::Fluff);
+        assert_eq!(butterflies.shape(), ParticleShape::Butterfly);
+        assert_eq!(ParticleShape::Butterfly.frames(), 4);
+        assert_eq!((fluff.lifetime.from, fluff.lifetime.to), (6.0, 10.0));
+        assert_eq!(fluff.rate, 3.0, "пушинок на клетку площади одновременно");
+        assert!(
+            near_one_third(butterflies.rate),
+            "бабочек на клетку ширины одновременно"
+        );
+        assert!(butterflies.wind <= 0.15 && fluff.wind >= 0.8);
+        assert!(fluff.warm_seconds(0.0) >= 10.0);
+        assert!(butterflies.warm_seconds(10.0) > butterflies.warm_seconds(5.0));
+    }
+
+    fn near_one_third(rate: f64) -> bool {
+        (rate - 1.0 / 3.0).abs() < 1e-12
+    }
+
+    #[test]
+    fn the_longest_butterfly_life_covers_the_mean_one() {
+        for width in [0.5, 3.0, 10.0, 40.0] {
+            assert!(
+                butterfly_longest_life(width) > butterfly_mean_life(width),
+                "{width}"
+            );
+        }
+        let ten = butterfly_mean_life(10.0);
+        assert!((12.0..=16.0).contains(&ten), "{ten}");
     }
 
     #[test]
@@ -419,6 +683,7 @@ mod tests {
         assert_eq!(plain.kind(Effect::Smoke).shape(), ParticleShape::Smoke);
         assert_eq!(plain.kind(Effect::Sparks).shape(), ParticleShape::Spark);
         assert_eq!(plain.kind(Effect::Leaves).shape(), ParticleShape::Leaf);
+        assert_eq!(plain.kind(Effect::Fluff).shape(), ParticleShape::Fluff);
         let coloured = Settings {
             leaf_color: Some([1.0, 0.0, 0.0]),
             ..plain

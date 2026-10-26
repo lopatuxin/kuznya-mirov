@@ -1,6 +1,7 @@
-//! «Ветер и частицы» → «Частицы»: встроенные рисунки частиц — клуб дыма, искра и по четыре кадра листа,
-//! осеннего и белого. Движок рисует их сам при сборке атласа; клуб, искра и белый лист белые —
-//! окрашивает их цвет прямоугольника, а осенний лист несёт свои цвета; края прозрачные.
+//! «Ветер и частицы» → «Частицы»: встроенные рисунки частиц — клуб дыма, искра, пушинка, по четыре кадра
+//! листа, осеннего и белого, и по четыре кадра взмаха бабочки. Движок рисует их сам при сборке атласа;
+//! клуб, искра, пушинка, белый лист и бабочка белые — окрашивает их цвет прямоугольника, а осенний лист
+//! несёт свои цвета; края прозрачные.
 
 use crate::core::particles::ParticleShape;
 
@@ -10,8 +11,24 @@ use super::fire::HALO_FALLOFF_POWER;
 pub(super) const SMOKE_SIZE: u32 = 64;
 pub(super) const SPARK_SIZE: u32 = 32;
 pub(super) const HALO_SIZE: u32 = 64;
+pub(super) const FLUFF_SIZE: u32 = 64;
 /// Сторона одного кадра листа; кадры лежат в ряд слева направо.
 pub(super) const LEAF_SIZE: u32 = 32;
+/// Сторона одного кадра бабочки; кадры лежат в ряд слева направо.
+pub(super) const BUTTERFLY_SIZE: u32 = 32;
+
+/// Пушинка: лучиков и доля половины рисунка, до которой дотягивается самый длинный из них.
+const FLUFF_RAYS: i32 = 13;
+const FLUFF_CORE_RADIUS: f32 = 0.2;
+/// Бабочка сбоку: подъём крыльев над тельцем на кадре взмаха — сложены вверх, раскрыты, опущены вниз,
+/// снова раскрыты.
+const BUTTERFLY_LIFT: [f32; 4] = [1.0, 0.55, -0.3, 0.55];
+const BUTTERFLY_WING: [f32; 3] = [250.0, 250.0, 250.0];
+const BUTTERFLY_HIND_WING: [f32; 3] = [215.0, 215.0, 215.0];
+const BUTTERFLY_RIM: [f32; 3] = [95.0, 95.0, 95.0];
+const BUTTERFLY_DARK: [f32; 3] = [45.0, 45.0, 45.0];
+/// Высота корня крыльев на тельце, в долях рисунка: от неё меряется, где кончик переднего крыла.
+const BUTTERFLY_ROOT_V: f32 = 0.62;
 
 /// Белый с запасом до 255: свет комков клуба не срезается, а серый дыма получается цветом по умолчанию.
 const SMOKE_TOP: [f32; 3] = [245.0, 245.0, 245.0];
@@ -50,6 +67,12 @@ pub(super) fn draw(shape: ParticleShape) -> AtlasImage {
         ParticleShape::Smoke => paint(SMOKE_SIZE, SMOKE_SIZE, smoke),
         ParticleShape::Spark => paint(SPARK_SIZE, SPARK_SIZE, spark),
         ParticleShape::Halo => paint(HALO_SIZE, HALO_SIZE, halo),
+        ParticleShape::Fluff => paint(FLUFF_SIZE, FLUFF_SIZE, fluff),
+        ParticleShape::Butterfly => {
+            paint(BUTTERFLY_SIZE * shape.frames(), BUTTERFLY_SIZE, |x, y| {
+                butterfly(x % BUTTERFLY_SIZE, y, (x / BUTTERFLY_SIZE) as usize)
+            })
+        }
         ParticleShape::Leaf | ParticleShape::WhiteLeaf => {
             let white = shape == ParticleShape::WhiteLeaf;
             paint(LEAF_SIZE * shape.frames(), LEAF_SIZE, |x, y| {
@@ -152,6 +175,100 @@ fn halo(x: u32, y: u32) -> [f32; 4] {
     [255.0, 255.0, 255.0, falloff.powi(HALO_FALLOFF_POWER)]
 }
 
+/// Пушинка: мягкое ядро с тонкими лучиками разной длины; цвет ей даёт прямоугольник.
+fn fluff(x: u32, y: u32) -> [f32; 4] {
+    let (u, v) = unit(x, y, FLUFF_SIZE);
+    let (px, py) = (u * 2.0 - 1.0, v * 2.0 - 1.0);
+    let r = px.hypot(py);
+    let core = (1.0 - smoothstep(0.0, FLUFF_CORE_RADIUS, r)).powf(1.4);
+    let point = 2.0 / FLUFF_SIZE as f32;
+    let angle = py.atan2(px);
+    let mut rays = 0.0f32;
+    for ray in 0..FLUFF_RAYS {
+        let direction =
+            std::f32::consts::TAU * (ray as f32 + 0.35 * lattice(ray, 7)) / FLUFF_RAYS as f32;
+        let length = 0.62 + 0.34 * (0.5 + 0.5 * lattice(ray, 3));
+        let along = r * (angle - direction).cos();
+        let across = r * (angle - direction).sin();
+        let thin = (1.0 - across.abs() / (0.9 * point)).clamp(0.0, 1.0);
+        let reach = smoothstep(0.1, 0.25, along) * (1.0 - smoothstep(0.35, length, along));
+        rays = rays.max(thin * reach * 0.8);
+    }
+    [255.0, 255.0, 255.0, (core + rays).min(1.0)]
+}
+
+/// Расстояние точки `(u, v)` до середины эллипса в долях его радиусов: 1 — край. Эллипс с радиусами `a`
+/// поперёк и `b` вдоль, повёрнутый на `degrees` по часовой стрелке.
+fn ellipse_reach(u: f32, v: f32, center: (f32, f32), a: f32, b: f32, degrees: f32) -> f32 {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (dx, dy) = (u - center.0, v - center.1);
+    ((dx * cos + dy * sin) / a).hypot((-dx * sin + dy * cos) / b)
+}
+
+/// Бабочка кадра `frame` сбоку, как её видит зритель рисованной игры: голова вправо, тельце внизу, над
+/// ним два крыла буквой V — переднее, острое, с тёмным кончиком, и заднее, круглое и чуть темнее. Взмах
+/// поднимает крылья на `BUTTERFLY_LIFT[frame]`: сложены вверх, раскрыты, опущены под тельце.
+fn butterfly(x: u32, y: u32, frame: usize) -> [f32; 4] {
+    let (u, v) = unit(x, y, BUTTERFLY_SIZE);
+    let point = 1.0 / BUTTERFLY_SIZE as f32;
+    let lift = BUTTERFLY_LIFT[frame];
+    let side = if lift < 0.0 { -1.0 } else { 1.0 };
+    let height = lift.abs();
+    let root_v = BUTTERFLY_ROOT_V;
+    let fore_long = 0.3 * height + 0.03;
+    let hind_long = 0.18 * height + 0.025;
+    let fore = ellipse_reach(u, v, (0.6, 0.6 - 0.25 * lift), 0.13, fore_long, 30.0 * side);
+    let hind = ellipse_reach(
+        u,
+        v,
+        (0.4, 0.63 - 0.15 * lift),
+        0.13,
+        hind_long,
+        -32.0 * side,
+    );
+    let inside = |reach: f32, radius: f32| ((1.0 - reach) * radius / (1.2 * point)).clamp(0.0, 1.0);
+    let fore_alpha = inside(fore, fore_long.min(0.13));
+    let hind_alpha = inside(hind, hind_long.min(0.13));
+    let hind_color = mix(
+        BUTTERFLY_HIND_WING,
+        BUTTERFLY_RIM,
+        smoothstep(0.72, 1.0, hind),
+    );
+    let along = side * (root_v - v) / (0.56 * height + 0.02);
+    let tip = smoothstep(0.55, 0.68, along) * smoothstep(0.5, 0.58, u);
+    let fore_color = mix(
+        mix(BUTTERFLY_WING, BUTTERFLY_RIM, smoothstep(0.74, 1.0, fore)),
+        BUTTERFLY_DARK,
+        tip,
+    );
+    let wing_color = mix(hind_color, fore_color, fore_alpha);
+    let wing = hind_alpha.max(fore_alpha);
+    let body = 1.0
+        - smoothstep(
+            0.75,
+            1.05,
+            ellipse_reach(u, v, (0.49, 0.64), 0.13, 0.045, -6.0),
+        );
+    let head = 1.0 - smoothstep(0.7, 1.05, (u - 0.655).hypot(v - 0.615) / 0.05);
+    let feeler = |tip_u: f32, tip_v: f32| {
+        let (from_u, from_v) = (0.67, 0.6);
+        let (du, dv) = (tip_u - from_u, tip_v - from_v);
+        let along = ((u - from_u) * du + (v - from_v) * dv) / (du * du + dv * dv);
+        if (0.0..=1.0).contains(&along) {
+            let off = (u - from_u - along * du).hypot(v - from_v - along * dv);
+            0.9 * (1.0 - off / (0.8 * point)).clamp(0.0, 1.0)
+        } else {
+            0.0
+        }
+    };
+    let dark = body
+        .max(head)
+        .max(feeler(0.82, 0.44))
+        .max(feeler(0.77, 0.42));
+    let [r, g, b] = mix(wing_color, BUTTERFLY_DARK, dark);
+    [r, g, b, wing.max(dark)]
+}
+
 /// Лист кадра `frame`: вытянутый, с острыми концами, изогнутый, со светлой жилкой посередине; белый
 /// лист — того же рисунка, но без цветов.
 fn leaf(x: u32, y: u32, frame: usize, white: bool) -> [f32; 4] {
@@ -194,6 +311,8 @@ mod tests {
             (ParticleShape::Smoke, SMOKE_SIZE, SMOKE_SIZE),
             (ParticleShape::Spark, SPARK_SIZE, SPARK_SIZE),
             (ParticleShape::Halo, HALO_SIZE, HALO_SIZE),
+            (ParticleShape::Fluff, FLUFF_SIZE, FLUFF_SIZE),
+            (ParticleShape::Butterfly, BUTTERFLY_SIZE * 4, BUTTERFLY_SIZE),
             (ParticleShape::Leaf, LEAF_SIZE * 4, LEAF_SIZE),
             (ParticleShape::WhiteLeaf, LEAF_SIZE * 4, LEAF_SIZE),
         ] {
@@ -234,6 +353,8 @@ mod tests {
             ParticleShape::Smoke,
             ParticleShape::Spark,
             ParticleShape::Halo,
+            ParticleShape::Fluff,
+            ParticleShape::Butterfly,
             ParticleShape::WhiteLeaf,
         ] {
             let image = draw(shape);
@@ -271,6 +392,83 @@ mod tests {
             assert_eq!(pixel(&image, edge.0, edge.1)[3], 0, "{edge:?}");
         }
         assert_eq!(pixel(&image, half, 3)[3], pixel(&image, 3, half)[3]);
+    }
+
+    #[test]
+    fn the_fluff_is_a_soft_core_with_thin_rays_and_clear_edges() {
+        let image = draw(ParticleShape::Fluff);
+        let half = FLUFF_SIZE / 2;
+        assert!(pixel(&image, half, half)[3] > 230, "ядро");
+        for corner in [
+            (0, 0),
+            (FLUFF_SIZE - 1, 0),
+            (0, FLUFF_SIZE - 1),
+            (FLUFF_SIZE - 1, FLUFF_SIZE - 1),
+        ] {
+            assert_eq!(pixel(&image, corner.0, corner.1)[3], 0, "{corner:?}");
+        }
+        let drawn_between = |from: f32, to: f32| {
+            (0..FLUFF_SIZE * FLUFF_SIZE)
+                .filter(|i| {
+                    let (x, y) = (
+                        (i % FLUFF_SIZE) as f32 - half as f32,
+                        (i / FLUFF_SIZE) as f32 - half as f32,
+                    );
+                    let radius = x.hypot(y) / half as f32;
+                    (from..to).contains(&radius)
+                        && pixel(&image, i % FLUFF_SIZE, i / FLUFF_SIZE)[3] > 40
+                })
+                .count()
+        };
+        assert!(
+            drawn_between(FLUFF_CORE_RADIUS + 0.1, 0.9) > 40,
+            "лучики видны за ядром"
+        );
+        let ring = drawn_between(0.5, 0.55);
+        assert!(
+            ring > 5 && ring < 80,
+            "лучики тонкие, не сплошной круг: {ring}"
+        );
+    }
+
+    #[test]
+    fn the_butterfly_beats_its_wings_from_up_to_down_and_back_over_a_dark_body() {
+        let image = draw(ParticleShape::Butterfly);
+        let covered = |frame: u32| {
+            (0..BUTTERFLY_SIZE * BUTTERFLY_SIZE)
+                .filter(|i| {
+                    pixel(
+                        &image,
+                        frame * BUTTERFLY_SIZE + i % BUTTERFLY_SIZE,
+                        i / BUTTERFLY_SIZE,
+                    )[3] > 128
+                })
+                .count()
+        };
+        let sizes: Vec<usize> = (0..4).map(covered).collect();
+        assert!(
+            sizes[0] > sizes[1] && sizes[1] > sizes[2],
+            "крылья опускаются: {sizes:?}"
+        );
+        assert_eq!(sizes[1], sizes[3], "и поднимаются тем же путём");
+        let at = |frame: u32, x: u32, y: u32| pixel(&image, frame * BUTTERFLY_SIZE + x, y);
+        for frame in 0..4 {
+            let body = at(frame, BUTTERFLY_SIZE / 2, BUTTERFLY_SIZE * 64 / 100);
+            assert!(body[3] > 200 && body[0] < 120, "тельце тёмное: {body:?}");
+        }
+        let column = BUTTERFLY_SIZE * 58 / 100;
+        let wing_above =
+            |frame: u32| (0..BUTTERFLY_SIZE / 2).any(|y| at(frame, column, y)[3] > 128);
+        let wing_below = |frame: u32| {
+            (BUTTERFLY_SIZE * 3 / 4..BUTTERFLY_SIZE).any(|y| at(frame, column, y)[3] > 128)
+        };
+        assert!(wing_above(0), "сложенные крылья стоят над тельцем");
+        assert!(!wing_above(2) && wing_below(2), "опущенные — под ним");
+        let tip = (0..BUTTERFLY_SIZE / 2)
+            .map(|y| at(0, column, y))
+            .find(|point| point[3] > 200)
+            .expect("кончик переднего крыла");
+        assert!(tip[0] < 120, "кончик переднего крыла тёмный: {tip:?}");
     }
 
     #[test]

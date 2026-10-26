@@ -33,7 +33,7 @@ vi.mock("./SceneCanvas", async () => {
         <button type="button" onClick={() => onDropModel("house", 10, 20)}>
           бросить модель
         </button>
-        {["smoke", "sparks", "leaves", "fire"].map((effectId) => (
+        {["smoke", "sparks", "leaves", "fluff", "butterflies", "fire"].map((effectId) => (
           <button key={effectId} type="button" onClick={() => onDropParticles(effectId, 10, 20)}>
             бросить {effectId}
           </button>
@@ -672,6 +672,29 @@ describe("вкладка «Эффекты» в окне проекта", () => {
       expect(addObject).not.toHaveBeenCalled();
     });
 
+    it("пух и бабочки над объектом дописываются ему со значением 0,3, как листья; мимо объектов нового источника не рождают", () => {
+      const addProperty = vi.fn();
+      const setSelectedIndex = vi.fn();
+      const addObject = vi.fn();
+      sceneEditingMock.current = createParticlesSceneEditing(engine, { addProperty, setSelectedIndex, addObject });
+      vi.mocked(engine.object_at).mockReturnValue(0);
+      renderWindow();
+
+      fireEvent.click(screen.getByRole("button", { name: "бросить fluff" }));
+      expect(addProperty).toHaveBeenLastCalledWith(0, "fluff", 0.3);
+      fireEvent.click(screen.getByRole("button", { name: "бросить butterflies" }));
+      expect(addProperty).toHaveBeenLastCalledWith(0, "butterflies", 0.3);
+      expect(setSelectedIndex).toHaveBeenCalledWith(0);
+
+      addProperty.mockClear();
+      vi.mocked(engine.object_at).mockReturnValue(undefined);
+      fireEvent.click(screen.getByRole("button", { name: "бросить fluff" }));
+      fireEvent.click(screen.getByRole("button", { name: "бросить butterflies" }));
+
+      expect(addProperty).not.toHaveBeenCalled();
+      expect(addObject).not.toHaveBeenCalled();
+    });
+
     it("листья не достаются небу и дальним холмам с repeat_x: цель — верхний объект, которому их можно дописать", () => {
       const addProperty = vi.fn();
       const setSelectedIndex = vi.fn();
@@ -805,13 +828,13 @@ describe("группа «Облака» в колонке «Свойства»",
     expect(screen.queryByRole("region", { name: "Облака" })).toBeNull();
   });
 
-  it("во вкладке «Эффекты» облаков нет: четыре карточки и нет группы", () => {
+  it("во вкладке «Эффекты» облаков нет: шесть карточек и нет группы", () => {
     sceneEditingMock.current = createCloudsSceneEditing({ selectedIndex: 0 }, [{ ...SKY, clouds: 0.3 }]);
     renderWindow();
     openParticlesTab();
 
     const particles = screen.getByRole("list", { name: "Эффекты" });
-    expect(within(particles).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья", "огонь"]);
+    expect(within(particles).getAllByRole("listitem").map((card) => card.textContent)).toEqual(["дым", "искры", "листья", "пух", "бабочки", "огонь"]);
     expect(screen.getAllByRole("region", { name: "Облака" })).toHaveLength(1);
   });
 

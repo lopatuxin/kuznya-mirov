@@ -9,7 +9,7 @@ use crate::core::value::Vec2;
 
 use super::clouds::{Camera, Clouds, Sky};
 use super::fire::{FireObject, Fires};
-use super::particles::{Emitter, OpaqueMask, Particles};
+use super::particles::{Emitter, OpaqueMask, Particles, ScreenParticles};
 
 /// «Часы движения», требование 18: пружины и кадры качающихся объектов идут шагами по 1/60 секунды,
 /// как шаг мира.
@@ -185,6 +185,8 @@ pub struct Motion {
     compare_look: bool,
     /// «Ветер и частицы» → «Частицы»: источники и частицы идут по тем же часам.
     particles: Particles,
+    /// «Ветер и частицы» → «На экране»: частицы экрана интерфейса идут по времени окна, а не по этим часам.
+    screen_particles: ScreenParticles,
     /// «Ветер и частицы» → «Облака»: облака неба идут по тем же часам.
     clouds: Clouds,
     /// «Огонь»: огни идут по тем же часам.
@@ -252,6 +254,7 @@ impl Motion {
     pub fn world_rebuilt(&mut self) {
         self.compare_look = true;
         self.fires.world_rebuilt();
+        self.screen_particles.forget();
     }
 
     fn restart_at(&mut self, steps: f64) {
@@ -277,11 +280,30 @@ impl Motion {
 
     /// «Листопад»: непрозрачные точки первых кадров картинок загруженной игры, по номеру картинки.
     pub fn set_opaque_masks(&mut self, masks: Vec<OpaqueMask>) {
+        self.screen_particles.set_masks(masks.clone());
         self.particles.set_masks(masks);
     }
 
     pub fn particles(&self) -> &Particles {
         &self.particles
+    }
+
+    /// «На экране»: доводит частицы экрана до времени окна `window_steps` (шаги по 1/60 секунды) — раз в
+    /// кадр. `opened` — сколько раз открывался экран, `wind` — ровный ветер экрана, `emitters` — его
+    /// панели-источники.
+    pub fn update_screen_particles(
+        &mut self,
+        opened: u64,
+        window_steps: f64,
+        wind: [f64; 2],
+        emitters: impl Iterator<Item = Emitter>,
+    ) {
+        self.screen_particles
+            .update(opened, window_steps, wind, emitters);
+    }
+
+    pub fn screen_particles(&self) -> &Particles {
+        self.screen_particles.particles()
     }
 
     /// Доводит огни до часов — раз в кадр, после `tick`. `objects` — объекты мира с записанным
