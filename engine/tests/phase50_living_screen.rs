@@ -263,7 +263,7 @@ fn an_error_names_the_element_by_its_number_in_the_file_even_when_earlier_elemen
 fn the_unknown_field_of_a_panel_lists_the_particle_properties_it_accepts() {
     let panel = r##"{"kind":"panel","anchor":"top_left","size":[100,100],"color":"#00000000","wind":[1,0]}"##;
     let errors = errors_of(try_load(CELLS, panel));
-    assert_error(&errors, "wind", "\"rest_at\", \"smoke\"");
+    assert_error(&errors, "wind", "\"rest_at\", \"idle\", \"smoke\"");
     assert_error(&errors, "wind", "\"butterfly_color\"");
 }
 

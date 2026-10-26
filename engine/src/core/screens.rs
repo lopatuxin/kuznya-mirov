@@ -319,6 +319,9 @@ pub enum Element {
         play_on_hover: Option<usize>,
         /// «Видео на панели»: секунда ролика, где поза та же, что на последнем кадре; `None` — назад играет весь ролик.
         rest_at: Option<f32>,
+        /// «Видео на панели»: ролик покоя — видео по кругу, которое панель показывает вместо своего, пока то стоит
+        /// на первом кадре без курсора.
+        idle: Option<ImageId>,
         /// «Ветер и частицы» → «На экране»: свойства частиц панели; `Some` — панель названа источником,
         /// даже если ни один эффект не включён.
         particles: Option<Settings>,
@@ -543,10 +546,20 @@ impl ScreensConfig {
         self.panel_video_images(true, |_| true)
     }
 
-    /// «Видео на панели»: картинки-видео, которые панели крутят по кругу, — без `play_on_hover`.
-    /// `is_video` говорит, какая картинка игры видео: экран этого не знает.
+    /// «Видео на панели»: картинки-видео, которые панели крутят по кругу, — без `play_on_hover`, и ролики
+    /// покоя `idle`. `is_video` говорит, какая картинка игры видео: экран этого не знает.
     pub fn loop_videos(&self, is_video: impl Fn(ImageId) -> bool) -> Vec<ImageId> {
-        self.panel_video_images(false, is_video)
+        let mut videos = self.panel_video_images(false, is_video);
+        for element in self.screens.iter().flat_map(|screen| &screen.elements) {
+            if let Element::Panel {
+                idle: Some(idle), ..
+            } = element
+                && !videos.contains(idle)
+            {
+                videos.push(*idle);
+            }
+        }
+        videos
     }
 
     fn panel_video_images(

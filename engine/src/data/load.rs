@@ -2952,20 +2952,27 @@ pub fn read_texts_with_imported(
 }
 
 /// «Картинки» → «Видео на панели»: имена видео, которые панели экранов крутят по кругу, — `image` панели
-/// без `play_on_hover`, названное видео из `files.images`.
+/// без `play_on_hover` и ролик покоя `idle`, названные видео из `files.images`.
 fn looped_video_names<'a>(images: &'a [ImageDecl], screens: &[ParsedScreen]) -> Vec<&'a str> {
     let mut names = Vec::new();
     let panels = screens
         .iter()
         .flat_map(|screen| &screen.elements)
-        .filter_map(|(_, element)| match element {
+        .flat_map(|(_, element)| match element {
             ParsedElementData::Panel {
-                image_name: Some(name),
+                image_name,
                 hover,
+                idle_name,
                 ..
-            } if hover.play_on_hover.is_none() => Some(name.as_str()),
-            _ => None,
-        });
+            } => [
+                image_name
+                    .as_deref()
+                    .filter(|_| hover.play_on_hover.is_none()),
+                idle_name.as_deref(),
+            ],
+            _ => [None, None],
+        })
+        .flatten();
     for name in panels {
         if let Some(decl) = images.iter().find(|decl| decl.video && decl.name == name)
             && !names.contains(&decl.name.as_str())
@@ -7686,6 +7693,8 @@ enum ParsedElementData {
         for_: Option<Selector>,
         hover: HoverFields,
         rest_at: Option<f32>,
+        /// «Видео на панели»: имя ролика покоя.
+        idle_name: Option<String>,
         /// «На экране»: свойства частиц панели-источника.
         particles: Option<Settings>,
     },
@@ -7766,6 +7775,7 @@ const PANEL_KEYS: &[&str] = &[
     "show_on_hover",
     "play_on_hover",
     "rest_at",
+    "idle",
 ];
 const BAR_KEYS: &[&str] = &[
     "kind",
@@ -8119,6 +8129,53 @@ fn parse_opacity(
             Some(Some(n as f32))
         }
     }
+}
+
+/// «Видео на панели»: `idle` — ролик покоя, другое видео из `files.images`, только у панели с `play_on_hover`
+/// (`hovers`); `video` — видео самой панели. Панель с `play_on_hover` без видео уже названа ошибкой, второй о
+/// ролике покоя ей не нужно. Внешний `None` — ошибка уже названа.
+fn resolve_panel_idle(
+    name: Option<&str>,
+    hovers: bool,
+    video: Option<ImageId>,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<ImageId>> {
+    let Some(name) = name else {
+        return Some(None);
+    };
+    if !hovers {
+        errors.push(
+            file,
+            path,
+            "idle у панели без видео по наведению: ролик покоя показывается, пока видео с play_on_hover стоит на первом кадре",
+        );
+        return None;
+    }
+    let image = resolve_image(name, images, file, path, errors)?;
+    if !images[image].video {
+        errors.push(
+            file,
+            path,
+            format!(
+                "\"{name}\" — картинка, а idle берёт видео: ролик покоя объявляется в files.images путём на .mp4"
+            ),
+        );
+        return None;
+    }
+    if video == Some(image) {
+        errors.push(
+            file,
+            path,
+            format!(
+                "\"{name}\" — видео самой панели: ролик покоя — другое видео, оно идёт, пока это стоит на первом кадре"
+            ),
+        );
+        return None;
+    }
+    Some(Some(image))
 }
 
 /// «Видео на панели»: `rest_at` — секунда ролика, число не меньше нуля; верхнюю границу — длину ролика —
@@ -8566,6 +8623,10 @@ fn parse_element(
             validate_opacity_has_image(image_name.is_some(), opacity.is_some(), file, path, errors);
             let image_scale = parse_image_scale(obj, image_name.is_some(), file, path, errors)?;
             let rest_at = parse_rest_at(obj, file, path, errors);
+            let idle_name = match obj.get("idle") {
+                Some(v) => expect_string(v, file, &join(path, "idle"), errors).map(Some),
+                None => Some(None),
+            };
             let own = scope == Scope::Row || for_.is_some();
             let tooltip = parse_tooltip(obj, context, own, file, path, errors)?;
             // «Элемент при объекте»: `{свойство}` в `image` — только у панели, у которой есть объект.
@@ -8600,6 +8661,7 @@ fn parse_element(
                 for_,
                 hover: hover?,
                 rest_at: rest_at?,
+                idle_name: idle_name?,
                 particles: particles?,
             })
         }
@@ -9642,6 +9704,7 @@ fn resolve_element(
             for_,
             hover,
             rest_at,
+            idle_name,
             particles,
         } => {
             let image_path = join(path, "image");
@@ -9722,9 +9785,19 @@ fn resolve_element(
                     "rest_at у панели с видео по кругу: поза покоя нужна только видео по наведению, а это идёт без play_on_hover",
                 );
             }
+            let idle = resolve_panel_idle(
+                idle_name.as_deref(),
+                hover.play_on_hover.is_some(),
+                video,
+                images,
+                file,
+                &join(path, "idle"),
+                errors,
+            );
             let tooltip_ok =
                 validate_tooltip_refs(tooltip, scene_names, file, scene_file, path, errors);
-            let (fill, show_on_hover, play_on_hover) = (fill?, show_on_hover?, play_on_hover?);
+            let (fill, show_on_hover, play_on_hover, idle) =
+                (fill?, show_on_hover?, play_on_hover?, idle?);
             (tooltip_ok && !plays_nothing && !rests_nowhere && !rests_in_a_loop).then(|| {
                 Element::Panel {
                     placement: *placement,
@@ -9736,6 +9809,7 @@ fn resolve_element(
                     show_on_hover,
                     play_on_hover,
                     rest_at: *rest_at,
+                    idle,
                     particles: *particles,
                 }
             })
@@ -11512,8 +11586,12 @@ fn collect_used_images(
             match element {
                 Element::Panel {
                     fill: PanelFill::Fixed(fill),
+                    idle,
                     ..
-                } => mark_fill_used(&mut used, fill),
+                } => {
+                    mark_fill_used(&mut used, fill);
+                    used.extend(*idle);
+                }
                 Element::Panel {
                     fill: PanelFill::Own { .. },
                     ..
@@ -11561,30 +11639,85 @@ fn validate_panel_videos(
         for (element_index, element) in screen.elements.iter().enumerate() {
             let Element::Panel {
                 fill: PanelFill::Fixed(Fill::Image { image, .. }),
+                idle,
                 ..
             } = element
             else {
                 continue;
             };
-            if !images[*image].video {
-                continue;
+            let field =
+                |key: &str| format!("screens[{screen_index}].elements[{element_index}].{key}");
+            let videos = [(*image, field("image"))]
+                .into_iter()
+                .chain(idle.map(|idle| (idle, field("idle"))));
+            for (image, path) in videos {
+                if !images[image].video {
+                    continue;
+                }
+                let name = &images[image].name;
+                if outside_screens.contains(&image) {
+                    errors.push(
+                        screens_file,
+                        &path,
+                        format!(
+                            "видео \"{name}\" играет панель, а его называет ещё и объект мира, картинка над объектом или земля: одно видео — на одной панели"
+                        ),
+                    );
+                } else if !played.insert(image) {
+                    errors.push(
+                        screens_file,
+                        &path,
+                        format!(
+                            "видео \"{name}\" уже играет другая панель: одно видео — на одной панели"
+                        ),
+                    );
+                }
             }
-            let path = format!("screens[{screen_index}].elements[{element_index}].image");
-            let name = &images[*image].name;
-            if outside_screens.contains(image) {
+        }
+    }
+}
+
+/// «Картинки» → «Видео на панели»: ролик покоя `idle` того же размера, что видео панели; размеры называют
+/// ответы страницы. Видео без ответа уже названо ошибкой файла.
+fn validate_idle_size(
+    screens: &[Screen],
+    images: &[ImageDecl],
+    image_data: &[(String, ImageVerdict)],
+    screens_file: &str,
+    errors: &mut ErrorSink,
+) {
+    let size_of = |image: ImageId| match image_data
+        .iter()
+        .find(|(name, _)| *name == images[image].name)
+    {
+        Some((_, ImageVerdict::Video { width, height, .. })) => Some([*width, *height]),
+        _ => None,
+    };
+    for (screen_index, screen) in screens.iter().enumerate() {
+        for (element_index, element) in screen.elements.iter().enumerate() {
+            let Element::Panel {
+                fill: PanelFill::Fixed(Fill::Image { image, .. }),
+                idle: Some(idle),
+                ..
+            } = element
+            else {
+                continue;
+            };
+            let (Some(size), Some(idle_size)) = (size_of(*image), size_of(*idle)) else {
+                continue;
+            };
+            if size != idle_size {
                 errors.push(
                     screens_file,
-                    &path,
+                    &format!("screens[{screen_index}].elements[{element_index}].idle"),
                     format!(
-                        "видео \"{name}\" играет панель, а его называет ещё и объект мира, картинка над объектом или земля: одно видео — на одной панели"
-                    ),
-                );
-            } else if !played.insert(*image) {
-                errors.push(
-                    screens_file,
-                    &path,
-                    format!(
-                        "видео \"{name}\" уже играет другая панель: одно видео — на одной панели"
+                        "ролик покоя \"{}\" размером {}×{}, а видео панели \"{}\" {}×{}: ролик покоя делается того же размера, от первого кадра видео панели",
+                        images[*idle].name,
+                        idle_size[0],
+                        idle_size[1],
+                        images[*image].name,
+                        size[0],
+                        size[1]
                     ),
                 );
             }
@@ -12540,6 +12673,13 @@ pub fn load_rest_with_imports(
             );
             if !skip_media_validation {
                 validate_rest_at(
+                    &sc.screens,
+                    &config.files.images,
+                    image_data,
+                    &config.files.screens,
+                    &mut errors,
+                );
+                validate_idle_size(
                     &sc.screens,
                     &config.files.images,
                     image_data,

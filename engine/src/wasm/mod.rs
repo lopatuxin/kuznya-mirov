@@ -1333,6 +1333,7 @@ fn compose_ui(
             fill: PanelFill::Fixed(Fill::Image { image, .. }),
             play_on_hover,
             rest_at,
+            idle,
             ..
         } = placed.element
         {
@@ -1340,6 +1341,8 @@ fn compose_ui(
                 Some(target) => Some(PanelPlay::Hover {
                     hovering: place == Some(*target),
                     rest_at: *rest_at,
+                    idle: *idle,
+                    now: ui_elapsed_steps * STEP_SECONDS,
                 }),
                 None if images[*image].video => Some(PanelPlay::Loop {
                     now: ui_elapsed_steps * STEP_SECONDS,
