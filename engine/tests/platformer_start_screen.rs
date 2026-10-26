@@ -1,8 +1,8 @@
 //! Фаза 07 платформера — начальный экран `games/platformer`: игра грузится без ошибок и предупреждений,
 //! стартует с экрана `menu`, «Новая игра» ведёт на уровень, «Выход» просит страницу уйти к списку игр, три
 //! героя — места наведения с видео героя и его имени и горящей строкой. Фаза 08 — живой фон: вся картина
-//! роликом по кругу, листья с берёзы, пух и бабочки при ветре экрана. Видео и курсор в браузере — только QA
-//! на стенде.
+//! роликом по кругу, листья с берёзы, пух и бабочки при ветре экрана. Фаза 09 — герои без мыши дышат роликами
+//! покоя. Видео и курсор в браузере — только QA на стенде.
 
 use std::fs;
 
@@ -190,6 +190,31 @@ fn each_hero_is_a_place_with_videos_of_him_and_his_name_and_a_glowing_line() {
 }
 
 #[test]
+fn the_heroes_breathe_in_their_idle_videos_until_the_cursor_comes() {
+    let (ui, _, images) = load();
+    let idles: Vec<(&str, &str)> = ui.config.screens[ui.state.active()]
+        .elements
+        .iter()
+        .filter_map(|element| match element {
+            Element::Panel {
+                fill: screens::PanelFill::Fixed(screens::Fill::Image { image, .. }),
+                idle: Some(idle),
+                ..
+            } => Some((images[*image].name.as_str(), images[*idle].name.as_str())),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        idles,
+        [
+            ("vasilisa_greet", "vasilisa_idle"),
+            ("alyosha_greet", "alyosha_idle"),
+            ("ilya_greet", "ilya_idle")
+        ]
+    );
+}
+
+#[test]
 fn the_menu_background_lives_with_loops_wind_and_particles() {
     let (ui, _, images) = load();
     let menu = &ui.config.screens[ui.state.active()];
@@ -199,7 +224,16 @@ fn the_menu_background_lives_with_loops_wind_and_particles() {
         .into_iter()
         .map(|id| images[id].name.as_str())
         .collect();
-    assert_eq!(loops, ["living_bg", "river"]);
+    assert_eq!(
+        loops,
+        [
+            "living_bg",
+            "river",
+            "vasilisa_idle",
+            "alyosha_idle",
+            "ilya_idle"
+        ]
+    );
     assert!(menu.wind[0] > 0.0, "ветер вправо: {:?}", menu.wind);
     assert!(menu.cell_pixels.is_some());
     let sources: Vec<_> = menu

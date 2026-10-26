@@ -224,6 +224,70 @@ impl PanelCourse {
             Roll::Backward => self.position <= END_SLACK_SECONDS,
         }
     }
+
+    /// «Видео на панели», `idle`: покой — курсора нет, а видео стоит на первом кадре или дошло до него назад.
+    /// Видео, что после конца считается стоящим на `rest_at` 0, тоже в покое: его последний кадр — поза первого.
+    pub fn at_rest(&self, hovering: bool) -> bool {
+        !hovering && matches!(self.state, CourseState::Rolling(_)) && self.reached(Roll::Backward)
+    }
+}
+
+/// Сколько секунд кадр ролика покоя проступает поверх видео по наведению или тает с него.
+pub const IDLE_FADE_SECONDS: f64 = 0.25;
+
+/// «Картинки» → «Видео на панели», `idle`: покой видео по наведению. Каждый покой — новый круг ролика покоя с
+/// первого кадра, поэтому покои считаются. Вес кадра покоя поверх видео за [`IDLE_FADE_SECONDS`] растёт до
+/// единицы, когда в покое ролик покоя отдал кадр, и падает до нуля, когда покоя нет: курсор пришёл посреди
+/// вдоха — вдох тает поверх первого кадра шага, а не сменяется им. Покой, что начался, пока прежний кадр покоя
+/// ещё не растаял, ждёт: ролик покоя стоит на том кадре, пока вес не дойдёт до нуля, и только потом идёт с
+/// первого кадра, — иначе кадр посреди вдоха сменился бы первым на глазах.
+#[derive(Debug, Clone, Default)]
+pub struct IdleFade {
+    /// Покой идёт и ролик покоя играет свой круг.
+    playing: bool,
+    rests: u64,
+    /// В этом покое ролик покоя уже отдал кадр.
+    shown: bool,
+    weight: f64,
+    last_now: Option<f64>,
+}
+
+impl IdleFade {
+    /// Начало кадра: `resting` — видео по наведению в покое. Возвращает номер покоя — счёт открытий для круга
+    /// ролика покоя: новый номер — круг с первого кадра; `None` — ролик покоя стоит.
+    pub fn begin(&mut self, resting: bool) -> Option<u64> {
+        if !resting {
+            self.playing = false;
+            self.shown = false;
+        } else if !self.playing && self.weight == 0.0 {
+            self.playing = true;
+            self.rests += 1;
+        }
+        self.playing.then_some(self.rests)
+    }
+
+    /// Конец кадра: `now` — время окна в секундах, `written` — ролик покоя записал кадр в этом кадре. Возвращает
+    /// вес кадра покоя.
+    pub fn finish(&mut self, now: f64, written: bool) -> f64 {
+        self.shown |= self.playing && written;
+        let elapsed = self.last_now.map_or(0.0, |last| (now - last).max(0.0));
+        self.last_now = Some(now);
+        let step = elapsed / IDLE_FADE_SECONDS;
+        self.weight = if self.shown {
+            (self.weight + step).min(1.0)
+        } else {
+            (self.weight - step).max(0.0)
+        };
+        self.weight
+    }
+
+    /// Панели нет на экране: покоя нет и кадр покоя не виден; покой на новом экране — новый круг.
+    pub fn leave(&mut self) {
+        self.playing = false;
+        self.shown = false;
+        self.weight = 0.0;
+        self.last_now = None;
+    }
 }
 
 /// Насколько близко к концу файла проигрыватель считается дошедшим до последнего кадра: последний кадр ролика
@@ -1325,5 +1389,140 @@ mod loop_course_tests {
             "экран открылся заново — первый кадр"
         );
         assert!(browser.seeks.iter().all(|(_, to)| *to == 0.0));
+    }
+}
+
+#[cfg(test)]
+mod idle_tests {
+    use super::*;
+
+    const FRAME: f64 = 1.0 / 60.0;
+
+    fn reading(time: f64, paused: bool) -> PlayerReading {
+        PlayerReading {
+            time,
+            seeking: false,
+            paused,
+        }
+    }
+
+    #[test]
+    fn a_new_course_without_the_cursor_is_at_rest() {
+        let course = PanelCourse::new(7.5);
+        assert!(course.at_rest(false));
+        assert!(!course.at_rest(true));
+    }
+
+    #[test]
+    fn a_course_on_its_way_back_is_not_at_rest_until_it_reaches_the_first_frame() {
+        let mut course = PanelCourse::new(7.5);
+        course.step(true, None, reading(0.0, true));
+        course.step(true, None, reading(3.0, false));
+        course.step(false, None, reading(3.0, false));
+        course.step(false, None, reading(4.5, true));
+        course.step(false, None, reading(5.0, false));
+        assert!(!course.at_rest(false), "назад ещё 2,5 с");
+        course.step(false, None, reading(7.5, true));
+        assert!(course.at_rest(false));
+    }
+
+    #[test]
+    fn a_course_resting_at_zero_after_the_end_is_at_rest_when_the_cursor_leaves() {
+        let mut course = PanelCourse::new(5.0);
+        course.step(true, Some(0.0), reading(0.0, true));
+        course.step(true, Some(0.0), reading(5.0, true));
+        assert!(!course.at_rest(true));
+        course.step(false, Some(0.0), reading(5.0, true));
+        assert!(course.at_rest(false));
+    }
+
+    /// Кадры по 1/60 с от `from`: покой `resting`, ролик покоя пишет кадр `written`; вес после последнего.
+    fn run(fade: &mut IdleFade, from: f64, seconds: f64, resting: bool, written: bool) -> f64 {
+        let mut weight = 0.0;
+        for k in 0..(seconds / FRAME).round() as u32 {
+            fade.begin(resting);
+            weight = fade.finish(from + f64::from(k) * FRAME, written);
+        }
+        weight
+    }
+
+    #[test]
+    fn each_rest_gets_a_new_number_and_no_rest_gets_none() {
+        let mut fade = IdleFade::default();
+        let first = fade.begin(true).expect("покой");
+        assert_eq!(fade.begin(true), Some(first), "тот же покой — тот же круг");
+        assert_eq!(fade.begin(false), None);
+        let second = fade.begin(true).expect("покой");
+        assert_ne!(first, second, "новый покой — круг с первого кадра");
+    }
+
+    #[test]
+    fn the_idle_frame_shows_through_in_a_quarter_second_once_it_has_a_frame() {
+        let mut fade = IdleFade::default();
+        assert_eq!(
+            run(&mut fade, 0.0, 0.5, true, false),
+            0.0,
+            "кадра покоя ещё нет"
+        );
+        let halfway = run(&mut fade, 0.5, IDLE_FADE_SECONDS / 2.0, true, true);
+        assert!((0.4..0.6).contains(&halfway), "на полпути вес {halfway}");
+        assert_eq!(run(&mut fade, 0.7, 0.2, true, false), 1.0);
+    }
+
+    #[test]
+    fn the_cursor_arriving_melts_the_idle_frame_away_in_a_quarter_second() {
+        let mut fade = IdleFade::default();
+        run(&mut fade, 0.0, 1.0, true, true);
+        let start = 1.0;
+        let mut weights = Vec::new();
+        for k in 0..30 {
+            fade.begin(false);
+            weights.push(fade.finish(start + f64::from(k) * FRAME, true));
+        }
+        assert!(
+            weights[0] > 0.9,
+            "в первый кадр наведения кадр покоя ещё виден"
+        );
+        assert!(weights.windows(2).all(|pair| pair[1] <= pair[0]));
+        let gone = weights.iter().position(|&w| w == 0.0).expect("растаял");
+        let seconds = gone as f64 * FRAME;
+        assert!(
+            (seconds - IDLE_FADE_SECONDS).abs() < 2.0 * FRAME,
+            "растаял за {seconds} с"
+        );
+    }
+
+    #[test]
+    fn a_rest_that_starts_before_the_idle_frame_melted_waits_until_it_is_gone() {
+        let mut fade = IdleFade::default();
+        let first = run(&mut fade, 0.0, 1.0, true, true);
+        assert_eq!(first, 1.0);
+        let rest = fade.begin(true);
+        run(&mut fade, 1.0, 3.0 * FRAME, false, false);
+        assert_eq!(
+            fade.begin(true),
+            None,
+            "прежний кадр покоя ещё тает — ролик стоит"
+        );
+        let melting = fade.finish(1.0 + 4.0 * FRAME, true);
+        assert!(
+            melting > 0.0 && melting < 1.0,
+            "кадр нового круга не принят: {melting}"
+        );
+        run(&mut fade, 1.0 + 5.0 * FRAME, IDLE_FADE_SECONDS, true, false);
+        let next = fade.begin(true);
+        assert!(
+            next.is_some() && next != rest,
+            "дотаял — новый круг с первого кадра"
+        );
+    }
+
+    #[test]
+    fn leaving_the_screen_hides_the_idle_frame_at_once() {
+        let mut fade = IdleFade::default();
+        run(&mut fade, 0.0, 1.0, true, true);
+        fade.leave();
+        fade.begin(true);
+        assert_eq!(fade.finish(5.0, false), 0.0);
     }
 }

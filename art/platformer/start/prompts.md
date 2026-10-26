@@ -31,6 +31,15 @@
 | `frog.png` | Царевна-лягушка в золотой короне на розовом фоне, ростом до колена Василисы, на месте её ступней | запрос Codex по `vasilisa.png`, программой опущена на 26 точек до уровня её подошв |
 | `vasilisa_greet.mp4` | ролик syntx: лягушка в золотом сиянии превращается в Василису; 1916×1080 | запрос ролика Василисы ниже, первый кадр `frog.png`, последний `vasilisa.png` |
 | `vasilisa_greet_masked.mp4` | ролик без розового фона | `node tools/art/sheet.mjs art/platformer/start/vasilisa_greet.mp4 art/platformer/start/vasilisa_greet_masked.mp4 --range 1-121 --key magenta --keep-color` |
+| `ilya_idle_start.png` | первый кадр `ilya_greet.mp4` — поза покоя Ильи, картинка для ролика покоя | `ffmpeg -i art/platformer/start/ilya_greet.mp4 -frames:v 1 art/platformer/start/ilya_idle_start.png` |
+| `ilya_idle.mp4` | утверждённый ролик покоя syntx по `ilya_idle_start.png` (второй запрос): еле заметное дыхание, ветер в бороде и кистях пояса; 1916×1080, 5 с | запрос «Ролики покоя» ниже |
+| `ilya_idle_shadow.mp4` | ролик покоя игры: вперёд и назад (240 кадров, 10 с), без зелёного, с тенью; размер и место фигуры — точь-в-точь как у `ilya_greet_shadow.mp4` | ниже, «Ролик покоя в игру» |
+| `alyosha_idle_start.png` | первый кадр `alyosha_greet.mp4` — поза покоя Алёши, картинка для ролика покоя | `ffmpeg -i art/platformer/start/alyosha_greet.mp4 -frames:v 1 art/platformer/start/alyosha_idle_start.png` |
+| `alyosha_idle.mp4` | ролик покоя syntx по `alyosha_idle_start.png`: на середине запрокидывает голову, закрывает глаза и вздыхает — хозяин решил оставить; 1920×1080, 5 с | запрос «Ролики покоя» ниже |
+| `alyosha_idle_shadow.mp4` | ролик покоя игры, как у Ильи; 920×1952, 240 кадров | ниже, «Ролик покоя в игру» |
+| `vasilisa_idle_start.png` | первый кадр `vasilisa_greet.mp4` — лягушка в короне на розовом, картинка для ролика покоя | `ffmpeg -i art/platformer/start/vasilisa_greet.mp4 -frames:v 1 art/platformer/start/vasilisa_idle_start.png` |
+| `vasilisa_idle.mp4` | ролик покоя syntx по `vasilisa_idle_start.png`: лягушка дышит горлом и дважды моргает; 1916×1080, 5 с | запрос «Ролики покоя» ниже |
+| `vasilisa_idle_shadow.mp4` | ролик покоя игры; 930×1820, 240 кадров | ниже, «Ролик покоя в игру» |
 
 Строки камня пишет движок поверх гладкой стороны: «Налево пойдёшь — силой возьмёшь», «Прямо пойдёшь — хитростью
 пройдёшь», «Направо пойдёшь — мудростью одолеешь». Кнопки меню и название в игре — тоже текст движка.
@@ -169,6 +178,87 @@ node tools/art/materialize.mjs games/platformer/fonts/Monomakh.ttf art/platforme
 node tools/art/materialize.mjs games/platformer/fonts/Monomakh.ttf art/platformer/start/alyosha_name.mp4 --text "Алёша|Попович" --delay 0.2 --reverse
 node tools/art/materialize.mjs games/platformer/fonts/Monomakh.ttf art/platformer/start/vasilisa_name.mp4 --text "Василиса|Премудрая" --delay 2.6 --reverse
 ```
+
+## Ролики покоя (фаза 09; syntx, по картинке; 16:9, 5 секунд, 1080p)
+
+Без мыши герой не стоит статуей: дышит, моргает, борода и одежда шевелятся от ветерка. Картинка — первый кадр
+его ролика приветствия, вырезанный из самого ролика, чтобы цвет совпал. Круг — туда и обратно, как у фона.
+
+Илья — по `ilya_idle_start.png`. Первый запрос просил «дышит медленно и глубоко, грудь и плечи поднимаются» и
+«вес чуть переносится с ноги на ногу»: в одном ролике Илья подошёл к камере и вырос на 10%, в другом через
+2,5 секунды переставил ногу, а вдох вышел сильным и неестественным — голова и грудь задирались (хозяин). Второй
+запрос — почти неподвижный герой:
+
+```
+Animate the attached image. Static camera: no zoom, no pan, no camera movement at all. The background stays
+perfectly flat, uniform pure green for the whole video: no floor, no ground, no shadow, no light changes, no
+particles. He stays exactly the same size and on exactly the same spot for the whole video.
+
+A very subtle idle animation: the man stands almost perfectly still, like a person quietly waiting. His breathing
+is calm, shallow and barely visible: his shoulders rise and settle only very slightly, one slow breath every
+four seconds. His head, his body and both feet stay still. His face keeps exactly the same calm confident
+half-smile with the same open lips as in the image for the whole video; he only blinks once, naturally. A light
+breeze from the left gently stirs a few strands of his hair, his beard and the tassels of his red sash. His
+right hand stays on his sash, his left hand keeps holding the axe by the end of the handle, blade down, still.
+No steps, no shifting of weight, no gestures, no turning or lifting of the head, no talking.
+
+Keep his face, beard, hair, clothes, colors and the hand-painted animated film style exactly as in the image.
+Slow, gentle, natural motion with no motion blur. No morphing, no extra objects, no other people, no text.
+```
+
+Алёша — по `alyosha_idle_start.png`, тем же почти неподвижным запросом:
+
+```
+Animate the attached image. Static camera: no zoom, no pan, no camera movement at all. The background stays
+perfectly flat, uniform pure green for the whole video: no floor, no ground, no shadow, no light changes, no
+particles. He stays exactly the same size and on exactly the same spot for the whole video.
+
+A very subtle idle animation: the young man stands almost perfectly still with his arms crossed, like a person
+quietly waiting. His breathing is calm, shallow and barely visible: his shoulders and crossed arms rise and
+settle only very slightly, one slow breath every four seconds. His head, his body and both feet stay still. His
+face keeps exactly the same sly, confident smile as in the image for the whole video; he only blinks once,
+naturally. A light breeze from the left gently stirs a few strands of his wavy blond hair and the tassels of his
+yellow sash. His arms stay crossed the whole time, the knife stays in its sheath on his belt. No steps, no
+shifting of weight, no gestures, no winking, no turning or lifting of the head, no talking.
+
+Keep his face, hair, blue shirt, yellow sash, clothes, colors and the hand-painted animated film style exactly
+as in the image. Slow, gentle, natural motion with no motion blur. No morphing, no extra objects, no other
+people, no text.
+```
+
+Лягушка — по `vasilisa_idle_start.png`, фон розовый, как у ролика Василисы:
+
+```
+Animate the attached image. Static camera: no zoom, no pan, no camera movement at all. The background stays
+perfectly flat, uniform pure magenta for the whole video: no floor, no ground, no shadow, no light changes, no
+particles. The frog stays exactly the same size and on exactly the same spot for the whole video.
+
+A very subtle idle animation: the crowned frog sits almost perfectly still, calmly waiting. Like a real frog,
+it breathes only with its throat: the pale throat gently puffs and settles, slowly and softly. It blinks once,
+slowly and naturally, keeping exactly the same gentle, wise smile as in the image. Its body, head, legs and
+webbed feet stay still, the golden crown stays exactly in place and does not move. No jumping, no hopping, no
+croaking, no tongue, no turning or lifting of the head, no magic glow, no transformation.
+
+Keep the frog, its colors, the crown and the hand-painted animated film style exactly as in the image. Slow,
+gentle, natural motion with no motion blur. No morphing, no extra objects, no other animals or people, no text.
+```
+
+## Ролик покоя в игру
+
+Вырезка `sheet.mjs` берёт общий прямоугольник всех кадров, а `shadows.mjs` считает запас под тень по самому высокому кадру, поэтому ролик покоя, обработанный отдельно, лёг бы в другой кадр, чем приветствие, и герой сдвинулся бы при переходе. Ролик покоя прогоняется одним входом с роликом приветствия, а из выхода берутся только его кадры. У теней героев начального экрана `--unit 1.8`: с ним склейка дала `ilya_greet_shadow.mp4` точка в точку (1406×1252, запас слева 600, снизу 236).
+
+```
+ffmpeg -i art/platformer/start/ilya_greet.mp4 -i art/platformer/start/ilya_idle.mp4 -filter_complex "[1]split[f][r0];[r0]reverse,trim=start_frame=1:end_frame=120,setpts=PTS-STARTPTS[r];[0][f][r]concat=n=3,setpts=N/24/TB" -r 24 -c:v libx264 -crf 10 -pix_fmt yuv420p combined.mp4
+node tools/art/sheet.mjs combined.mp4 combined_masked.mp4 --range 1-421
+node tools/art/shadows.mjs combined_masked.mp4 combined_shadow.mp4 --unit 1.8
+ffmpeg -i combined_shadow.mp4 -vf "select=gte(n,181)" -fps_mode passthrough png/v%06d.png
+```
+
+Кадры `png/` собираются в `ilya_idle_shadow.mp4` функцией `encodeVideo` из `tools/art/sheet.mjs` (24 кадра в секунду, ключевой кадр раз в полсекунды) и копируются в `games/platformer/images/ilya_idle.mp4`.
+
+Алёша — то же со своими числами: в склейке 121 кадр приветствия, `--range 1-361`; волосы покоя на ветру расширили рамку вырезки на 2 точки слева, поэтому перед тенью выход вырезки обрезается до рамки приветствия (`crop=598:2100:2:0`); тень — `--scale 0.7485 --unit 1.8` (кадр 920×976, как у `alyosha_greet_shadow.mp4`); кадры покоя — с 121-го.
+
+Лягушка — 121 кадр превращения, `--range 1-361 --key magenta --keep-color`, рамка вырезки совпала с превращением сама; тень — `--scale 0.678 --unit 1.8` (кадр 930×910); кадры покоя — с 121-го.
 
 ## Живой фон (фаза 08)
 
