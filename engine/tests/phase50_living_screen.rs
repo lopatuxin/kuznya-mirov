@@ -12,7 +12,7 @@ use engine::core::input::StepInput;
 use engine::core::interface;
 use engine::core::particles::{Effect, ParticleShape, Settings};
 use engine::core::property;
-use engine::core::screens::{self, Element, ScreensConfig};
+use engine::core::screens::{self, Element, Lit, ScreensConfig};
 use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{
     ImageDecl, ImageVerdict, ReverseVerdict, load_rest, read_entry, read_texts,
@@ -1200,8 +1200,9 @@ fn the_particles_of_a_panel_are_drawn_right_over_it_before_the_next_element_of_t
         &ui.state,
         frame.viewport,
     );
+    let no_place = Lit::over(None);
     let paints: Vec<(usize, _)> =
-        screen_particle_paints(&parts, None, motion.screen_particles(), 40.0).collect();
+        screen_particle_paints(&parts, &no_place, motion.screen_particles(), 40.0).collect();
     assert!(!paints.is_empty());
     assert!(
         paints.windows(2).all(|pair| pair[0].0 <= pair[1].0),
@@ -1220,7 +1221,8 @@ fn the_particles_of_a_panel_are_drawn_right_over_it_before_the_next_element_of_t
         paints.iter().all(|(index, _)| *index != 1),
         "у красной панели частиц нет"
     );
-    let over_place = screen_particle_paints(&parts, Some(0), motion.screen_particles(), 40.0);
+    let on_place = Lit::over(Some(0));
+    let over_place = screen_particle_paints(&parts, &on_place, motion.screen_particles(), 40.0);
     assert!(
         over_place
             .into_iter()

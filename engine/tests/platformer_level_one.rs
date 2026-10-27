@@ -15,6 +15,7 @@ fn the_first_level_loads_without_errors_or_warnings() {
     let (config, mut warnings) =
         read_entry(&game_json).unwrap_or_else(|e| panic!("game.json не разобран: {e:?}"));
     let images = support::image_verdicts(&config.files.images);
+    let tables = support::table_texts(&config.files.tables);
     let fonts: Vec<(String, Option<Vec<u8>>)> = config
         .files
         .fonts
@@ -34,7 +35,7 @@ fn the_first_level_loads_without_errors_or_warnings() {
         &images,
         Some(&read("code.lua")),
         false,
-        &[],
+        &tables,
         None,
         &[],
         &[],

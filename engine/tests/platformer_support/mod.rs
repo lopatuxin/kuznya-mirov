@@ -20,6 +20,14 @@ pub fn read(name: &str) -> String {
         .unwrap_or_else(|e| panic!("не смог прочитать {name}: {e}"))
 }
 
+/// Тексты таблиц данных из `files.tables`, как их отдала бы страница.
+pub fn table_texts(tables: &[(String, String)]) -> Vec<(String, Option<String>)> {
+    tables
+        .iter()
+        .map(|(name, path)| (name.clone(), Some(read(path))))
+        .collect()
+}
+
 fn read_bytes(path: &str) -> Vec<u8> {
     fs::read(platformer_dir().join(path))
         .unwrap_or_else(|e| panic!("не смог прочитать {path}: {e}"))

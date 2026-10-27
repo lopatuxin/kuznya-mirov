@@ -170,6 +170,74 @@ pub enum TextPart {
     /// «Интерфейс игры» → «Элемент при объекте»: `{свойство}` без имени объекта — свойство объекта
     /// элемента с `for` или строки списка.
     Own(PropertyId),
+    /// «Выбор»: `{choice:<таблица>}` или `{choice:<таблица>.<поле>}`.
+    Choice(ChoiceRef),
+}
+
+/// «Интерфейс игры» → «Выбор»: что выбранное в группе подставляется — имя места или поле его строки в таблице.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChoiceRef {
+    pub group: String,
+    pub field: Option<String>,
+}
+
+/// «Выбор»: строки таблицы данных группы по ключу, а в строке — поля, уже записанные текстом.
+pub type ChoiceTable = HashMap<String, HashMap<String, String>>;
+
+/// «Выбор»: выбранные места групп на странице и таблицы, по которым подставляются поля их строк.
+#[derive(Debug, Clone, Copy)]
+pub struct Choices<'a> {
+    tables: &'a HashMap<String, ChoiceTable>,
+    chosen: &'a HashMap<String, String>,
+}
+
+impl<'a> Choices<'a> {
+    /// Имя выбранного места группы или поле его строки; `None` — ничего не выбрано или у строки нет поля.
+    pub fn text(&self, choice: &ChoiceRef) -> Option<&'a str> {
+        let place = self.chosen.get(&choice.group)?;
+        match &choice.field {
+            None => Some(place),
+            Some(field) => self
+                .tables
+                .get(&choice.group)?
+                .get(place)?
+                .get(field)
+                .map(String::as_str),
+        }
+    }
+
+    /// Номер картинки из `names`, которую называет подстановка; нет выбора, поле пусто или картинки с
+    /// таким именем нет — `None`.
+    pub fn image(&self, choice: &ChoiceRef, names: &[String]) -> Option<ImageId> {
+        let name = self.text(choice).filter(|name| !name.is_empty())?;
+        names.iter().position(|declared| declared == name)
+    }
+}
+
+/// «Выбор»: места экрана, которые горят, как под курсором, — то, над чем курсор, и выбранные.
+#[derive(Debug, Clone, Default)]
+pub struct Lit {
+    hover: Option<usize>,
+    chosen: Vec<usize>,
+}
+
+impl Lit {
+    /// Горит только место под курсором, выбранных нет.
+    pub fn over(hover: Option<usize>) -> Lit {
+        Lit {
+            hover,
+            chosen: Vec::new(),
+        }
+    }
+
+    pub fn contains(&self, place: usize) -> bool {
+        self.hover == Some(place) || self.chosen.contains(&place)
+    }
+
+    /// Место выбрано: оно горит и без курсора.
+    pub fn is_held(&self, place: usize) -> bool {
+        self.chosen.contains(&place)
+    }
 }
 
 /// «Интерфейс игры» → «Текст»: resolves every `{object.prop}` substitution against `world`,
@@ -187,6 +255,17 @@ pub fn format_text_for(
     properties: &PropertyTable,
     own: Option<u32>,
 ) -> String {
+    format_text_with(parts, world, properties, own, None)
+}
+
+/// То же с выбором страницы: `{choice:…}` подставляется из `choices`, без него — пусто.
+pub fn format_text_with(
+    parts: &[TextPart],
+    world: &World,
+    properties: &PropertyTable,
+    own: Option<u32>,
+    choices: Option<Choices<'_>>,
+) -> String {
     let mut out = String::new();
     for part in parts {
         match part {
@@ -199,6 +278,11 @@ pub fn format_text_for(
             TextPart::Own(prop) => {
                 if let Some(id) = own {
                     out.push_str(&format_property(world, id, *prop, properties));
+                }
+            }
+            TextPart::Choice(choice) => {
+                if let Some(text) = choices.and_then(|choices| choices.text(choice)) {
+                    out.push_str(text);
                 }
             }
         }
@@ -265,6 +349,14 @@ pub(crate) fn format_property(
     }
 }
 
+/// «Начальные значения у new_game»: значение из файла или подстановка выбора, строка целиком.
+#[derive(Debug, Clone, PartialEq)]
+pub enum InitialValue {
+    Fixed(Value),
+    /// «Выбор»: имя выбранного места или поле его строки; ничего не выбрано — значение не пишется.
+    Choice(ChoiceRef),
+}
+
 /// Index into `ScreensConfig::initial_values` — «Экраны и состояние» → «Начальные значения у
 /// new_game», требование 29: `new_game`'s optional third element, one set per distinct list a
 /// button or a screen key declares.
@@ -313,6 +405,8 @@ pub enum Element {
         for_: Option<Selector>,
         /// «Наведение»: имя места наведения.
         name: Option<String>,
+        /// «Выбор»: группа, в которой щелчок по панели выбирает её место.
+        choose: Option<String>,
         /// «Наведение»: номер элемента экрана — места, пока курсор над которым панель рисуется.
         show_on_hover: Option<usize>,
         /// «Наведение», «Видео на панели»: номер места, пока курсор над которым видео панели идёт вперёд.
@@ -355,6 +449,12 @@ pub enum Element {
         for_: Option<Selector>,
         /// «Наведение»: имя места наведения.
         name: Option<String>,
+        /// «Выбор»: группа, в которой щелчок по кнопке выбирает её место.
+        choose: Option<String>,
+        /// «Выбор»: группа, пока в которой ничего не выбрано, кнопка заперта.
+        needs_choice: Option<String>,
+        /// «Выбор»: цвет подписи запертой кнопки; без него — `text_color` с прозрачностью 45 %.
+        text_color_disabled: Option<[f32; 4]>,
     },
     /// «Шкала»: подложка на весь прямоугольник и заливка от левого края на долю `value / max`
     /// объекта элемента — объекта отбора `for_` или строки списка.
@@ -429,11 +529,26 @@ impl Element {
         }
     }
 
-    /// «Наведение»: рисуется ли элемент, когда курсор над местом `place` (`None` — ни над каким): без
-    /// `show_on_hover` рисуется всегда.
-    pub fn visible_over(&self, place: Option<usize>) -> bool {
+    /// «Выбор»: группа, в которой щелчок по панели или кнопке выбирает её место.
+    pub fn choose(&self) -> Option<&str> {
+        match self {
+            Element::Panel { choose, .. } | Element::Button { choose, .. } => choose.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// «Выбор»: группа, пока в которой ничего не выбрано, кнопка заперта.
+    pub fn needs_choice(&self) -> Option<&str> {
+        match self {
+            Element::Button { needs_choice, .. } => needs_choice.as_deref(),
+            _ => None,
+        }
+    }
+
+    /// «Наведение», «Выбор»: рисуется ли элемент, когда горят места `lit`: без `show_on_hover` рисуется всегда.
+    pub fn visible_over(&self, lit: &Lit) -> bool {
         self.show_on_hover()
-            .is_none_or(|target| place == Some(target))
+            .is_none_or(|target| lit.contains(target))
     }
 
     /// «Наведение», «Видео на панели»: место, пока курсор над которым видео панели идёт вперёд.
@@ -497,7 +612,9 @@ pub struct ScreensConfig {
     pub loss_screen: Option<ScreenId>,
     /// «Начальные значения у new_game», требование 29: every distinct value list a `new_game`
     /// command declares, indexed by `InitialValuesId`.
-    pub initial_values: Vec<Vec<(String, PropertyId, Value)>>,
+    pub initial_values: Vec<Vec<(String, PropertyId, InitialValue)>>,
+    /// «Выбор»: таблицы групп выбора, которые читают экраны, — поля строк текстом.
+    pub choices: HashMap<String, ChoiceTable>,
     /// «Надписи и полоски в мире», требование 1: the optional `world_elements` list, in file
     /// order — empty when `screens.json` names none.
     pub world_elements: Vec<WorldElement>,
@@ -549,7 +666,7 @@ impl ScreensConfig {
     /// «Видео на панели»: картинки-видео, которые панели крутят по кругу, — без `play_on_hover`, и ролики
     /// покоя `idle`. `is_video` говорит, какая картинка игры видео: экран этого не знает.
     pub fn loop_videos(&self, is_video: impl Fn(ImageId) -> bool) -> Vec<ImageId> {
-        let mut videos = self.panel_video_images(false, is_video);
+        let mut videos = self.panel_video_images(false, &is_video);
         for element in self.screens.iter().flat_map(|screen| &screen.elements) {
             if let Element::Panel {
                 idle: Some(idle), ..
@@ -559,7 +676,46 @@ impl ScreensConfig {
                 videos.push(*idle);
             }
         }
+        for image in self.choice_panel_images() {
+            if is_video(image) && !videos.contains(&image) {
+                videos.push(image);
+            }
+        }
         videos
+    }
+
+    /// «Выбор»: картинки и видео, которые подстановки `image: "{choice:…}"` панелей называют в строках таблиц.
+    pub fn choice_panel_images(&self) -> Vec<ImageId> {
+        let mut images = Vec::new();
+        for element in self.screens.iter().flat_map(|screen| &screen.elements) {
+            if let Element::Panel {
+                fill: PanelFill::Choice { choice, names, .. },
+                ..
+            } = element
+            {
+                for image in self.choice_images(choice, names) {
+                    if !images.contains(&image) {
+                        images.push(image);
+                    }
+                }
+            }
+        }
+        images
+    }
+
+    /// «Выбор»: картинки, которые подстановка `choice` называет в какой-нибудь строке таблицы группы.
+    pub fn choice_images(&self, choice: &ChoiceRef, names: &[String]) -> Vec<ImageId> {
+        let Some(table) = self.choices.get(&choice.group) else {
+            return Vec::new();
+        };
+        table
+            .iter()
+            .filter_map(|(place, fields)| match &choice.field {
+                None => Some(place),
+                Some(field) => fields.get(field),
+            })
+            .filter_map(|name| names.iter().position(|declared| declared == name))
+            .collect()
     }
 
     fn panel_video_images(
@@ -662,6 +818,14 @@ pub enum PanelFill {
         image: ImageRef,
         opacity: f32,
     },
+    /// «Выбор»: `image: "{choice:<таблица>.<поле>}"` — картинка или видео, чьё имя берётся у выбранного места.
+    /// Ничего не выбрано, поле пустое или называет картинку, которой нет, — панели не видно.
+    Choice {
+        choice: ChoiceRef,
+        /// Имена `files.images` в порядке `ImageId`.
+        names: Arc<[String]>,
+        opacity: f32,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -710,6 +874,9 @@ pub struct ScreenState {
     scrolls: HashMap<(ScreenId, usize), ListScroll>,
     /// «Экраны и состояние» → «Команды»: `exit` сработал — игра просит страницу уйти к списку игр.
     exit_requested: bool,
+    /// «Выбор»: выбранное место каждой группы выбора. Принадлежит странице, а не партии и не экрану: смена
+    /// экрана, `new_game` и `quit` его не трогают, новое состояние экранов начинается без выбора.
+    chosen: HashMap<String, String>,
     /// Номер последнего открытия экрана: частицы и видео экрана начинаются заново при каждом открытии, и
     /// номер говорит об этом, даже когда экран открыт заново между двумя кадрами.
     opened: u64,
@@ -737,6 +904,7 @@ impl ScreenState {
             sound_enabled: true,
             scrolls: HashMap::new(),
             exit_requested: false,
+            chosen: HashMap::new(),
             opened: NEXT_OPENED.fetch_add(OPENINGS_PER_STATE, Ordering::Relaxed),
         }
     }
@@ -780,6 +948,49 @@ impl ScreenState {
 
     pub fn active(&self) -> ScreenId {
         self.active
+    }
+
+    /// «Выбор»: выбранное место группы.
+    pub fn chosen(&self, group: &str) -> Option<&str> {
+        self.chosen.get(group).map(String::as_str)
+    }
+
+    /// «Выбор»: выбор группы переходит на место `place`; выбранное повторно остаётся.
+    fn choose(&mut self, group: String, place: String) {
+        self.chosen.insert(group, place);
+    }
+
+    /// «Выбор»: выбранное и таблицы, по которым подставляются поля.
+    pub fn choices<'a>(&'a self, config: &'a ScreensConfig) -> Choices<'a> {
+        Choices {
+            tables: &config.choices,
+            chosen: &self.chosen,
+        }
+    }
+
+    /// «Выбор»: кнопка заперта, пока в группе её `needs_choice` ничего не выбрано.
+    pub fn is_locked(&self, element: &Element) -> bool {
+        element
+            .needs_choice()
+            .is_some_and(|group| self.chosen(group).is_none())
+    }
+
+    /// «Выбор»: места `screen`, которые горят: под курсором (`hover`) и выбранные, как будто курсор остался
+    /// над ними.
+    pub fn lit(&self, screen: &Screen, hover: Option<usize>) -> Lit {
+        let chosen = screen
+            .elements
+            .iter()
+            .enumerate()
+            .filter(|(_, element)| {
+                element
+                    .choose()
+                    .zip(element.place_name())
+                    .is_some_and(|(group, place)| self.chosen(group) == Some(place))
+            })
+            .map(|(index, _)| index)
+            .collect();
+        Lit { hover, chosen }
     }
 
     pub fn sound_enabled(&self) -> bool {
@@ -843,7 +1054,10 @@ pub fn apply_command_on(
         ButtonCommand::ShowScreen(target) => switch_to(state, config, game, target, true),
         ButtonCommand::NewGame(target, values_id) => {
             match values_id.and_then(|id| config.initial_values.get(id)) {
-                Some(values) => game.new_game_with_values(values),
+                Some(values) => {
+                    let values = resolve_initial_values(values, state.choices(config));
+                    game.new_game_with_values(&values);
+                }
                 None => game.new_game(),
             }
             state.reset_scrolls();
@@ -874,6 +1088,24 @@ pub fn apply_command_on(
         // screen, no queued anything — the whole command is this one flip.
         ButtonCommand::ToggleSound => state.sound_enabled = !state.sound_enabled,
     }
+}
+
+/// «Выбор»: начальные значения `new_game` с выбором страницы. Ничего не выбрано — значение не пишется, у объекта
+/// остаётся значение из сцены.
+pub(crate) fn resolve_initial_values(
+    values: &[(String, PropertyId, InitialValue)],
+    choices: Choices<'_>,
+) -> Vec<(String, PropertyId, Value)> {
+    values
+        .iter()
+        .filter_map(|(object, prop, value)| {
+            let value = match value {
+                InitialValue::Fixed(value) => value.clone(),
+                InitialValue::Choice(choice) => Value::Text(choices.text(choice)?.to_string()),
+            };
+            Some((object.clone(), *prop, value))
+        })
+        .collect()
 }
 
 /// «Редактор», требование 27–28: same transition as `apply_command`'s own `NewGame` branch, for a
@@ -1046,6 +1278,8 @@ enum InterfaceHit<'a> {
     Button(Placed<'a>),
     /// Верхняя из панелей под точкой.
     Panel(Placed<'a>),
+    /// «Выбор»: запертая кнопка — забирает нажатие, но не нажимается и не место наведения.
+    Locked,
 }
 
 fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<InterfaceHit<'a>> {
@@ -1058,6 +1292,7 @@ fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<Inte
             continue;
         }
         match placed.element {
+            Element::Button { .. } if placed.locked => return Some(InterfaceHit::Locked),
             Element::Button { .. } => return Some(InterfaceHit::Button(*placed)),
             // «Наведение»: панель с `show_on_hover` прозрачна для мыши, видна она сейчас или нет.
             // «На экране»: и панель-источник частиц без `name`.
@@ -1079,6 +1314,7 @@ fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<Inte
 pub fn hover_place(parts: &[Part<'_>], point: Option<[f32; 2]>) -> Option<usize> {
     let placed = match topmost_interface_hit(parts, point?)? {
         InterfaceHit::Button(placed) | InterfaceHit::Panel(placed) => placed,
+        InterfaceHit::Locked => return None,
     };
     placed.element.place_name()?;
     Some(placed.key.element)
@@ -1152,6 +1388,8 @@ enum MouseOutcome {
     /// Нажатие дошло до мира; объект — тот, чья картинка в мире стояла под курсором.
     WorldPress(Option<u32>),
     WorldRelease,
+    /// «Выбор»: нажатие по месту с `choose` — группа и имя места.
+    Choose(String, String),
 }
 
 /// Нажатие левой кнопки: его забирает кнопка или панель под курсором, иначе на живом экране — мир.
@@ -1164,14 +1402,23 @@ fn press_outcome(
     match topmost_interface_hit(parts, mouse.position) {
         Some(InterfaceHit::Button(placed)) => {
             mouse.captured = Some(placed.key);
-            MouseOutcome::None
+            choose_outcome(&placed)
         }
-        Some(InterfaceHit::Panel(_)) => MouseOutcome::None,
+        Some(InterfaceHit::Panel(placed)) => choose_outcome(&placed),
+        Some(InterfaceHit::Locked) => MouseOutcome::None,
         None if world_accepts => {
             mouse.world_captured = true;
             MouseOutcome::WorldPress(image_object)
         }
         None => MouseOutcome::None,
+    }
+}
+
+/// «Выбор»: нажатие по панели или кнопке с `choose` выбирает её место.
+fn choose_outcome(placed: &Placed<'_>) -> MouseOutcome {
+    match (placed.element.choose(), placed.element.place_name()) {
+        (Some(group), Some(place)) => MouseOutcome::Choose(group.to_string(), place.to_string()),
+        _ => MouseOutcome::None,
     }
 }
 
@@ -1329,6 +1576,7 @@ pub fn process_ui_queue_recording(
                             events.push(RecordedEvent::WorldKeyUp("MouseLeft".to_string()));
                         }
                     }
+                    MouseOutcome::Choose(group, place) => state.choose(group, place),
                     MouseOutcome::None => {}
                 }
             }
@@ -1450,6 +1698,28 @@ pub fn button_fill<'a>(
         fill
     }
 }
+
+/// «Выбор»: цвет подписи кнопки — запертая показывается `text_color_disabled`, а без него `text_color` с
+/// прозрачностью 45 %.
+pub fn button_text_color(
+    text_color: [f32; 4],
+    text_color_disabled: Option<[f32; 4]>,
+    locked: bool,
+) -> [f32; 4] {
+    match (locked, text_color_disabled) {
+        (false, _) => text_color,
+        (true, Some(disabled)) => disabled,
+        (true, None) => [
+            text_color[0],
+            text_color[1],
+            text_color[2],
+            text_color[3] * LOCKED_TEXT_OPACITY,
+        ],
+    }
+}
+
+/// «Выбор»: прозрачность подписи запертой кнопки без `text_color_disabled`.
+const LOCKED_TEXT_OPACITY: f32 = 0.45;
 
 #[cfg(test)]
 mod opened_tests {

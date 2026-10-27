@@ -188,6 +188,22 @@ impl PanelCourse {
         step
     }
 
+    /// «Выбор»: видео выбранного места на экране, открытом заново, сразу стоит на последнем кадре: проигрыватель
+    /// переходит на конец ролика, и ход считает, что дошёл до него сам. `None` — ход уже начат, и видео идёт
+    /// как идёт.
+    pub fn start_held(&mut self) -> Option<PanelStep> {
+        if self.touched {
+            return None;
+        }
+        self.touched = true;
+        self.position = self.length;
+        self.state = CourseState::Moving(Roll::Forward);
+        Some(PanelStep {
+            seek: Some((Roll::Forward, self.length)),
+            ..PanelStep::default()
+        })
+    }
+
     /// Экран с панелью ушёл: видео снова стоит на первом кадре. `true` — ход успел сдвинуться и проигрыватели
     /// надо вернуть на начало; повторный вызов подряд ничего не меняет.
     pub fn reset(&mut self) -> bool {
@@ -1524,5 +1540,60 @@ mod idle_tests {
         fade.leave();
         fade.begin(true);
         assert_eq!(fade.finish(5.0, false), 0.0);
+    }
+}
+
+#[cfg(test)]
+mod held_tests {
+    use super::*;
+
+    fn reading(time: f64, seeking: bool) -> PlayerReading {
+        PlayerReading {
+            time,
+            seeking,
+            paused: true,
+        }
+    }
+
+    #[test]
+    fn a_held_course_goes_to_the_last_frame_and_stays_there() {
+        let mut course = PanelCourse::new(7.5);
+        let start = course.start_held().expect("ход не начат");
+        assert_eq!(start.seek, Some((Roll::Forward, 7.5)));
+        assert_eq!(course.current(), Roll::Forward);
+
+        let moving = course.step(true, None, reading(7.5, true));
+        assert_eq!(moving, PanelStep::default(), "проигрыватель ещё переходит");
+        for _ in 0..3 {
+            let step = course.step(true, None, reading(7.5, false));
+            assert_eq!(step.show, Some(Roll::Forward));
+            assert_eq!(step.play, None, "проход ролика не идёт");
+            assert_eq!(step.seek, None);
+        }
+    }
+
+    #[test]
+    fn a_held_course_with_rest_at_goes_back_from_the_rest_pose() {
+        let mut course = PanelCourse::new(7.5);
+        course.start_held().expect("ход не начат");
+        for _ in 0..3 {
+            course.step(true, Some(6.0), reading(7.5, false));
+        }
+        let leaving = course.step(false, Some(6.0), reading(7.5, false));
+        assert_eq!(
+            leaving.seek,
+            Some((Roll::Backward, 1.5)),
+            "назад — с позы покоя, а не с последнего кадра"
+        );
+    }
+
+    #[test]
+    fn a_course_that_has_begun_is_not_started_held_again_until_the_screen_leaves() {
+        let mut course = PanelCourse::new(7.5);
+        course.step(false, None, reading(0.0, false));
+        assert_eq!(course.start_held(), None, "ход начат — видео идёт как идёт");
+        assert!(course.reset());
+        assert!(course.start_held().is_some(), "экран открыт заново");
+        assert_eq!(course.start_held(), None);
     }
 }

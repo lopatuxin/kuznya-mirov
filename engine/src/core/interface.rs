@@ -25,6 +25,8 @@ pub struct Placed<'a> {
     /// Объект элемента с `for` или строки списка, которой принадлежит элемент.
     pub object: Option<u32>,
     pub key: ButtonKey,
+    /// «Выбор»: кнопка заперта — в её группе `needs_choice` ничего не выбрано.
+    pub locked: bool,
 }
 
 impl Placed<'_> {
@@ -155,6 +157,7 @@ pub fn layout<'a>(
                     object,
                     inner: 0,
                 },
+                locked: state.is_locked(element),
             }));
             continue;
         };
@@ -179,6 +182,7 @@ pub fn layout<'a>(
                         object: Some(object),
                         inner,
                     },
+                    locked: state.is_locked(part),
                 }));
             }
         }

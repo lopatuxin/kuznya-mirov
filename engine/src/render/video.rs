@@ -46,10 +46,13 @@ pub struct VideoSource {
 /// Как панель играет своё видео в этом кадре.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum PanelPlay {
-    /// «Видео на панели»: `hovering` — курсор над местом наведения панели, `rest_at` — секунда ролика с
-    /// позой последнего кадра, `idle` — ролик покоя панели, `now` — время окна в секундах.
+    /// «Видео на панели»: `hovering` — место наведения панели горит (курсор над ним или оно выбрано), `held` —
+    /// горит, потому что выбрано: на экране, открытом заново, такое видео сразу стоит на последнем кадре.
+    /// `rest_at` — секунда ролика с позой последнего кадра, `idle` — ролик покоя панели, `now` — время окна в
+    /// секундах.
     Hover {
         hovering: bool,
+        held: bool,
         rest_at: Option<f32>,
         idle: Option<usize>,
         now: f64,
@@ -341,6 +344,14 @@ impl Videos {
                 .iter()
                 .find(|input| input.image == video.image)
                 .map(|input| input.play);
+            if let Some(PanelPlay::Hover { held: true, .. }) = input
+                && let Some(start) = video
+                    .panel
+                    .as_mut()
+                    .and_then(|panel| panel.course.start_held())
+            {
+                apply_panel_step(&start, video);
+            }
             let Some(panel) = &mut video.panel else {
                 continue;
             };
@@ -349,6 +360,7 @@ impl Videos {
                 rest_at,
                 idle,
                 now,
+                ..
             }) = input
             else {
                 panel.show = None;

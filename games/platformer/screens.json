@@ -10,7 +10,7 @@
       { "kind": "panel", "anchor": "center", "offset": [620, 385], "size": [640, 270], "color": "#00000000", "butterflies": 0.75 },
       { "kind": "panel", "anchor": "left", "offset": [60, -369], "size": [560, 254], "image": "title" },
       { "kind": "label", "anchor": "left", "offset": [90, -150], "size": [440, 84], "text": "Продолжить", "font": "menu", "font_size": 60, "color": "#f3e6c873", "align": "center" },
-      { "kind": "button", "anchor": "left", "name": "new_game", "offset": [90, -50], "size": [440, 84], "text": "Новая игра", "font": "menu", "font_size": 60, "text_color": "#f3e6c8", "image": "menu_clear", "image_hover": "menu_glow", "image_pressed": "menu_glow", "on_click": ["new_game", "game"] },
+      { "kind": "button", "anchor": "left", "name": "new_game", "needs_choice": "heroes", "offset": [90, -50], "size": [440, 84], "text": "Новая игра", "font": "menu", "font_size": 60, "text_color": "#f3e6c8", "image": "menu_clear", "image_hover": "menu_glow", "image_pressed": "menu_glow", "on_click": ["new_game", "game"] },
       { "kind": "label", "anchor": "left", "offset": [90, -50], "size": [440, 84], "text": "Новая игра", "font": "menu", "font_size": 60, "color": "#ffd779", "align": "center", "show_on_hover": "new_game" },
       { "kind": "label", "anchor": "left", "offset": [90, 50], "size": [440, 84], "text": "Настройки", "font": "menu", "font_size": 60, "color": "#f3e6c873", "align": "center" },
       { "kind": "button", "anchor": "left", "name": "exit", "offset": [90, 150], "size": [440, 84], "text": "Выход", "font": "menu", "font_size": 60, "text_color": "#f3e6c8", "image": "menu_clear", "image_hover": "menu_glow", "image_pressed": "menu_glow", "on_click": ["exit"] },
@@ -24,9 +24,9 @@
       { "kind": "panel", "anchor": "center", "offset": [-260, -285], "size": [270.8, 180.9], "image": "ilya_name", "play_on_hover": "ilya" },
       { "kind": "panel", "anchor": "center", "offset": [470, -223], "size": [250.3, 167.9], "image": "alyosha_name", "play_on_hover": "alyosha" },
       { "kind": "panel", "anchor": "center", "offset": [720, -160], "size": [302.3, 180.9], "image": "vasilisa_name", "play_on_hover": "vasilisa" },
-      { "kind": "panel", "anchor": "center", "name": "vasilisa", "offset": [752, 166], "size": [358, 558], "color": "#00000000" },
-      { "kind": "panel", "anchor": "center", "name": "alyosha", "offset": [342, 136], "size": [335, 590], "color": "#00000000" },
-      { "kind": "panel", "anchor": "center", "name": "ilya", "offset": [-282, 134], "size": [578, 730], "color": "#00000000" }
+      { "kind": "panel", "anchor": "center", "name": "vasilisa", "choose": "heroes", "offset": [752, 166], "size": [358, 558], "color": "#00000000" },
+      { "kind": "panel", "anchor": "center", "name": "alyosha", "choose": "heroes", "offset": [342, 136], "size": [335, 590], "color": "#00000000" },
+      { "kind": "panel", "anchor": "center", "name": "ilya", "choose": "heroes", "offset": [-282, 134], "size": [578, 730], "color": "#00000000" }
     ] },
     { "name": "game", "world_runs": true, "keys": { "Escape": ["show_screen", "pause"] }, "elements": [] },
     { "name": "pause", "world_runs": false, "keys": { "Escape": ["resume"] }, "elements": [

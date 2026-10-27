@@ -25,6 +25,7 @@ fn load() -> (Ui, Vec<engine::data::error::GameError>, Vec<ImageDecl>) {
     let (config, mut warnings) =
         read_entry(&game_json).unwrap_or_else(|e| panic!("game.json не разобран: {e:?}"));
     let images = platformer::image_verdicts(&config.files.images);
+    let tables = platformer::table_texts(&config.files.tables);
     let fonts: Vec<(String, Option<Vec<u8>>)> = config
         .files
         .fonts
@@ -44,7 +45,7 @@ fn load() -> (Ui, Vec<engine::data::error::GameError>, Vec<ImageDecl>) {
         &images,
         Some(&read("code.lua")),
         false,
-        &[],
+        &tables,
         None,
         &[],
         &[],
@@ -114,12 +115,46 @@ fn the_game_starts_on_the_menu_screen_without_a_world() {
     assert!(!ui.game.has_world());
 }
 
-#[test]
-fn new_game_leads_to_the_level() {
-    let mut ui = ui();
-    let new_game = middle_of(&ui, |element| {
+fn new_game_button(ui: &Ui) -> [f32; 2] {
+    middle_of(ui, |element| {
         matches!(button_command(element), Some(ButtonCommand::NewGame(..)))
-    });
+    })
+}
+
+fn choose_hero(ui: &mut Ui, hero: &str) {
+    let at = middle_of(ui, |element| element.place_name() == Some(hero));
+    ui.click(at[0], at[1]);
+}
+
+#[test]
+fn new_game_stays_shut_until_a_hero_is_chosen() {
+    let mut ui = ui();
+    let new_game = new_game_button(&ui);
+    ui.click(new_game[0], new_game[1]);
+    assert_eq!(active_screen(&ui), "menu");
+    assert!(!ui.game.has_world());
+    assert_eq!(
+        place_at(&ui, new_game),
+        None,
+        "запертая кнопка не место наведения"
+    );
+}
+
+#[test]
+fn a_click_on_a_hero_chooses_him_and_a_click_on_another_moves_the_choice() {
+    let mut ui = ui();
+    assert_eq!(ui.state.chosen("heroes"), None);
+    choose_hero(&mut ui, "ilya");
+    assert_eq!(ui.state.chosen("heroes"), Some("ilya"));
+    choose_hero(&mut ui, "alyosha");
+    assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
+}
+
+#[test]
+fn new_game_leads_to_the_level_once_a_hero_is_chosen() {
+    let mut ui = ui();
+    choose_hero(&mut ui, "vasilisa");
+    let new_game = new_game_button(&ui);
     ui.click(new_game[0], new_game[1]);
     assert_eq!(active_screen(&ui), "game");
     assert!(ui.game.has_world());
@@ -257,11 +292,10 @@ fn the_cursor_over_a_hero_is_over_his_place() {
 }
 
 #[test]
-fn the_pause_returns_to_the_start_screen() {
+fn the_pause_returns_to_the_start_screen_with_the_same_hero_chosen() {
     let mut ui = ui();
-    let new_game = middle_of(&ui, |element| {
-        matches!(button_command(element), Some(ButtonCommand::NewGame(..)))
-    });
+    choose_hero(&mut ui, "alyosha");
+    let new_game = new_game_button(&ui);
     ui.click(new_game[0], new_game[1]);
     ui.key("Escape");
     assert_eq!(active_screen(&ui), "pause");
@@ -270,4 +304,5 @@ fn the_pause_returns_to_the_start_screen() {
     });
     ui.click(to_menu[0], to_menu[1]);
     assert_eq!(active_screen(&ui), "menu");
+    assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
 }

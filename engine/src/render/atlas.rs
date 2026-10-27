@@ -14,7 +14,7 @@ use crate::core::interface::Part;
 use crate::core::particles::{ParticleShape, Settings};
 use crate::core::property;
 use crate::core::scene::{self, CellRange, GroundLayer, LayerView, SceneConfig};
-use crate::core::screens::{Element, Fill, PanelFill};
+use crate::core::screens::{Element, Fill, Lit, PanelFill};
 use crate::core::time::frame_index;
 use crate::core::value::{ImageId, Vec2};
 use crate::core::world::World;
@@ -1221,10 +1221,10 @@ pub fn screen_particle_paint(sprite: &Sprite, cell_pixels: f64) -> RectPaint {
 
 /// «Ветер и частицы» → «На экране», требование 10: частицы панелей экрана с номером той части раскладки
 /// `parts`, после которой их рисовать, — сразу после панели, до следующего элемента списка. Частицы
-/// панели с `show_on_hover`, пока курсор не над местом `place`, не рисуются, как и сама панель.
+/// панели с `show_on_hover`, пока не горит её место `lit`, не рисуются, как и сама панель.
 pub fn screen_particle_paints<'a>(
     parts: &'a [Part<'a>],
-    place: Option<usize>,
+    lit: &'a Lit,
     particles: &'a Particles,
     cell_pixels: f64,
 ) -> impl Iterator<Item = (usize, RectPaint)> + 'a {
@@ -1235,7 +1235,7 @@ pub fn screen_particle_paints<'a>(
             let Part::Element(placed) = part else {
                 return None;
             };
-            (placed.element.particles().is_some() && placed.element.visible_over(place))
+            (placed.element.particles().is_some() && placed.element.visible_over(lit))
                 .then_some((index, placed.key.element))
         })
         .flat_map(move |(index, element)| {

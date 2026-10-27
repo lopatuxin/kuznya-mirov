@@ -454,7 +454,7 @@ fn a_light_model_that_the_page_did_not_find_is_an_error_naming_its_path() {
 fn needed(index: Option<&str>) -> NeededMedia {
     let text = game_json(&["a", "b", "c"]);
     let (config, _) = read_entry(&text).expect("game.json читается");
-    read_texts_with_imported(&config, Some(PROPS), None, None, index)
+    read_texts_with_imported(&config, Some(PROPS), None, None, None, index)
 }
 
 #[test]

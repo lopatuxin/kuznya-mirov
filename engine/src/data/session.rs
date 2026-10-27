@@ -150,6 +150,7 @@ impl PlaySession {
         events: Vec<RecordedEvent>,
         game: &Game,
         config: &ScreensConfig,
+        state: &ScreenState,
         images: &[ImageDecl],
     ) {
         for event in events {
@@ -159,7 +160,7 @@ impl PlaySession {
                     RecordedEvent::WorldKeyUp(code) => ReplayEventKind::KeyUp(code),
                     RecordedEvent::WorldClick(object) => ReplayEventKind::Click(object),
                     RecordedEvent::Command(cmd, object) => ReplayEventKind::Command(
-                        replay_command_of(cmd, object, config, &game.properties, images),
+                        replay_command_of(cmd, object, config, state, &game.properties, images),
                     ),
                 };
             self.recording.events.push(ReplayEvent { step, kind });
@@ -270,7 +271,7 @@ impl PlaySession {
             Some(&mut events),
             true,
         );
-        self.push_screen_events(step_before, events, game, config, images);
+        self.push_screen_events(step_before, events, game, config, state, images);
         Self::annotate_screen_change(game, config, before_screen, state.active());
     }
 
@@ -379,7 +380,7 @@ impl PlaySession {
             true,
         );
         if !self.is_replay() {
-            self.push_screen_events(step_before, events, game, config, images);
+            self.push_screen_events(step_before, events, game, config, state, images);
         }
         Self::annotate_screen_change(game, config, before_screen, state.active());
     }
@@ -728,6 +729,7 @@ fn replay_command_of(
     cmd: screens::ButtonCommand,
     object: Option<u32>,
     config: &ScreensConfig,
+    state: &ScreenState,
     properties: &crate::core::property::PropertyTable,
     images: &[ImageDecl],
 ) -> ReplayCommand {
@@ -738,7 +740,8 @@ fn replay_command_of(
             let values = values_id
                 .and_then(|vid| config.initial_values.get(vid))
                 .map(|list| {
-                    list.iter()
+                    screens::resolve_initial_values(list, state.choices(config))
+                        .iter()
                         .map(|(name, prop, value)| {
                             (
                                 format!("{name}.{}", properties.name(*prop)),

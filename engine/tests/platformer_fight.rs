@@ -31,6 +31,7 @@ impl Fight {
         let game_json = read("game.json");
         let (config, _) = read_entry(&game_json).expect("game.json разобран");
         let images = support::image_verdicts(&config.files.images);
+        let tables = support::table_texts(&config.files.tables);
         let fonts: Vec<(String, Option<Vec<u8>>)> = config
             .files
             .fonts
@@ -59,7 +60,7 @@ impl Fight {
             &images,
             Some(&read("code.lua")),
             false,
-            &[],
+            &tables,
             None,
             &[],
             &[],
