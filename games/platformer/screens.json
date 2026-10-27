@@ -10,7 +10,7 @@
       { "kind": "panel", "anchor": "center", "offset": [620, 385], "size": [640, 270], "color": "#00000000", "butterflies": 0.75 },
       { "kind": "panel", "anchor": "left", "offset": [60, -369], "size": [560, 254], "image": "title" },
       { "kind": "label", "anchor": "left", "offset": [90, -150], "size": [440, 84], "text": "Продолжить", "font": "menu", "font_size": 60, "color": "#f3e6c873", "align": "center" },
-      { "kind": "button", "anchor": "left", "name": "new_game", "needs_choice": "heroes", "offset": [90, -50], "size": [440, 84], "text": "Новая игра", "font": "menu", "font_size": 60, "text_color": "#f3e6c8", "image": "menu_clear", "image_hover": "menu_glow", "image_pressed": "menu_glow", "on_click": ["new_game", "game"] },
+      { "kind": "button", "anchor": "left", "name": "new_game", "needs_choice": "heroes", "offset": [90, -50], "size": [440, 84], "text": "Новая игра", "font": "menu", "font_size": 60, "text_color": "#f3e6c8", "image": "menu_clear", "image_hover": "menu_glow", "image_pressed": "menu_glow", "on_click": ["show_screen", "hero"] },
       { "kind": "label", "anchor": "left", "offset": [90, -50], "size": [440, 84], "text": "Новая игра", "font": "menu", "font_size": 60, "color": "#ffd779", "align": "center", "show_on_hover": "new_game" },
       { "kind": "label", "anchor": "left", "offset": [90, 50], "size": [440, 84], "text": "Настройки", "font": "menu", "font_size": 60, "color": "#f3e6c873", "align": "center" },
       { "kind": "button", "anchor": "left", "name": "exit", "offset": [90, 150], "size": [440, 84], "text": "Выход", "font": "menu", "font_size": 60, "text_color": "#f3e6c8", "image": "menu_clear", "image_hover": "menu_glow", "image_pressed": "menu_glow", "on_click": ["exit"] },
@@ -28,18 +28,50 @@
       { "kind": "panel", "anchor": "center", "name": "alyosha", "choose": "heroes", "offset": [342, 136], "size": [335, 590], "color": "#00000000" },
       { "kind": "panel", "anchor": "center", "name": "ilya", "choose": "heroes", "offset": [-282, 134], "size": [578, 730], "color": "#00000000" }
     ] },
+    { "name": "hero", "world_runs": false, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [2675, 1215], "image": "hero_bg"  },
+      { "kind": "panel", "anchor": "center", "offset": [-538.2, 280.6], "size": [656.1, 740.6], "image": "{choice:heroes.portrait}"  },
+      { "kind": "label", "anchor": "center", "offset": [469.6, -372], "size": [878, 104.6], "text": "{choice:heroes.name}", "font": "menu", "font_size": 69.7, "color": "#8c2416", "align": "center"  },
+      { "kind": "label", "anchor": "center", "offset": [469.6, -312], "size": [878, 58.1], "text": "{choice:heroes.epithet}", "font": "menu", "font_size": 38.7, "color": "#5b4630", "align": "center"  },
+      { "kind": "label", "anchor": "center", "offset": [469.6, -268], "size": [860, 31.5], "text": "{choice:heroes.fight}", "font": "ui", "font_size": 21, "color": "#3a2414", "align": "center"  },
+      { "kind": "label", "anchor": "center", "offset": [469.6, -236], "size": [860, 31.5], "text": "{choice:heroes.paths}", "font": "ui", "font_size": 21, "color": "#3a2414", "align": "center"  },
+      { "kind": "panel", "anchor": "center", "offset": [469.6, -204], "size": [560.8, 2.6], "color": "#8c24168c"  },
+      { "kind": "label", "anchor": "center", "offset": [397.2, -160], "size": [579, 65.9], "text": "Сила богатырская", "font": "menu", "font_size": 43.9, "color": "#3a2414", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [779.7, -160.3], "size": [103.3, 81.3], "text": "{choice:heroes.strength}", "font": "menu", "font_size": 54.2, "color": "#8c2416", "align": "right"  },
+      { "kind": "label", "anchor": "center", "offset": [502.7, -126], "size": [790, 31.5], "text": "Отвечает за силу удара, шанс блока и устойчивость к сильным ударам", "font": "ui", "font_size": 21, "color": "#5b4630", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [397.2, -80], "size": [579, 65.9], "text": "Сноровка", "font": "menu", "font_size": 43.9, "color": "#3a2414", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [779.7, -80.3], "size": [103.3, 81.3], "text": "{choice:heroes.skill}", "font": "menu", "font_size": 54.2, "color": "#8c2416", "align": "right"  },
+      { "kind": "label", "anchor": "center", "offset": [502.7, -46], "size": [790, 31.5], "text": "Отвечает за скорость ударов и шанс парирования", "font": "ui", "font_size": 21, "color": "#5b4630", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [397.2, 0], "size": [579, 65.9], "text": "Прыть", "font": "menu", "font_size": 43.9, "color": "#3a2414", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [779.7, -0.3], "size": [103.3, 81.3], "text": "{choice:heroes.agility}", "font": "menu", "font_size": 54.2, "color": "#8c2416", "align": "right"  },
+      { "kind": "label", "anchor": "center", "offset": [502.7, 34], "size": [790, 31.5], "text": "Отвечает за шанс уклонения и удар в слабое место с двойным уроном", "font": "ui", "font_size": 21, "color": "#5b4630", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [397.2, 80], "size": [579, 65.9], "text": "Мудрость", "font": "menu", "font_size": 43.9, "color": "#3a2414", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [779.7, 79.7], "size": [103.3, 81.3], "text": "{choice:heroes.wisdom}", "font": "menu", "font_size": 54.2, "color": "#8c2416", "align": "right"  },
+      { "kind": "label", "anchor": "center", "offset": [502.7, 114], "size": [790, 31.5], "text": "Отвечает за прочность чар, их восстановление и силу заклинаний", "font": "ui", "font_size": 21, "color": "#5b4630", "align": "left"  },
+      { "kind": "panel", "anchor": "center", "offset": [469.6, 146], "size": [560.8, 2.6], "color": "#8c24168c"  },
+      { "kind": "label", "anchor": "center", "offset": [223.3, 186], "size": [231.3, 50.4], "text": "Дух", "font": "menu", "font_size": 33.6, "color": "#8c2416", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [611, 188.8], "size": [518.3, 34.9], "text": "{choice:heroes.spirit}", "font": "ui", "font_size": 23.2, "color": "#3a2414", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [223.3, 232], "size": [231.3, 50.4], "text": "Рост", "font": "menu", "font_size": 33.6, "color": "#8c2416", "align": "left"  },
+      { "kind": "label", "anchor": "center", "offset": [611, 234.8], "size": [518.3, 34.9], "text": "{choice:heroes.growth}", "font": "ui", "font_size": 23.2, "color": "#3a2414", "align": "left"  },
+      { "kind": "button", "anchor": "center", "name": "back", "offset": [288.7, 356.2], "size": [297, 87.8], "text": "Назад", "font": "menu", "font_size": 51.6, "text_color": "#5b4630", "image": "menu_clear", "on_click": ["show_screen", "menu"] },
+      { "kind": "panel", "anchor": "center", "offset": [288.7, 356.2], "size": [378.4, 72.2], "image": "parchment_glow", "show_on_hover": "back"  },
+      { "kind": "label", "anchor": "center", "offset": [288.7, 356.2], "size": [297, 87.8], "text": "Назад", "font": "menu", "font_size": 51.6, "color": "#b8301c", "align": "center", "show_on_hover": "back"  },
+      { "kind": "button", "anchor": "center", "name": "go", "offset": [650.5, 356.2], "size": [335.7, 109.8], "text": "В путь", "font": "menu", "font_size": 64.6, "text_color": "#8c2416", "image": "menu_clear", "on_click": ["new_game", "game", { "Герой.hero_id": "{choice:heroes}" }] },
+      { "kind": "panel", "anchor": "center", "offset": [650.5, 356.2], "size": [473.7, 90.4], "image": "parchment_glow", "show_on_hover": "go"  },
+      { "kind": "label", "anchor": "center", "offset": [650.5, 356.2], "size": [335.7, 109.8], "text": "В путь", "font": "menu", "font_size": 64.6, "color": "#b8301c", "align": "center", "show_on_hover": "go"  }
+    ] },
     { "name": "game", "world_runs": true, "keys": { "Escape": ["show_screen", "pause"] }, "elements": [] },
     { "name": "pause", "world_runs": false, "keys": { "Escape": ["resume"] }, "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 30], "size": [320, 320], "color": "#16201ad9" },
       { "kind": "label", "anchor": "center", "offset": [0, -80], "size": [300, 40], "text": "Пауза", "font": "title", "font_size": 28, "color": "#f3efe4", "align": "center" },
       { "kind": "button", "anchor": "center", "offset": [0, -10], "size": [240, 50], "text": "Продолжить", "font": "ui", "font_size": 21, "text_color": "#1b2416", "color": "#e8d9a8", "color_hover": "#f4e7ba", "color_pressed": "#c9b884", "on_click": ["resume"] },
-      { "kind": "button", "anchor": "center", "offset": [0, 55], "size": [240, 50], "text": "Начать заново", "font": "ui", "font_size": 21, "text_color": "#f3efe4", "color": "#2f3a2c", "color_hover": "#3d4a39", "color_pressed": "#232c21", "on_click": ["new_game", "game"] },
+      { "kind": "button", "anchor": "center", "offset": [0, 55], "size": [240, 50], "text": "Начать заново", "font": "ui", "font_size": 21, "text_color": "#f3efe4", "color": "#2f3a2c", "color_hover": "#3d4a39", "color_pressed": "#232c21", "on_click": ["new_game", "game", { "Герой.hero_id": "{choice:heroes}" }] },
       { "kind": "button", "anchor": "center", "offset": [0, 120], "size": [240, 50], "text": "В главное меню", "font": "ui", "font_size": 21, "text_color": "#f3efe4", "color": "#2f3a2c", "color_hover": "#3d4a39", "color_pressed": "#232c21", "on_click": ["quit"] }
     ] },
     { "name": "win", "world_runs": false, "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [480, 220], "color": "#16201ad9" },
       { "kind": "label", "anchor": "center", "offset": [0, -55], "size": [440, 44], "text": "Уровень пройден", "font": "title", "font_size": 30, "color": "#f3efe4", "align": "center" },
-      { "kind": "button", "anchor": "center", "offset": [0, 25], "size": [240, 50], "text": "Ещё раз", "font": "ui", "font_size": 21, "text_color": "#1b2416", "color": "#e8d9a8", "color_hover": "#f4e7ba", "color_pressed": "#c9b884", "on_click": ["new_game", "game"] }
+      { "kind": "button", "anchor": "center", "offset": [0, 25], "size": [240, 50], "text": "Ещё раз", "font": "ui", "font_size": 21, "text_color": "#1b2416", "color": "#e8d9a8", "color_hover": "#f4e7ba", "color_pressed": "#c9b884", "on_click": ["new_game", "game", { "Герой.hero_id": "{choice:heroes}" }] }
     ] }
   ]
 }

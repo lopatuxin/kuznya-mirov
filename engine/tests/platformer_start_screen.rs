@@ -1,5 +1,5 @@
 //! Фаза 07 платформера — начальный экран `games/platformer`: игра грузится без ошибок и предупреждений,
-//! стартует с экрана `menu`, «Новая игра» ведёт на уровень, «Выход» просит страницу уйти к списку игр, три
+//! стартует с экрана `menu`, «Новая игра» ведёт на экран героя (фаза 10), «Выход» просит страницу уйти к списку игр, три
 //! героя — места наведения с видео героя и его имени и горящей строкой. Фаза 08 — живой фон: вся картина
 //! роликом по кругу, листья с берёзы, пух и бабочки при ветре экрана. Фаза 09 — герои без мыши дышат роликами
 //! покоя. Видео и курсор в браузере — только QA на стенде.
@@ -116,9 +116,11 @@ fn the_game_starts_on_the_menu_screen_without_a_world() {
 }
 
 fn new_game_button(ui: &Ui) -> [f32; 2] {
-    middle_of(ui, |element| {
-        matches!(button_command(element), Some(ButtonCommand::NewGame(..)))
-    })
+    middle_of(ui, |element| element.place_name() == Some("new_game"))
+}
+
+fn go_button(ui: &Ui) -> [f32; 2] {
+    middle_of(ui, |element| element.place_name() == Some("go"))
 }
 
 fn choose_hero(ui: &mut Ui, hero: &str) {
@@ -151,13 +153,13 @@ fn a_click_on_a_hero_chooses_him_and_a_click_on_another_moves_the_choice() {
 }
 
 #[test]
-fn new_game_leads_to_the_level_once_a_hero_is_chosen() {
+fn new_game_leads_to_the_hero_screen_once_a_hero_is_chosen() {
     let mut ui = ui();
     choose_hero(&mut ui, "vasilisa");
     let new_game = new_game_button(&ui);
     ui.click(new_game[0], new_game[1]);
-    assert_eq!(active_screen(&ui), "game");
-    assert!(ui.game.has_world());
+    assert_eq!(active_screen(&ui), "hero");
+    assert!(!ui.game.has_world());
 }
 
 #[test]
@@ -179,7 +181,7 @@ fn only_new_game_and_exit_are_buttons_on_the_menu() {
         .filter_map(button_command)
         .collect();
     assert_eq!(commands.len(), 2, "{commands:?}");
-    assert!(matches!(commands[0], ButtonCommand::NewGame(..)));
+    assert!(matches!(commands[0], ButtonCommand::ShowScreen(..)));
     assert_eq!(commands[1], ButtonCommand::Exit);
 }
 
@@ -266,7 +268,10 @@ fn the_menu_background_lives_with_loops_wind_and_particles() {
             "river",
             "vasilisa_idle",
             "alyosha_idle",
-            "ilya_idle"
+            "ilya_idle",
+            "alyosha_portrait",
+            "ilya_portrait",
+            "vasilisa_portrait"
         ]
     );
     assert!(menu.wind[0] > 0.0, "ветер вправо: {:?}", menu.wind);
@@ -297,6 +302,8 @@ fn the_pause_returns_to_the_start_screen_with_the_same_hero_chosen() {
     choose_hero(&mut ui, "alyosha");
     let new_game = new_game_button(&ui);
     ui.click(new_game[0], new_game[1]);
+    let go = go_button(&ui);
+    ui.click(go[0], go[1]);
     ui.key("Escape");
     assert_eq!(active_screen(&ui), "pause");
     let to_menu = middle_of(&ui, |element| {

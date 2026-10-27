@@ -288,8 +288,21 @@ local function animate(hero)
   end
 end
 
+-- Числа героя — из таблицы героев по его hero_id, один раз за партию. Бой их пока не читает.
+local function take_stats(hero)
+  if hero.strength ~= nil then
+    return
+  end
+  local row = tables.heroes[hero.hero_id]
+  if row == nil then
+    error("нет героя " .. tostring(hero.hero_id) .. " в таблице heroes")
+  end
+  hero.strength, hero.skill, hero.agility, hero.wisdom = row.strength, row.skill, row.agility, row.wisdom
+end
+
 function fight_hero(hero)
   ensure(hero, HERO_DEFAULTS)
+  take_stats(hero)
   step_no = step_no + 1
   -- В остановке время боя стоит, но кадр уже тот, что начался в миг попадания.
   if held(hero) then

@@ -1,6 +1,11 @@
 {
   "properties": {
     "hero": "flag",
+    "hero_id": "text",
+    "strength": "number",
+    "skill": "number",
+    "agility": "number",
+    "wisdom": "number",
     "ground": "flag",
     "ledge": "flag",
     "pit": "flag",
