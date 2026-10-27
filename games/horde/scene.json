@@ -1,0 +1,22 @@
+{
+  "objects": [
+    { "name": "hero", "position": [8.9, 10.05], "size": [0.6, 0.35], "image": "hero_down_right", "heading": 1, "layer": 10, "velocity": [0, 0],
+      "camera_follows": true, "hero": true,
+      "keys": {
+        "ArrowLeft":   { "press": [["go_left", true]], "release": [["go_left", false]] },
+        "KeyA":        { "press": [["go_left", true]], "release": [["go_left", false]] },
+        "ArrowRight":  { "press": [["go_right", true]], "release": [["go_right", false]] },
+        "KeyD":        { "press": [["go_right", true]], "release": [["go_right", false]] },
+        "ArrowUp":     { "press": [["go_up", true]], "release": [["go_up", false]] },
+        "KeyW":        { "press": [["go_up", true]], "release": [["go_up", false]] },
+        "ArrowDown":   { "press": [["go_down", true]], "release": [["go_down", false]] },
+        "KeyS":        { "press": [["go_down", true]], "release": [["go_down", false]] },
+        "KeyE":        { "press": [["climb", true]], "release": [["climb", false]] }
+      } },
+
+    { "position": [0, 0], "size": [32, 18], "image": "ground_01", "layer": 0 },
+    { "position": [21.2823, 0], "size": [32, 18], "image": "ground_02", "layer": 1 },
+
+    { "name": "tower", "position": [5.3, 7.8], "size": [4.4, 2.2], "image": "tower", "layer": 10, "tower": true }
+  ]
+}

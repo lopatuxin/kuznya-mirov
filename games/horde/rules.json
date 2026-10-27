@@ -1,0 +1,11 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["hero"] },
+      "do": [["run", "steer"]] },
+
+    { "kind": "move", "for": { "has": ["position", "velocity"] } },
+
+    { "kind": "check", "for": { "has": ["hero"] },
+      "do": [["run", "keep_in_scene"]] }
+  ]
+}
