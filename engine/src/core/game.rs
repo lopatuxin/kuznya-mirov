@@ -7,6 +7,7 @@ use super::code::{self, CodeCreate, CodeError, ObjectParser};
 use super::grid::SpatialGrid;
 use super::input::{InputQueue, KeyAction, KeyEvent, StepInput};
 use super::math3::Vec3;
+use super::motion;
 use super::pathfind::WalkCaches;
 use super::property::{self, PropertyId, PropertyTable};
 use super::report::{CreatedObject, DeleteCause, StepReport, StepReportBuilder};
@@ -1616,6 +1617,7 @@ impl Game {
         if let Some(outcome) = outcome_flag {
             self.outcome = Some((outcome, self.step_count));
         }
+        motion::advance(&mut self.world);
         // «Камера», требование 6: без отставания — сразу после последнего шага, здесь, а не при
         // следующей отрисовке.
         self.step_camera();

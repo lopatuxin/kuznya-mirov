@@ -16,11 +16,18 @@ use engine::core::shapes::Body;
 use engine::core::surface;
 use engine::core::walk3d::{self, Blocker, Deck, Goal, Surfaces, Walker};
 use engine::data::load::{
-    GameConfig, ImageVerdict, load_rest_with_stamps, read_entry, terrain_image_paths,
+    GameConfig, ImageVerdict, ModelFile, load_rest_with_motions, read_entry, terrain_image_paths,
 };
 use serde_json::json;
 
 const WINDOW: [f32; 2] = [1920.0, 1080.0];
+
+/// Склон деревни, на котором земля под ступнями героя не на уровне его основания.
+const SLOPE: [f64; 2] = [41.0, 16.0];
+
+#[path = "skeleton_support/mod.rs"]
+mod skeleton_support;
+use skeleton_support::{joint_point, posed_point};
 
 fn game_path(name: &str) -> PathBuf {
     let mut path = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
@@ -106,6 +113,32 @@ fn map_data(config: &GameConfig, terrain_json: Option<&str>) -> (Verdicts, Verdi
     (maps, masks)
 }
 
+/// Файлы моделей игры, как их отдала бы страница: байты `.glb` и картинки внутри него готовыми точками.
+fn model_files(config: &GameConfig) -> Vec<(String, ModelFile)> {
+    let image = ImageVerdict::Ok {
+        width: 4,
+        height: 4,
+        pixels: vec![200; 64],
+    };
+    config
+        .files
+        .models
+        .iter()
+        .map(|decl| {
+            let bytes =
+                fs::read(game_path(&decl.path)).unwrap_or_else(|e| panic!("{}: {e}", decl.path));
+            let images = (0..8).map(|index| (index, image.clone())).collect();
+            (
+                decl.name.clone(),
+                ModelFile {
+                    bytes: Some(bytes),
+                    images,
+                },
+            )
+        })
+        .collect()
+}
+
 /// Loads a `games/rpg` folder end to end, image sizes, the `enemies` table, the terrain file, the
 /// material maps and the cover masks included. `game_json`, `scene_json` and `terrain_json` stand in for the real files: the village
 /// passes them as they are, the combat scene passes its own.
@@ -152,7 +185,9 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
         .map(|(name, path)| (name.clone(), Some(read(path))))
         .collect();
     let (map_verdicts, mask_verdicts) = map_data(&config, terrain_json);
-    let (game, _screens, warnings, _images) = load_rest_with_stamps(
+    let model_files = model_files(&config);
+    let motions_text = config.files.motions.as_deref().map(read);
+    let (game, _screens, warnings, _images) = load_rest_with_motions(
         game_json,
         config,
         Some(&read("properties.json")),
@@ -170,10 +205,18 @@ fn load_files(game_json: &str, scene_json: &str, terrain_json: Option<&str>) -> 
         &map_verdicts,
         &mask_verdicts,
         &stamp_texts,
+        &model_files,
+        None,
+        &[],
+        motions_text.as_deref(),
     )
     .expect("ролевая игра должна проходить предстартовую проверку");
     let mut all_warnings = entry_warnings;
     all_warnings.extend(warnings);
+    // Движения, заведённые на стенде анимации и ещё не отданные герою, игре не мешают.
+    all_warnings.retain(|warning| {
+        !warning.message.contains("не сжата") && !warning.message.contains("нигде не названо")
+    });
     assert_eq!(all_warnings, Vec::new(), "{all_warnings:?}");
     game
 }
@@ -247,7 +290,7 @@ fn combat_scene(first_goblin_kind: &str) -> String {
 }
 
 /// `game.json` игры с боевой сценой вместо деревни: свой размер, ровная земля без файла рельефа и без
-/// материалов, которым на ней нечего одевать.
+/// материалов, которым на ней нечего одевать; без моделей — и без движений к ним.
 fn combat_game_json() -> String {
     let mut game_json: serde_json::Value =
         serde_json::from_str(&read("game.json")).expect("game.json должен разбираться");
@@ -257,6 +300,8 @@ fn combat_game_json() -> String {
     files.remove("terrain");
     files.remove("materials");
     files.remove("stamps");
+    files.remove("models");
+    files.remove("motions");
     game_json.to_string()
 }
 
@@ -869,5 +914,273 @@ fn enemy_catalog_typo_names_the_enemy_and_its_bad_row() {
         !err.message.contains("nil value"),
         "не сырая ошибка Lua: {}",
         err.message
+    );
+}
+
+/// Фаза 27: герой деревни — модель героя Орды со скелетом, стойкой, лёгким бегом и ступнями вместо капсулы.
+#[test]
+fn the_hero_is_the_horde_model_with_its_motions_and_feet_instead_of_a_capsule() {
+    let game = load_village(&read("scene.json"));
+    let id = find_named(&game, "hero");
+    assert_eq!(game.world.text(id, property::MODEL), Some("hero"));
+    assert!(
+        game.world.shape(id, property::SHAPE).is_none(),
+        "капсулы нет"
+    );
+    assert_eq!(game.world.number_like(id, property::HEIGHT), Some(1.8));
+    let model = game.world.model_of(id).expect("модель героя");
+    let skeleton = model.skeleton.as_ref().expect("у модели героя есть скелет");
+    for motion in [
+        "Стойка",
+        "Бег",
+        "Спринт",
+        "Попадание",
+        "Смерть",
+        "Перекат",
+        "Ремонт",
+    ] {
+        assert!(
+            skeleton.clip_named(motion).is_some(),
+            "нет движения {motion}"
+        );
+    }
+    assert_eq!(skeleton.idle, skeleton.clip_named("Стойка"));
+    assert_eq!(skeleton.walk, skeleton.clip_named("бег_героя"));
+    assert!(skeleton.legs.is_some(), "ступни на склонах");
+    assert_eq!(skeleton.spine, skeleton.bone_named("mixamorig:Spine"));
+    assert_eq!(
+        skeleton.hands,
+        Some(["mixamorig:LeftHand", "mixamorig:RightHand"].map(|name| {
+            skeleton
+                .bone_named(name)
+                .expect("кисть героя есть в скелете")
+        }))
+    );
+    let credits = read("CREDITS.txt");
+    assert!(
+        credits.contains("Quaternius Universal Animation Library") && credits.contains("CC0"),
+        "движения героя названы в авторах"
+    );
+    assert!(credits.contains("Tripo"), "модель героя названа в авторах");
+}
+
+/// Поза бега героя с поправками `lean` и `arms_out` и без них: где в осях модели голова и две кисти.
+fn jog_points(lean: f32, arms_out: f32) -> Vec<[f32; 3]> {
+    use engine::core::skeleton::{Clip, PoseScratch, Retouch};
+    let game = load_village(&read("scene.json"));
+    let id = find_named(&game, "hero");
+    let mut skeleton = game
+        .world
+        .model_of(id)
+        .and_then(|model| model.skeleton.clone())
+        .expect("скелет героя");
+    let jog = skeleton.clip_named("Бег").expect("бег");
+    let length = skeleton.clips[jog].length;
+    skeleton.clips.push(Clip {
+        name: "Corrected".to_string(),
+        start: 0.0,
+        length,
+        tracks: Vec::new(),
+        retouch: Some(Retouch {
+            base: jog,
+            looped: None,
+            upper: None,
+            bounce: 1.0,
+            pelvis: None,
+            lean,
+            arms_out,
+            bones: Vec::new(),
+        }),
+    });
+    let corrected = skeleton.clips.len() - 1;
+    let mut scratch = PoseScratch::default();
+    skeleton.pose(
+        &engine::core::skeleton::Blend::single(engine::core::skeleton::Playing {
+            clip: Some(corrected),
+            time: 0.25 * length,
+            looped: true,
+        }),
+        &mut scratch,
+    );
+    [
+        "mixamorig:Head",
+        "mixamorig:LeftHand",
+        "mixamorig:RightHand",
+    ]
+    .map(|name| {
+        let bone = skeleton.bone_named(name).expect("кость есть");
+        let m = scratch.globals()[bone];
+        [m[3][0], m[3][1], m[3][2]]
+    })
+    .to_vec()
+}
+
+#[test]
+fn lean_tips_the_real_hero_forward_and_arms_out_spreads_its_hands_apart() {
+    let plain = jog_points(0.0, 0.0);
+    let leaned = jog_points(15.0, 0.0);
+    assert!(
+        leaned[0][1] > plain[0][1] + 0.05,
+        "голова ушла вперёд (+y модели): {:?} → {:?}",
+        plain[0],
+        leaned[0]
+    );
+    assert!(leaned[0][2] < plain[0][2], "и опустилась");
+    let spread = jog_points(0.0, 25.0);
+    let width = |points: &[[f32; 3]]| (points[2][0] - points[1][0]).abs();
+    assert!(
+        width(&spread) > width(&plain) + 0.1,
+        "кисти разошлись: {} → {}",
+        width(&plain),
+        width(&spread)
+    );
+}
+
+#[test]
+fn the_hero_stands_in_the_first_pose_of_idle_and_runs_a_jog_toward_a_click_facing_its_way() {
+    let mut game = load_village(&read("scene.json"));
+    let id = find_named(&game, "hero");
+    let model = game.world.model_of(id).expect("модель героя").clone();
+    let skeleton = model.skeleton.expect("скелет");
+    let stands = game.world.motion(id).blend(&skeleton);
+    assert_eq!(stands.current().playing.clip, skeleton.idle);
+    assert_eq!(
+        stands.current().playing.time,
+        0.0,
+        "в редакторе — первая поза стойки"
+    );
+    let center = center_of(&game, id);
+    game.world
+        .set_vec2(id, property::WALK_TO, [center[0] + 6.0, center[1]]);
+    for _ in 0..3 {
+        game.step(StepInput::empty());
+    }
+    let runs = game.world.motion(id).blend(&skeleton);
+    assert_eq!(runs.current().playing.clip, skeleton.walk, "идёт — Jog");
+    assert_eq!(
+        runs.layers().get(1).map(|layer| layer.playing.clip),
+        Some(skeleton.idle),
+        "плавно от стойки"
+    );
+    let facing = game
+        .world
+        .rotation(id, property::FACING)
+        .map(|r| r.angle())
+        .expect("повернулся по ходу");
+    assert!((facing - 270.0).abs() < 1e-6, "вправо — 270: {facing}");
+}
+
+/// Точка связывания сустава в осях модели: обратный перенос и поворот матрицы `tail`, что переводит её в сустав.
+fn bind_point(tail: &[[f32; 4]; 4]) -> [f32; 3] {
+    let translation = [tail[3][0], tail[3][1], tail[3][2]];
+    std::array::from_fn(|row| {
+        -(tail[row][0] * translation[0]
+            + tail[row][1] * translation[1]
+            + tail[row][2] * translation[2])
+    })
+}
+
+/// Лицо героя смотрит вдоль +Z файла, к игроку при `facing` 0: на бегу колено ушло вперёд от прямой бедро — ступня.
+#[test]
+fn the_knees_of_the_running_hero_bend_toward_the_front_of_the_model() {
+    use engine::core::skeleton::{Blend, Playing, PoseScratch};
+    let game = load_village(&read("scene.json"));
+    let id = find_named(&game, "hero");
+    let skeleton = game
+        .world
+        .model_of(id)
+        .expect("модель героя")
+        .skeleton
+        .clone()
+        .expect("скелет");
+    let joint = |name: &str| {
+        let at = skeleton
+            .joint_named(name)
+            .unwrap_or_else(|| panic!("нет кости {name}"));
+        (at, bind_point(&skeleton.tails[at]))
+    };
+    let [hip, knee, ankle] = [
+        "mixamorig:LeftUpLeg",
+        "mixamorig:LeftLeg",
+        "mixamorig:LeftFoot",
+    ]
+    .map(joint);
+    let blend = Blend::single(Playing {
+        clip: skeleton.walk,
+        time: 0.6,
+        looped: true,
+    });
+    let (mut scratch, mut matrices) = (PoseScratch::default(), Vec::new());
+    skeleton.pose(&blend, &mut scratch);
+    skeleton.skin_matrices(&scratch, &mut matrices);
+    let place = |(at, bind): (usize, [f32; 3])| posed_point(&matrices[at], bind);
+    let (hip, knee, ankle) = (place(hip), place(knee), place(ankle));
+    let along = (hip[2] - knee[2]) / (hip[2] - ankle[2]);
+    let line_y = hip[1] + along * (ankle[1] - hip[1]);
+    assert!(
+        knee[1] - line_y > 0.05,
+        "колено позади прямой бедро — ступня: {hip:?} {knee:?} {ankle:?}"
+    );
+}
+
+/// Фаза 27: герой доходит до склона ходом движка, и ступни стоят на земле под собой, как на ровном: над землёй ровно
+/// настолько, насколько их держит движение, а таз и колени подстроились.
+#[test]
+fn on_a_slope_both_feet_of_the_hero_stand_the_same_height_above_the_ground_as_on_the_flat() {
+    use engine::core::skeleton::PoseScratch;
+    use engine::render::models::model_draws;
+    let mut game = load_village(&read("scene.json"));
+    let id = find_named(&game, "hero");
+    game.world.set_vec2(id, property::WALK_TO, SLOPE);
+    let mut guard = 0;
+    while game.world.has(id, property::WALK_TO) && guard < 4000 {
+        game.step(StepInput::empty());
+        guard += 1;
+    }
+    assert!(guard < 4000, "герой дошёл до склона");
+    for _ in 0..40 {
+        game.step(StepInput::empty());
+    }
+    let model = game.world.models().index_of("hero").expect("модель героя");
+    let skeleton = game
+        .world
+        .model_of(id)
+        .expect("модель")
+        .skeleton
+        .clone()
+        .expect("скелет");
+    let draws = model_draws(&game);
+    let instance = draws.instances[model][0];
+    let [x, y, cos, sin] = instance.placement.map(f64::from);
+    let [base, scale, ..] = instance.base.map(f64::from);
+    assert!(
+        (base - z_of(&game, id)).abs() < 1e-5,
+        "основание то, что посадил движок"
+    );
+    let bones = &draws.bones[model];
+    assert!(bones.iter().all(|c| c.is_finite()), "матрицы конечны");
+    let (mut scratch, mut matrices) = (PoseScratch::default(), Vec::new());
+    skeleton.pose(&game.world.motion(id).blend(&skeleton), &mut scratch);
+    skeleton.skin_matrices(&scratch, &mut matrices);
+    let flat: Vec<f32> = matrices.iter().flatten().flatten().copied().collect();
+    let terrain = game.world.terrain();
+    let mut lifts = Vec::new();
+    for name in ["mixamorig:LeftFoot", "mixamorig:RightFoot"] {
+        let at = skeleton.joint_named(name).expect("кость ступни");
+        let bind = bind_point(&skeleton.tails[at]);
+        let foot = joint_point(bones, at, bind);
+        let (lx, ly) = (f64::from(foot[0]) * scale, f64::from(foot[1]) * scale);
+        let ground = terrain.height_at(x + cos * lx - sin * ly, y + sin * lx + cos * ly);
+        let above = base + f64::from(foot[2]) * scale - ground;
+        let on_flat = f64::from(joint_point(&flat, at, bind)[2]) * scale;
+        assert!(
+            (above - on_flat).abs() < 2e-3,
+            "{name}: над землёй {above}, на ровном {on_flat}"
+        );
+        lifts.push(ground - base);
+    }
+    assert!(
+        lifts.iter().any(|lift| lift.abs() > 1e-3),
+        "склон: земля под ступнями не на основании: {lifts:?}"
     );
 }

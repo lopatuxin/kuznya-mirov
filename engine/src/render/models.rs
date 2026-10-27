@@ -10,10 +10,14 @@ use block_compression::decode::decompress_blocks_as_rgba8;
 use block_compression::{BC7Settings, CompressionVariant};
 
 use crate::core::game::Game;
+use crate::core::math3::Mat4;
 use crate::core::model::{Image, ModelImage, PackedFormat, PackedImage};
 use crate::core::property;
 use crate::core::road_kinds::Junction;
+use crate::core::skeleton::{PoseScratch, Skeleton, Stance};
+use crate::core::surface;
 use crate::core::value::Rotation;
+use crate::core::world::World;
 
 use super::materials::{linear_to_srgb, srgb_to_linear};
 
@@ -41,6 +45,9 @@ pub struct BlendedDraw {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelDraws {
     pub instances: Vec<Vec<ModelInstance>>,
+    /// «Скелет и движения»: у модели со скелетом — матрицы суставов каждого её объекта в кадре, по порядку
+    /// `instances`, по шестнадцать чисел на сустав, столбцами; у остальных пусто.
+    pub bones: Vec<Vec<f32>>,
     pub top: f64,
     blended: Vec<(BlendedDraw, [f64; 3])>,
 }
@@ -185,12 +192,14 @@ pub fn model_draws(game: &Game) -> ModelDraws {
     let models = world.models();
     let mut draws = ModelDraws {
         instances: vec![Vec::new(); models.len()],
+        bones: vec![Vec::new(); models.len()],
         top: f64::NEG_INFINITY,
         blended: Vec::new(),
     };
     if models.is_empty() {
         return draws;
     }
+    let mut posing = Posing::default();
     for id in world.ids() {
         let Some(name) = world.text(id, property::MODEL) else {
             continue;
@@ -209,9 +218,7 @@ pub fn model_draws(game: &Game) -> ModelDraws {
             continue;
         }
         let scale = model.scale(world.number_like(id, property::HEIGHT));
-        let (sin, cos) = world
-            .rotation(id, property::ROTATION)
-            .map_or((0.0, 1.0), Rotation::sin_cos);
+        let (sin, cos) = view_rotation(world, id).sin_cos();
         let base = world.base_z(id);
         let middle = [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0];
         draws.top = draws.top.max(base + model.size[2] * scale);
@@ -224,12 +231,65 @@ pub fn model_draws(game: &Game) -> ModelDraws {
                 [middle[0], middle[1], base + model.size[2] * scale / 2.0],
             ));
         }
+        if let Some(skeleton) = &model.skeleton {
+            let stance = Stance {
+                place: middle,
+                cos,
+                sin,
+                scale,
+                base,
+            };
+            posing.pose(game, id, skeleton, &stance, &mut draws.bones[index]);
+        }
         draws.instances[index].push(ModelInstance {
             placement: [middle[0] as f32, middle[1] as f32, cos as f32, sin as f32],
             base: [base as f32, scale as f32, 1.0, world.tilt(id) as f32],
         });
     }
     draws
+}
+
+/// Куда смотрит вид объекта: `rotation` вместе с `facing`.
+pub(super) fn view_rotation(world: &World, id: u32) -> Rotation {
+    let angle = |prop| world.rotation(id, prop).map_or(0.0, Rotation::angle);
+    let sum = angle(property::ROTATION) + angle(property::FACING);
+    Rotation::from_degrees(sum).unwrap_or_else(|| Rotation::from_quarters(0))
+}
+
+/// Рабочие буферы поз, общие на все объекты кадра.
+#[derive(Default)]
+struct Posing {
+    scratch: PoseScratch,
+    matrices: Vec<Mat4>,
+}
+
+impl Posing {
+    /// Дописывает в `out` матрицы суставов объекта `id`: поза его движения, а у модели со ступнями — ещё и ступни на
+    /// земле, настилах и ступеньках под ними.
+    fn pose(
+        &mut self,
+        game: &Game,
+        id: u32,
+        skeleton: &Skeleton,
+        stance: &Stance,
+        out: &mut Vec<f32>,
+    ) {
+        let world = &game.world;
+        skeleton.pose(&world.motion(id).blend(skeleton), &mut self.scratch);
+        if skeleton.legs.is_some() {
+            let scene = [f64::from(game.scene.width), f64::from(game.scene.height)];
+            let inside = |point: [f64; 2]| {
+                (0.0..=scene[0]).contains(&point[0]) && (0.0..=scene[1]).contains(&point[1])
+            };
+            skeleton.plant_feet(
+                stance,
+                |point| inside(point).then(|| surface::ground_at(world, id, point, stance.base)),
+                &mut self.scratch,
+            );
+        }
+        skeleton.skin_matrices(&self.scratch, &mut self.matrices);
+        out.extend(self.matrices.iter().flatten().flatten());
+    }
 }
 
 /// Одна ступень уменьшения картинки модели: четыре байта на точку.

@@ -266,11 +266,11 @@ fn every_prestart_error_about_models_names_the_model_or_the_object() {
 
     let mut setup = Setup::new(&scene);
     setup.models = r#"{"house":{"path":"models/house.glb","idle":"Idle"}}"#;
-    expect_error(&setup, &["idle", "фазе 27"]);
+    expect_error(&setup, &["idle", "нет скелета"]);
     setup.models = r#"{"house":{"path":"models/house.glb","walk":"Walk"}}"#;
-    expect_error(&setup, &["walk", "фазе 27"]);
+    expect_error(&setup, &["walk", "нет скелета"]);
     setup.models = r#"{"house":{"path":"models/house.glb","feet":["a","b"]}}"#;
-    expect_error(&setup, &["feet", "фазе 27"]);
+    expect_error(&setup, &["feet", "нет скелета"]);
     setup.models = r#"{"house":{"path":"models/house.glb","speed":1}}"#;
     expect_error(&setup, &["неизвестное поле", "speed"]);
     setup.models = r#"{"house":{}}"#;
@@ -347,7 +347,7 @@ fn the_keys_in_the_model_errors_stand_in_quotes_so_the_editor_can_swap_them() {
 }
 
 #[test]
-fn the_animation_property_is_an_error_until_phase_27() {
+fn the_animation_property_is_an_error_when_no_model_has_that_motion() {
     let scene = object(
         "дом",
         "house",
@@ -355,7 +355,7 @@ fn the_animation_property_is_an_error_until_phase_27() {
         [2.0, 2.0],
         r#","animation":"Walk""#,
     );
-    expect_error(&Setup::new(&scene), &["animation", "фазе 27"]);
+    expect_error(&Setup::new(&scene), &["animation", "Walk"]);
 }
 
 #[test]

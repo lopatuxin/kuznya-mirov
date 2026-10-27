@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use super::skeleton::Skeleton;
+
 /// Вершина части модели.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ModelVertex {
@@ -110,6 +112,14 @@ pub struct Part {
     pub material: usize,
 }
 
+/// Какие суставы скелета двигают вершину и с каким весом: до четырёх, веса в сумме единица; нулевые веса —
+/// вершина стоит на месте.
+#[derive(Debug, Clone, Copy, PartialEq, Default)]
+pub struct SkinVertex {
+    pub joints: [u16; 4],
+    pub weights: [f32; 4],
+}
+
 /// Картинка из файла модели, какой её разжала страница: четыре байта на точку.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Image {
@@ -180,6 +190,10 @@ pub struct Model {
     /// Где в осях модели лежит начало координат файла: загрузка ставит в начало середину коробки, а перекрёсток
     /// лежит в файле серединой в нуле.
     pub origin: [f32; 2],
+    /// Скелет и движения файла; `None` у модели без скелета.
+    pub skeleton: Option<Skeleton>,
+    /// Веса вершин каждой части по порядку частей; пусто у модели без скелета.
+    pub skin: Vec<Vec<SkinVertex>>,
 }
 
 impl Model {
@@ -192,6 +206,8 @@ impl Model {
             images: Vec::new(),
             size: [1.0; 3],
             origin: [0.0; 2],
+            skeleton: None,
+            skin: Vec::new(),
         }
     }
 

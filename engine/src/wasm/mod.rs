@@ -41,6 +41,8 @@ use crate::render::{
 };
 use crate::render::{PanelInput, PanelPlay, VideoRole, VideoSource};
 
+mod stand;
+
 fn set(obj: &Object, key: &str, value: &JsValue) {
     let _ = Reflect::set(obj, &JsValue::from_str(key), value);
 }
@@ -109,6 +111,10 @@ fn js_entry_ok(config: &GameConfig, warnings: &[GameError]) -> JsValue {
     // «Рельеф»: путь файла высот — страница читает его во втором заходе вместе с таблицами.
     if let Some(terrain) = &config.files.terrain {
         set(&files, "terrain", &JsValue::from_str(terrain));
+    }
+    // «Движения»: путь `motions.json` — страница читает его вместе с остальными текстами и отдаёт `load()` последним.
+    if let Some(motions) = &config.files.motions {
+        set(&files, "motions", &JsValue::from_str(motions));
     }
     let fonts = Array::new();
     for (name, path) in &config.files.fonts {
@@ -1905,6 +1911,7 @@ fn render_world(
                 shapes: [&shapes[0], &shapes[1], &shapes[2], &shapes[3]],
                 models: ModelsFrame {
                     objects: &frame.models,
+                    bones: &frame.model_bones,
                     pieces: &frame.road_pieces,
                     junctions: &frame.road_junctions,
                     bent: &frame.road_bent,
@@ -2045,6 +2052,12 @@ pub struct Engine {
     /// «Ветер и частицы» → «Часы движения»: часы, по которым идут порывы, пружины и кадры по
     /// времени, и наклоны с кадрами качающихся объектов.
     motion: Motion,
+    /// «Редактор» → «Анимация»: стенд анимации; пока он есть, `draw` рисует его, а не игру.
+    stand: Option<crate::data::stand::Stand>,
+    /// На видеокарте лежат модели стенда (со скелетом, что несёт поправки движения), а не модели игры.
+    stand_models_on_gpu: bool,
+    stand_motion: Motion,
+    stand_shapes: FlatShapes,
 }
 
 #[wasm_bindgen]
@@ -2081,6 +2094,10 @@ impl Engine {
             battle_view: true,
             last_mouse_window_pos: None,
             motion: seeded_motion(),
+            stand: None,
+            stand_models_on_gpu: false,
+            stand_motion: seeded_motion(),
+            stand_shapes: FlatShapes::default(),
         })
     }
 
@@ -2176,6 +2193,8 @@ impl Engine {
     /// модель, а `images` не читается. `model_textures` — `[{index, bytes: Uint8Array|null}]`, байты сжатых файлов как
     /// есть, по номерам из `read_texts()`'s `model_textures`; нет файла или он пуст — `null`. `imported_index` — тот же текст
     /// `imported/index.json`, что был в `read_texts()`, или `null`.
+    /// «Движения»: `motions` — текст `motions.json`, если `read_entry()` назвал его в `files.motions`; `null` или
+    /// не передан — файла нет на месте.
     #[allow(clippy::too_many_arguments)]
     pub fn load(
         &mut self,
@@ -2197,6 +2216,7 @@ impl Engine {
         models: JsValue,
         model_textures: JsValue,
         imported_index: Option<String>,
+        motions: Option<String>,
     ) -> JsValue {
         let Some((config, game_json)) = self.pending_config.take() else {
             return js_load_err(
@@ -2256,7 +2276,7 @@ impl Engine {
         } else {
             parse_sound_bytes(&model_textures, &path_table(&model_texture_paths))
         };
-        match load::load_rest_with_imports(
+        match load::load_rest_with_motions(
             &game_json,
             config,
             properties_json.as_deref(),
@@ -2277,6 +2297,7 @@ impl Engine {
             &model_files,
             imported_index.as_deref(),
             &model_texture_bytes,
+            motions.as_deref(),
         ) {
             Ok((game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
@@ -2368,6 +2389,7 @@ impl Engine {
                 );
                 self.renderer.set_relief(relief.as_ref());
                 let image_stats = self.renderer.set_models(game.properties.models());
+                self.stand_models_on_gpu = false;
                 if !game.properties.models().is_empty() {
                     web_sys::console::log_1(&JsValue::from_str(&image_stats.line()));
                 }
@@ -2435,6 +2457,7 @@ impl Engine {
         self.renderer.reset_fonts();
         self.renderer.set_relief(None);
         self.renderer.set_models(&ModelTable::default());
+        self.stand_models_on_gpu = false;
         self.renderer.set_videos(Vec::new());
         self.session = None;
     }
@@ -2571,6 +2594,10 @@ impl Engine {
     /// simply stays exactly as `tick` last left it, which is what "paused" means for its own animated
     /// fills). An empty frame without a loaded game.
     pub fn draw(&mut self, dt: f64) {
+        if self.stand.is_some() {
+            self.draw_stand();
+            return;
+        }
         if self.game.is_none() {
             let _ = self
                 .renderer

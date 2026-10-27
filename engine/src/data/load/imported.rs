@@ -132,6 +132,11 @@ mod tests {
         ModelDecl {
             name: name.to_string(),
             path: path.to_string(),
+            idle: None,
+            walk: None,
+            feet: None,
+            spine: None,
+            hands: None,
         }
     }
 

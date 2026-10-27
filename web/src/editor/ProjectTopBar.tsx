@@ -19,7 +19,12 @@ type ProjectTopBarProps = {
   battle: BattleSessionState;
   /** Место над сценой, куда встают инструменты трёхмерной сцены. */
   onToolbarSlotChange: (slot: HTMLElement | null) => void;
+  /** Кнопка «Анимация» («Сцена» на экране стенда) — «Редактор», «Анимация», требование 4; `null` — кнопки нет, сцена плоская. */
+  stand: StandButton | null;
 };
+
+/** Кнопка, что открывает экран стенда и возвращает окно проекта; `disabledReason` — почему она недоступна. */
+export type StandButton = { isOpen: boolean; disabledReason: string | null; onToggle: () => void };
 
 function ProjectStatus({ headerNotice, loadedAt }: Pick<ProjectTopBarProps, "headerNotice" | "loadedAt">): React.JSX.Element | null {
   if (headerNotice !== null) {
@@ -260,7 +265,7 @@ function BattleNotices({ battle }: { battle: BattleSessionState }): React.JSX.El
  * (их ставит сцена в `onToolbarSlotChange`) и кнопки партии; над свойствами — строки о записи и точка «Обновлено».
  * «Отменить» неактивна без истории (требования 2, 4, 21); во время партии и повтора полоса подсвечена (требование 5).
  */
-export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, saveState, canUndo, onUndo, onBackToProjects, battle, onToolbarSlotChange }: ProjectTopBarProps): React.JSX.Element {
+export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, saveState, canUndo, onUndo, onBackToProjects, battle, onToolbarSlotChange, stand }: ProjectTopBarProps): React.JSX.Element {
   const sourceTitle = source.kind === "listed" ? `Проект из списка: games/${source.name}` : `Папка с диска: ${source.displayName}`;
   return (
     <header className={`project-topbar${battle.mode !== "edit" ? ` project-topbar--${battle.mode}` : ""}`}>
@@ -275,6 +280,17 @@ export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, sav
         <button type="button" className="editor-button editor-button--icon" disabled={!canUndo} title="Отменить (Ctrl+Z)" aria-label="Отменить" onClick={onUndo}>
           <EditorIcon name="undo" size={15} />
         </button>
+        {stand !== null && (
+          <button
+            type="button"
+            className={`editor-button project-topbar__stand${stand.isOpen ? " project-topbar__stand--open" : ""}`}
+            disabled={stand.disabledReason !== null}
+            title={stand.disabledReason ?? (stand.isOpen ? "Вернуться к сцене" : "Экран анимации: движения моделей со скелетом")}
+            onClick={stand.onToggle}
+          >
+            {stand.isOpen ? "Сцена" : "Анимация"}
+          </button>
+        )}
       </div>
       <div className="project-topbar__scene">
         <div ref={onToolbarSlotChange} className="scene-tools" />

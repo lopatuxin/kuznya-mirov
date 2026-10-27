@@ -1,7 +1,7 @@
 import type { Engine } from "engine";
 import { GAME_FILE_FETCH, fetchText } from "./gameOptions";
 import { buildImagePayload, buildVideoPayload, fetchImageBytes, isVideoPath, type ImageEntry, type ImageFileEntry } from "./images/imagePayload";
-import { buildModelPayload, buildModelTexturePayload, type ModelEntry, type ModelTextureEntry } from "./images/modelImages";
+import { buildModelPayload, buildModelTexturePayload, readModelRig, type ModelEntry, type ModelRig, type ModelTextureEntry } from "./images/modelImages";
 import { releaseDecodedVideos, releaseVideoPlayer, type DecodedReverseVideo, type VideoPlayerKeeper } from "./images/videoLoader";
 import { probeMusicVerdict, type MusicVerdict } from "./sound/soundLoader";
 import type { EngineError } from "./engineErrors";
@@ -25,6 +25,8 @@ type ReadEntryFiles = {
   stamps: StampEntry[];
   code?: string;
   terrain?: string;
+  /** Путь `motions.json` из `files.motions` — «Движения»; нет ключа — файла в игре нет. */
+  motions?: string;
 };
 
 type ReadEntryResult =
@@ -76,6 +78,9 @@ export type LoadedCoverMask = { path: string; width: number; height: number; pix
  */
 export type LoadedProjectImage = { name: string; width: number; height: number; pixels: Uint8Array };
 
+/** Модель игры, как её читает редактор из файла: имя из `files.models`, скелет и имена движений — «Редактор», «Анимация». */
+export type ProjectModelRig = { name: string } & ModelRig;
+
 /** Подмножество `Engine`, которого хватает трём заходам загрузки — тестам достаточно подделать эти три метода. */
 export type ProjectLoadEngine = Pick<Engine, "read_entry" | "read_texts" | "load">;
 
@@ -103,6 +108,8 @@ export type ProjectLoadResult =
       coverMasks: LoadedCoverMask[];
       /** Разжатые картинки `files.images` в порядке, в каком их назвал движок. */
       images: LoadedProjectImage[];
+      /** Модели игры с прочитанным скелетом и движениями файла; файл, что не разбирается, не входит. */
+      modelRigs: ProjectModelRig[];
       audioContext: AudioContext;
     }
   /** `game.json` не читается вовсе — вызывающая сторона сама знает, как это назвать (имя игры или проекта). */
@@ -176,7 +183,7 @@ export async function loadProject(
     return { status: "rejected", errors: entryResult.errors, warnings: entryResult.warnings, gameJsonText, sceneText: null };
   }
 
-  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText, stamps, importedIndexText] = await Promise.all([
+  const [propertiesText, sceneText, rulesText, screensText, codeText, tableTexts, terrainText, stamps, importedIndexText, motionsText] = await Promise.all([
     reader.readText(entryResult.files.properties),
     reader.readText(entryResult.files.scene),
     reader.readText(entryResult.files.rules),
@@ -190,6 +197,8 @@ export async function loadProject(
     // «Трёхмерная сцена», «Загрузка и проверка»: какие модели службой сжаты — `null`, если `imported/index.json` нет; путь
     // читается всегда, поэтому опрос файлов редактора заметит и появление файла после сжатия.
     reader.readText(IMPORTED_INDEX_PATH),
+    // «Движения»: `motions.json`, если игра его назвала; `null` — файл назван, но не найден, движок назовёт ошибку.
+    entryResult.files.motions !== undefined ? reader.readText(entryResult.files.motions) : Promise.resolve(undefined),
   ]);
 
   const needed = engine.read_texts(propertiesText, sceneText, rulesText, screensText, codeText, terrainText, importedIndexText) as ReadTextsResult;
@@ -259,6 +268,7 @@ export async function loadProject(
       modelsPayload,
       buildModelTexturePayload(loadedModelTextures),
       importedIndexText,
+      motionsText,
     ) as LoadResult;
   } catch (error) {
     for (const player of players) releaseVideoPlayer(player);
@@ -287,7 +297,12 @@ export async function loadProject(
     const video = decodedVideos.get(entry.index);
     return video?.verdict === "ok" ? [{ name: entry.name, ...video.frame }] : [];
   });
-  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, coverMasks, images, audioContext };
+  const modelRigs = needed.models.flatMap((entry, position): ProjectModelRig[] => {
+    const bytes = loadedModels[position]?.bytes;
+    const rig = bytes === null || bytes === undefined ? null : readModelRig(bytes);
+    return rig === null ? [] : [{ name: entry.name, ...rig }];
+  });
+  return { status: "ok", warnings, gameJsonText, sceneText, loadedSounds, musicTracks, stamps, coverMasks, images, modelRigs, audioContext };
 }
 
 /**

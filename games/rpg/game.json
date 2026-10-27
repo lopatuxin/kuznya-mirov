@@ -34,6 +34,17 @@
       "marker": {
         "path": "images/marker.png"
       }
-    }
+    },
+    "models": {
+      "hero": {
+        "path": "models/hero.glb",
+        "idle": "Стойка",
+        "walk": "бег_героя",
+        "feet": ["mixamorig:LeftFoot", "mixamorig:RightFoot"],
+        "spine": "mixamorig:Spine",
+        "hands": ["mixamorig:LeftHand", "mixamorig:RightHand"]
+      }
+    },
+    "motions": "motions.json"
   }
 }

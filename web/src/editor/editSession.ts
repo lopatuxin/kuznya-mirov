@@ -2,10 +2,10 @@ import { areMaskSetsEqual, changedMaskPaths, type MaskSet } from "./maskBytes";
 
 /**
  * Текст файлов, которые правит редактор, и маски покрытий; `terrainText` — `null`, пока у проекта нет файла рельефа
- * («Кисти рельефа», требование 19). `masks` — маски слоёв из `covers` файла рельефа по путям, байты которых история
+ * («Кисти рельефа», требование 19), `motionsText` — пока нет `motions.json` («Анимация»). `masks` — маски слоёв из `covers` файла рельефа по путям, байты которых история
  * хранит рядом с текстами («Покраска», требование 16).
  */
-export type EditSnapshot = { sceneText: string; propertiesText: string; terrainText: string | null; masks: MaskSet };
+export type EditSnapshot = { sceneText: string; propertiesText: string; terrainText: string | null; motionsText: string | null; masks: MaskSet };
 export type SaveState = { status: "saved" } | { status: "unsaved"; reason: string };
 
 export type EditSessionState = {
@@ -37,6 +37,14 @@ export function beginTerrainCreation(state: EditSessionState, candidate: EditSna
 }
 
 /**
+ * Первое движение в игре без `motions.json` — «Анимация», новое движение: файл заводится вместе с действием и остаётся после
+ * отмены, поэтому снимок «до» получает пустую таблицу (`emptyMotionsText`) вместо «файла нет».
+ */
+export function beginMotionsCreation(state: EditSessionState, candidate: EditSnapshot, emptyMotionsText: string): EditSessionState {
+  return beginAction({ ...state, displayed: { ...state.displayed, motionsText: emptyMotionsText } }, candidate);
+}
+
+/**
  * Отмена — требование 21: последний снимок истории становится показанным текстом. Без своей
  * записи в историю — повтора отменённого нет (вне scope фазы). Истории нет — `null`, кнопка
  * «Отменить» неактивна.
@@ -61,11 +69,12 @@ export function markUnsaved(state: EditSessionState, reason: string): EditSessio
  * Какие файлы отличаются от `diskTruth` и поэтому должны быть записаны — требование 2: следующее
  * успешное действие или отмена дописывают то, что не записалось раньше, вместе со своей правкой.
  */
-export function dirtyFiles(state: EditSessionState): { scene: boolean; properties: boolean; terrain: boolean } {
+export function dirtyFiles(state: EditSessionState): { scene: boolean; properties: boolean; terrain: boolean; motions: boolean } {
   return {
     scene: state.displayed.sceneText !== state.diskTruth.sceneText,
     properties: state.displayed.propertiesText !== state.diskTruth.propertiesText,
     terrain: state.displayed.terrainText !== state.diskTruth.terrainText,
+    motions: state.displayed.motionsText !== state.diskTruth.motionsText,
   };
 }
 
@@ -97,8 +106,9 @@ export function applyExternalRead(state: EditSessionState, disk: EditSnapshot): 
   const sceneChanged = disk.sceneText !== state.diskTruth.sceneText;
   const propertiesChanged = disk.propertiesText !== state.diskTruth.propertiesText;
   const terrainChanged = disk.terrainText !== state.diskTruth.terrainText;
+  const motionsChanged = disk.motionsText !== state.diskTruth.motionsText;
   const masksChanged = !areMaskSetsEqual(disk.masks, state.diskTruth.masks);
-  if (!sceneChanged && !propertiesChanged && !terrainChanged && !masksChanged) return state;
+  if (!sceneChanged && !propertiesChanged && !terrainChanged && !motionsChanged && !masksChanged) return state;
   return {
     ...state,
     history: [...state.history, state.displayed],
@@ -106,6 +116,7 @@ export function applyExternalRead(state: EditSessionState, disk: EditSnapshot): 
       sceneText: sceneChanged ? disk.sceneText : state.displayed.sceneText,
       propertiesText: propertiesChanged ? disk.propertiesText : state.displayed.propertiesText,
       terrainText: terrainChanged ? disk.terrainText : state.displayed.terrainText,
+      motionsText: motionsChanged ? disk.motionsText : state.displayed.motionsText,
       masks: masksChanged ? disk.masks : state.displayed.masks,
     },
     diskTruth: disk,

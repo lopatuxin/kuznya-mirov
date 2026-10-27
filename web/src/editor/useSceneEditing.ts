@@ -17,6 +17,7 @@ import {
 } from "./editSession";
 import type { EditorCameraStore, FlatCameraStore } from "./editorCamera";
 import { NO_MASKS, type MaskBytes, type MaskSet } from "./maskBytes";
+import { planMotionCreation } from "./motionsEditing";
 import type { PlacementChange } from "./objectPlacement";
 import type { PaintResult } from "./paintStroke";
 import { encodeMaskPng } from "./pngCodec";
@@ -73,6 +74,8 @@ export type SceneEditingState = {
   propertiesText: string | null;
   /** Текст файла рельефа, показанный сейчас; `null` — у проекта нет файла рельефа. */
   terrainText: string | null;
+  /** Текст `motions.json`, показанный сейчас; `null` — у игры нет файла движений («Анимация»). */
+  motionsText: string | null;
   /** Маски слоёв покрытий, показанные сейчас, по путям файлов («Покраска»). */
   masks: MaskSet;
   saveState: SaveState;
@@ -103,6 +106,10 @@ export type SceneEditingState = {
   setImprintValue: (index: number, key: string, value: unknown) => void;
   copyImprint: (index: number) => void;
   deleteImprint: (index: number) => void;
+  /** Правка `motions.json` — «Анимация»: `build` получает показанный текст и отдаёт новый, `null` — правки нет; одно действие и один шаг отмены. */
+  editMotions: (build: (motionsText: string | null) => string | null) => void;
+  /** Новое движение: первое в игре заводит `motions.json` и дописывает `files.motions` в `game.json` («Анимация», требование 5). */
+  createMotion: (name: string, model: string, clip: string) => void;
   setPropertyValue: (objectIndex: number, key: string, value: unknown) => void;
   removeProperty: (objectIndex: number, key: string) => void;
   /** Несколько свойств объекта одной правкой текста и одним шагом отмены — «Убрать» во вкладке «Эффекты» («Редактор», требование 31). */
@@ -185,6 +192,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       sceneText: current.displayed.sceneText,
       propertiesText: current.displayed.propertiesText,
       terrainText: current.displayed.terrainText,
+      motionsText: current.displayed.motionsText,
       maskFiles,
     });
     const afterLoad = sessionRef.current;
@@ -196,7 +204,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     }
 
     const paths = parseProjectFilePaths(gameJsonTextRef.current);
-    const dirty = paths === null ? { scene: false, properties: false, terrain: false } : dirtyFiles(afterLoad);
+    const dirty = paths === null ? { scene: false, properties: false, terrain: false, motions: false } : dirtyFiles(afterLoad);
     let failureReason: string | null = paths === null ? "не удалось определить пути файлов проекта" : null;
 
     // Маски раньше рельефа, а рельеф раньше `game.json`: слой не должен указывать на маску, а ключ `files.terrain` — на файл, которого ещё нет.
@@ -205,6 +213,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       { path: paths?.scene, text: afterLoad.displayed.sceneText, isDirty: dirty.scene },
       { path: paths?.properties, text: afterLoad.displayed.propertiesText, isDirty: dirty.properties },
       { path: paths?.terrain, text: afterLoad.displayed.terrainText, isDirty: dirty.terrain },
+      { path: paths?.motions, text: afterLoad.displayed.motionsText, isDirty: dirty.motions },
       { path: GAME_JSON_PATH, text: gameJsonTextRef.current, isDirty: gameJsonTextRef.current !== diskGameJsonTextRef.current },
     ];
     for (const write of writes) {
@@ -234,8 +243,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       if (current === null) return;
       const candidate = build(current.displayed);
       if (candidate === null) return;
-      const { sceneText, propertiesText, terrainText } = current.displayed;
-      if (candidate.sceneText === sceneText && candidate.propertiesText === propertiesText && candidate.terrainText === terrainText) return;
+      const { sceneText, propertiesText, terrainText, motionsText } = current.displayed;
+      if (candidate.sceneText === sceneText && candidate.propertiesText === propertiesText && candidate.terrainText === terrainText && candidate.motionsText === motionsText) return;
       updateSession(beginAction(current, candidate));
       await syncCurrent();
     });
@@ -266,13 +275,15 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
       const sceneText = result.sceneText;
       const propertiesText = paths === null ? null : (getCachedText(paths.properties) ?? null);
       const terrainText = paths?.terrain == null ? null : (getCachedText(paths.terrain) ?? null);
+      // Файл движений назван, а на диске его нет — ошибку назовёт загрузка, правка сцены от этого не пропадает.
+      const motionsText = paths?.motions == null ? null : (getCachedText(paths.motions) ?? null);
       if (paths === null || sceneText === null || propertiesText === null || (paths.terrain !== null && terrainText === null)) {
         updateSession(null);
         return;
       }
       // Маски читает сама загрузка; отказавшая загрузка их не отдаёт — тогда по ним прежняя «правда диска».
       const masks = result.status === "ok" ? masksOfLoad(result.coverMasks) : (sessionRef.current?.diskTruth.masks ?? NO_MASKS);
-      const disk: EditSnapshot = { sceneText, propertiesText, terrainText, masks };
+      const disk: EditSnapshot = { sceneText, propertiesText, terrainText, motionsText, masks };
       const current = sessionRef.current;
       if (current === null) {
         updateSession(createEditSessionState(disk));
@@ -438,6 +449,26 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     dispatchImprintEdit((imprints) => imprintsWithout(imprints, index));
   }
 
+  function editMotions(build: (motionsText: string | null) => string | null): void {
+    dispatchEdit((displayed) => {
+      const motionsText = build(displayed.motionsText);
+      return motionsText === null ? null : { ...displayed, motionsText };
+    });
+  }
+
+  function createMotion(name: string, model: string, clip: string): void {
+    void actionQueue.run(async () => {
+      const current = sessionRef.current;
+      const gameJsonText = gameJsonTextRef.current;
+      if (current === null || gameJsonText === null) return;
+      const plan = await planMotionCreation(current, gameJsonText, engineApiRef.current.isFilePresent, { name, model, clip });
+      if (plan === null) return;
+      gameJsonTextRef.current = plan.gameJsonText;
+      updateSession(plan.state);
+      await syncCurrent();
+    });
+  }
+
   function setPropertyValue(objectIndex: number, key: string, value: unknown): void {
     dispatchEdit((displayed) => {
       const objects = parseSceneObjects(displayed.sceneText);
@@ -525,6 +556,7 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     sceneText: session?.displayed.sceneText ?? null,
     propertiesText: session?.displayed.propertiesText ?? null,
     terrainText,
+    motionsText: session?.displayed.motionsText ?? null,
     masks: session?.displayed.masks ?? NO_MASKS,
     saveState: session?.saveState ?? { status: "saved" },
     canUndo: (session?.history.length ?? 0) > 0,
@@ -544,6 +576,8 @@ export function useSceneEditing(canvasRef: RefObject<HTMLCanvasElement | null>, 
     setImprintValue,
     copyImprint,
     deleteImprint,
+    editMotions,
+    createMotion,
     setPropertyValue,
     removeProperty,
     removeProperties,

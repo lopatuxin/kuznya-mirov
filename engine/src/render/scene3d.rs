@@ -56,6 +56,8 @@ pub struct Frame3d {
     pub shapes: Vec<ShapeDraw>,
     /// Объекты каждой модели игры по номеру модели.
     pub models: Vec<Vec<ModelInstance>>,
+    /// Матрицы суставов объектов каждой модели со скелетом → `models::ModelDraws::bones`.
+    pub model_bones: Vec<Vec<f32>>,
     /// «Вид дороги»: куски дорог по номеру модели и перекрёстки; рисуются после моделей и до плоских объектов.
     pub road_pieces: Vec<Vec<ModelInstance>>,
     pub road_junctions: Rc<Vec<Junction>>,
@@ -120,6 +122,7 @@ fn shape_draws(game: &Game) -> Vec<ShapeDraw> {
             let body = Body::of_object(&game.world, id)?;
             let color = game.world.color(id, property::COLOR)?;
             let solid = body.size[0] > 0.0 && body.size[1] > 0.0 && body.height > 0.0;
+            let (sin, cos) = models::view_rotation(&game.world, id).sin_cos();
             solid.then(|| ShapeDraw {
                 shape: body.shape,
                 center: [body.center[0] as f32, body.center[1] as f32],
@@ -127,8 +130,8 @@ fn shape_draws(game: &Game) -> Vec<ShapeDraw> {
                 size: [body.size[0] as f32, body.size[1] as f32],
                 height: body.height as f32,
                 cap_height: body.cap_height() as f32,
-                cos: body.cos as f32,
-                sin: body.sin as f32,
+                cos: cos as f32,
+                sin: sin as f32,
                 color: [color[0], color[1], color[2]],
             })
         })
@@ -348,6 +351,7 @@ pub fn compose_frame3d(
     Frame3d {
         shapes,
         models: model_draws.instances,
+        model_bones: model_draws.bones,
         road_pieces: road_draws.pieces,
         road_junctions: road_draws.junctions,
         road_bent: road_draws.bent,

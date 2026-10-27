@@ -2,8 +2,9 @@ import { isVideoPath } from "../images/imagePayload";
 
 /**
  * `terrain` — путь из `files.terrain`; `null`, пока у проекта нет файла рельефа («Кисти рельефа», требование 19).
+ * `motions` — путь из `files.motions`; `null`, пока у игры нет `motions.json` («Движения»).
  */
-export type ProjectFilePaths = { scene: string; properties: string; terrain: string | null };
+export type ProjectFilePaths = { scene: string; properties: string; terrain: string | null; motions: string | null };
 
 /**
  * Пути `scene.json`, `properties.json` и рельефа из `files.scene`/`files.properties`/`files.terrain` в `game.json` —
@@ -19,7 +20,7 @@ export function parseProjectFilePaths(gameJsonText: string | null): ProjectFileP
   } catch {
     return null;
   }
-  const files = (parsed as { files?: { scene?: unknown; properties?: unknown; terrain?: unknown } } | null)?.files;
+  const files = (parsed as { files?: { scene?: unknown; properties?: unknown; terrain?: unknown; motions?: unknown } } | null)?.files;
   const scene = files?.scene;
   const properties = files?.properties;
   if (typeof scene !== "string" || typeof properties !== "string") return null;
@@ -27,6 +28,7 @@ export function parseProjectFilePaths(gameJsonText: string | null): ProjectFileP
     scene,
     properties,
     terrain: typeof files?.terrain === "string" ? files.terrain : null,
+    motions: typeof files?.motions === "string" ? files.motions : null,
   };
 }
 
@@ -52,6 +54,14 @@ export async function chooseTerrainFilePath(scenePath: string, isTaken: (path: s
   const folder = scenePath.slice(0, scenePath.lastIndexOf("/") + 1);
   for (let attempt = 1; ; attempt += 1) {
     const path = `${folder}${attempt === 1 ? "terrain.json" : `terrain-${attempt}.json`}`;
+    if (!(await isTaken(path))) return path;
+  }
+}
+
+/** Куда лечь новому `motions.json` — «Анимация»: в корень игры, а занятое имя — `motions-2.json` и дальше, чтобы не затереть чужой файл. */
+export async function chooseMotionsFilePath(isTaken: (path: string) => Promise<boolean>): Promise<string> {
+  for (let attempt = 1; ; attempt += 1) {
+    const path = attempt === 1 ? "motions.json" : `motions-${attempt}.json`;
     if (!(await isTaken(path))) return path;
   }
 }

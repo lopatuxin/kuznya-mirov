@@ -77,6 +77,10 @@ impl ErrorSink {
         self.errors.is_empty()
     }
 
+    pub fn error_count(&self) -> usize {
+        self.errors.len()
+    }
+
     /// Second pass over `file`'s own already-parsed source `text`: fills `line`/`column` on every
     /// collected message (error or warning) that names `file`, by walking `text` along that
     /// message's `path`. Safe to call once per file after every push for it is done.

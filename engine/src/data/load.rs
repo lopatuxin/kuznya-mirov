@@ -40,6 +40,7 @@ use super::wav;
 mod imported;
 mod materials;
 mod models;
+mod motions;
 mod road_kinds;
 mod stamps;
 mod water;
@@ -55,6 +56,8 @@ use materials::{
 };
 pub use models::{ModelDecl, ModelFile};
 use models::{load_models, named_in_scene, parse_models_table, warn_unused_models};
+pub use motions::{END_GAP_LIMIT, rebuild_skeleton};
+use motions::{MotionSet, parse_motions, warn_unused_motions};
 pub use road_kinds::{JunctionArmDecl, JunctionDecl, RoadKindDecl};
 use road_kinds::{
     build_road_kinds, parse_road_junctions, parse_road_kinds, validate_junctions,
@@ -402,6 +405,10 @@ pub(crate) fn parse_scalar_value(
             }
             Some(Value::Timer(seconds_to_steps_delta(s)))
         }
+        PropKind::Rotation if prop == property::FACING && !properties.three_d() => {
+            errors.push(file, path, FACING_IN_FLAT_SCENE);
+            None
+        }
         PropKind::Rotation if properties.three_d() => {
             let n = expect_number(value, file, path, errors)?;
             Rotation::from_degrees(n).map(Value::Rotation).or_else(|| {
@@ -515,6 +522,14 @@ pub(crate) fn parse_scalar_value(
             }
             let name = expect_string(value, file, path, errors)?;
             resolve_model(&name, properties, file, path, errors).map(Value::Text)
+        }
+        PropKind::Text if prop == property::ANIMATION => {
+            if !properties.three_d() {
+                errors.push(file, path, ANIMATION_IN_FLAT_SCENE);
+                return None;
+            }
+            let name = expect_string(value, file, path, errors)?;
+            resolve_animation(&name, properties, file, path, errors).map(Value::Text)
         }
         PropKind::Text if prop == property::ROAD_KIND => {
             if !properties.three_d() {
@@ -764,14 +779,6 @@ fn resolve_property(
 ) -> Option<PropertyId> {
     match properties.resolve(name) {
         Some(id) => Some(id),
-        None if name == "animation" => {
-            errors.push(
-                file,
-                path,
-                "animation: движения моделей появятся в фазе 27".to_string(),
-            );
-            None
-        }
         None => {
             errors.push(
                 file,
@@ -968,6 +975,167 @@ fn resolve_model(
         },
     );
     None
+}
+
+const FACING_IN_FLAT_SCENE: &str =
+    "свойство \"facing\" есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+const ANIMATION_IN_FLAT_SCENE: &str =
+    "свойство \"animation\" есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+/// Движение по имени: `animation` называет движение из файла какой-нибудь модели игры; пустое имя возвращает
+/// объект к `idle` и `walk`.
+fn resolve_animation(
+    name: &str,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<String> {
+    let skeletons = || {
+        properties
+            .models()
+            .iter()
+            .filter_map(|model| model.skeleton.as_ref())
+    };
+    if name.is_empty() || skeletons().any(|skeleton| skeleton.clip_named(name).is_some()) {
+        return Some(name.to_string());
+    }
+    let known: Vec<String> = skeletons()
+        .flat_map(|skeleton| &skeleton.clips)
+        .map(|clip| format!("\"{}\"", clip.name))
+        .collect();
+    errors.push(
+        file,
+        path,
+        if known.is_empty() {
+            format!("движения \"{name}\" нет ни в одной модели игры; движений в моделях нет")
+        } else {
+            format!(
+                "движения \"{name}\" нет ни в одной модели игры; в моделях есть {}",
+                known.join(", ")
+            )
+        },
+    );
+    None
+}
+
+/// `animation` объекта с `model` в данных названо в файле его модели.
+fn validate_animation_of_model(
+    animation: Option<&Value>,
+    model: Option<&Value>,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    let (Some(Value::Text(animation)), Some(Value::Text(model_name))) = (animation, model) else {
+        return;
+    };
+    let models = properties.models();
+    let Some(model) = models.index_of(model_name).and_then(|at| models.get(at)) else {
+        return;
+    };
+    if animation.is_empty() {
+        return;
+    }
+    match &model.skeleton {
+        Some(skeleton) if skeleton.clip_named(animation).is_some() => {}
+        Some(_) => errors.push(
+            file,
+            path,
+            format!("в модели \"{model_name}\" нет движения \"{animation}\" из animation"),
+        ),
+        None => errors.push(
+            file,
+            path,
+            format!("animation у объекта с моделью \"{model_name}\", а у модели нет скелета"),
+        ),
+    }
+}
+
+/// `animation`, которое клавиши и `on_click` объекта пишут константой, названо в файле модели объекта, если она
+/// задана в данных константой.
+fn validate_edited_animations(
+    keys: Option<&KeyTable>,
+    on_click: &[KeyEdit],
+    model: Option<&Value>,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    let mut check = |edits: &[KeyEdit], at: String| {
+        for edit in edits.iter().filter(|e| e.property == property::ANIMATION) {
+            if let EditValue::Const(value) = &edit.value {
+                validate_animation_of_model(Some(value), model, properties, file, &at, errors);
+            }
+        }
+    };
+    let mut bindings: Vec<_> = keys.into_iter().flatten().collect();
+    bindings.sort_by_key(|(code, _)| code.as_str());
+    for (code, binding) in bindings {
+        let at = join(&join(path, "keys"), code);
+        check(&binding.press, join(&at, "press"));
+        check(&binding.release, join(&at, "release"));
+    }
+    check(on_click, join(path, "on_click"));
+}
+
+/// Значение `prop` в полях уровней `layers` (верхний последним): записанное константой; `None`, если его нет
+/// или оно берётся у родителя и до запуска неизвестно.
+fn layered_const<'a>(
+    layers: &[&'a [(PropertyId, TemplateValue)]],
+    prop: PropertyId,
+) -> Option<&'a Value> {
+    let (_, value) = layers
+        .iter()
+        .rev()
+        .find_map(|fields| fields.iter().find(|(field, _)| *field == prop))?;
+    match value {
+        TemplateValue::Const(value) => Some(value),
+        TemplateValue::FromParent(_) => None,
+    }
+}
+
+/// `animation` создаваемого правилом объекта названо в файле модели того же объекта. Поля идут template → вариант
+/// → клетка; сочетание проверяется у каждого уровня, что называет `model` или `animation`.
+fn validate_spawned_animations(
+    template: &[(PropertyId, TemplateValue)],
+    variants: &[SpawnVariant],
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    let mut check = |layers: &[&[(PropertyId, TemplateValue)]], at: String| {
+        validate_animation_of_model(
+            layered_const(layers, property::ANIMATION),
+            layered_const(layers, property::MODEL),
+            properties,
+            file,
+            &at,
+            errors,
+        );
+    };
+    check(&[template], join(path, "template"));
+    let names = |fields: &[(PropertyId, TemplateValue)]| {
+        fields
+            .iter()
+            .any(|(prop, _)| matches!(*prop, property::MODEL | property::ANIMATION))
+    };
+    for (i, variant) in variants.iter().enumerate() {
+        let variant_path = join(&join(path, "pick_one"), &format!("[{i}]"));
+        if names(&variant.fields) {
+            check(&[template, &variant.fields], variant_path.clone());
+        }
+        for (j, cell) in variant.cells.iter().enumerate() {
+            if names(&cell.fields) {
+                let cell_path = join(&join(&variant_path, "cells"), &format!("[{j}]"));
+                check(&[template, &variant.fields, &cell.fields], cell_path);
+            }
+        }
+    }
 }
 
 const ROAD_KIND_IN_FLAT_SCENE: &str =
@@ -1823,6 +1991,23 @@ fn parse_scene_object(
     validate_follow_mouse_shape(&shape, true, file, &path, errors);
     validate_shape_fill(&shape, true, file, &path, errors);
     validate_model_fill(&shape, true, file, &path, errors);
+    validate_animation_of_model(
+        find_value(&values, property::ANIMATION),
+        find_value(&values, property::MODEL),
+        properties,
+        file,
+        &path,
+        errors,
+    );
+    validate_edited_animations(
+        keys.as_ref(),
+        on_click.as_deref().unwrap_or_default(),
+        find_value(&values, property::MODEL),
+        properties,
+        file,
+        &path,
+        errors,
+    );
     validate_deck_shape(&shape, true, file, &path, errors);
     validate_road_shape(&shape, true, file, &path, errors);
     validate_road_kind_shape(&shape, true, file, &path, errors);
@@ -2691,6 +2876,9 @@ pub struct FilePaths {
     /// `files.models` — «Трёхмерная сцена» → «Модели и движения»: модели в порядке объявления. Пусто, если не
     /// объявлена.
     pub models: Vec<ModelDecl>,
+    /// `files.motions` — «Движения»: необязательный путь к `motions.json`, движениям моделей с поправками. `None` —
+    /// файла нет.
+    pub motions: Option<String>,
 }
 
 /// One `files.images` entry — «Картинки» → «Таблица картинок»: `frames`/`frame_time` default to
@@ -3231,6 +3419,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
                 "materials",
                 "stamps",
                 "models",
+                "motions",
             ],
             "game.json",
             "files",
@@ -3300,6 +3489,19 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             parse_models_table(v, &order, "game.json", "files → models", errors)
                 .unwrap_or_default()
         });
+        // «Движения»: необязателен — нет ключа, нет и файла поправок движений.
+        let motions = f.get("motions").and_then(|v| {
+            let path = expect_string(v, "game.json", "files → motions", errors)?;
+            if path.to_ascii_lowercase().ends_with(".json") {
+                return Some(path);
+            }
+            errors.push(
+                "game.json",
+                "files → motions",
+                format!("{path} — движения берутся из файла .json; путь должен оканчиваться на \".json\""),
+            );
+            None
+        });
         // «Лепка рельефа»: необязательна — нет ключа, нет и отпечатков штампов; номер штампа — порядок
         // объявления, а не алфавит.
         let stamps = f.get("stamps").map(|v| {
@@ -3317,7 +3519,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         });
         (
             properties, scene_path, rules, screens, fonts, sounds, music, images, code, tables,
-            terrain, materials, stamps, models,
+            terrain, materials, stamps, models, motions,
         )
     });
 
@@ -3355,6 +3557,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         materials,
         stamps,
         models,
+        motions,
     ) = files?;
     if terrain.is_some() && scene.camera.is_none() {
         errors.push(
@@ -3431,6 +3634,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             stamps: stamps.unwrap_or_default(),
             materials: materials.unwrap_or_default(),
             models: models.unwrap_or_default(),
+            motions,
         },
         start_screen,
         win_screen,
@@ -5688,6 +5892,14 @@ fn parse_rule(
                 )?),
                 None => None,
             };
+            validate_spawned_animations(
+                &template,
+                pick_one.as_deref().unwrap_or_default(),
+                properties,
+                file,
+                &path,
+                errors,
+            );
             // «Создание по форме», требование 20: поля идут template → вариант → клетка, и
             // `from_parent` может прийти с любого из трёх уровней, не только template — путь в
             // ошибке называет то поле, а не всегда template.
@@ -12966,6 +13178,56 @@ pub fn load_rest_with_models(
 #[allow(clippy::too_many_arguments)]
 pub fn load_rest_with_imports(
     game_json: &str,
+    config: GameConfig,
+    properties_json: Option<&str>,
+    scene_json: Option<&str>,
+    rules_json: Option<&str>,
+    screens_json: Option<&str>,
+    font_bytes: &[(String, Option<Vec<u8>>)],
+    sound_bytes: &[(String, Option<Vec<u8>>)],
+    music_verdicts: &[(String, MusicVerdict)],
+    image_data: &[(String, ImageVerdict)],
+    code_json: Option<&str>,
+    skip_media_validation: bool,
+    table_texts: &[(String, Option<String>)],
+    terrain_text: Option<&str>,
+    material_data: &[(String, ImageVerdict)],
+    mask_data: &[(String, ImageVerdict)],
+    stamp_texts: &[(String, Option<String>)],
+    model_files: &[(String, ModelFile)],
+    imported_index: Option<&str>,
+    imported_textures: &[(String, Option<Vec<u8>>)],
+) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
+    load_rest_with_motions(
+        game_json,
+        config,
+        properties_json,
+        scene_json,
+        rules_json,
+        screens_json,
+        font_bytes,
+        sound_bytes,
+        music_verdicts,
+        image_data,
+        code_json,
+        skip_media_validation,
+        table_texts,
+        terrain_text,
+        material_data,
+        mask_data,
+        stamp_texts,
+        model_files,
+        imported_index,
+        imported_textures,
+        None,
+    )
+}
+
+/// Same as `load_rest_with_imports`, additionally accepting the text of `files.motions` — «Движения»: `None` — файла
+/// нет на месте; без `files.motions` в `game.json` текст не нужен.
+#[allow(clippy::too_many_arguments)]
+pub fn load_rest_with_motions(
+    game_json: &str,
     mut config: GameConfig,
     properties_json: Option<&str>,
     scene_json: Option<&str>,
@@ -12985,6 +13247,7 @@ pub fn load_rest_with_imports(
     model_files: &[(String, ModelFile)],
     imported_index: Option<&str>,
     imported_textures: &[(String, Option<Vec<u8>>)],
+    motions_text: Option<&str>,
 ) -> Result<(Game, ScreensConfig, Vec<GameError>, Vec<ImageDecl>), LoadFailure> {
     let mut errors = ErrorSink::new();
 
@@ -13038,12 +13301,25 @@ pub fn load_rest_with_imports(
     }
     properties.set_stamps(stamp_table);
     let imported = ImportedPlan::new(&config.files.models, imported_index);
+    let motions = match (&config.files.motions, motions_text) {
+        (Some(path), Some(text)) => parse_motions(text, path, &config.files.models, &mut errors),
+        (Some(path), None) => {
+            errors.push(
+                path,
+                "",
+                "файл не найден; ожидался JSON-файл, названный в game.json → files → motions",
+            );
+            MotionSet::default()
+        }
+        (None, _) => MotionSet::default(),
+    };
     let models = load_models(
         &config.files.models,
         model_files,
         &imported,
         imported_textures,
         skip_media_validation,
+        &motions,
         &mut errors,
     );
     properties.set_road_kinds(build_road_kinds(
@@ -13404,6 +13680,15 @@ pub fn load_rest_with_imports(
             code_and_tables.as_deref(),
             &mut errors,
         );
+        let named_motions = named_in_scene(&scene_objects, property::ANIMATION);
+        warn_unused_motions(
+            &motions,
+            &config.files.models,
+            &named_motions,
+            rules_json,
+            code_and_tables.as_deref(),
+            &mut errors,
+        );
         warn_unused_road_kinds(
             &config.road_kinds,
             &named_in_scene(&scene_objects, property::ROAD_KIND),
@@ -13477,6 +13762,9 @@ pub fn load_rest_with_imports(
         errors.fill_locations(&config.files.screens, text);
     }
     if let (Some(path), Some(text)) = (&config.files.terrain, terrain_text) {
+        errors.fill_locations(path, text);
+    }
+    if let (Some(path), Some(text)) = (&config.files.motions, motions_text) {
         errors.fill_locations(path, text);
     }
 

@@ -15,8 +15,8 @@ import { createSerialQueue } from "./serialQueue";
 
 /**
  * Тексты, которые правка держит в памяти вместо прочитанных с диска: `game.json` (первый мазок дописывает
- * в него `files.terrain`), `scene.json`, `properties.json` и рельеф.
- * `terrainText` `null` — файла нет.
+ * в него `files.terrain`, первое движение `files.motions`), `scene.json`, `properties.json`, рельеф и `motions.json`.
+ * `terrainText` и `motionsText` `null` — файла нет.
  * `maskFiles` — PNG масок покрытий, что правка ещё не записала, по путям файлов.
  */
 export type EditedTexts = {
@@ -24,6 +24,7 @@ export type EditedTexts = {
   sceneText?: string;
   propertiesText?: string;
   terrainText?: string | null;
+  motionsText?: string | null;
   maskFiles?: Readonly<Record<string, Uint8Array>>;
 };
 
@@ -253,6 +254,7 @@ export function useProjectEngine(
           if (edited.sceneText !== undefined) overrides[paths.scene] = edited.sceneText;
           if (edited.propertiesText !== undefined) overrides[paths.properties] = edited.propertiesText;
           if (edited.terrainText !== undefined && edited.terrainText !== null && paths.terrain !== null) overrides[paths.terrain] = edited.terrainText;
+          if (edited.motionsText !== undefined && edited.motionsText !== null && paths.motions !== null) overrides[paths.motions] = edited.motionsText;
           const overrideReader = createOverridingReader(cache.cachedReader, overrides, edited.maskFiles);
           const loadResult = await loadProject(engineInstance, overrideReader, gameJsonText, () => audioContext, videoPlayers);
           if (cancelled) return loadResult;

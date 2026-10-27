@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyExternalRead,
   beginAction,
+  beginMotionsCreation,
   beginTerrainCreation,
   beginUndo,
   createEditSessionState,
@@ -14,29 +15,29 @@ import {
 } from "./editSession";
 import { NO_MASKS } from "./maskBytes";
 
-const INITIAL: EditSnapshot = { sceneText: "scene-0", propertiesText: "props-0", terrainText: null, masks: NO_MASKS };
+const INITIAL: EditSnapshot = { sceneText: "scene-0", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS };
 
 describe("beginAction / markWritten", () => {
   it("действие кладёт показанный текст в историю и показывает новый", () => {
     const state = createEditSessionState(INITIAL);
-    const next = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    const next = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
 
-    expect(next.displayed).toEqual({ sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    expect(next.displayed).toEqual({ sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     expect(next.history).toEqual([INITIAL]);
   });
 
   it("запись без ошибок сдвигает diskTruth к показанному и снимает «не сохранено»", () => {
     let state = createEditSessionState(INITIAL);
-    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     state = markWritten(state);
 
-    expect(state.diskTruth).toEqual({ sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    expect(state.diskTruth).toEqual({ sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     expect(state.saveState).toEqual({ status: "saved" });
   });
 
   it("ошибка проверки — показанное остаётся, diskTruth не двигается", () => {
     let state = createEditSessionState(INITIAL);
-    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     state = markUnsaved(state, "в проекте ошибки");
 
     expect(state.displayed.sceneText).toBe("scene-1");
@@ -48,9 +49,9 @@ describe("beginAction / markWritten", () => {
 describe("dirtyFiles", () => {
   it("отмечает только те файлы, что отличаются от diskTruth", () => {
     let state = createEditSessionState(INITIAL);
-    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
 
-    expect(dirtyFiles(state)).toEqual({ scene: true, properties: false, terrain: false });
+    expect(dirtyFiles(state)).toEqual({ scene: true, properties: false, terrain: false, motions: false });
   });
 });
 
@@ -60,7 +61,7 @@ describe("рельеф в снимке", () => {
   it("рельеф, что отличается от diskTruth, помечен к записи", () => {
     const state = beginAction(createEditSessionState(WITH_TERRAIN), { ...WITH_TERRAIN, terrainText: "terrain-1" });
 
-    expect(dirtyFiles(state)).toEqual({ scene: false, properties: false, terrain: true });
+    expect(dirtyFiles(state)).toEqual({ scene: false, properties: false, terrain: true, motions: false });
   });
 
   it("первое изменение рельефа без файла: снимок «до» — ровная земля, а не «файла нет», и отмена его возвращает", () => {
@@ -84,7 +85,40 @@ describe("рельеф в снимке", () => {
     const pending = beginAction(createEditSessionState(WITH_TERRAIN), { ...WITH_TERRAIN, terrainText: "terrain-pending" });
     const next = applyExternalRead(pending, { ...WITH_TERRAIN, sceneText: "scene-external" });
 
-    expect(next.displayed).toEqual({ sceneText: "scene-external", propertiesText: "props-0", terrainText: "terrain-pending", masks: NO_MASKS });
+    expect(next.displayed).toEqual({ sceneText: "scene-external", propertiesText: "props-0", terrainText: "terrain-pending", motionsText: null, masks: NO_MASKS });
+  });
+});
+
+describe("движения в снимке", () => {
+  const WITH_MOTIONS: EditSnapshot = { ...INITIAL, motionsText: "motions-0" };
+
+  it("текст motions.json, что отличается от diskTruth, помечен к записи", () => {
+    const state = beginAction(createEditSessionState(WITH_MOTIONS), { ...WITH_MOTIONS, motionsText: "motions-1" });
+
+    expect(dirtyFiles(state)).toEqual({ scene: false, properties: false, terrain: false, motions: true });
+  });
+
+  it("первое движение без файла: снимок «до» — пустая таблица, а не «файла нет», и отмена её возвращает", () => {
+    const state = beginMotionsCreation(createEditSessionState(INITIAL), { ...INITIAL, motionsText: "motions-1" }, "{}");
+
+    expect(state.history).toEqual([{ ...INITIAL, motionsText: "{}" }]);
+    expect(state.displayed.motionsText).toBe("motions-1");
+    expect(dirtyFiles(state).motions).toBe(true);
+    expect(beginUndo(state)?.candidate.motionsText).toBe("{}");
+  });
+
+  it("motions.json изменился снаружи — в историю уходит показанное до, экран получает свежий текст, Ctrl+Z вернёт прежний", () => {
+    const next = applyExternalRead(createEditSessionState(WITH_MOTIONS), { ...WITH_MOTIONS, motionsText: "motions-external" });
+
+    expect(next.displayed.motionsText).toBe("motions-external");
+    expect(beginUndo(next)?.candidate.motionsText).toBe("motions-0");
+  });
+
+  it("правка scene.json снаружи не трогает несохранённые движения", () => {
+    const pending = beginAction(createEditSessionState(WITH_MOTIONS), { ...WITH_MOTIONS, motionsText: "motions-pending" });
+    const next = applyExternalRead(pending, { ...WITH_MOTIONS, sceneText: "scene-external" });
+
+    expect(next.displayed.motionsText).toBe("motions-pending");
   });
 });
 
@@ -96,7 +130,7 @@ describe("beginUndo", () => {
 
   it("возвращает последний снимок и снимает его с истории, без записи повтора", () => {
     let state = createEditSessionState(INITIAL);
-    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    state = beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     state = markWritten(state);
 
     const undo = beginUndo(state);
@@ -108,11 +142,11 @@ describe("beginUndo", () => {
 
   it("многошаговая отмена — второй Ctrl+Z откатывает предыдущий шаг", () => {
     let state = createEditSessionState(INITIAL);
-    state = markWritten(beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS }));
-    state = markWritten(beginAction(state, { sceneText: "scene-2", propertiesText: "props-0", terrainText: null, masks: NO_MASKS }));
+    state = markWritten(beginAction(state, { sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS }));
+    state = markWritten(beginAction(state, { sceneText: "scene-2", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS }));
 
     const firstUndo = beginUndo(state);
-    expect(firstUndo?.candidate).toEqual({ sceneText: "scene-1", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    expect(firstUndo?.candidate).toEqual({ sceneText: "scene-1", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     state = markWritten(firstUndo?.state as typeof state);
 
     const secondUndo = beginUndo(state);
@@ -129,16 +163,16 @@ describe("applyExternalRead", () => {
 
   it("scene.json изменился снаружи — в историю уходит показанное до, экран получает свежий текст", () => {
     const state = createEditSessionState(INITIAL);
-    const next = applyExternalRead(state, { sceneText: "scene-external", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    const next = applyExternalRead(state, { sceneText: "scene-external", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
 
     expect(next.history).toEqual([INITIAL]);
-    expect(next.displayed).toEqual({ sceneText: "scene-external", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
-    expect(next.diskTruth).toEqual({ sceneText: "scene-external", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    expect(next.displayed).toEqual({ sceneText: "scene-external", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
+    expect(next.diskTruth).toEqual({ sceneText: "scene-external", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
   });
 
   it("правка other-файла не трогает несохранённую правку в displayed — требование 23 (переоценка снаружи хука)", () => {
     let state = createEditSessionState(INITIAL);
-    state = beginAction(state, { sceneText: "scene-pending", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    state = beginAction(state, { sceneText: "scene-pending", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     // Внешняя правка не пришла (diskTruth не изменился) — applyExternalRead её и не находит.
     const next = applyExternalRead(state, INITIAL);
     expect(next).toBe(state);
@@ -147,13 +181,13 @@ describe("applyExternalRead", () => {
 
   it("правка properties.json при несохранённой правке scene.json — уходит в историю то, что было показано (включая несохранённый scene)", () => {
     let state = createEditSessionState(INITIAL);
-    state = beginAction(state, { sceneText: "scene-pending", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    state = beginAction(state, { sceneText: "scene-pending", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
 
-    const next = applyExternalRead(state, { sceneText: "scene-0", propertiesText: "props-external", terrainText: null, masks: NO_MASKS });
+    const next = applyExternalRead(state, { sceneText: "scene-0", propertiesText: "props-external", terrainText: null, motionsText: null, masks: NO_MASKS });
 
-    expect(next.history.at(-1)).toEqual({ sceneText: "scene-pending", propertiesText: "props-0", terrainText: null, masks: NO_MASKS });
+    expect(next.history.at(-1)).toEqual({ sceneText: "scene-pending", propertiesText: "props-0", terrainText: null, motionsText: null, masks: NO_MASKS });
     // scene.json на диске не изменился — несохранённая правка scene остаётся на экране.
-    expect(next.displayed).toEqual({ sceneText: "scene-pending", propertiesText: "props-external", terrainText: null, masks: NO_MASKS });
+    expect(next.displayed).toEqual({ sceneText: "scene-pending", propertiesText: "props-external", terrainText: null, motionsText: null, masks: NO_MASKS });
   });
 });
 
