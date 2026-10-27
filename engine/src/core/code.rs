@@ -25,6 +25,7 @@ use luars::{
     lua_float_to_string,
 };
 
+use super::model::Model;
 use super::property::{self, PropertyId, PropertyTable};
 use super::rng::Rng;
 use super::roads::RoadNetwork;
@@ -854,6 +855,53 @@ fn check_road_kept(world: &World, id: u32, prop: PropertyId) -> Result<(), Strin
     Ok(())
 }
 
+/// `animation` объекта с моделью называет движение из файла этой модели; пустое имя возвращает объект к
+/// `idle` и `walk`. Объекту, чью модель ещё не назвали, любое имя пока годится: пару проверит запись `model`.
+fn check_animation(world: &World, id: u32, value: &AnyValue) -> Result<(), String> {
+    match (value, world.model_of(id)) {
+        (AnyValue::Str(name), Some(model)) => animation_in_model(model, name),
+        _ => Ok(()),
+    }
+}
+
+/// Модель, названная в `model`, должна иметь движение, что уже записано в `animation` объекта. Модели, которой
+/// нет в игре, здесь не видно — её ошибка в самой записи.
+fn check_model_animation(
+    world: &World,
+    properties: &PropertyTable,
+    id: u32,
+    value: &AnyValue,
+) -> Result<(), String> {
+    let AnyValue::Str(model_name) = value else {
+        return Ok(());
+    };
+    let models = properties.models();
+    let Some(model) = models.index_of(model_name).and_then(|at| models.get(at)) else {
+        return Ok(());
+    };
+    match world.text(id, property::ANIMATION) {
+        Some(name) => animation_in_model(model, name),
+        None => Ok(()),
+    }
+}
+
+fn animation_in_model(model: &Model, name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Ok(());
+    }
+    match &model.skeleton {
+        Some(skeleton) if skeleton.clip_named(name).is_some() => Ok(()),
+        Some(_) => Err(format!(
+            "в модели \"{}\" нет движения \"{name}\"",
+            model.name
+        )),
+        None => Err(format!(
+            "у модели \"{}\" нет скелета: движения \"{name}\" в ней нет",
+            model.name
+        )),
+    }
+}
+
 fn check_shape_rules(
     world: &World,
     properties: &PropertyTable,
@@ -862,10 +910,18 @@ fn check_shape_rules(
     value: &AnyValue,
 ) -> Result<(), String> {
     let name = properties.name(prop);
+    if prop == property::MODEL {
+        check_model_animation(world, properties, id, value)?;
+    }
     match prop {
-        property::MODEL | property::HEIGHT if !properties.three_d() => Err(format!(
-            "свойство \"{name}\" есть только в трёхмерной сцене"
-        )),
+        property::MODEL | property::HEIGHT | property::FACING | property::ANIMATION
+            if !properties.three_d() =>
+        {
+            Err(format!(
+                "свойство \"{name}\" есть только в трёхмерной сцене"
+            ))
+        }
+        property::ANIMATION => check_animation(world, id, value),
         property::SHAPE | property::DECK | property::ROAD if !properties.three_d() => {
             Err(format!("{name} есть только в трёхмерной сцене"))
         }

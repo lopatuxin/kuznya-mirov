@@ -75,6 +75,24 @@ export function readModelImageBytes(glb: Uint8Array): (Uint8Array | null)[] {
   return (gltf.images as GltfImage[]).map((image) => imageBytesOf(image, bufferViews, chunks.bin));
 }
 
+/** Скелет модели из файла: есть ли он и имена движений в нём — по ним экран «Анимация» предлагает движение для нового. */
+export type ModelRig = { hasSkeleton: boolean; clips: string[] };
+
+/** Скелет и движения файла `.glb` по его JSON; файл, что не разбирается, — `null`: ошибку про сам файл назовёт движок. */
+export function readModelRig(glb: Uint8Array): ModelRig | null {
+  const chunks = findChunks(glb);
+  if (chunks === null) return null;
+  try {
+    const gltf = JSON.parse(new TextDecoder().decode(chunks.json)) as { skins?: unknown; animations?: unknown };
+    const clips = Array.isArray(gltf.animations)
+      ? (gltf.animations as { name?: unknown }[]).flatMap((animation) => (typeof animation.name === "string" ? [animation.name] : []))
+      : [];
+    return { hasSkeleton: Array.isArray(gltf.skins) && gltf.skins.length > 0, clips };
+  } catch {
+    return null;
+  }
+}
+
 async function decodeModelImages(glb: Uint8Array): Promise<ModelPayloadEntry["images"]> {
   const imageBytes = readModelImageBytes(glb);
   const decoded = await Promise.all(imageBytes.map((bytes): Promise<DecodedImage> => (bytes === null ? Promise.resolve({ verdict: "rejected" }) : decodeImage(bytes))));

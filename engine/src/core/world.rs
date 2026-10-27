@@ -3,6 +3,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::keys::{KeyEdit, KeyTable};
 use super::model::{Model, ModelTable};
+use super::motion::MotionState;
 use super::property::{self, PropertyId, PropertyTable};
 use super::road_ground::{RoadGround, RoadInput};
 use super::road_kinds::{LayoutForm, RoadKindTable};
@@ -182,6 +183,8 @@ pub struct World {
     /// «Бег и прыжок»: память нажатия, запас после края и признак подъёма каждого объекта — в мире, а не
     /// в свойствах: повтор записи даёт ту же партию шаг в шаг.
     jump: Vec<JumpState>,
+    /// «Трёхмерная сцена» → «Модели и движения»: какое движение играет у каждого объекта со скелетом.
+    motion: Vec<MotionState>,
     /// «Мир на экране» → «Камера игрока»: сколько раз объектам записали `camera_follows` — признак
     /// «записали», а не «есть»: запись тому же объекту заново тоже возвращает слежение.
     camera_follow_writes: u64,
@@ -228,6 +231,7 @@ impl World {
             base_z: Vec::new(),
             walk_to_z: Vec::new(),
             jump: Vec::new(),
+            motion: Vec::new(),
             camera_follow_writes: 0,
             decks: Vec::new(),
             surface_revision: next_surface_revision(),
@@ -485,6 +489,17 @@ impl World {
         self.jump.get(id as usize).copied().unwrap_or_default()
     }
 
+    /// Движение объекта: у объекта, что не сделал ни шага партии, — первая поза стойки.
+    pub fn motion(&self, id: u32) -> MotionState {
+        self.motion.get(id as usize).copied().unwrap_or_default()
+    }
+
+    pub fn set_motion(&mut self, id: u32, state: MotionState) {
+        if let Some(slot) = self.motion.get_mut(id as usize) {
+            *slot = state;
+        }
+    }
+
     pub fn set_jump_state(&mut self, id: u32, state: JumpState) {
         if let Some(slot) = self.jump.get_mut(id as usize) {
             *slot = state;
@@ -514,6 +529,7 @@ impl World {
             self.tilt[id as usize] = 0.0;
             self.walk_to_z[id as usize] = None;
             self.jump[id as usize] = JumpState::default();
+            self.motion[id as usize] = MotionState::default();
             return id;
         }
         let id = self.alive.len() as u32;
@@ -525,6 +541,7 @@ impl World {
         self.tilt.push(0.0);
         self.walk_to_z.push(None);
         self.jump.push(JumpState::default());
+        self.motion.push(MotionState::default());
         for column in &mut self.columns {
             column.push_empty();
         }
@@ -542,6 +559,9 @@ impl World {
     /// runtime write side for `obj.prop = nil`. A no-op past the slot count, same as every other
     /// per-property accessor here.
     pub fn clear_property(&mut self, id: u32, prop: PropertyId) {
+        if prop == property::MODEL {
+            self.set_motion(id, MotionState::default());
+        }
         self.columns[prop as usize].clear(id as usize);
         if prop == property::WALK_TO {
             self.walk_to_z[id as usize] = None;
@@ -570,6 +590,7 @@ impl World {
         self.tilt[idx] = 0.0;
         self.walk_to_z[idx] = None;
         self.jump[idx] = JumpState::default();
+        self.motion[idx] = MotionState::default();
         self.free_list.push(id);
         if was_road {
             self.roads_changed();
@@ -806,7 +827,12 @@ impl World {
         }
     }
 
+    /// Пишет текст. Другая `model` сбрасывает движение объекта: номера движений прежней модели новому скелету
+    /// не принадлежат.
     pub fn set_text(&mut self, id: u32, prop: PropertyId, value: String) {
+        if prop == property::MODEL && self.text(id, prop) != Some(value.as_str()) {
+            self.set_motion(id, MotionState::default());
+        }
         if let Column::Text(v) = &mut self.columns[prop as usize] {
             v[id as usize] = Some(value);
         }

@@ -333,6 +333,7 @@ pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec3>, scene: &Scene
             }
             _ => world.set_vec2(id, property::POSITION, new_pos),
         }
+        face_along(world, id, [new_pos[0] - pos[0], new_pos[1] - pos[1]]);
     }
 }
 
@@ -407,6 +408,7 @@ fn apply_move_rule(
         };
         if new_pos != pos {
             world.set_vec2(id, property::POSITION, new_pos);
+            face_along(world, id, [new_pos[0] - pos[0], new_pos[1] - pos[1]]);
             moved[id as usize] = true;
             if report.is_some() {
                 moved_objects.push(id);
@@ -630,6 +632,7 @@ fn execute_shift(
         )?;
     } else {
         for &id in &group {
+            face_along(world, id, spec.by);
             moved[id as usize] = true;
         }
     }
@@ -902,6 +905,14 @@ fn apply_walk_rule(
                 property::POSITION,
                 [new_center[0] - size[0] / 2.0, new_center[1] - size[1] / 2.0],
             );
+            face_along(
+                world,
+                id,
+                [
+                    new_center[0] - center_from[0],
+                    new_center[1] - center_from[1],
+                ],
+            );
             moved[id as usize] = true;
             moved_objects.push(id);
         }
@@ -1068,6 +1079,22 @@ fn apply_run_jump_rule(
     }
 }
 
+/// «Трёхмерная сцена» → «Объект в объёме»: объект с моделью, который сдвинулся на `shift`, сразу смотрит по
+/// сдвигу — в `facing` ложится такой угол, чтобы вместе с `rotation` вид смотрел по ходу. Стоящий объект
+/// сохраняет `facing`; фигуры сами не поворачиваются.
+fn face_along(world: &mut World, id: u32, shift: Vec2) {
+    if shift == [0.0, 0.0] || !world.three_d() || !world.has(id, property::MODEL) {
+        return;
+    }
+    let turned = world
+        .rotation(id, property::ROTATION)
+        .map_or(0.0, Rotation::angle);
+    let heading = heading_degrees(shift[0], shift[1]) - turned;
+    if let Some(facing) = Rotation::from_degrees(heading.rem_euclid(360.0)) {
+        world.set_rotation(id, property::FACING, facing);
+    }
+}
+
 /// «Езда по дорогам», требование 24: направление сдвига в мере `rotation` — 0 вниз сцены, 90 влево,
 /// 180 вверх, 270 вправо.
 fn heading_degrees(dx: f64, dy: f64) -> f64 {
@@ -1139,6 +1166,7 @@ fn apply_drive_rule(
             world.set_vec2(id, property::POSITION, result.position);
             if let Some(facing) = Rotation::from_degrees(heading_degrees(shift[0], shift[1])) {
                 world.set_rotation(id, property::ROTATION, facing);
+                face_along(world, id, shift);
             }
             moved[id as usize] = true;
             moved_objects.push(id);

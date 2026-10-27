@@ -6,6 +6,7 @@ import { parseGameDisplayName } from "../gamesIndex";
 import { liveObjectListEmptyLabel } from "./battleSelection";
 import { isBattleTransportShortcut, isCopyShortcut, isPlayStopShortcut, isReplaySeekShortcut, isStepShortcut, isUndoShortcut } from "./battleShortcuts";
 import { withCodeErrorLine, type EngineEditResult } from "./battleTypes";
+import type { ProjectModelRig } from "../projectLoader";
 import { EditorIcon } from "./EditorIcon";
 import { ImprintPropertiesPanel } from "./ImprintPropertiesPanel";
 import { parseStampShape } from "./imprintGeometry";
@@ -20,11 +21,14 @@ import { ProblemsTabs } from "./ProblemsTabs";
 import { parsePropertyDeclarations } from "./propertiesDeclarations";
 import { parseSceneWind } from "./sceneWind";
 import { readTerrainCovers, readTerrainImprints, readTerrainTint, readTerrainWater } from "./terrainFile";
-import { parseProjectCellPixels, parseProjectCloudImageNames, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames, parseProjectRoadKindNames } from "./projectFiles";
+import { parseProjectCellPixels, parseProjectCloudImageNames, parseProjectFilePaths, parseProjectImageDescriptions, parseProjectImageNames, parseProjectMaterialNames, parseProjectRoadKindNames } from "./projectFiles";
 import { buildImageTiles, createImageObject, createParticlesObject, imageFrameSize, newObjectParallax, newObjectSize } from "./projectImages";
 import { ProjectTopBar } from "./ProjectTopBar";
 import { PropertiesPanel } from "./PropertiesPanel";
 import { SceneCanvas, type BrushFields } from "./SceneCanvas";
+import { StandMotionList } from "./StandMotionList";
+import { StandSidePanel } from "./StandSidePanel";
+import { StandViewport } from "./StandViewport";
 import { stampPreviewOf, type StampPreview } from "./stampPreview";
 import { toVec2, toVec3 } from "./terrainReadings";
 import { fallbackDisplayName, type ProjectSource } from "./projectSource";
@@ -36,6 +40,7 @@ import {
   parseSceneSize,
   summarizeSceneObjects,
 } from "./sceneObjects";
+import { useAnimationStand } from "./useAnimationStand";
 import { useBattleSession } from "./useBattleSession";
 import { useSceneEditing } from "./useSceneEditing";
 import { useStoredPanelWidth } from "./useStoredPanelWidth";
@@ -180,6 +185,29 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   });
 
   const isLive = battle.mode !== "edit";
+
+  // Экран «Анимация» — «Редактор», «Анимация»: открывается кнопкой в полосе, только в трёхмерной сцене и вне партии. Модели со
+  // скелетом запоминаются с последней загрузки без ошибок: правка, из-за которой проект не собрался, экран не закрывает.
+  const [isStandRequested, setStandRequested] = useState(false);
+  const skeletonRigsRef = useRef<ProjectModelRig[]>([]);
+  if (result?.status === "ok") skeletonRigsRef.current = result.modelRigs.filter((rig) => rig.hasSkeleton);
+  const skeletonRigs = skeletonRigsRef.current;
+  const isStandOpen = isStandRequested && isThreeDimensionalScene && !isLive;
+  const stand = useAnimationStand({
+    engine,
+    isOpen: isStandOpen,
+    isProjectLoaded: sceneAvailable,
+    motionsText: sceneEditing.motionsText,
+    editMotions: sceneEditing.editMotions,
+    createMotion: sceneEditing.createMotion,
+    setReloadGateOpen: sceneEditing.setReloadGateOpen,
+    loadVersion: result,
+  });
+  const standBoneName = stand.selectedBone === null ? undefined : stand.info?.bones[stand.selectedBone]?.name;
+  const motionsPath = parseProjectFilePaths(gameJsonText)?.motions ?? null;
+  const motionsErrorLines = result?.status === "rejected" ? result.errors.filter((error) => error.file === motionsPath).map(formatError) : [];
+  const standDisabledReason = isStandOpen ? null : isLive ? "Анимация недоступна в партии и повторе" : skeletonRigs.length === 0 ? "В игре нет моделей со скелетом" : null;
+  const standButton = isThreeDimensionalScene ? { isOpen: isStandOpen, disabledReason: standDisabledReason, onToggle: () => setStandRequested(!isStandRequested) } : null;
   const displayedObjectSummaries = isLive ? battle.liveObjectSummaries : objectSummaries;
   const displayedSelectedIndex = isLive ? (battle.liveSelection?.id ?? null) : selectedIndex;
   const displayedSelectedObject = isLive ? battle.liveSelectedSummary : selectedObject;
@@ -201,6 +229,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
 
   // Последний selectedIndex и действия правки — в ref, чтобы не переставлять слушатель на каждый рендер.
   const shortcutState = {
+    isStandOpen,
     selectedIndex,
     selectedImprintIndex,
     undo: sceneEditing.undo,
@@ -255,7 +284,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
       if (!isBattleTransportShortcut(event)) return;
       event.preventDefault();
       event.stopImmediatePropagation();
-      if (isStrokeActiveRef.current) return;
+      // Запуск партии с экрана стенда недоступен («Анимация», требование 4).
+      if (isStrokeActiveRef.current || shortcutStateRef.current.isStandOpen) return;
       clearScenePreviewRef.current();
       // Открытое поле свойства записывается раньше «Запуска», «Стопа» и паузы, как при нажатии кнопки мышью: на «Запуске»
       // панель свойств пересоздаётся под живой мир, и поле в фокусе пропало бы вместе с черновиком. «Шаг» фокус не трогает.
@@ -319,6 +349,9 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
       if (isUndoShortcut(event)) {
         event.preventDefault();
         current.undo();
+      } else if (current.isStandOpen) {
+        // Объектов сцены на экране стенда нет: Ctrl+D и Delete их не касаются.
+        return;
       } else if (isCopyShortcut(event)) {
         if (current.selectedImprintIndex !== null) {
           event.preventDefault();
@@ -460,6 +493,8 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
   // Кнопки полосы запускают игру и повтор так же, как сочетания: пробный отпечаток сначала снимается.
   const topBarBattle = {
     ...battle,
+    canPlay: battle.canPlay && !isStandOpen,
+    canStartReplay: battle.canStartReplay && !isStandOpen,
     play: () => {
       clearScenePreviewRef.current();
       playAfterSceneEdits();
@@ -476,7 +511,7 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
 
   return (
     <div
-      className={`project-window${isLive ? ` project-window--${battle.mode}` : ""}`}
+      className={`project-window${isLive ? ` project-window--${battle.mode}` : ""}${isStandOpen ? " project-window--stand" : ""}`}
       // Панели держат свою ширину, пока сцене хватает места; в узком окне первыми сжимаются они, а не сцена.
       style={{
         gridTemplateColumns: `minmax(${PANEL_MIN_SHRUNK_WIDTH}px, ${objectsWidth}px) minmax(${SCENE_MIN_WIDTH}px, 1fr) minmax(${PANEL_MIN_SHRUNK_WIDTH}px, ${propertiesWidth}px)`,
@@ -495,15 +530,28 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
         onBackToProjects={onBackToProjects}
         battle={topBarBattle}
         onToolbarSlotChange={setToolbarSlot}
+        stand={standButton}
       />
 
       <aside className="project-window__objects">
-        <ObjectList
-          objects={displayedObjectSummaries}
-          selectedIndex={displayedSelectedIndex}
-          onSelect={displayedOnSelect}
-          emptyLabel={isLive ? liveObjectListEmptyLabel(battle.hasWorld) : undefined}
-        />
+        {isStandOpen ? (
+          <StandMotionList
+            motionsText={sceneEditing.motionsText}
+            motionNames={stand.motionNames}
+            selectedName={stand.selectedName}
+            rigs={skeletonRigs}
+            canEdit={canEdit}
+            onSelect={stand.selectMotion}
+            onCreate={stand.createMotion}
+          />
+        ) : (
+          <ObjectList
+            objects={displayedObjectSummaries}
+            selectedIndex={displayedSelectedIndex}
+            onSelect={displayedOnSelect}
+            emptyLabel={isLive ? liveObjectListEmptyLabel(battle.hasWorld) : undefined}
+          />
+        )}
         <PanelResizeHandle edge="right" width={objectsWidth} onWidthChange={setObjectsWidth} label="Ширина списка объектов" />
       </aside>
 
@@ -513,16 +561,16 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           engine={engine}
           sceneSize={sceneSize}
           objectsVersion={isLive ? battle.liveObjectSummaries : objects}
-          canEditScene={displayedCanEdit}
-          isSceneShown={sceneAvailable || isLive}
-          areOutlinesShown={battle.mode === "edit" || (battle.mode === "battle" && !battle.isRunning)}
+          canEditScene={displayedCanEdit && !isStandOpen}
+          isSceneShown={(sceneAvailable || isLive) && !isStandOpen}
+          areOutlinesShown={!isStandOpen && (battle.mode === "edit" || (battle.mode === "battle" && !battle.isRunning))}
           isGameInputActive={battle.mode === "battle" && battle.isRunning}
           isThreeDimensionalScene={isThreeDimensionalScene}
-          isEditorCameraActive={battle.mode === "edit"}
+          isEditorCameraActive={battle.mode === "edit" && !isStandOpen}
           editorCameraStore={sceneEditing.editorCameraStore}
           flatCameraStore={sceneEditing.flatCameraStore}
           getObjectProperties={isLive ? liveObjectProperties : sceneObjectProperties}
-          selectedIndex={displayedSelectedIndex}
+          selectedIndex={isStandOpen ? null : displayedSelectedIndex}
           selectedLabel={displayedSelectedObject === null ? null : (displayedSelectedObject.name ?? `№ ${displayedSelectedObject.index}`)}
           onSelect={displayedOnSelect}
           onCommitPlacement={isLive ? battle.commitLiveTransform : sceneEditing.transformObject}
@@ -554,12 +602,19 @@ export function ProjectWindow({ source, onBackToProjects, brushFields }: Project
           toolbarSlot={toolbarSlot}
           clearPreviewRef={clearScenePreviewRef}
         />
-        {!sceneAvailable && !isLive && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
+        {!sceneAvailable && !isLive && !isStandOpen && <ScenePlaceholder isLoading={isLoading} hasEngineFailed={engineError !== null} />}
+        {isStandOpen && <StandViewport stand={stand} worldCanvasRef={canvasRef} boneName={standBoneName} projectErrorLines={motionsErrorLines} isEditable={sceneEditing.motionsText !== null} />}
       </main>
 
       <aside className="project-window__properties">
         <PanelResizeHandle edge="left" width={propertiesWidth} onWidthChange={setPropertiesWidth} label="Ширина панели свойств" />
-        {selectedImprint !== undefined && selectedImprintIndex !== null ? (
+        {isStandOpen ? (
+          <StandSidePanel
+            stand={stand}
+            fileClips={skeletonRigs.find((rig) => rig.name === stand.settings?.model)?.clips ?? []}
+            isEditable={sceneEditing.motionsText !== null}
+          />
+        ) : selectedImprint !== undefined && selectedImprintIndex !== null ? (
           <ImprintPropertiesPanel
             key={`imprint-${selectedImprintIndex}`}
             index={selectedImprintIndex}

@@ -136,7 +136,7 @@ describe("addTerrainFilePath", () => {
     const result = addTerrainFilePath(RPG_WITHOUT_TERRAIN, "terrain.json");
     expect(JSON.parse(result).files.terrain).toBe("terrain.json");
     expect(result.replace(',\n    "terrain": "terrain.json"', "")).toBe(RPG_WITHOUT_TERRAIN);
-    expect(result).toContain('    },\n    "terrain": "terrain.json"\n  }');
+    expect(result).toMatch(/,\n {4}"terrain": "terrain\.json"\n {2}\}\n\}\n?$/);
   });
 
   it("files в одну строку — ключ через запятую с пробелом", () => {

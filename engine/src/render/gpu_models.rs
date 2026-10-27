@@ -55,6 +55,23 @@ pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
     },
 ];
 
+/// Байт на вершину в буфере весов: четыре сустава и четыре веса, все числами с плавающей точкой.
+pub const SKIN_STRIDE: u64 = 32;
+
+/// Суставы и веса вершины скелетной части, как их читает `scene3d.wgsl`.
+pub const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 0,
+        shader_location: 7,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 16,
+        shader_location: 8,
+    },
+];
+
 pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x4,
@@ -71,6 +88,8 @@ pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
 /// Часть модели на видеокарте: сетка, привязка её материала и режим прозрачности материала.
 struct PartGpu {
     vertices: wgpu::Buffer,
+    /// Суставы и веса вершин; есть у частей модели со скелетом.
+    skin: Option<wgpu::Buffer>,
     indices: wgpu::Buffer,
     index_count: u32,
     material: wgpu::BindGroup,
@@ -79,6 +98,93 @@ struct PartGpu {
 
 struct ModelGpu {
     parts: Vec<PartGpu>,
+    bones: Option<BonesGpu>,
+}
+
+/// Матрицы суставов объектов модели со скелетом: строка текстуры данных — один объект, четыре точки на сустав.
+/// Текстура растёт вместе с числом объектов; больше строк, чем позволяет видеокарта, не рисуется.
+struct BonesGpu {
+    joints: u32,
+    capacity: u32,
+    texture: Option<(wgpu::Texture, wgpu::BindGroup)>,
+    /// Сколько строк записано в кадре и тем сколько объектов рисуется.
+    rows: u32,
+}
+
+impl BonesGpu {
+    fn new(joints: usize) -> BonesGpu {
+        BonesGpu {
+            joints: joints as u32,
+            capacity: 0,
+            texture: None,
+            rows: 0,
+        }
+    }
+
+    fn write(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        layout: &wgpu::BindGroupLayout,
+        matrices: &[f32],
+    ) {
+        let row_floats = self.joints as usize * 16;
+        let limit = device.limits().max_texture_dimension_2d;
+        self.rows = ((matrices.len() / row_floats) as u32).min(limit);
+        if self.rows == 0 {
+            return;
+        }
+        if self.texture.is_none() || self.rows > self.capacity {
+            self.capacity = self.rows.next_power_of_two().max(8).min(limit);
+            let texture = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("model_bones"),
+                size: wgpu::Extent3d {
+                    width: self.joints * 4,
+                    height: self.capacity,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba32Float,
+                usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+                view_formats: &[],
+            });
+            let group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("model_bones_bind_group"),
+                layout,
+                entries: &[wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(
+                        &texture.create_view(&wgpu::TextureViewDescriptor::default()),
+                    ),
+                }],
+            });
+            self.texture = Some((texture, group));
+        }
+        let Some((texture, _)) = &self.texture else {
+            return;
+        };
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d::ZERO,
+                aspect: wgpu::TextureAspect::All,
+            },
+            bytemuck::cast_slice(&matrices[..self.rows as usize * row_floats]),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(self.joints * 64),
+                rows_per_image: Some(self.rows),
+            },
+            wgpu::Extent3d {
+                width: self.joints * 4,
+                height: self.rows,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
 }
 
 /// Что рисовать из списка кадра: объекты моделей или куски дорог.
@@ -92,6 +198,8 @@ enum Group {
 /// порядок объектов с частью `BLEND`.
 pub struct ModelsFrame<'a> {
     pub objects: &'a [Vec<ModelInstance>],
+    /// Матрицы суставов объектов каждой модели со скелетом → `models::ModelDraws::bones`.
+    pub bones: &'a [Vec<f32>],
     pub pieces: &'a [Vec<ModelInstance>],
     pub junctions: &'a Rc<Vec<Junction>>,
     pub bent: &'a Rc<Vec<Junction>>,
@@ -120,6 +228,7 @@ struct JunctionsGpu {
 /// Все модели игры на видеокарте и буфер экземпляров кадра.
 pub struct ModelsGpu {
     material_layout: wgpu::BindGroupLayout,
+    bones_layout: wgpu::BindGroupLayout,
     models: Vec<ModelGpu>,
     instances: wgpu::Buffer,
     capacity: usize,
@@ -171,6 +280,24 @@ fn material_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
     device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
         label: Some("model_material_layout"),
         entries: &entries,
+    })
+}
+
+/// Матрицы суставов читает вершинный шейдер выборкой без сглаживания: четырёхбайтные числа в запасном WebGL2
+/// сглаживанию не поддаются.
+fn bones_layout(device: &wgpu::Device) -> wgpu::BindGroupLayout {
+    device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+        label: Some("model_bones_layout"),
+        entries: &[wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: false },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        }],
     })
 }
 
@@ -294,7 +421,8 @@ impl<'a> ModelBuilder<'a> {
         let parts = model
             .parts
             .iter()
-            .map(|part| {
+            .enumerate()
+            .map(|(at, part)| {
                 let floats: Vec<f32> = part
                     .vertices
                     .iter()
@@ -307,6 +435,18 @@ impl<'a> ModelBuilder<'a> {
                             .chain(v.color)
                     })
                     .collect();
+                let skin = model.skin.get(at).map(|weights| {
+                    let floats: Vec<f32> = weights
+                        .iter()
+                        .flat_map(|pull| pull.joints.map(f32::from).into_iter().chain(pull.weights))
+                        .collect();
+                    self.device
+                        .create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                            label: Some("model_skin"),
+                            contents: &floats_to_bytes(&floats),
+                            usage: wgpu::BufferUsages::VERTEX,
+                        })
+                });
                 PartGpu {
                     vertices: self
                         .device
@@ -315,6 +455,7 @@ impl<'a> ModelBuilder<'a> {
                             contents: &floats_to_bytes(&floats),
                             usage: wgpu::BufferUsages::VERTEX,
                         }),
+                    skin,
                     indices: self
                         .device
                         .create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -332,7 +473,13 @@ impl<'a> ModelBuilder<'a> {
                 }
             })
             .collect();
-        ModelGpu { parts }
+        ModelGpu {
+            parts,
+            bones: model
+                .skeleton
+                .as_ref()
+                .map(|skeleton| BonesGpu::new(skeleton.joints.len())),
+        }
     }
 
     /// Текстура картинки `image` в роли `srgb`: создаётся при первом упоминании на всю игру.
@@ -442,6 +589,7 @@ impl ModelsGpu {
         table: &ModelTable,
     ) -> ModelsGpu {
         let layout = material_layout(device);
+        let bones_layout = bones_layout(device);
         let white = solid_view(device, queue, [255; 4]);
         let flat_normal = solid_view(device, queue, [128, 128, 255, 255]);
         let default_sampler = sampler(device, options, Sampler::default());
@@ -474,11 +622,16 @@ impl ModelsGpu {
             scratch: Vec::new(),
             image_stats,
             material_layout: layout,
+            bones_layout,
         }
     }
 
     pub fn material_layout(&self) -> &wgpu::BindGroupLayout {
         &self.material_layout
+    }
+
+    pub fn bones_layout(&self) -> &wgpu::BindGroupLayout {
+        &self.bones_layout
     }
 
     /// Сколько текстур заняли картинки моделей и сколько байт они весят на видеокарте.
@@ -515,6 +668,12 @@ impl ModelsGpu {
                         self.scratch.extend(value.to_le_bytes());
                     }
                 }
+            }
+        }
+        for (at, model) in self.models.iter_mut().enumerate() {
+            if let Some(bones) = &mut model.bones {
+                let matrices = frame.bones.get(at).map_or(&[][..], Vec::as_slice);
+                bones.write(device, queue, &self.bones_layout, matrices);
             }
         }
         self.blended.clear();
@@ -583,7 +742,7 @@ impl ModelsGpu {
             Group::Pieces => &self.pieces,
         };
         for (model, &(first, count)) in self.models.iter().zip(spans) {
-            if count == 0 {
+            if count == 0 || model.bones.is_some() {
                 continue;
             }
             for part in model.parts.iter().filter(|part| wanted(part.alpha)) {
@@ -607,8 +766,47 @@ impl ModelsGpu {
         self.draw_group(pass, Group::Objects, |mode| mode == alpha, materials);
     }
 
-    /// Рисует части `BLEND` объектов кадра по одному объекту в порядке кадра, от дальнего к ближнему.
-    pub fn draw_blended(&self, pass: &mut wgpu::RenderPass<'_>) {
+    /// Рисует части моделей со скелетом с прозрачностью `alpha` (`OPAQUE` или `MASK`): каждую одной командой на все
+    /// объекты модели, с матрицами суставов из текстуры данных и с материалами частей.
+    pub fn draw_skinned(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
+        for (model, &(first, count)) in self.models.iter().zip(&self.objects) {
+            let Some(bones) = &model.bones else {
+                continue;
+            };
+            let Some((_, group)) = &bones.texture else {
+                continue;
+            };
+            let count = count.min(bones.rows);
+            if count == 0 {
+                continue;
+            }
+            pass.set_bind_group(2, group, &[]);
+            for part in model.parts.iter().filter(|part| part.alpha == alpha) {
+                let Some(skin) = &part.skin else {
+                    continue;
+                };
+                pass.set_vertex_buffer(0, part.vertices.slice(..));
+                pass.set_vertex_buffer(
+                    1,
+                    self.instances.slice(ModelsGpu::span_bytes(first, count)),
+                );
+                pass.set_vertex_buffer(2, skin.slice(..));
+                pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
+                pass.set_bind_group(1, &part.material, &[]);
+                pass.draw_indexed(0..part.index_count, 0, 0..count);
+            }
+        }
+    }
+
+    /// Рисует части `BLEND` объектов кадра по одному объекту в порядке кадра, от дальнего к ближнему: модели со
+    /// скелетом — конвейером `skinned`, остальные — `plain`. Объект скелетной модели рисуется экземпляром своего
+    /// номера в буфере всей модели: по этому номеру шейдер находит строку его матриц суставов.
+    pub fn draw_blended(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        plain: &wgpu::RenderPipeline,
+        skinned: &wgpu::RenderPipeline,
+    ) {
         for draw in &self.blended {
             let Some(model) = self.models.get(draw.model as usize) else {
                 continue;
@@ -619,20 +817,43 @@ impl ModelsGpu {
             if draw.index >= count {
                 continue;
             }
+            let instance = match &model.bones {
+                Some(bones) => {
+                    let Some((_, group)) =
+                        bones.texture.as_ref().filter(|_| draw.index < bones.rows)
+                    else {
+                        continue;
+                    };
+                    pass.set_pipeline(skinned);
+                    pass.set_bind_group(2, group, &[]);
+                    pass.set_vertex_buffer(
+                        1,
+                        self.instances.slice(ModelsGpu::span_bytes(first, count)),
+                    );
+                    draw.index..draw.index + 1
+                }
+                None => {
+                    pass.set_pipeline(plain);
+                    pass.set_vertex_buffer(
+                        1,
+                        self.instances
+                            .slice(ModelsGpu::span_bytes(first + draw.index, 1)),
+                    );
+                    0..1
+                }
+            };
             for part in model
                 .parts
                 .iter()
                 .filter(|part| part.alpha == AlphaMode::Blend)
             {
                 pass.set_vertex_buffer(0, part.vertices.slice(..));
-                pass.set_vertex_buffer(
-                    1,
-                    self.instances
-                        .slice(ModelsGpu::span_bytes(first + draw.index, 1)),
-                );
+                if let Some(skin) = &part.skin {
+                    pass.set_vertex_buffer(2, skin.slice(..));
+                }
                 pass.set_index_buffer(part.indices.slice(..), wgpu::IndexFormat::Uint32);
                 pass.set_bind_group(1, &part.material, &[]);
-                pass.draw_indexed(0..part.index_count, 0, 0..1);
+                pass.draw_indexed(0..part.index_count, 0, instance.clone());
             }
         }
     }

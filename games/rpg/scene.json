@@ -1,5 +1,6 @@
 {
   "objects": [
+    {"name":"hero","model":"hero","position":[59.7,39.7],"size":[0.6,0.6],"layer":2,"hero":true,"camera_follows":true,"walk_speed":4,"height":1.8,"health":100,"max_health":100,"damage":10,"keys":{"MouseLeft":{"press":[["walk_to","cursor"]]}}},
     {"name":"marker","position":[0,0],"size":[0.8,0.8],"layer":3,"marker":true,"opacity":0,"image":"marker","keys":{"MouseLeft":{"press":[["position","cursor"],["opacity",1]]}}}
   ]
 }

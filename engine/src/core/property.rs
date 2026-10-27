@@ -89,6 +89,11 @@ pub const BUTTERFLIES: PropertyId = 57;
 pub const BUTTERFLY_COLOR: PropertyId = 58;
 /// «Правила игры» → «Езда по дорогам»: изгиб оси дороги в градусах — ось становится дугой окружности.
 pub const BEND: PropertyId = 59;
+/// «Трёхмерная сцена» → «Объект в объёме»: куда смотрит вид объекта, в градусах по мере `rotation`; место на
+/// земле от него не поворачивается.
+pub const FACING: PropertyId = 60;
+/// «Трёхмерная сцена» → «Модели и движения»: имя движения модели, которое играет объект.
+pub const ANIMATION: PropertyId = 61;
 
 /// Наибольшая скорость времени.
 pub const MAX_TIME_SCALE: f64 = 16.0;
@@ -178,6 +183,8 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("butterflies", PropKind::Number),
     ("butterfly_color", PropKind::Color),
     ("bend", PropKind::Number),
+    ("facing", PropKind::Rotation),
+    ("animation", PropKind::Text),
 ];
 
 #[derive(Debug, Clone)]
@@ -422,6 +429,10 @@ mod tests {
         assert_eq!(table.kind(ROAD_KIND), PropKind::Text);
         assert_eq!(table.resolve("bend"), Some(BEND));
         assert_eq!(table.kind(BEND), PropKind::Number);
+        assert_eq!(table.resolve("facing"), Some(FACING));
+        assert_eq!(table.kind(FACING), PropKind::Rotation);
+        assert_eq!(table.resolve("animation"), Some(ANIMATION));
+        assert_eq!(table.kind(ANIMATION), PropKind::Text);
         assert_eq!(table.resolve("particles"), None);
     }
 

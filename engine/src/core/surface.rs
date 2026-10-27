@@ -12,7 +12,7 @@ use super::world::World;
 /// Ступенька, которую объект переходит, и допуск на неё: перепад до 0,4 клетки включительно.
 pub const STEP: f64 = 0.4;
 
-const TOLERANCE: f64 = 1e-9;
+pub(crate) const TOLERANCE: f64 = 1e-9;
 
 /// Глубже этого прямоугольник объекта должен зайти на настил, чтобы встать на него: идущий, что лежит
 /// телом вдоль края настила ровно впритык, не прыгает на настил и обратно от погрешности дробных чисел.
@@ -103,6 +103,20 @@ pub fn rest_height(
         }
     }
     best.unwrap_or_else(|| world.terrain().min_under(footprint))
+}
+
+/// Высота поверхности под точкой `point`, на которую ставится ступня объекта `id` с основанием `from`: верх самого
+/// высокого настила под точкой, чей верх не выше `from` плюс ступенька, иначе земля.
+pub fn ground_at(world: &World, id: u32, point: Vec2, from: f64) -> f64 {
+    decks(world)
+        .filter(|&(deck_id, place, top)| {
+            deck_id != id && top <= from + STEP + TOLERANCE && place.contains(point)
+        })
+        .map(|(_, _, top)| top)
+        .fold(None, |best: Option<f64>, top| {
+            Some(best.map_or(top, |best| best.max(top)))
+        })
+        .unwrap_or_else(|| world.terrain().height_at(point[0], point[1]))
 }
 
 /// Основание настила без `z` в данных: низом на самой высокой точке рельефа под ним.

@@ -658,7 +658,7 @@ impl EditorCamera {
 
 /// Наименьшее расстояние, с которого камера с точкой `target` на высоте `target_z` под `yaw` и
 /// `pitch` видит в окне все `points`.
-fn fit_distance(
+pub fn fit_distance(
     points: &[Vec3],
     target: Vec2,
     target_z: f64,

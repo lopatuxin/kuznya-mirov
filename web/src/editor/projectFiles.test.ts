@@ -14,8 +14,13 @@ describe("parseProjectFilePaths", () => {
   it("путь рельефа — из files.terrain, без него null", () => {
     const withTerrain = '{ "files": { "scene": "scene.json", "properties": "properties.json", "terrain": "world/terrain.json" } }';
     const without = '{ "files": { "scene": "scene.json", "properties": "properties.json" } }';
-    expect(parseProjectFilePaths(withTerrain)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: "world/terrain.json" });
-    expect(parseProjectFilePaths(without)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: null });
+    expect(parseProjectFilePaths(withTerrain)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: "world/terrain.json", motions: null });
+    expect(parseProjectFilePaths(without)).toEqual({ scene: "scene.json", properties: "properties.json", terrain: null, motions: null });
+  });
+
+  it("путь движений — из files.motions, без него null", () => {
+    const withMotions = '{ "files": { "scene": "scene.json", "properties": "properties.json", "motions": "motions.json" } }';
+    expect(parseProjectFilePaths(withMotions)?.motions).toBe("motions.json");
   });
 
   it("сцены и свойств нет — правка недоступна", () => {

@@ -28,6 +28,23 @@ function createReader(files: Record<string, string | Uint8Array>): ProjectFileRe
   };
 }
 
+
+/** Файл `.glb` из одного JSON-куска: этого хватает, чтобы редактор прочёл скелет и движения. */
+function glbWith(gltf: object): Uint8Array {
+  const json = new TextEncoder().encode(JSON.stringify(gltf));
+  const padded = new Uint8Array(Math.ceil(json.length / 4) * 4).fill(0x20);
+  padded.set(json);
+  const bytes = new Uint8Array(20 + padded.length);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(0, 0x46546c67, true);
+  view.setUint32(4, 2, true);
+  view.setUint32(8, bytes.length, true);
+  view.setUint32(12, padded.length, true);
+  view.setUint32(16, 0x4e4f534a, true);
+  bytes.set(padded, 20);
+  return bytes;
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
 });
@@ -131,6 +148,7 @@ describe("loadProject", () => {
       [],
       [],
       null,
+      undefined,
     );
     expect(result.status).toBe("ok");
     if (result.status !== "ok") throw new Error("unreachable");
@@ -188,6 +206,7 @@ describe("loadProject", () => {
       [],
       [],
       null,
+      undefined,
     );
   });
 
@@ -232,7 +251,7 @@ describe("loadProject", () => {
 
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext, createVideoPlayerKeeper());
 
-      expect(load.mock.calls[0]).toHaveLength(18);
+      expect(load.mock.calls[0]).toHaveLength(19);
       expect(load.mock.calls[0]?.[10]).toBeUndefined();
       expect(readText).not.toHaveBeenCalledWith("terrain.json");
     });
@@ -247,7 +266,7 @@ describe("loadProject", () => {
   });
 
   describe("частицы без файла видов", () => {
-    it("particles.json не читается, а load получает ровно восемнадцать аргументов", async () => {
+    it("particles.json не читается, а load получает ровно девятнадцать аргументов", async () => {
       const load = vi.fn(() => ({ ok: true, warnings: NO_WARNINGS }));
       const engine: ProjectLoadEngine = {
         read_entry: vi.fn(() => ({
@@ -263,7 +282,69 @@ describe("loadProject", () => {
       await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext, createVideoPlayerKeeper());
 
       expect(readText).not.toHaveBeenCalledWith("particles.json");
-      expect(load.mock.calls[0]).toHaveLength(18);
+      expect(load.mock.calls[0]).toHaveLength(19);
+    });
+  });
+
+  describe("файл движений files.motions", () => {
+    function createEngine(motionsPath: string | undefined, models: { index: number; name: string; path: string }[] = []): { engine: ProjectLoadEngine; load: ReturnType<typeof vi.fn> } {
+      const load = vi.fn(() => ({ ok: true, warnings: NO_WARNINGS }));
+      const engine: ProjectLoadEngine = {
+        read_entry: vi.fn(() => ({
+          ok: true,
+          files: { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [], motions: motionsPath },
+          warnings: NO_WARNINGS,
+        })),
+        read_texts: vi.fn(() => ({ fonts: [], sounds: [], music: [], images: [], materials: [], masks: [], models, model_textures: [] })),
+        load,
+      };
+      return { engine, load };
+    }
+
+    it("читается тем же читателем, что остальные файлы, и уходит в load последним аргументом", async () => {
+      const { engine, load } = createEngine("motions.json");
+      const recording = createRecordingProjectFileReader(createReader({ "motions.json": '{"run":{}}' }));
+
+      await loadProject(engine, recording.reader, "{}", stubAudioContext, createVideoPlayerKeeper());
+
+      expect(recording.getReadPaths()).toContain("motions.json");
+      expect(load.mock.calls[0]?.[18]).toBe('{"run":{}}');
+    });
+
+    it("без files.motions в load идёт undefined, и файл не читается", async () => {
+      const { engine, load } = createEngine(undefined);
+      const readText = vi.fn(async () => null);
+
+      await loadProject(engine, { readText, readBinary: async () => null }, "{}", stubAudioContext, createVideoPlayerKeeper());
+
+      expect(load.mock.calls[0]?.[18]).toBeUndefined();
+      expect(readText).not.toHaveBeenCalledWith("motions.json");
+    });
+
+    it("файл назван, но не читается — в load идёт null: движок назовёт ошибку", async () => {
+      const { engine, load } = createEngine("motions.json");
+
+      await loadProject(engine, createReader({}), "{}", stubAudioContext, createVideoPlayerKeeper());
+
+      expect(load.mock.calls[0]?.[18]).toBeNull();
+    });
+
+    it("скелет и движения моделей читаются из их файлов: экран «Анимация» предлагает по ним новое движение", async () => {
+      const { engine } = createEngine(undefined, [
+        { index: 0, name: "hero", path: "models/hero.glb" },
+        { index: 1, name: "tree", path: "models/tree.glb" },
+        { index: 2, name: "broken", path: "models/broken.glb" },
+      ]);
+      const hero = glbWith({ skins: [{ joints: [0] }], animations: [{ name: "Idle" }, { name: "Jog" }, {}] });
+      const tree = glbWith({ meshes: [] });
+      const files = { "models/hero.glb": hero, "models/tree.glb": tree, "models/broken.glb": new Uint8Array([1, 2, 3]) };
+
+      const result = await loadProject(engine, createReader(files), "{}", stubAudioContext, createVideoPlayerKeeper());
+
+      expect(result.status === "ok" && result.modelRigs).toEqual([
+        { name: "hero", hasSkeleton: true, clips: ["Idle", "Jog"] },
+        { name: "tree", hasSkeleton: false, clips: [] },
+      ]);
     });
   });
 

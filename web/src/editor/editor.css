@@ -479,16 +479,28 @@ body.is-resizing-panel {
 }
 
 /* Окошки групп выпадают вниз за край полосы — здесь ничего не обрезается. На узкой сцене подписи групп
-   прячутся и остаются значки, чтобы кнопки не наезжали на часть над свойствами. */
+   прячутся, а кнопки сжимаются, чтобы инструменты не наезжали на кнопки партии (окно в 1024 точки). */
 .project-topbar__scene {
   container-type: inline-size;
-  gap: 10px;
-  padding: 0 10px;
+  gap: 8px;
+  padding: 0 8px;
 }
 
 @container (max-width: 640px) {
   .tool-menu__caption {
     display: none;
+  }
+
+  .scene-tools {
+    gap: 4px;
+  }
+
+  .scene-tools .tool-menu__main {
+    padding: 0 7px;
+  }
+
+  .scene-tools .tool-menu__toggle {
+    padding: 0 4px;
   }
 }
 
@@ -1626,6 +1638,8 @@ body.is-resizing-panel {
 
 /* Кнопки партии — у правого края части над сценой: стоят на месте, есть инструменты сцены или нет. */
 .battle-transport {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   gap: 2px;
@@ -2210,3 +2224,459 @@ body.is-resizing-panel {
   font-size: 12px;
 }
 
+
+/* ——— Экран «Анимация» ——— */
+
+/* Холст движка стоит между кнопками видов и шкалой; сверху его накрывает холст редактора с кольцами поворота. */
+.project-window--stand {
+  --stand-toolbar-height: 42px;
+  --stand-timeline-height: 118px;
+}
+
+.project-window--stand .scene-view {
+  top: var(--stand-toolbar-height);
+  bottom: var(--stand-timeline-height);
+}
+
+.project-window--stand .scene-view__size {
+  display: none;
+}
+
+.project-topbar__stand {
+  flex: none;
+  padding: 0 9px;
+  border-color: var(--editor-border-strong);
+  color: var(--editor-text);
+}
+
+.project-topbar__stand--open {
+  border-color: var(--editor-accent-ring);
+  background: var(--editor-accent-soft);
+  color: var(--editor-accent);
+}
+
+.stand-viewport {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.stand-viewport > * {
+  pointer-events: auto;
+}
+
+.stand-viewport__toolbar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  left: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: var(--stand-toolbar-height);
+  padding: 0 12px;
+  border-bottom: 1px solid var(--editor-border);
+  background: var(--editor-surface);
+}
+
+.stand-viewport .scene-tools__button {
+  width: auto;
+  padding: 0 11px;
+  font-size: 12.5px;
+}
+
+.stand-viewport__overlay {
+  position: absolute;
+  top: var(--stand-toolbar-height);
+  left: 0;
+  width: 100%;
+  height: calc(100% - var(--stand-toolbar-height) - var(--stand-timeline-height));
+  cursor: crosshair;
+  touch-action: none;
+}
+
+.stand-viewport__placeholder {
+  position: absolute;
+  top: var(--stand-toolbar-height);
+  right: 0;
+  left: 0;
+  display: grid;
+  place-items: center;
+  height: calc(100% - var(--stand-toolbar-height) - var(--stand-timeline-height));
+  background-color: var(--editor-bg);
+  background-image: var(--editor-dots);
+  background-size: 20px 20px;
+  color: var(--editor-text-faint);
+  pointer-events: none;
+}
+
+.stand-viewport__error {
+  position: absolute;
+  top: calc(var(--stand-toolbar-height) + 8px);
+  right: 12px;
+  left: 12px;
+  z-index: 3;
+  max-height: 140px;
+  overflow: auto;
+  pointer-events: auto;
+}
+
+.stand-viewport__error-line {
+  display: block;
+}
+
+.stand-viewport__timeline {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: var(--stand-timeline-height);
+  border-top: 1px solid var(--editor-border);
+  background: var(--editor-surface);
+}
+
+.stand-timeline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 14px;
+  padding: 14px 16px;
+}
+
+.stand-timeline__buttons {
+  display: flex;
+  flex: none;
+  gap: 2px;
+}
+
+.stand-timeline__track {
+  position: relative;
+  flex: 1 1 260px;
+  height: 38px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 6px;
+  background: var(--editor-bg);
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.stand-timeline__track:focus-visible {
+  outline: 2px solid var(--editor-accent-ring);
+}
+
+.stand-timeline__head {
+  position: absolute;
+  top: -4px;
+  bottom: -4px;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--editor-accent);
+  pointer-events: none;
+}
+
+/* Красные метки: ступня скользит на этих долях — верхняя половина шкалы для первой ступни, нижняя для второй. */
+.stand-timeline__slip {
+  position: absolute;
+  height: 50%;
+  background: rgba(255, 122, 122, 0.5);
+}
+
+.stand-timeline__gap {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 7px;
+  background: var(--editor-error);
+}
+
+/* Засечка отметки кости: ромб на середине шкалы, тянется по ней. */
+.stand-timeline__mark {
+  position: absolute;
+  top: 50%;
+  z-index: 2;
+  width: 11px;
+  height: 11px;
+  margin: -6px 0 0 -6px;
+  padding: 0;
+  border: 1px solid var(--editor-bg);
+  background: var(--editor-ember);
+  cursor: ew-resize;
+  transform: rotate(45deg);
+}
+
+.stand-timeline__mark:focus-visible {
+  outline: 2px solid var(--editor-accent-ring);
+  outline-offset: 2px;
+}
+
+.stand-timeline__readout {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  gap: 4px 18px;
+  color: var(--editor-text-muted);
+  font: 12px var(--editor-font-mono);
+}
+
+.stand-timeline__warning {
+  color: var(--editor-error-text);
+}
+
+.stand-list,
+.stand-side {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.stand-list__body,
+.stand-side__body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.stand-list__body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 10px;
+}
+
+.stand-list__empty,
+.stand-side__empty {
+  margin: 0;
+  padding: 4px 6px;
+  color: var(--editor-text-faint);
+  font-size: 12.5px;
+  line-height: 1.45;
+}
+
+.stand-list__items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.stand-list__item {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  width: 100%;
+  padding: 6px 10px;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--editor-text);
+  text-align: left;
+  cursor: pointer;
+}
+
+.stand-list__item:hover {
+  background: var(--editor-surface-hover);
+}
+
+.stand-list__item--selected,
+.stand-list__item--selected:hover {
+  border-color: var(--editor-accent-ring);
+  background: var(--editor-accent-soft);
+}
+
+.stand-list__source {
+  color: var(--editor-text-faint);
+  font-size: 11.5px;
+}
+
+.stand-list__new {
+  align-self: stretch;
+  justify-content: center;
+}
+
+.stand-new-motion {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 8px;
+  background: var(--editor-surface-raised);
+}
+
+.stand-new-motion__title {
+  font: 600 13px var(--editor-font-display);
+}
+
+.stand-new-motion__field {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  color: var(--editor-text-muted);
+  font-size: 12px;
+}
+
+.stand-new-motion__field select,
+.stand-new-motion__field input,
+.stand-side__row select {
+  box-sizing: border-box;
+  min-width: 0;
+  height: 28px;
+  padding: 0 7px;
+  border: 1px solid var(--editor-border-strong);
+  border-radius: 5px;
+  background: var(--editor-bg);
+  color: var(--editor-text);
+  font: 12.5px var(--editor-font-ui);
+}
+
+.stand-new-motion__problem {
+  margin: 0;
+  color: var(--editor-warning-text);
+  font-size: 12px;
+}
+
+.stand-new-motion__buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.stand-side__section {
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--editor-border);
+}
+
+.stand-side__heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  color: var(--editor-text-muted);
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.stand-side__row {
+  display: grid;
+  grid-template-columns: 100px 1fr;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stand-side__label,
+.stand-slider__label {
+  color: var(--editor-text-muted);
+  font: 12px var(--editor-font-mono);
+}
+
+.stand-slider {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.stand-slider__range {
+  min-width: 0;
+  accent-color: var(--editor-accent);
+}
+
+.stand-slider__field {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.stand-slider__field .particles-input {
+  width: 62px;
+  min-width: 0;
+}
+
+.stand-slider__unit {
+  width: 10px;
+  color: var(--editor-text-faint);
+  font-size: 12px;
+}
+
+.stand-bones {
+  max-height: 220px;
+  margin: 0 0 10px;
+  padding: 4px 0;
+  overflow: auto;
+  border: 1px solid var(--editor-border);
+  border-radius: 8px;
+  background: var(--editor-bg);
+  list-style: none;
+}
+
+.stand-bones__row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.stand-bones__toggle {
+  display: grid;
+  flex: none;
+  place-items: center;
+  width: 16px;
+  height: 20px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--editor-text-faint);
+  cursor: pointer;
+}
+
+.stand-bones__bone {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  height: 22px;
+  padding: 0 6px;
+  overflow: hidden;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--editor-text-muted);
+  font-size: 12.5px;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.stand-bones__bone:hover {
+  background: var(--editor-surface-hover);
+  color: var(--editor-text);
+}
+
+.stand-bones__bone--selected,
+.stand-bones__bone--selected:hover {
+  background: var(--editor-accent-soft);
+  color: var(--editor-accent);
+}
+
+.stand-bones__dot {
+  flex: none;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--editor-ember);
+}
+
+.stand-bone__buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 4px;
+}

@@ -100,8 +100,13 @@ pub struct Scene3d {
     shape_pipeline: wgpu::RenderPipeline,
     model_shadow_pipeline: wgpu::RenderPipeline,
     model_mask_shadow_pipeline: wgpu::RenderPipeline,
+    skinned_shadow_pipeline: wgpu::RenderPipeline,
+    skinned_mask_shadow_pipeline: wgpu::RenderPipeline,
     model_pipeline: wgpu::RenderPipeline,
     model_mask_pipeline: wgpu::RenderPipeline,
+    skinned_pipeline: wgpu::RenderPipeline,
+    skinned_mask_pipeline: wgpu::RenderPipeline,
+    skinned_blend_pipeline: wgpu::RenderPipeline,
     model_blend_pipeline: wgpu::RenderPipeline,
     road_pipeline: wgpu::RenderPipeline,
     junction_pipeline: wgpu::RenderPipeline,
@@ -756,10 +761,40 @@ impl Scene3d {
                 attributes: &gpu_models::INSTANCE_ATTRIBUTES,
             },
         ];
+        let skinned_buffers = [
+            model_buffers[0].clone(),
+            model_buffers[1].clone(),
+            wgpu::VertexBufferLayout {
+                array_stride: gpu_models::SKIN_STRIDE,
+                step_mode: wgpu::VertexStepMode::Vertex,
+                attributes: &gpu_models::SKIN_ATTRIBUTES,
+            },
+        ];
         let model_pipeline_layout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("model_pipeline_layout"),
                 bind_group_layouts: &[Some(&main_layout), Some(models.material_layout())],
+                immediate_size: 0,
+            });
+        // Модель со скелетом: к материалам частей добавлена текстура матриц суставов.
+        let skinned_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("skinned_pipeline_layout"),
+                bind_group_layouts: &[
+                    Some(&main_layout),
+                    Some(models.material_layout()),
+                    Some(models.bones_layout()),
+                ],
+                immediate_size: 0,
+            });
+        let skinned_shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("skinned_shadow_pipeline_layout"),
+                bind_group_layouts: &[
+                    Some(&shadow_layout),
+                    Some(models.material_layout()),
+                    Some(models.bones_layout()),
+                ],
                 immediate_size: 0,
             });
         // Тень части `MASK` читает прозрачность из материала части.
@@ -849,6 +884,36 @@ impl Scene3d {
                 multiview_mask: None,
                 cache: None,
             });
+        let skinned_shadow = |label: &str, vertex_entry: &str, fragment: Option<&str>| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&skinned_shadow_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some(vertex_entry),
+                    buffers: &skinned_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: fragment.map(|entry| wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(entry),
+                    targets: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let skinned_shadow_pipeline =
+            skinned_shadow("skinned_shadow_pipeline", "vs_shadow_model_skinned", None);
+        let skinned_mask_shadow_pipeline = skinned_shadow(
+            "skinned_mask_shadow_pipeline",
+            "vs_shadow_model_mask_skinned",
+            Some("fs_shadow_model_mask"),
+        );
         let shape_targets = color_target(wgpu::BlendState::REPLACE);
         let terrain_shadow_pipeline =
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
@@ -953,6 +1018,44 @@ impl Scene3d {
                 })
             };
         let solid_depth = depth_state(true, wgpu::CompareFunction::Less);
+        let skinned_surface = |label: &str,
+                               fragment_entry: &str,
+                               targets: &[Option<wgpu::ColorTargetState>],
+                               depth: wgpu::DepthStencilState| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(&skinned_pipeline_layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_model_skinned"),
+                    buffers: &skinned_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment_entry),
+                    targets,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let skinned_pipeline = skinned_surface(
+            "skinned_pipeline",
+            "fs_model",
+            &shape_targets,
+            solid_depth.clone(),
+        );
+        let skinned_mask_pipeline = skinned_surface(
+            "skinned_mask_pipeline",
+            "fs_model_mask",
+            &shape_targets,
+            solid_depth.clone(),
+        );
         let model_pipeline = model_surface_pipeline(
             "model_pipeline",
             "fs_model",
@@ -969,6 +1072,12 @@ impl Scene3d {
         let blend_targets = color_target(wgpu::BlendState::ALPHA_BLENDING);
         let model_blend_pipeline = model_surface_pipeline(
             "model_blend_pipeline",
+            "fs_model_blend",
+            &blend_targets,
+            depth_state(false, wgpu::CompareFunction::Less),
+        );
+        let skinned_blend_pipeline = skinned_surface(
+            "skinned_blend_pipeline",
             "fs_model_blend",
             &blend_targets,
             depth_state(false, wgpu::CompareFunction::Less),
@@ -1051,9 +1160,14 @@ impl Scene3d {
             shape_pipeline,
             model_shadow_pipeline,
             model_mask_shadow_pipeline,
+            skinned_shadow_pipeline,
+            skinned_mask_shadow_pipeline,
             model_pipeline,
             model_mask_pipeline,
+            skinned_pipeline,
+            skinned_mask_pipeline,
             model_blend_pipeline,
+            skinned_blend_pipeline,
             road_pipeline,
             junction_pipeline,
             ground_pipeline,
@@ -1223,6 +1337,10 @@ impl Scene3d {
             models.draw(&mut pass, AlphaMode::Opaque, false);
             pass.set_pipeline(&self.model_mask_shadow_pipeline);
             models.draw(&mut pass, AlphaMode::Mask, true);
+            pass.set_pipeline(&self.skinned_shadow_pipeline);
+            models.draw_skinned(&mut pass, AlphaMode::Opaque);
+            pass.set_pipeline(&self.skinned_mask_shadow_pipeline);
+            models.draw_skinned(&mut pass, AlphaMode::Mask);
             if let Some(terrain) = &self.terrain {
                 pass.set_pipeline(&self.terrain_shadow_pipeline);
                 pass.set_vertex_buffer(0, terrain.buffer.slice(..));
@@ -1270,6 +1388,10 @@ impl Scene3d {
         models.draw(&mut pass, AlphaMode::Opaque, true);
         pass.set_pipeline(&self.model_mask_pipeline);
         models.draw(&mut pass, AlphaMode::Mask, true);
+        pass.set_pipeline(&self.skinned_pipeline);
+        models.draw_skinned(&mut pass, AlphaMode::Opaque);
+        pass.set_pipeline(&self.skinned_mask_pipeline);
+        models.draw_skinned(&mut pass, AlphaMode::Mask);
         pass.set_pipeline(&self.road_pipeline);
         models.draw_road_pieces(&mut pass);
         pass.set_pipeline(&self.junction_pipeline);
@@ -1284,7 +1406,10 @@ impl Scene3d {
             pass.set_pipeline(&self.water_pipeline);
             pass.draw(terrain.land..terrain.total, 0..1);
         }
-        pass.set_pipeline(&self.model_blend_pipeline);
-        models.draw_blended(&mut pass);
+        models.draw_blended(
+            &mut pass,
+            &self.model_blend_pipeline,
+            &self.skinned_blend_pipeline,
+        );
     }
 }

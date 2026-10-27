@@ -1,8 +1,8 @@
 //! «Трёхмерная сцена» → «Модели и движения», «Загрузка и проверка»: разбор модели `.glb` в `core::model`.
 //! Картинки внутри файла сюда приходят уже разжатыми страницей; узлы с их сдвигами, поворотами и
 //! масштабами собираются в одно тело, сетки с одним материалом — в одну часть, оси файла ложатся в оси
-//! сцены (+X вправо, +Y вверх → вверх, +Z к игроку → вниз по сцене). Скелеты, движения и расширения
-//! `KHR_materials_*` и `KHR_texture_transform` игнорируются: модель рисуется в покое.
+//! сцены (+X вправо, +Y вверх → вверх, +Z к игроку → вниз по сцене). Скелет, веса вершин и движения читает
+//! `data::rig`; расширения `KHR_materials_*` и `KHR_texture_transform` игнорируются.
 
 use std::collections::HashMap;
 
@@ -13,10 +13,14 @@ use gltf::texture::{MagFilter, MinFilter, WrappingMode};
 use gltf::{Gltf, Node};
 use serde_json::Value as Json;
 
+use crate::core::math3::IDENTITY;
 use crate::core::model::{
     AlphaMode, DEFAULT_ALPHA_CUTOFF, Material, Model, ModelImage, ModelVertex, Part, Sampler,
-    Texture, Wrap,
+    SkinVertex, Texture, Wrap,
 };
+use crate::core::skeleton::Skeleton;
+
+use super::rig;
 
 type Vec3 = [f32; 3];
 /// Матрица 4 × 4 по столбцам, как в glTF.
@@ -99,6 +103,18 @@ struct FileVertex {
     uv: [f32; 2],
     tangent: [f32; 4],
     color: [f32; 4],
+    skin: SkinVertex,
+}
+
+/// Как сетка узла привязана к скелету.
+#[derive(Debug, Clone, Copy)]
+enum Binding {
+    /// Сетка не двигается: запекается в позе покоя.
+    Baked,
+    /// У узла свой `skin`: веса вершин лежат в самой сетке.
+    Skin,
+    /// Сетка без `skin` висит на узле кости (шлем на голове): вся она идёт за суставом с весом 1.
+    Held(usize),
 }
 
 /// Картинка файла, на которую ссылается материал части: PNG или JPEG внутри файла или сжатый файл службы
@@ -142,8 +158,15 @@ pub fn parse_model_images(
         .default_scene()
         .or_else(|| document.scenes().next())
         .ok_or("в файле нет сцены с сеткой")?;
+    let skeleton = rig::read_skeleton(&document, &scene, blob)?;
     let mut builder = Builder {
         blob,
+        joints: skeleton.as_ref().map(|skeleton| skeleton.joints.len()),
+        joint_of: if skeleton.is_some() {
+            rig::joint_nodes(&document)
+        } else {
+            HashMap::new()
+        },
         materials: Vec::new(),
         material_of: HashMap::new(),
         images: Vec::new(),
@@ -151,16 +174,10 @@ pub fn parse_model_images(
         parts: Vec::new(),
         load_image: image,
     };
-    let identity: Mat4 = [
-        [1.0, 0.0, 0.0, 0.0],
-        [0.0, 1.0, 0.0, 0.0],
-        [0.0, 0.0, 1.0, 0.0],
-        [0.0, 0.0, 0.0, 1.0],
-    ];
     for node in scene.nodes() {
-        builder.visit(&node, &identity)?;
+        builder.visit(&node, &IDENTITY, None)?;
     }
-    builder.finish(name)
+    builder.finish(name, skeleton)
 }
 
 struct Container {
@@ -239,6 +256,10 @@ fn without_ignored_requirements(json: &[u8]) -> Vec<u8> {
 
 struct Builder<'a, F> {
     blob: Option<&'a [u8]>,
+    /// Сколько суставов у скелета файла; `None` у модели без скелета.
+    joints: Option<usize>,
+    /// Номер сустава скелета по номеру узла файла; пусто у модели без скелета.
+    joint_of: HashMap<usize, usize>,
     materials: Vec<Material>,
     material_of: HashMap<Option<usize>, usize>,
     images: Vec<ModelImage>,
@@ -248,15 +269,27 @@ struct Builder<'a, F> {
 }
 
 impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
-    fn visit(&mut self, node: &Node<'_>, parent: &Mat4) -> Result<(), String> {
+    /// `holder` — сустав, на узле которого или выше висит узел `node`.
+    fn visit(
+        &mut self,
+        node: &Node<'_>,
+        parent: &Mat4,
+        holder: Option<usize>,
+    ) -> Result<(), String> {
         let matrix = multiply(parent, &node.transform().matrix());
+        let holder = self.joint_of.get(&node.index()).copied().or(holder);
         if let Some(mesh) = node.mesh() {
+            let (placed, binding) = if node.skin().is_some() && self.joints.is_some() {
+                (IDENTITY, Binding::Skin)
+            } else {
+                (matrix, holder.map_or(Binding::Baked, Binding::Held))
+            };
             for primitive in mesh.primitives() {
-                self.add_primitive(&primitive, &matrix)?;
+                self.add_primitive(&primitive, &placed, binding)?;
             }
         }
         for child in node.children() {
-            self.visit(&child, &matrix)?;
+            self.visit(&child, &matrix, holder)?;
         }
         Ok(())
     }
@@ -265,6 +298,7 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
         &mut self,
         primitive: &gltf::Primitive<'_>,
         matrix: &Mat4,
+        binding: Binding,
     ) -> Result<(), String> {
         let blob = self.blob;
         let reader = primitive.reader(|_| blob);
@@ -302,6 +336,15 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
         let tangents: Option<Vec<[f32; 4]>> = reader.read_tangents().map(Iterator::collect);
         let material = primitive.material();
         let wants_tangents = material.normal_texture().is_some();
+        let skin = match (binding, self.joints) {
+            (Binding::Skin, Some(joints)) => {
+                rig::skin_vertices(primitive, blob, positions.len(), joints)?
+            }
+            (Binding::Held(joint), _) => {
+                vec![rig::held_by(joint); positions.len()]
+            }
+            _ => Vec::new(),
+        };
 
         let mut vertices: Vec<FileVertex> = positions
             .iter()
@@ -324,6 +367,7 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
                         [xyz[0], xyz[1], xyz[2], w]
                     }),
                 color: colors.get(at).copied().unwrap_or([1.0; 4]),
+                skin: skin.get(at).copied().unwrap_or_default(),
             })
             .collect();
 
@@ -426,37 +470,64 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
         })
     }
 
-    /// Собирает модель: части по материалам, вершины в осях сцены, середина основания в начале.
-    fn finish(self, name: &str) -> Result<Model, String> {
-        let mut by_material: Vec<Option<Part>> = (0..self.materials.len()).map(|_| None).collect();
+    /// Собирает модель: части по материалам, вершины в осях сцены, середина основания в начале. Коробка
+    /// скелетной модели меряется в позе покоя файла.
+    fn finish(self, name: &str, mut skeleton: Option<Skeleton>) -> Result<Model, String> {
+        let mut by_material: Vec<Option<(Part, Vec<SkinVertex>)>> =
+            (0..self.materials.len()).map(|_| None).collect();
         for (material, vertices, triangles) in self.parts {
-            let part = by_material[material].get_or_insert_with(|| Part {
-                vertices: Vec::new(),
-                indices: Vec::new(),
-                material,
+            let (part, skin) = by_material[material].get_or_insert_with(|| {
+                (
+                    Part {
+                        vertices: Vec::new(),
+                        indices: Vec::new(),
+                        material,
+                    },
+                    Vec::new(),
+                )
             });
             let base = part.vertices.len() as u32;
             part.vertices.extend(vertices.iter().map(to_scene_axes));
             part.indices
                 .extend(triangles.iter().flatten().map(|index| index + base));
+            skin.extend(vertices.iter().map(|vertex| vertex.skin));
         }
-        let mut parts: Vec<Part> = by_material.into_iter().flatten().collect();
+        let (mut parts, mut skin): (Vec<Part>, Vec<Vec<SkinVertex>>) =
+            by_material.into_iter().flatten().unzip();
+        let rest = skeleton.as_ref().map(Skeleton::rest_matrices);
         let mut low = [f32::INFINITY; 3];
         let mut high = [f32::NEG_INFINITY; 3];
-        for vertex in parts.iter().flat_map(|part| &part.vertices) {
-            for (axis, &coordinate) in vertex.position.iter().enumerate() {
-                low[axis] = low[axis].min(coordinate);
-                high[axis] = high[axis].max(coordinate);
+        for (part, weights) in parts.iter().zip(&skin) {
+            for (vertex, pull) in part.vertices.iter().zip(weights) {
+                let position = match &rest {
+                    Some(matrices) if is_skinned(pull) => {
+                        skinned_point(matrices, pull, vertex.position)
+                    }
+                    _ => vertex.position,
+                };
+                for (axis, &coordinate) in position.iter().enumerate() {
+                    low[axis] = low[axis].min(coordinate);
+                    high[axis] = high[axis].max(coordinate);
+                }
             }
         }
         if parts.is_empty() || low.iter().chain(&high).any(|c| !c.is_finite()) {
             return Err("в файле нет ни одной сетки с треугольниками".to_string());
         }
         let shift = [(low[0] + high[0]) / 2.0, (low[1] + high[1]) / 2.0, low[2]];
-        for vertex in parts.iter_mut().flat_map(|part| &mut part.vertices) {
-            for (coordinate, shift) in vertex.position.iter_mut().zip(shift) {
-                *coordinate -= shift;
+        for (part, weights) in parts.iter_mut().zip(&skin) {
+            for (vertex, pull) in part.vertices.iter_mut().zip(weights) {
+                if is_skinned(pull) {
+                    continue;
+                }
+                for (coordinate, shift) in vertex.position.iter_mut().zip(shift) {
+                    *coordinate -= shift;
+                }
             }
+        }
+        match &mut skeleton {
+            Some(skeleton) => rig::recentre(skeleton, shift),
+            None => skin.clear(),
         }
         Ok(Model {
             name: name.to_string(),
@@ -465,8 +536,27 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
             images: self.images,
             size: std::array::from_fn(|axis| f64::from(high[axis] - low[axis])),
             origin: [-shift[0], -shift[1]],
+            skeleton,
+            skin,
         })
     }
+}
+
+/// Двигает ли сустав скелета эту вершину: у вершины с нулевыми весами сустава нет, она стоит на месте.
+fn is_skinned(pull: &SkinVertex) -> bool {
+    pull.weights.iter().sum::<f32>() > 0.0
+}
+
+/// Точка `position` вершины связывания, согнутая матрицами суставов `matrices`.
+fn skinned_point(matrices: &[Mat4], pull: &SkinVertex, position: Vec3) -> Vec3 {
+    let mut out = [0.0; 3];
+    for (joint, weight) in pull.joints.iter().zip(pull.weights) {
+        let moved = transform_point(&matrices[usize::from(*joint)], position);
+        for (sum, coordinate) in out.iter_mut().zip(moved) {
+            *sum += weight * coordinate;
+        }
+    }
+    out
 }
 
 /// Оси файла в оси сцены: x → x, z → y (к игроку), y → z (вверх). Обмен осей — отражение, поэтому знак
@@ -1330,5 +1420,322 @@ mod tests {
         let sampler = model.materials[0].base_texture.expect("цвет").sampler;
         assert_eq!(sampler.wrap, [Wrap::Clamp, Wrap::Mirror]);
         assert!(!sampler.mag_linear && !sampler.min_linear);
+    }
+
+    /// Оболочка `.glb` вокруг JSON и бинарного куска.
+    fn container(json: String, bin: Vec<u8>) -> Vec<u8> {
+        let json = padded(json.into_bytes(), b' ');
+        let bin = padded(bin, 0);
+        let total = 12 + 8 + json.len() + 8 + bin.len();
+        let mut file = Vec::new();
+        file.extend(b"glTF");
+        file.extend(2u32.to_le_bytes());
+        file.extend((total as u32).to_le_bytes());
+        file.extend((json.len() as u32).to_le_bytes());
+        file.extend(0x4E4F534Au32.to_le_bytes());
+        file.extend(json);
+        file.extend((bin.len() as u32).to_le_bytes());
+        file.extend(0x004E4942u32.to_le_bytes());
+        file.extend(bin);
+        file
+    }
+
+    /// Что в тестовом файле со скелетом можно испортить.
+    struct Rigged {
+        /// Сустав, которому принадлежит верхняя вершина.
+        top_joint: u8,
+        second_skin: bool,
+        interpolation: &'static str,
+        /// Сколько значений у движения `Raise`; для линейного нужно два.
+        outputs: usize,
+        /// Шлем — сетка без `skin` на узле, что висит на «руке».
+        helmet: bool,
+        /// Материал тела — `BLEND`.
+        blended: bool,
+    }
+
+    impl Default for Rigged {
+        fn default() -> Self {
+            Rigged {
+                top_joint: 1,
+                second_skin: false,
+                interpolation: "LINEAR",
+                outputs: 2,
+                helmet: false,
+                blended: false,
+            }
+        }
+    }
+
+    /// Файл со скелетом из двух суставов — корня и «руки» на высоте 1 по y файла — и треугольником: две его точки
+    /// держит корень, верхнюю — рука. Движение `Raise` поднимает руку с 1 до 3 за секунду.
+    fn rigged_file(options: &Rigged) -> Vec<u8> {
+        let mut bin = Vec::new();
+        let mut views = Vec::new();
+        let mut accessors = Vec::new();
+        let mut put = |bytes: Vec<u8>, component: u32, kind: &str, count: usize, extra: &str| {
+            let offset = bin.len();
+            bin.extend(&bytes);
+            while !bin.len().is_multiple_of(4) {
+                bin.push(0);
+            }
+            views.push(format!(
+                r#"{{"buffer":0,"byteOffset":{offset},"byteLength":{}}}"#,
+                bytes.len()
+            ));
+            accessors.push(format!(
+                r#"{{"bufferView":{},"componentType":{component},"count":{count},"type":"{kind}"{extra}}}"#,
+                views.len() - 1
+            ));
+            accessors.len() - 1
+        };
+        let position = put(
+            floats([0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 2.0, 0.0]),
+            5126,
+            "VEC3",
+            3,
+            r#","min":[0,0,0],"max":[1,2,0]"#,
+        );
+        let indices = put(vec![0, 0, 1, 0, 2, 0], 5123, "SCALAR", 3, "");
+        let joints = put(
+            vec![0, 0, 0, 0, 0, 0, 0, 0, options.top_joint, 0, 0, 0],
+            5121,
+            "VEC4",
+            3,
+            "",
+        );
+        let weights = put(
+            floats([1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0]),
+            5126,
+            "VEC4",
+            3,
+            "",
+        );
+        let inverse_binds = put(
+            floats([
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+                1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, -1.0, 0.0, 1.0,
+            ]),
+            5126,
+            "MAT4",
+            2,
+            "",
+        );
+        let times = put(
+            floats([0.0, 1.0]),
+            5126,
+            "SCALAR",
+            2,
+            r#","min":[0],"max":[1]"#,
+        );
+        let lifts = put(
+            floats([0.0, 1.0, 0.0, 0.0, 3.0, 0.0]),
+            5126,
+            "VEC3",
+            options.outputs,
+            "",
+        );
+        let helmet_position = put(
+            floats([0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0, 0.2, 0.0]),
+            5126,
+            "VEC3",
+            3,
+            r#","min":[0,0,0],"max":[0.2,0.2,0]"#,
+        );
+        let helmet_indices = put(vec![0, 0, 1, 0, 2, 0], 5123, "SCALAR", 3, "");
+        let (arm_children, helmet_node, helmet_mesh) = if options.helmet {
+            (
+                r#","children":[4]"#,
+                r#",{"name":"helmet","translation":[0,0.5,0],"mesh":1}"#,
+                format!(
+                    r#",{{"primitives":[{{"attributes":{{"POSITION":{helmet_position}}},"indices":{helmet_indices}}}]}}"#
+                ),
+            )
+        } else {
+            ("", "", String::new())
+        };
+        let (body_material, materials) = if options.blended {
+            (
+                r#","material":0"#,
+                r#""materials":[{"alphaMode":"BLEND","pbrMetallicRoughness":{"baseColorFactor":[1,1,1,0.5]}}],"#,
+            )
+        } else {
+            ("", "")
+        };
+        let second_skin = if options.second_skin {
+            format!(r#",{{"joints":[1,2],"inverseBindMatrices":{inverse_binds}}}"#)
+        } else {
+            String::new()
+        };
+        let json = format!(
+            r#"{{"asset":{{"version":"2.0"}},"scene":0,"scenes":[{{"nodes":[0]}}],
+"nodes":[{{"name":"armature","children":[1,3]}},{{"name":"root","children":[2]}},{{"name":"arm","translation":[0,1,0]{arm_children}}},{{"name":"body","mesh":0,"skin":0}}{helmet_node}],
+{materials}"meshes":[{{"primitives":[{{"attributes":{{"POSITION":{position},"JOINTS_0":{joints},"WEIGHTS_0":{weights}}},"indices":{indices}{body_material}}}]}}{helmet_mesh}],
+"skins":[{{"joints":[1,2],"inverseBindMatrices":{inverse_binds}}}{second_skin}],
+"animations":[{{"name":"Raise","samplers":[{{"input":{times},"output":{lifts},"interpolation":"{}"}}],"channels":[{{"sampler":0,"target":{{"node":2,"path":"translation"}}}}]}}],
+"buffers":[{{"byteLength":{}}}],"bufferViews":[{}],"accessors":[{}]}}"#,
+            options.interpolation,
+            bin.len(),
+            views.join(","),
+            accessors.join(","),
+        );
+        container(json, bin)
+    }
+
+    #[test]
+    fn a_skeleton_with_its_weights_and_motions_is_read() {
+        let model = parse(&rigged_file(&Rigged::default())).expect("модель читается");
+        let skeleton = model.skeleton.as_ref().expect("скелет есть");
+        let names: Vec<&str> = skeleton.bones.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["armature", "root", "arm", "body"]);
+        assert_eq!(skeleton.joints, [1, 2]);
+        assert_eq!(skeleton.joint_named("arm"), Some(1));
+        assert_eq!(skeleton.bones[2].parent, Some(1));
+        let raise = &skeleton.clips[skeleton.clip_named("Raise").expect("движение есть")];
+        assert!(close(f64::from(raise.length), 1.0) && raise.tracks.len() == 1);
+        let weights = &model.skin[0];
+        assert_eq!(weights.len(), 3);
+        assert_eq!((weights[0].joints[0], weights[2].joints[0]), (0, 1));
+        assert!(weights.iter().all(|w| w.weights == [1.0, 0.0, 0.0, 0.0]));
+    }
+
+    #[test]
+    fn the_box_of_a_skinned_model_is_measured_in_the_rest_pose_and_stands_on_zero() {
+        let model = parse(&rigged_file(&Rigged::default())).expect("модель читается");
+        assert!(
+            model
+                .size
+                .iter()
+                .zip([1.0, 0.0, 2.0])
+                .all(|(a, b)| close(*a, b)),
+            "{:?}",
+            model.size
+        );
+        let skeleton = model.skeleton.as_ref().expect("скелет есть");
+        let rest = skeleton.rest_matrices();
+        let top = model.parts[0].vertices[2].position;
+        let at_rest = skinned_point(&rest, &model.skin[0][2], top);
+        assert!(close(f64::from(at_rest[0]), -0.5) && close(f64::from(at_rest[2]), 2.0));
+    }
+
+    #[test]
+    fn a_motion_moves_the_vertices_its_joint_holds_and_leaves_the_rest() {
+        use crate::core::skeleton::{Blend, Playing, PoseScratch};
+        let model = parse(&rigged_file(&Rigged::default())).expect("модель читается");
+        let skeleton = model.skeleton.as_ref().expect("скелет есть");
+        let blend = Blend::single(Playing {
+            clip: skeleton.clip_named("Raise"),
+            time: 1.0,
+            looped: false,
+        });
+        let (mut scratch, mut matrices) = (PoseScratch::default(), Vec::new());
+        skeleton.pose(&blend, &mut scratch);
+        skeleton.skin_matrices(&scratch, &mut matrices);
+        let part = &model.parts[0];
+        let moved =
+            |at: usize| skinned_point(&matrices, &model.skin[0][at], part.vertices[at].position);
+        let top = moved(2);
+        assert!(
+            close(f64::from(top[2]), 4.0),
+            "рука поднялась на 2: {top:?}"
+        );
+        assert!(close(f64::from(moved(1)[0]), 0.5) && close(f64::from(moved(1)[2]), 0.0));
+    }
+
+    #[test]
+    fn a_mesh_without_a_skin_hung_on_a_bone_node_follows_that_bone() {
+        use crate::core::skeleton::{Blend, Playing, PoseScratch};
+        let helmeted = Rigged {
+            helmet: true,
+            ..Rigged::default()
+        };
+        let model = parse(&rigged_file(&helmeted)).expect("модель читается");
+        let weights = &model.skin[0];
+        assert_eq!(weights.len(), 6, "тело и шлем — одна часть");
+        for helmet in &weights[..3] {
+            assert_eq!(
+                (helmet.joints[0], helmet.weights),
+                (1, [1.0, 0.0, 0.0, 0.0])
+            );
+        }
+        let skeleton = model.skeleton.as_ref().expect("скелет есть");
+        let rest = skeleton.rest_matrices();
+        let blend = Blend::single(Playing {
+            clip: skeleton.clip_named("Raise"),
+            time: 1.0,
+            looped: false,
+        });
+        let (mut scratch, mut matrices) = (PoseScratch::default(), Vec::new());
+        skeleton.pose(&blend, &mut scratch);
+        skeleton.skin_matrices(&scratch, &mut matrices);
+        let part = &model.parts[0];
+        for (pull, vertex) in weights.iter().zip(&part.vertices).take(3) {
+            let before = skinned_point(&rest, pull, vertex.position);
+            let after = skinned_point(&matrices, pull, vertex.position);
+            assert!(
+                close(f64::from(after[0] - before[0]), 0.0)
+                    && close(f64::from(after[1] - before[1]), 0.0)
+                    && close(f64::from(after[2] - before[2]), 2.0),
+                "шлем поднялся вместе с рукой на 2: {before:?} → {after:?}"
+            );
+        }
+        let alone = parse(&rigged_file(&Rigged::default())).expect("модель читается");
+        assert_eq!(alone.parts[0].vertices.len(), 3, "без шлема сетка прежняя");
+    }
+
+    #[test]
+    fn a_blend_part_of_a_model_with_a_skeleton_is_read() {
+        let blended = Rigged {
+            blended: true,
+            ..Rigged::default()
+        };
+        let model =
+            parse(&rigged_file(&blended)).expect("прозрачная часть скелетной модели годится");
+        assert!(model.skeleton.is_some());
+        assert_eq!(model.materials[0].alpha_mode, AlphaMode::Blend);
+        assert!(model.has_blend());
+    }
+
+    #[test]
+    fn a_file_without_a_skin_has_no_skeleton_and_no_weights() {
+        let file = glb_file(&[cube([0.0; 3], [1.0; 3], None)], r#"[{"mesh":0}]"#, "", "");
+        let model = parse(&file).expect("модель читается");
+        assert!(model.skeleton.is_none() && model.skin.is_empty());
+    }
+
+    #[test]
+    fn two_skeletons_a_joint_past_the_skeleton_and_broken_keys_are_errors() {
+        let two = Rigged {
+            second_skin: true,
+            ..Rigged::default()
+        };
+        let error = parse(&rigged_file(&two)).expect_err("два скелета");
+        assert!(error.contains("несколько скелетов"), "{error}");
+        let past = Rigged {
+            top_joint: 9,
+            ..Rigged::default()
+        };
+        let error = parse(&rigged_file(&past)).expect_err("сустав за скелетом");
+        assert!(error.contains("за пределами скелета"), "{error}");
+        let short = Rigged {
+            outputs: 1,
+            ..Rigged::default()
+        };
+        let error = parse(&rigged_file(&short)).expect_err("ключей и значений не поровну");
+        assert!(
+            error.contains("Raise") && error.contains("не сходятся"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn a_cubic_motion_keeps_three_values_per_key() {
+        let cubic = Rigged {
+            interpolation: "CUBICSPLINE",
+            outputs: 2,
+            ..Rigged::default()
+        };
+        let error = parse(&rigged_file(&cubic)).expect_err("для двух ключей нужно шесть значений");
+        assert!(error.contains("не сходятся"), "{error}");
     }
 }

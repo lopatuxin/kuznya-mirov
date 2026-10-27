@@ -5,5 +5,7 @@ mod ktx2;
 pub mod load;
 mod locate;
 pub mod recording;
+mod rig;
 pub mod session;
+pub mod stand;
 mod wav;

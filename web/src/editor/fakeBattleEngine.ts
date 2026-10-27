@@ -79,6 +79,19 @@ export function createFakeBattleEngine({ fileWind = [0, 0], replayWind = DEFAULT
     recording_length: vi.fn(() => 0),
     has_world: vi.fn(() => true),
     step_blocked: vi.fn(() => undefined),
+    // Экран «Анимация»: стенд из двух костей, в просмотре ничего не движется.
+    show_motion: vi.fn((): unknown => ({ ok: true, bones: [{ name: "Hips", parent: -1 }, { name: "Spine", parent: 0 }], length: 1, frames: 30 })),
+    motion_pose: vi.fn((): unknown => ({ phase: 0, points: [[10, 10], [10, 30]], slips: [], end_gap: null })),
+    motion_rings: vi.fn((): unknown => undefined),
+    motion_bone_at: vi.fn((): number | undefined => undefined),
+    motion_ring_at: vi.fn((): number | undefined => undefined),
+    motion_ring_grab: vi.fn(),
+    motion_ring_drag: vi.fn((): number | undefined => undefined),
+    motion_ring_release: vi.fn(),
+    motion_view: vi.fn(),
+    motion_zoom: vi.fn(),
+    motion_turn: vi.fn(),
+    hide_motion: vi.fn(),
   };
   return engine as unknown as FakeBattleEngine;
 }

@@ -107,6 +107,11 @@ export function addTerrainFilePath(gameJsonText: string, path: string): string {
   return appendLastKey(gameJsonText, ["files"], "terrain", path);
 }
 
+/** Дописывает `"motions": "<путь>"` в конец `files` файла `game.json` — «Анимация»: первое движение заводит `motions.json`. */
+export function addMotionsFilePath(gameJsonText: string, path: string): string {
+  return appendLastKey(gameJsonText, ["files"], "motions", path);
+}
+
 /**
  * Ветер сцены — «Редактор», «Правка сцены», требование 31: меняет значение `wind` в корне `scene.json` на месте, а если
  * ключа не было, дописывает `"wind": [x, y]` последним ключом корня в стиле файла. `[0, 0]` пишется как есть.

@@ -8,24 +8,29 @@ use serde_json::Value as Json;
 use crate::core::keys::{EditValue, KeyEdit};
 use crate::core::model::{Image, Model, ModelImage, ModelTable};
 use crate::core::property::PropertyId;
+use crate::core::skeleton::{Leg, Skeleton};
 use crate::core::value::Value;
 use crate::data::glb::{self, FileImage};
 
 use super::imported::{ImportedPlan, PackedFault, PackedFiles, resolve_uri};
 use super::materials::pixel_problem;
+use super::motions::{self, MotionSet};
 use super::{
     ErrorSink, ImageVerdict, ParsedObject, code_mentions_word, expect_object, expect_string,
-    find_value, join, reject_unknown_keys, require_field,
+    find_value, join, kind_name, reject_unknown_keys, require_field,
 };
 
-/// Ключи описания, которые появятся вместе со скелетом и движениями моделей.
-const MOTION_KEYS: [&str; 3] = ["idle", "walk", "feet"];
-
-/// Одна модель `files.models`: имя и путь файла `.glb` от папки игры.
+/// Одна модель `files.models`: имя, путь файла `.glb` от папки игры и, у модели со скелетом, движения стойки и
+/// ходьбы, кости ступней, кость начала верха тела и две кисти.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelDecl {
     pub name: String,
     pub path: String,
+    pub idle: Option<String>,
+    pub walk: Option<String>,
+    pub feet: Option<[String; 2]>,
+    pub spine: Option<String>,
+    pub hands: Option<[String; 2]>,
 }
 
 /// Ответ страницы по файлу одной модели: его байты, если файл нашёлся, и по каждой картинке внутри него —
@@ -79,22 +84,31 @@ fn parse_model_decl(
     errors: &mut ErrorSink,
 ) -> Option<ModelDecl> {
     let obj = expect_object(value, file, path, errors)?;
-    for key in MOTION_KEYS {
-        if obj.contains_key(key) {
-            errors.push(
-                file,
-                &join(path, key),
-                format!("{key}: движения моделей появятся в фазе 27"),
-            );
-        }
-    }
-    let known: Vec<&str> = ["path"].into_iter().chain(MOTION_KEYS).collect();
+    let known = ["path", "idle", "walk", "feet", "spine", "hands"];
     reject_unknown_keys(obj, &known, file, path, errors);
-    if !obj.keys().all(|key| known.contains(&key.as_str()))
-        || MOTION_KEYS.iter().any(|key| obj.contains_key(*key))
-    {
+    if !obj.keys().all(|key| known.contains(&key.as_str())) {
         return None;
     }
+    let motion = |key: &str, errors: &mut ErrorSink| -> Option<Option<String>> {
+        match obj.get(key) {
+            None => Some(None),
+            Some(value) => expect_string(value, file, &join(path, key), errors).map(Some),
+        }
+    };
+    let (idle, walk) = (motion("idle", errors), motion("walk", errors));
+    let feet = match obj.get("feet") {
+        None => Some(None),
+        Some(value) => {
+            parse_bone_pair(value, "ступни", file, &join(path, "feet"), errors).map(Some)
+        }
+    };
+    let spine = motion("spine", errors);
+    let hands = match obj.get("hands") {
+        None => Some(None),
+        Some(value) => {
+            parse_bone_pair(value, "кисти", file, &join(path, "hands"), errors).map(Some)
+        }
+    };
     let field = join(path, "path");
     let model_path = expect_string(
         require_field(obj, "path", file, path, errors)?,
@@ -115,7 +129,43 @@ fn parse_model_decl(
     Some(ModelDecl {
         name: name.to_string(),
         path: model_path,
+        idle: idle?,
+        walk: walk?,
+        feet: feet?,
+        spine: spine?,
+        hands: hands?,
     })
+}
+
+/// `feet` и `hands`: имена костей левой и правой ступни или кисти; `whose` — «ступни» или «кисти».
+fn parse_bone_pair(
+    value: &Json,
+    whose: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<[String; 2]> {
+    let names = value
+        .as_array()
+        .filter(|items| items.len() == 2)
+        .and_then(|items| {
+            items
+                .iter()
+                .map(|item| item.as_str().map(str::to_string))
+                .collect::<Option<Vec<String>>>()
+        });
+    let Some(names) = names else {
+        errors.push(
+            file,
+            path,
+            format!(
+                "ожидались имена двух костей, левой и правой {whose}: [\"левая\", \"правая\"], получено {}",
+                kind_name(value)
+            ),
+        );
+        return None;
+    };
+    names.try_into().ok()
 }
 
 /// Картинка файла модели из ответа страницы.
@@ -156,6 +206,7 @@ pub(super) fn load_models(
     plan: &ImportedPlan,
     packed: &[(String, Option<Vec<u8>>)],
     skip_media: bool,
+    motions: &MotionSet,
     errors: &mut ErrorSink,
 ) -> ModelTable {
     let mut packed = PackedFiles::new(packed);
@@ -193,7 +244,8 @@ pub(super) fn load_models(
                 }
             });
             match parsed {
-                Ok(model) => {
+                Ok(mut model) => {
+                    attach_motion(decl, &mut model, &field, motions, errors);
                     if imported.is_none() && !skip_media && !model.images.is_empty() {
                         errors.push_warning(
                             "game.json",
@@ -214,6 +266,197 @@ pub(super) fn load_models(
         })
         .collect();
     ModelTable::new(models)
+}
+
+/// Ключи скелета из описания `decl` и движения `motions.json` модели ложатся на её скелет, потом по именам из движений
+/// файла и `motions.json` встают стойка и ходьба; чего в файле нет — ошибка.
+fn attach_motion(
+    decl: &ModelDecl,
+    model: &mut Model,
+    field: &str,
+    motions: &MotionSet,
+    errors: &mut ErrorSink,
+) {
+    let placeholder = model.parts.is_empty();
+    let Some(skeleton) = &mut model.skeleton else {
+        for (key, named) in [
+            ("idle", decl.idle.is_some()),
+            ("walk", decl.walk.is_some()),
+            ("feet", decl.feet.is_some()),
+            ("spine", decl.spine.is_some()),
+            ("hands", decl.hands.is_some()),
+        ] {
+            if named {
+                errors.push(
+                    "game.json",
+                    &join(field, key),
+                    format!("в файле модели {} нет скелета", decl.name),
+                );
+            }
+        }
+        for motion in motions
+            .decls
+            .iter()
+            .filter(|motion| motion.model == decl.name)
+        {
+            if !placeholder {
+                errors.push(
+                    &motions.file,
+                    &join(&motion.name, "model"),
+                    format!("в файле модели {} нет скелета", decl.name),
+                );
+            }
+        }
+        return;
+    };
+    if let Some(feet) = &decl.feet {
+        skeleton.legs = legs_of(skeleton, feet, &join(field, "feet"), errors);
+    }
+    if let Some(name) = &decl.spine {
+        skeleton.spine = bone_named(skeleton, name, &join(field, "spine"), errors);
+    }
+    if let Some(hands) = &decl.hands {
+        skeleton.hands = hands_of(skeleton, hands, &join(field, "hands"), errors);
+    }
+    motions::attach(skeleton, decl, motions, errors);
+    skeleton.idle = named_clip(skeleton, "idle", &decl.idle, field, errors);
+    skeleton.walk = named_clip(skeleton, "walk", &decl.walk, field, errors);
+}
+
+fn bone_named(
+    skeleton: &Skeleton,
+    name: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<usize> {
+    let found = skeleton.bone_named(name);
+    if found.is_none() {
+        errors.push(
+            "game.json",
+            path,
+            format!("в скелете модели нет кости \"{name}\""),
+        );
+    }
+    found
+}
+
+/// Две кисти и над каждой предплечье и плечо: `arms_out` поворачивает руку от плеча.
+fn hands_of(
+    skeleton: &Skeleton,
+    hands: &[String; 2],
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<[usize; 2]> {
+    let found = hands
+        .clone()
+        .map(|name| bone_named(skeleton, &name, path, errors));
+    let [Some(left), Some(right)] = found else {
+        return None;
+    };
+    if left == right {
+        errors.push(
+            "game.json",
+            path,
+            "левая и правая кисть — одна и та же кость",
+        );
+        return None;
+    }
+    let shoulder = |hand: usize| {
+        skeleton.bones[hand]
+            .parent
+            .and_then(|elbow| skeleton.bones[elbow].parent)
+    };
+    if shoulder(left).is_none() || shoulder(right).is_none() {
+        errors.push(
+            "game.json",
+            path,
+            "над костью кисти должны быть предплечье и плечо",
+        );
+        return None;
+    }
+    Some([left, right])
+}
+
+fn named_clip(
+    skeleton: &Skeleton,
+    key: &str,
+    name: &Option<String>,
+    field: &str,
+    errors: &mut ErrorSink,
+) -> Option<usize> {
+    let name = name.as_deref()?;
+    let found = skeleton.clip_named(name);
+    if found.is_none() {
+        let known: Vec<String> = skeleton
+            .clips
+            .iter()
+            .map(|clip| format!("\"{}\"", clip.name))
+            .collect();
+        errors.push(
+            "game.json",
+            &join(field, key),
+            format!(
+                "в файле модели нет движения \"{name}\"; в нём {}",
+                if known.is_empty() {
+                    "движений нет".to_string()
+                } else {
+                    known.join(", ")
+                }
+            ),
+        );
+    }
+    found
+}
+
+fn legs_of(
+    skeleton: &Skeleton,
+    feet: &[String; 2],
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<[Leg; 2]> {
+    let joints = feet.clone().map(|name| {
+        let joint = skeleton.joint_named(&name);
+        if joint.is_none() {
+            errors.push(
+                "game.json",
+                path,
+                format!("в скелете модели нет кости \"{name}\""),
+            );
+        }
+        joint
+    });
+    let [Some(left), Some(right)] = joints else {
+        return None;
+    };
+    if left == right {
+        errors.push(
+            "game.json",
+            path,
+            "левая и правая ступня — одна и та же кость",
+        );
+        return None;
+    }
+    let legs = [left, right].map(|joint| skeleton.leg_of(joint));
+    let [Some(left_leg), Some(right_leg)] = legs else {
+        errors.push(
+            "game.json",
+            path,
+            "над костью ступни должны быть голень, бедро и таз",
+        );
+        return None;
+    };
+    if left_leg.pelvis != right_leg.pelvis {
+        errors.push(
+            "game.json",
+            path,
+            format!(
+                "бёдра ног растут из разных костей (\"{}\" и \"{}\"): у обеих ног должен быть один таз",
+                skeleton.bones[left_leg.pelvis].name, skeleton.bones[right_leg.pelvis].name
+            ),
+        );
+        return None;
+    }
+    Some([left_leg, right_leg])
 }
 
 /// Ошибка требования 17: сжатый файл картинки модели не найден или не читается.

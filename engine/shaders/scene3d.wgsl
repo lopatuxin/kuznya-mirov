@@ -977,9 +977,82 @@ fn model_direction(direction: vec3<f32>, instance: ModelInstance) -> vec3<f32> {
     return vec3<f32>(c * tilted.x - s * tilted.y, s * tilted.x + c * tilted.y, tilted.z);
 }
 
+// --- Скелет -----------------------------------------------------------------------------------
+// Матрицы суставов объектов модели со скелетом лежат в текстуре данных: строка — один объект модели в порядке
+// кадра (номер объекта — `instance_index` команды, буфер объектов нарезан по модели), четыре точки на сустав —
+// столбцы матрицы. Читаются выборкой по целым координатам, без сглаживания.
+@group(2) @binding(0)
+var bone_texture: texture_2d<f32>;
+
+struct SkinVertex {
+    // Номера четырёх суставов числами с плавающей точкой и их веса; нулевые веса — вершина стоит на месте.
+    @location(7) joints: vec4<f32>,
+    @location(8) weights: vec4<f32>,
+};
+
+fn bone_matrix(row: i32, joint: f32) -> mat4x4<f32> {
+    let x = i32(joint) * 4;
+    return mat4x4<f32>(
+        textureLoad(bone_texture, vec2<i32>(x, row), 0),
+        textureLoad(bone_texture, vec2<i32>(x + 1, row), 0),
+        textureLoad(bone_texture, vec2<i32>(x + 2, row), 0),
+        textureLoad(bone_texture, vec2<i32>(x + 3, row), 0),
+    );
+}
+
+fn skin_matrix(skin: SkinVertex, row: i32) -> mat4x4<f32> {
+    let total = skin.weights.x + skin.weights.y + skin.weights.z + skin.weights.w;
+    if (total < 0.000001) {
+        return mat4x4<f32>(
+            vec4<f32>(1.0, 0.0, 0.0, 0.0),
+            vec4<f32>(0.0, 1.0, 0.0, 0.0),
+            vec4<f32>(0.0, 0.0, 1.0, 0.0),
+            vec4<f32>(0.0, 0.0, 0.0, 1.0),
+        );
+    }
+    return bone_matrix(row, skin.joints.x) * skin.weights.x
+        + bone_matrix(row, skin.joints.y) * skin.weights.y
+        + bone_matrix(row, skin.joints.z) * skin.weights.z
+        + bone_matrix(row, skin.joints.w) * skin.weights.w;
+}
+
+// Нормаль `normal` после сгиба матрицей `bent`: обратная транспонированная матрица через кофакторы 3 × 3, без
+// обращения, со знаком определителя — у неравномерного масштаба кости свет не искажается, у зеркального узла
+// нормаль не выворачивается.
+fn bent_normal(bent: mat4x4<f32>, normal: vec3<f32>) -> vec3<f32> {
+    let c0 = bent[0].xyz;
+    let c1 = bent[1].xyz;
+    let c2 = bent[2].xyz;
+    let cofactor_x = cross(c1, c2);
+    let handedness = select(-1.0, 1.0, dot(c0, cofactor_x) >= 0.0);
+    return normalize(handedness * (cofactor_x * normal.x + cross(c2, c0) * normal.y + cross(c0, c1) * normal.z));
+}
+
+// Вершина, согнутая суставами в позу объекта: место, нормаль и касательная; остальное — как у вершины модели.
+// Касательная идёт вдоль поверхности и сгибается самой матрицей, нормаль — обратной транспонированной.
+fn skinned_vertex(vertex: ModelVertex, skin: SkinVertex, row: u32) -> ModelVertex {
+    let bent = skin_matrix(skin, i32(row));
+    var out = vertex;
+    out.position = (bent * vec4<f32>(vertex.position, 1.0)).xyz;
+    out.normal = bent_normal(bent, vertex.normal);
+    out.tangent = vec4<f32>(normalize((bent * vec4<f32>(vertex.tangent.xyz, 0.0)).xyz), vertex.tangent.w);
+    return out;
+}
+
 @vertex
 fn vs_shadow_model(vertex: ModelVertex, instance: ModelInstance) -> @builtin(position) vec4<f32> {
     return globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
+}
+
+// Тень скелетной модели повторяет её позу.
+@vertex
+fn vs_shadow_model_skinned(
+    vertex: ModelVertex,
+    instance: ModelInstance,
+    skin: SkinVertex,
+    @builtin(instance_index) row: u32,
+) -> @builtin(position) vec4<f32> {
+    return globals.light_view_proj * vec4<f32>(model_world(skinned_vertex(vertex, skin, row), instance), 1.0);
 }
 
 struct ShadowMaskOutput {
@@ -989,13 +1062,27 @@ struct ShadowMaskOutput {
 };
 
 // Тень части `MASK`: той же формы, но точки с прозрачностью меньше порога в неё не попадают.
-@vertex
-fn vs_shadow_model_mask(vertex: ModelVertex, instance: ModelInstance) -> ShadowMaskOutput {
+fn shadow_mask_point(vertex: ModelVertex, instance: ModelInstance) -> ShadowMaskOutput {
     var out: ShadowMaskOutput;
     out.clip_position = globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
     out.uv = vertex.uv;
     out.vertex_alpha = vertex.color.a;
     return out;
+}
+
+@vertex
+fn vs_shadow_model_mask(vertex: ModelVertex, instance: ModelInstance) -> ShadowMaskOutput {
+    return shadow_mask_point(vertex, instance);
+}
+
+@vertex
+fn vs_shadow_model_mask_skinned(
+    vertex: ModelVertex,
+    instance: ModelInstance,
+    skin: SkinVertex,
+    @builtin(instance_index) row: u32,
+) -> ShadowMaskOutput {
+    return shadow_mask_point(skinned_vertex(vertex, skin, row), instance);
 }
 
 @fragment
@@ -1034,6 +1121,20 @@ struct ModelOutput {
 
 @vertex
 fn vs_model(vertex: ModelVertex, instance: ModelInstance) -> ModelOutput {
+    return model_point_out(vertex, instance);
+}
+
+@vertex
+fn vs_model_skinned(
+    vertex: ModelVertex,
+    instance: ModelInstance,
+    skin: SkinVertex,
+    @builtin(instance_index) row: u32,
+) -> ModelOutput {
+    return model_point_out(skinned_vertex(vertex, skin, row), instance);
+}
+
+fn model_point_out(vertex: ModelVertex, instance: ModelInstance) -> ModelOutput {
     let world = model_world(vertex, instance);
     var out: ModelOutput;
     out.clip_position = globals.view_proj * vec4<f32>(world, 1.0);

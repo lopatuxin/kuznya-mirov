@@ -63,6 +63,7 @@ function createSceneEditing(engine: FakeBattleEngine, setSceneWind: SceneEditing
       stamps: [],
       coverMasks: [],
       images: [],
+      modelRigs: [],
       audioContext: null as unknown as AudioContext,
     },
     loadedAt: null,
@@ -73,6 +74,7 @@ function createSceneEditing(engine: FakeBattleEngine, setSceneWind: SceneEditing
     sceneText: SCENE_TEXT,
     propertiesText: "{}",
     terrainText: null,
+    motionsText: null,
     masks: NO_MASKS,
     saveState: { status: "saved" },
     canUndo: false,
@@ -92,6 +94,8 @@ function createSceneEditing(engine: FakeBattleEngine, setSceneWind: SceneEditing
     setImprintValue: noop,
     copyImprint: noop,
     deleteImprint: noop,
+    editMotions: noop,
+    createMotion: noop,
     setPropertyValue: noop,
     removeProperty: noop,
     removeProperties: noop,
@@ -1039,5 +1043,140 @@ describe("вкладка «Модели» в окне проекта", () => {
 
     expect(screen.getByText("свойство \"модель\" разрешено только объекту с position и size")).toBeTruthy();
     expect(screen.getByText("scene.json: objects[0] → model")).toBeTruthy();
+  });
+});
+
+const STAND_GAME_JSON_TEXT = MODELS_GAME_JSON_TEXT.replace('"models": {', '"scene": "scene.json", "properties": "properties.json", "motions": "motions.json", "models": {');
+const STAND_MOTIONS_TEXT = '{ "run": { "model": "hero", "clip": "Jog" }, "idle": { "model": "hero", "clip": "Idle" } }';
+const HERO_RIG = { name: "hero", hasSkeleton: true, clips: ["Idle", "Jog"] };
+
+function createStandSceneEditing(engine: FakeBattleEngine, overrides: Partial<SceneEditingState> = {}, rigs = [HERO_RIG], gameJsonText = STAND_GAME_JSON_TEXT): SceneEditingState {
+  const base = createSceneEditing(engine, vi.fn());
+  return createSceneEditing(engine, vi.fn(), {
+    result: { ...(base.result as Extract<SceneEditingState["result"], { status: "ok" }>), gameJsonText, sceneText: MODELS_SCENE_TEXT, modelRigs: rigs },
+    sceneText: MODELS_SCENE_TEXT,
+    motionsText: STAND_MOTIONS_TEXT,
+    ...overrides,
+  });
+}
+
+function standItems(): HTMLElement[] {
+  return Array.from(document.querySelectorAll<HTMLElement>(".stand-list__item"));
+}
+
+describe("кнопка «Анимация» в верхней полосе", () => {
+  let engine: FakeBattleEngine;
+
+  beforeEach(() => {
+    window.HTMLElement.prototype.scrollIntoView = vi.fn();
+    vi.stubGlobal("requestAnimationFrame", () => 0);
+    vi.stubGlobal("cancelAnimationFrame", () => {});
+    engine = createFakeBattleEngine();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
+  it("в плоской сцене кнопки нет", () => {
+    sceneEditingMock.current = createStandSceneEditing(engine, {}, [HERO_RIG], STAND_GAME_JSON_TEXT.replace(', "camera": { "position": [0, 0, 5] }', ""));
+    renderWindow();
+
+    expect(screen.queryByRole("button", { name: "Анимация" })).toBeNull();
+  });
+
+  it("в игре нет моделей со скелетом — кнопка недоступна, подсказка называет причину", () => {
+    sceneEditingMock.current = createStandSceneEditing(engine, {}, [{ name: "tree", hasSkeleton: false, clips: [] }]);
+    renderWindow();
+
+    const button = screen.getByRole("button", { name: "Анимация" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe("В игре нет моделей со скелетом");
+  });
+
+  it("с моделью со скелетом кнопка открывает экран стенда вместо дерева объектов и свойств, «Сцена» возвращает окно проекта", () => {
+    sceneEditingMock.current = createStandSceneEditing(engine);
+    renderWindow();
+    expect(document.querySelector(".object-list")).not.toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Анимация" }));
+
+    expect(document.querySelector(".object-list")).toBeNull();
+    expect(standItems().map((item) => item.textContent)).toEqual(["runhero · Jog", "idlehero · Idle"]);
+    expect(screen.getByRole("button", { name: "Новое движение" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Анимация" })).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "Сцена" }));
+
+    expect(document.querySelector(".object-list")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Анимация" })).toBeTruthy();
+    expect(engine.hide_motion).toHaveBeenCalled();
+  });
+
+  it("первое движение файла собирается движком: текст motions.json, имя и вид камеры игры", () => {
+    sceneEditingMock.current = createStandSceneEditing(engine);
+    renderWindow();
+
+    fireEvent.click(screen.getByRole("button", { name: "Анимация" }));
+
+    expect(engine.show_motion).toHaveBeenCalledWith(STAND_MOTIONS_TEXT, "run", "game");
+  });
+
+  it("щелчок по другому движению собирает стенд заново", () => {
+    sceneEditingMock.current = createStandSceneEditing(engine);
+    renderWindow();
+    fireEvent.click(screen.getByRole("button", { name: "Анимация" }));
+
+    fireEvent.click(standItems()[1] as HTMLElement);
+
+    expect(engine.show_motion).toHaveBeenLastCalledWith(STAND_MOTIONS_TEXT, "idle", "game");
+  });
+
+  it("с экрана стенда партия не запускается ни кнопкой, ни Ctrl+P", () => {
+    sceneEditingMock.current = createStandSceneEditing(engine);
+    renderWindow();
+    fireEvent.click(screen.getByRole("button", { name: "Анимация" }));
+
+    expect((screen.getByRole("button", { name: "Запуск" }) as HTMLButtonElement).disabled).toBe(true);
+    pressPlayStopShortcut();
+
+    expect(engine.play).not.toHaveBeenCalled();
+  });
+
+  it("в партии кнопка недоступна", async () => {
+    sceneEditingMock.current = createStandSceneEditing(engine);
+    renderWindow();
+    pressPlayStopShortcut();
+    await waitFor(() => expect(engine.play).toHaveBeenCalled());
+
+    const button = screen.getByRole("button", { name: "Анимация" }) as HTMLButtonElement;
+    expect(button.disabled).toBe(true);
+    expect(button.title).toBe("Анимация недоступна в партии и повторе");
+  });
+
+  it("ошибка motions.json видна над просмотром текстом", () => {
+    const base = createStandSceneEditing(engine);
+    sceneEditingMock.current = base;
+    const brushFields = { size: 4, strength: 50, onSizeChange: () => {}, onStrengthChange: () => {} };
+    const view = render(<ProjectWindow source={{ kind: "listed", name: "qa-stand" }} onBackToProjects={() => {}} brushFields={brushFields} />);
+    fireEvent.click(screen.getByRole("button", { name: "Анимация" }));
+    // Правка сломала проект: загрузка отказала, но экран стенда остаётся открытым.
+    const result = {
+      status: "rejected" as const,
+      warnings: [],
+      gameJsonText: STAND_GAME_JSON_TEXT,
+      sceneText: MODELS_SCENE_TEXT,
+      errors: [
+        { file: "motions.json", path: "run → bones → Nose", message: "кости \"Nose\" нет в скелете", line: null, column: null },
+        { file: "scene.json", path: "", message: "чужая ошибка", line: null, column: null },
+      ],
+    };
+    sceneEditingMock.current = { ...base, result };
+    view.rerender(<ProjectWindow source={{ kind: "listed", name: "qa-stand" }} onBackToProjects={() => {}} brushFields={brushFields} />);
+
+    const alert = screen.getByRole("alert");
+    expect(alert.textContent).toContain("кости \"Nose\" нет в скелете");
+    expect(alert.textContent).not.toContain("чужая ошибка");
   });
 });
