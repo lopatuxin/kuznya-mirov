@@ -703,19 +703,23 @@ impl ScreensConfig {
         images
     }
 
-    /// «Выбор»: картинки, которые подстановка `choice` называет в какой-нибудь строке таблицы группы.
+    /// «Выбор»: картинки, которые подстановка `choice` называет в какой-нибудь строке таблицы группы, в порядке
+    /// номеров картинок — строки таблицы лежат без порядка.
     pub fn choice_images(&self, choice: &ChoiceRef, names: &[String]) -> Vec<ImageId> {
         let Some(table) = self.choices.get(&choice.group) else {
             return Vec::new();
         };
-        table
+        let mut images: Vec<ImageId> = table
             .iter()
             .filter_map(|(place, fields)| match &choice.field {
                 None => Some(place),
                 Some(field) => fields.get(field),
             })
             .filter_map(|name| names.iter().position(|declared| declared == name))
-            .collect()
+            .collect();
+        images.sort_unstable();
+        images.dedup();
+        images
     }
 
     fn panel_video_images(

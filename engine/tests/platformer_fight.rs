@@ -16,7 +16,7 @@ mod support;
 use support::{platformer_dir, read};
 
 const VIEWPORT: [f32; 2] = [800.0, 600.0];
-const HERO_START: &str = r#""name": "Илья", "position": [3, 7.1]"#;
+const HERO_START: &str = r#""name": "Герой", "position": [3, 7.1]"#;
 
 /// Партия первого уровня, где Илья поставлен в точку `hero_at` (левый верхний угол его прямоугольника).
 struct Fight {
@@ -43,7 +43,7 @@ impl Fight {
         let scene = scene.replace(
             HERO_START,
             &format!(
-                r#""name": "Илья", "position": [{}, {}]"#,
+                r#""name": "Герой", "position": [{}, {}]"#,
                 hero_at[0], hero_at[1]
             ),
         );
