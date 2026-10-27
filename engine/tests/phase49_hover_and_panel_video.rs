@@ -8,7 +8,7 @@ mod support;
 
 use engine::core::game::Game;
 use engine::core::interface;
-use engine::core::screens::{self, Element, Fill, PanelFill, ScreensConfig};
+use engine::core::screens::{self, Element, Fill, Lit, PanelFill, ScreensConfig};
 use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{ImageDecl, ImageVerdict, ReverseVerdict, load_rest, read_entry};
 use support::{Ui, VIEWPORT};
@@ -367,15 +367,15 @@ fn a_panel_and_a_label_with_show_on_hover_are_drawn_only_over_their_place() {
     assert_eq!(elements[1].show_on_hover(), place);
     assert_eq!(elements[2].show_on_hover(), place);
     for glowing in [&elements[1], &elements[2]] {
-        assert!(glowing.visible_over(place));
-        assert!(!glowing.visible_over(None));
+        assert!(glowing.visible_over(&Lit::over(place)));
+        assert!(!glowing.visible_over(&Lit::over(None)));
         assert!(
-            !glowing.visible_over(Some(0)),
+            !glowing.visible_over(&Lit::over(Some(0))),
             "над другим местом не рисуется"
         );
     }
     for always in [&elements[0], &elements[3], &elements[4]] {
-        assert!(always.visible_over(None) && always.visible_over(place));
+        assert!(always.visible_over(&Lit::over(None)) && always.visible_over(&Lit::over(place)));
     }
 }
 

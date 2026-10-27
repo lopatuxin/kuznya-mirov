@@ -10,6 +10,7 @@
     "rules": "rules.json",
     "screens": "screens.json",
     "code": "code.lua",
+    "tables": { "heroes": "heroes.json" },
     "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf", "menu": "fonts/Monomakh.ttf" },
     "images": {
       "start_bg": { "path": "images/start_bg.png", "smooth": true },

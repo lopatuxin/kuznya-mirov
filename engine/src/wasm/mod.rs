@@ -1318,6 +1318,8 @@ fn compose_ui(
     let mut paints = Vec::new();
     let parts = interface::layout(screen, screen_id, world, state, frame.viewport);
     let place = screens::hover_place(&parts, tooltip.pointer.map(|pointer| frame.point(pointer)));
+    let lit = state.lit(screen, place);
+    let choices = state.choices(config);
     let cell = screen.cell_pixels.unwrap_or(1.0);
     motion.update_screen_particles(
         state.opened(),
@@ -1328,7 +1330,7 @@ fn compose_ui(
     let screen_particles = motion.screen_particles();
     let mut panel_videos = Vec::new();
     let mut particle_paints =
-        atlas::screen_particle_paints(&parts, place, screen_particles, cell).peekable();
+        atlas::screen_particle_paints(&parts, &lit, screen_particles, cell).peekable();
     for (index, part) in parts.iter().enumerate() {
         let placed = match part {
             Part::ScrollBar { rect, color } => {
@@ -1356,7 +1358,8 @@ fn compose_ui(
         {
             let play = match play_on_hover {
                 Some(target) => Some(PanelPlay::Hover {
-                    hovering: place == Some(*target),
+                    hovering: lit.contains(*target),
+                    held: lit.is_held(*target),
                     rest_at: *rest_at,
                     idle: *idle,
                     now: ui_elapsed_steps * STEP_SECONDS,
@@ -1374,8 +1377,24 @@ fn compose_ui(
                 });
             }
         }
-        // «Наведение»: элемент с `show_on_hover` рисуется, только пока курсор над его местом.
-        if !placed.element.visible_over(place) {
+        // «Выбор»: видео из подстановки идёт по кругу, как видео панели без `play_on_hover`.
+        if let screens::Element::Panel {
+            fill: PanelFill::Choice { choice, names, .. },
+            ..
+        } = placed.element
+            && let Some(image) = choices.image(choice, names)
+            && images[image].video
+        {
+            panel_videos.push(PanelInput {
+                image,
+                play: PanelPlay::Loop {
+                    now: ui_elapsed_steps * STEP_SECONDS,
+                    opened: state.opened(),
+                },
+            });
+        }
+        // «Наведение», «Выбор»: элемент с `show_on_hover` рисуется, только пока горит его место.
+        if !placed.element.visible_over(&lit) {
             continue;
         }
         let rect = placed.rect;
@@ -1422,6 +1441,33 @@ fn compose_ui(
                     );
                 }
             }
+            // «Выбор»: картинку или видео называет выбранное место; нет выбора, картинки или картинка, которую
+            // панель не берёт (`frame_by`, `size`), — панели не видно.
+            screens::Element::Panel {
+                fill:
+                    PanelFill::Choice {
+                        choice,
+                        names,
+                        opacity,
+                    },
+                image_scale,
+                ..
+            } => {
+                let image = choices.image(choice, names).filter(|&image| {
+                    let decl = &images[image];
+                    decl.frame_by.is_none() && decl.size.is_none()
+                });
+                if let Some(image) = image {
+                    fill(
+                        &Fill::Image {
+                            image,
+                            opacity: *opacity,
+                        },
+                        rect,
+                        *image_scale,
+                    );
+                }
+            }
             screens::Element::Bar {
                 fill: bar_fill,
                 back,
@@ -1449,7 +1495,13 @@ fn compose_ui(
                 ..
             } => {
                 layers.texts.push(TextDraw {
-                    text: screens::format_text_for(text, world, properties, placed.object),
+                    text: screens::format_text_with(
+                        text,
+                        world,
+                        properties,
+                        placed.object,
+                        Some(choices),
+                    ),
                     font: *font,
                     font_size_px: *font_size,
                     color: *color,
@@ -1467,6 +1519,7 @@ fn compose_ui(
                 fill_hover,
                 fill_pressed,
                 image_scale,
+                text_color_disabled,
                 ..
             } => {
                 let chosen =
@@ -1475,10 +1528,20 @@ fn compose_ui(
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
                 layers.texts.push(TextDraw {
-                    text: screens::format_text_for(text, world, properties, placed.object),
+                    text: screens::format_text_with(
+                        text,
+                        world,
+                        properties,
+                        placed.object,
+                        Some(choices),
+                    ),
                     font: *font,
                     font_size_px: *font_size,
-                    color: *text_color,
+                    color: screens::button_text_color(
+                        *text_color,
+                        *text_color_disabled,
+                        placed.locked,
+                    ),
                     align: screens::Align::Center,
                     wrap: false,
                     rect_px: rect,
@@ -2041,8 +2104,9 @@ impl Engine {
     }
 
     /// Step two of loading — «Звук» → «Загрузка и проверка»: a
-    /// best-effort read of `properties_json`/`screens_json` (`scene`/`rules` play no part in the
-    /// answer and are accepted only for symmetry with `read_entry`'s own file list) that reports
+    /// best-effort read of `properties_json`/`scene_json`/`screens_json` (`rules` plays no part in the
+    /// answer and is accepted only for symmetry with `read_entry`'s own file list; the scene only says which
+    /// videos objects and the ground play, so those get no second player) that reports
     /// which binary files are worth fetching next — `fonts` (all of them), `sounds` (all of
     /// them, numbered), `music` (only the tracks some screen actually names, numbered). Never
     /// fails: a text file that doesn't parse here just names fewer tracks, and the real errors
@@ -2060,7 +2124,7 @@ impl Engine {
     pub fn read_texts(
         &self,
         properties_json: Option<String>,
-        _scene_json: Option<String>,
+        scene_json: Option<String>,
         _rules_json: Option<String>,
         screens_json: Option<String>,
         // «Код игры»: движок его здесь не читает — принят только для единообразия с остальными
@@ -2076,6 +2140,7 @@ impl Engine {
         let needed = load::read_texts_with_imported(
             config,
             properties_json.as_deref(),
+            scene_json.as_deref(),
             screens_json.as_deref(),
             terrain_json.as_deref(),
             imported_index.as_deref(),
@@ -3159,10 +3224,12 @@ impl Engine {
         }
         self.last_ui_elapsed_steps = ui_clock_steps;
         let is_replay = self.session.as_ref().is_some_and(PlaySession::is_replay);
-        if self.battle_view && !is_replay && game.camera_pan(dt_seconds, viewport) {
-            if let Some(session) = self.session.as_mut() {
-                session.record_camera(game);
-            }
+        if self.battle_view
+            && !is_replay
+            && game.camera_pan(dt_seconds, viewport)
+            && let Some(session) = self.session.as_mut()
+        {
+            session.record_camera(game);
         }
         recompute_cursor_after_step(
             game,

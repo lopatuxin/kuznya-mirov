@@ -22,9 +22,10 @@ use crate::core::scene::{
     CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, SceneConfig,
 };
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, Element, Fill, FontId, ImageRef, MaxSpec, MusicId, PanelFill,
-    Placement, RunCall, RunId, Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart,
-    TooltipStyle, WorldColor, WorldElement, WorldElementKind, WorldTextPart,
+    Align, Anchor, ButtonCommand, ChoiceRef, ChoiceTable, Element, Fill, FontId, ImageRef,
+    InitialValue, MaxSpec, MusicId, PanelFill, Placement, RunCall, RunId, Screen, ScreenId,
+    ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle, WorldColor, WorldElement,
+    WorldElementKind, WorldTextPart,
 };
 use crate::core::terrain::{DENSITIES, Terrain};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
@@ -2927,23 +2928,32 @@ pub fn read_entry(text: &str) -> Result<(GameConfig, Vec<GameError>), LoadFailur
 /// worth fetching next. Tolerant of broken text on purpose: a `screens.json` that fails to parse
 /// simply names no referenced track here, same as `parse_screens_json` itself falls back to no
 /// screens — the real errors surface later, when `load_rest` parses everything again for real and
-/// collects them all in one pass. `scene_json`/`rules_json` play no part in the answer (only a
-/// screen's own `music` field decides which tracks are read — «Звук» → «Загрузка и проверка») and are accordingly not asked for here.
+/// collects them all in one pass. `rules_json` plays no part in the answer (only a screen's own `music`
+/// field decides which tracks are read — «Звук» → «Загрузка и проверка») and is accordingly not asked for here.
 pub fn read_texts(
     config: &GameConfig,
     properties_json: Option<&str>,
     screens_json: Option<&str>,
     terrain_json: Option<&str>,
 ) -> NeededMedia {
-    read_texts_with_imported(config, properties_json, screens_json, terrain_json, None)
+    read_texts_with_imported(
+        config,
+        properties_json,
+        None,
+        screens_json,
+        terrain_json,
+        None,
+    )
 }
 
 /// Same as `read_texts`, additionally accepting the text of `imported/index.json` — «Трёхмерная сцена» →
 /// «Загрузка и проверка»: по каждой модели, у которой в нём есть запись, читаются облегчённая модель и сжатые файлы
-/// её картинок, а не исходный `.glb`. `None` — файла нет, сжатых моделей нет.
+/// её картинок, а не исходный `.glb`. `None` — файла нет, сжатых моделей нет. `scene_json` — «Видео на панели» →
+/// «Выбор»: видео объектов и земли сцены второй раз не читаются, их не назовёт таблица выбора.
 pub fn read_texts_with_imported(
     config: &GameConfig,
     properties_json: Option<&str>,
+    scene_json: Option<&str>,
     screens_json: Option<&str>,
     terrain_json: Option<&str>,
     imported_index: Option<&str>,
@@ -2964,7 +2974,21 @@ pub fn read_texts_with_imported(
         .iter()
         .filter_map(|s| s.music.as_deref())
         .collect();
-    let looped = looped_video_names(&config.files.images, &parsed_screens);
+    let scene_images = match scene_json {
+        Some(text) => {
+            let scene = parse_scene_json(
+                text,
+                &config.files.scene,
+                &properties,
+                &config.files.images,
+                &config.scene,
+                &mut scratch,
+            );
+            scene_image_ids(&scene.objects, &scene.ground)
+        }
+        None => std::collections::HashSet::new(),
+    };
+    let looped = looped_video_names(&config.files.images, &parsed_screens, &scene_images);
     let music = config
         .files
         .music
@@ -3026,9 +3050,33 @@ pub fn read_texts_with_imported(
     }
 }
 
+/// «Видео на панели»: картинки и видео, которые называют объекты сцены и слои земли.
+fn scene_image_ids(
+    objects: &[ParsedObject],
+    ground: &[GroundLayer],
+) -> std::collections::HashSet<ImageId> {
+    let mut ids: std::collections::HashSet<ImageId> =
+        ground.iter().map(|layer| layer.image).collect();
+    for (_, value) in objects.iter().flat_map(|object| &object.values) {
+        match value {
+            Value::Image(id) => {
+                ids.insert(*id);
+            }
+            Value::ImageList(list) => ids.extend(list),
+            _ => {}
+        }
+    }
+    ids
+}
+
 /// «Картинки» → «Видео на панели»: имена видео, которые панели экранов крутят по кругу, — `image` панели
-/// без `play_on_hover` и ролик покоя `idle`, названные видео из `files.images`.
-fn looped_video_names<'a>(images: &'a [ImageDecl], screens: &[ParsedScreen]) -> Vec<&'a str> {
+/// без `play_on_hover` и ролик покоя `idle`, названные видео из `files.images`. `scene_images` — что называют
+/// объекты сцены и земля.
+fn looped_video_names<'a>(
+    images: &'a [ImageDecl],
+    screens: &[ParsedScreen],
+    scene_images: &std::collections::HashSet<ImageId>,
+) -> Vec<&'a str> {
     let mut names = Vec::new();
     let panels = screens
         .iter()
@@ -3053,6 +3101,46 @@ fn looped_video_names<'a>(images: &'a [ImageDecl], screens: &[ParsedScreen]) -> 
             && !names.contains(&decl.name.as_str())
         {
             names.push(decl.name.as_str());
+        }
+    }
+    // «Выбор»: какое видео назовёт `{choice:…}`, знают таблицы данных, а они читаются позже этого захода, —
+    // поэтому второй раз читается каждое видео, которое не стоит на панели, у объекта сцены или на земле: видео
+    // выбора идёт по кругу вперёд, `reverse` у него не берётся, и больше нигде оно стоять не может.
+    let names_a_choice = screens
+        .iter()
+        .flat_map(|screen| &screen.elements)
+        .any(|(_, element)| {
+            matches!(
+                element,
+                ParsedElementData::Panel {
+                    choice_image: Some(_),
+                    ..
+                }
+            )
+        });
+    if names_a_choice {
+        let on_panels: std::collections::HashSet<&str> = screens
+            .iter()
+            .flat_map(|screen| &screen.elements)
+            .filter_map(|(_, element)| match element {
+                ParsedElementData::Panel {
+                    image_name,
+                    idle_name,
+                    ..
+                } => Some([image_name.as_deref(), idle_name.as_deref()]),
+                _ => None,
+            })
+            .flatten()
+            .flatten()
+            .collect();
+        for (index, decl) in images.iter().enumerate() {
+            if decl.video
+                && !on_panels.contains(decl.name.as_str())
+                && !scene_images.contains(&index)
+                && !names.contains(&decl.name.as_str())
+            {
+                names.push(decl.name.as_str());
+            }
         }
     }
     names
@@ -7550,34 +7638,37 @@ fn parse_rich_text(
             );
             return None;
         }
-        let part = match inner.find('.') {
-            None if !inner.is_empty() && own => {
-                TextPart::Own(resolve_property(&inner, properties, file, path, errors)?)
-            }
-            None if !inner.is_empty() => {
-                errors.push(
-                    file,
-                    path,
-                    format!(
-                        "подстановка \"{{{inner}}}\" без имени объекта допустима только у элемента с for и в строке списка; у этого элемента нужна подстановка вида {{имя объекта.свойство}}"
-                    ),
-                );
-                return None;
-            }
-            Some(dot) if dot > 0 && dot + 1 < inner.len() => TextPart::Value {
-                object_name: inner[..dot].to_string(),
-                prop: resolve_property(&inner[dot + 1..], properties, file, path, errors)?,
+        let part = match inner.strip_prefix("choice:") {
+            Some(reference) => TextPart::Choice(parse_choice_ref(reference, file, path, errors)?),
+            None => match inner.find('.') {
+                None if !inner.is_empty() && own => {
+                    TextPart::Own(resolve_property(&inner, properties, file, path, errors)?)
+                }
+                None if !inner.is_empty() => {
+                    errors.push(
+                        file,
+                        path,
+                        format!(
+                            "подстановка \"{{{inner}}}\" без имени объекта допустима только у элемента с for и в строке списка; у этого элемента нужна подстановка вида {{имя объекта.свойство}}"
+                        ),
+                    );
+                    return None;
+                }
+                Some(dot) if dot > 0 && dot + 1 < inner.len() => TextPart::Value {
+                    object_name: inner[..dot].to_string(),
+                    prop: resolve_property(&inner[dot + 1..], properties, file, path, errors)?,
+                },
+                _ => {
+                    errors.push(
+                        file,
+                        path,
+                        format!(
+                            "подстановка \"{{{inner}}}\" должна быть вида {{имя объекта.свойство}}"
+                        ),
+                    );
+                    return None;
+                }
             },
-            _ => {
-                errors.push(
-                    file,
-                    path,
-                    format!(
-                        "подстановка \"{{{inner}}}\" должна быть вида {{имя объекта.свойство}}"
-                    ),
-                );
-                return None;
-            }
         };
         if !literal.is_empty() {
             parts.push(TextPart::Literal(std::mem::take(&mut literal)));
@@ -7588,6 +7679,57 @@ fn parse_rich_text(
         parts.push(TextPart::Literal(literal));
     }
     Some(parts)
+}
+
+/// «Выбор»: `таблица` или `таблица.поле` внутри `{choice:…}`.
+fn parse_choice_ref(
+    reference: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ChoiceRef> {
+    let (group, field) = match reference.split_once('.') {
+        Some((group, field)) => (group, Some(field)),
+        None => (reference, None),
+    };
+    if group.is_empty() || field.is_some_and(|field| field.is_empty() || field.contains('.')) {
+        errors.push(
+            file,
+            path,
+            format!(
+                "подстановка \"{{choice:{reference}}}\" должна быть вида {{choice:таблица}} или {{choice:таблица.поле}}"
+            ),
+        );
+        return None;
+    }
+    Some(ChoiceRef {
+        group: group.to_string(),
+        field: field.map(str::to_string),
+    })
+}
+
+/// «Выбор»: `{choice:…}`, занимающая строку `text` целиком, — имя картинки панели или начальное значение
+/// (`what`). Ошибка, если вокруг подстановки есть ещё что-то.
+fn parse_whole_choice(
+    text: &str,
+    what: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ChoiceRef> {
+    let reference = text
+        .strip_prefix("{choice:")
+        .and_then(|rest| rest.strip_suffix('}'))
+        .filter(|reference| !reference.contains(['{', '}']));
+    let Some(reference) = reference else {
+        errors.push(
+            file,
+            path,
+            format!("\"{text}\": подстановка {{choice:…}} в {what} занимает его целиком"),
+        );
+        return None;
+    };
+    parse_choice_ref(reference, file, path, errors)
 }
 
 fn parse_placement(
@@ -7768,6 +7910,9 @@ enum ParsedElementData {
         tooltip: Option<Vec<TextPart>>,
         for_: Option<Selector>,
         hover: HoverFields,
+        choice: ChoiceFields,
+        /// `image: "{choice:…}"` — имя картинки берёт выбранное место; `image_name` тогда пуст.
+        choice_image: Option<ChoiceRef>,
         rest_at: Option<f32>,
         /// «Видео на панели»: имя ролика покоя.
         idle_name: Option<String>,
@@ -7808,6 +7953,7 @@ enum ParsedElementData {
         /// В коробке: кнопка — самый большой вид элемента.
         for_: Option<Box<Selector>>,
         hover: HoverFields,
+        choice: ChoiceFields,
     },
     List {
         placement: Placement,
@@ -7850,6 +7996,9 @@ const PANEL_KEYS: &[&str] = &[
     "name",
     "show_on_hover",
     "play_on_hover",
+    "choose",
+    "needs_choice",
+    "text_color_disabled",
     "rest_at",
     "idle",
 ];
@@ -7870,6 +8019,9 @@ const BAR_KEYS: &[&str] = &[
     "name",
     "show_on_hover",
     "play_on_hover",
+    "choose",
+    "needs_choice",
+    "text_color_disabled",
 ];
 const LABEL_KEYS: &[&str] = &[
     "kind",
@@ -7886,6 +8038,9 @@ const LABEL_KEYS: &[&str] = &[
     "name",
     "show_on_hover",
     "play_on_hover",
+    "choose",
+    "needs_choice",
+    "text_color_disabled",
 ];
 const BUTTON_KEYS: &[&str] = &[
     "kind",
@@ -7910,6 +8065,9 @@ const BUTTON_KEYS: &[&str] = &[
     "name",
     "show_on_hover",
     "play_on_hover",
+    "choose",
+    "needs_choice",
+    "text_color_disabled",
 ];
 const LIST_KEYS: &[&str] = &[
     "kind",
@@ -7926,6 +8084,9 @@ const LIST_KEYS: &[&str] = &[
     "name",
     "show_on_hover",
     "play_on_hover",
+    "choose",
+    "needs_choice",
+    "text_color_disabled",
 ];
 
 /// «Ветер и частицы» → «На экране»: свойства частиц панели — те же имена, что у свойств объекта.
@@ -8168,6 +8329,100 @@ fn parse_hover_fields(
     ok.then_some(fields)
 }
 
+/// «Выбор»: `choose`, `needs_choice` и `text_color_disabled` одного элемента.
+#[derive(Debug, Clone, Default)]
+struct ChoiceFields {
+    choose: Option<String>,
+    needs_choice: Option<String>,
+    text_color_disabled: Option<[f32; 4]>,
+}
+
+/// «Выбор»: разбирает `choose` (панель или кнопка с `name`, не при объекте и не в строке списка),
+/// `needs_choice` (только кнопка) и `text_color_disabled` (только при `needs_choice`). Таблицы здесь не
+/// проверяются — их проверяет `resolve_element`. Внешний `None` — ошибка уже названа.
+fn parse_choice_fields(
+    obj: &serde_json::Map<String, Json>,
+    owner: HoverOwner,
+    scope: Scope,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ChoiceFields> {
+    let mut fields = ChoiceFields::default();
+    let mut ok = true;
+    for key in ["choose", "needs_choice"] {
+        let Some(value) = obj.get(key) else {
+            continue;
+        };
+        let key_path = join(path, key);
+        let problem = if key == "choose" && !matches!(owner, HoverOwner::Panel | HoverOwner::Button)
+        {
+            Some(format!(
+                "у {} нет \"choose\": выбирать щелчком можно только панель или кнопку",
+                owner.genitive()
+            ))
+        } else if key == "needs_choice" && owner != HoverOwner::Button {
+            Some(format!(
+                "у {} нет \"needs_choice\": запереть до выбора можно только кнопку",
+                owner.genitive()
+            ))
+        } else if key == "choose" && scope == Scope::Row {
+            Some(
+                "у элемента строки списка нет \"choose\": выбираемое место стоит на экране всегда, а не при объекте"
+                    .to_string(),
+            )
+        } else if key == "choose" && obj.contains_key("for") {
+            Some(
+                "у элемента с for нет \"choose\": выбираемое место стоит на экране всегда, а не при объекте"
+                    .to_string(),
+            )
+        } else if key == "choose" && !obj.contains_key("name") {
+            Some(
+                "у \"choose\" нет \"name\": выбирается место, а место — панель или кнопка с name, ключом строки таблицы"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        if let Some(problem) = problem {
+            errors.push(file, &key_path, problem);
+            ok = false;
+            continue;
+        }
+        let Some(text) = expect_string(value, file, &key_path, errors) else {
+            ok = false;
+            continue;
+        };
+        if text.is_empty() {
+            errors.push(file, &key_path, format!("\"{key}\" не может быть пустым"));
+            ok = false;
+            continue;
+        }
+        if key == "choose" {
+            fields.choose = Some(text);
+        } else {
+            fields.needs_choice = Some(text);
+        }
+    }
+    if let Some(value) = obj.get("text_color_disabled") {
+        let key_path = join(path, "text_color_disabled");
+        if !obj.contains_key("needs_choice") {
+            errors.push(
+                file,
+                &key_path,
+                "text_color_disabled у элемента без needs_choice: цвет запертой подписи нужен только запертой кнопке",
+            );
+            ok = false;
+        } else {
+            match expect_ui_color(value, file, &key_path, errors) {
+                Some(color) => fields.text_color_disabled = Some(color),
+                None => ok = false,
+            }
+        }
+    }
+    ok.then_some(fields)
+}
+
 /// «Картинки» → «Где появляется картинка»: a panel or button must show exactly one of `color`/
 /// `image`, never both and never neither — checked once here for the two element kinds that can
 /// carry either.
@@ -8334,7 +8589,16 @@ fn parse_tooltip(
         );
         return None;
     }
-    parse_rich_text(&text, context.properties, own, file, &tooltip_path, errors).map(Some)
+    let parts = parse_rich_text(&text, context.properties, own, file, &tooltip_path, errors)?;
+    if parts.iter().any(|part| matches!(part, TextPart::Choice(_))) {
+        errors.push(
+            file,
+            &tooltip_path,
+            "подстановка {choice:…} есть в тексте надписи и кнопки, а в подсказке её нет",
+        );
+        return None;
+    }
+    Some(Some(parts))
 }
 
 /// Что элементу экрана нужно знать о файле вокруг него: свойства игры и есть ли блок вида подсказок.
@@ -8683,6 +8947,7 @@ fn parse_element(
             let known: Vec<&str> = PANEL_KEYS.iter().chain(&PARTICLE_KEYS).copied().collect();
             reject_unknown_keys(obj, &known, file, path, errors);
             let hover = parse_hover_fields(obj, HoverOwner::Panel, scope, file, path, errors);
+            let choice = parse_choice_fields(obj, HoverOwner::Panel, scope, file, path, errors);
             let particles = parse_panel_particles(obj, scope, properties, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
@@ -8705,6 +8970,16 @@ fn parse_element(
             };
             let own = scope == Scope::Row || for_.is_some();
             let tooltip = parse_tooltip(obj, context, own, file, path, errors)?;
+            // «Выбор»: `{choice:…}` в `image` — имя картинки берёт выбранное место.
+            let (image_name, choice_image) = match image_name {
+                Some(name) if name.contains("{choice:") => {
+                    let image_path = join(path, "image");
+                    let choice_image =
+                        parse_whole_choice(&name, "image панели", file, &image_path, errors)?;
+                    (None, Some(choice_image))
+                }
+                other => (other, None),
+            };
             // «Элемент при объекте»: `{свойство}` в `image` — только у панели, у которой есть объект.
             let (image_name, own_image) = match image_name {
                 Some(name) if name.contains(['{', '}']) => {
@@ -8736,6 +9011,8 @@ fn parse_element(
                 tooltip,
                 for_,
                 hover: hover?,
+                choice: choice?,
+                choice_image,
                 rest_at: rest_at?,
                 idle_name: idle_name?,
                 particles: particles?,
@@ -8745,6 +9022,7 @@ fn parse_element(
             reject_unknown_keys_except(obj, LABEL_KEYS, &PARTICLE_KEYS, file, path, errors);
             reject_foreign_particle_keys(obj, HoverOwner::Label, file, path, errors);
             let hover = parse_hover_fields(obj, HoverOwner::Label, scope, file, path, errors);
+            let choice = parse_choice_fields(obj, HoverOwner::Label, scope, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
             let text_json = require_field(obj, "text", file, path, errors)?;
@@ -8783,6 +9061,7 @@ fn parse_element(
                 None => Align::Left,
             };
             let wrap = parse_wrap(obj, file, path, errors)?;
+            choice?;
             Some(ParsedElementData::Label {
                 placement,
                 text,
@@ -8799,6 +9078,7 @@ fn parse_element(
             reject_unknown_keys_except(obj, BUTTON_KEYS, &PARTICLE_KEYS, file, path, errors);
             reject_foreign_particle_keys(obj, HoverOwner::Button, file, path, errors);
             let hover = parse_hover_fields(obj, HoverOwner::Button, scope, file, path, errors);
+            let choice = parse_choice_fields(obj, HoverOwner::Button, scope, file, path, errors);
             let (placement, for_) =
                 parse_element_place(obj, scope, properties, file, path, errors)?;
             let text_json = require_field(obj, "text", file, path, errors)?;
@@ -8915,17 +9195,20 @@ fn parse_element(
                 on_click,
                 for_: for_.map(Box::new),
                 hover: hover?,
+                choice: choice?,
             })
         }
         "bar" => {
             let hover = parse_hover_fields(obj, HoverOwner::Bar, scope, file, path, errors);
+            let choice = parse_choice_fields(obj, HoverOwner::Bar, scope, file, path, errors);
             let bar = parse_bar(obj, scope, context, file, path, errors);
-            hover.and(bar)
+            hover.and(choice).and(bar)
         }
         "list" if scope == Scope::Screen => {
             let hover = parse_hover_fields(obj, HoverOwner::List, scope, file, path, errors);
+            let choice = parse_choice_fields(obj, HoverOwner::List, scope, file, path, errors);
             let list = parse_list(obj, path, file, context, errors);
-            hover.and(list)
+            hover.and(choice).and(list)
         }
         "list" => {
             errors.push(
@@ -9411,6 +9694,215 @@ fn validate_text_refs(
     ok
 }
 
+/// «Выбор»: строки таблицы группы по ключу места.
+type ChoiceRows = serde_json::Map<String, Json>;
+
+/// «Выбор»: таблицы данных, по которым проверяются `choose`, `needs_choice` и `{choice:…}`, и группы, на которые
+/// ссылаются экраны. `declared` — `files.tables`, `tables` — те из них, что разобрались.
+struct ChoiceChecker<'a> {
+    declared: &'a [(String, String)],
+    tables: &'a [(String, Json)],
+    /// Группы, у которых есть место с `choose` хоть на одном экране.
+    choosable: std::collections::HashSet<String>,
+    /// Группы, на которые что-то ссылается, в порядке первой ссылки.
+    used: Vec<String>,
+    /// Таблицы, строение которых уже названо ошибкой.
+    broken: std::collections::HashSet<String>,
+}
+
+impl<'a> ChoiceChecker<'a> {
+    fn new(
+        declared: &'a [(String, String)],
+        tables: &'a [(String, Json)],
+        screens: &[ParsedScreen],
+    ) -> Self {
+        let choosable = screens
+            .iter()
+            .flat_map(|screen| &screen.elements)
+            .filter_map(|(_, element)| match element {
+                ParsedElementData::Panel { choice, .. }
+                | ParsedElementData::Button { choice, .. } => choice.choose.clone(),
+                _ => None,
+            })
+            .collect();
+        ChoiceChecker {
+            declared,
+            tables,
+            choosable,
+            used: Vec::new(),
+            broken: std::collections::HashSet::new(),
+        }
+    }
+
+    /// Строки таблицы группы. `None` — таблицы нет в `files.tables` или у неё не те строки (ошибка названа тут),
+    /// либо таблица не разобралась (её ошибка названа раньше).
+    fn rows(
+        &mut self,
+        group: &str,
+        file: &str,
+        path: &str,
+        errors: &mut ErrorSink,
+    ) -> Option<&'a ChoiceRows> {
+        if !self.declared.iter().any(|(name, _)| name == group) {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "таблицы данных \"{group}\" нет в files.tables game.json: группа выбора названа по таблице данных"
+                ),
+            );
+            return None;
+        }
+        if !self.used.iter().any(|used| used == group) {
+            self.used.push(group.to_string());
+        }
+        let tables: &'a [(String, Json)] = self.tables;
+        let (_, table) = tables.iter().find(|(name, _)| name == group)?;
+        let rows = table
+            .as_object()
+            .filter(|rows| rows.values().all(Json::is_object));
+        if rows.is_none() && self.broken.insert(group.to_string()) {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "таблица \"{group}\" — не объект со строками-объектами: группа выбора берёт места из ключей строк, а поля из самих строк"
+                ),
+            );
+        }
+        rows
+    }
+
+    /// `{choice:…}` называет таблицу, которая есть, и поле, которое есть хоть в одной её строке.
+    fn reference(
+        &mut self,
+        choice: &ChoiceRef,
+        file: &str,
+        path: &str,
+        errors: &mut ErrorSink,
+    ) -> bool {
+        let Some(rows) = self.rows(&choice.group, file, path, errors) else {
+            return false;
+        };
+        let Some(field) = &choice.field else {
+            return true;
+        };
+        let known = rows.values().any(|row| row.get(field).is_some());
+        if !known {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "в строках таблицы \"{}\" нет поля \"{field}\": подстановка берёт поле строки выбранного места",
+                    choice.group
+                ),
+            );
+        }
+        known
+    }
+
+    /// `choose` называет таблицу, которая есть, а `name` места — ключ её строки.
+    fn place(
+        &mut self,
+        group: &str,
+        place: &str,
+        file: &str,
+        group_path: &str,
+        place_path: &str,
+        errors: &mut ErrorSink,
+    ) -> bool {
+        let Some(rows) = self.rows(group, file, group_path, errors) else {
+            return false;
+        };
+        let known = rows.contains_key(place);
+        if !known {
+            let keys = rows.keys().cloned().collect::<Vec<_>>().join(", ");
+            errors.push(
+                file,
+                place_path,
+                format!(
+                    "имя места \"{place}\" — не ключ строки таблицы \"{group}\": choose выбирает строку таблицы по name; ключи: {keys}"
+                ),
+            );
+        }
+        known
+    }
+
+    /// `needs_choice` называет таблицу, которая есть, и группу, в которой что-то можно выбрать.
+    fn needs(&mut self, group: &str, file: &str, path: &str, errors: &mut ErrorSink) -> bool {
+        if self.rows(group, file, path, errors).is_none() {
+            return false;
+        }
+        let choosable = self.choosable.contains(group);
+        if !choosable {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "needs_choice называет группу \"{group}\", а ни у одной панели или кнопки ни на одном экране нет choose: \"{group}\": кнопка осталась бы запертой навсегда"
+                ),
+            );
+        }
+        choosable
+    }
+
+    /// Таблицы групп, на которые ссылаются экраны, с полями строк текстом.
+    fn into_tables(self) -> std::collections::HashMap<String, ChoiceTable> {
+        self.used
+            .iter()
+            .filter_map(|group| {
+                let (_, table) = self.tables.iter().find(|(name, _)| name == group)?;
+                let rows = table
+                    .as_object()
+                    .filter(|rows| rows.values().all(Json::is_object))?;
+                let table = rows
+                    .iter()
+                    .filter_map(|(place, row)| {
+                        let fields = row
+                            .as_object()?
+                            .iter()
+                            .map(|(field, value)| (field.clone(), choice_text(value)))
+                            .collect();
+                        Some((place.clone(), fields))
+                    })
+                    .collect();
+                Some((group.clone(), table))
+            })
+            .collect()
+    }
+}
+
+/// «Выбор»: поле строки таблицы текстом подстановки — строка как есть, число без лишней дробной части
+/// (`8`, а не `8.0`), признак как у свойства, остальное пусто.
+fn choice_text(value: &Json) -> String {
+    match value {
+        Json::String(text) => text.clone(),
+        Json::Number(number) => number
+            .as_f64()
+            .map(|number| format!("{number}"))
+            .unwrap_or_default(),
+        Json::Bool(true) => "да".to_string(),
+        _ => String::new(),
+    }
+}
+
+/// «Выбор»: каждая `{choice:…}` в тексте называет таблицу и поле, которые есть.
+fn validate_choice_refs(
+    text: &[TextPart],
+    choices: &mut ChoiceChecker<'_>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> bool {
+    let mut ok = true;
+    for part in text {
+        if let TextPart::Choice(choice) = part {
+            ok &= choices.reference(choice, file, path, errors);
+        }
+    }
+    ok
+}
+
 /// Resolves a screen name against `name_to_id` for the three places «Экраны и состояние» names
 /// separately: a button's `on_click`, a screen's own `keys`, and `game.json`'s
 /// `start_screen`/`win_screen`/`loss_screen` — each needs its own file and wording rather than
@@ -9448,10 +9940,11 @@ fn resolve_initial_value(
     properties: &PropertyTable,
     images: &[ImageDecl],
     scene_names: &std::collections::HashSet<&str>,
+    choices: &mut ChoiceChecker<'_>,
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
-) -> Option<(String, PropertyId, Value)> {
+) -> Option<(String, PropertyId, InitialValue)> {
     let Some(dot) = key.find('.') else {
         errors.push(
             file,
@@ -9478,8 +9971,25 @@ fn resolve_initial_value(
         return None;
     }
     let prop = resolve_property(prop_name, properties, file, path, errors)?;
+    if let Some(text) = value_json.as_str().filter(|text| text.contains("{choice:")) {
+        let choice = parse_whole_choice(text, "начальном значении", file, path, errors)?;
+        if properties.kind(prop) != PropKind::Text {
+            errors.push(
+                file,
+                path,
+                format!(
+                    "\"{text}\": у свойства \"{prop_name}\" вид {}, а выбор подставляется строкой в свойство вида text",
+                    properties.kind(prop).label()
+                ),
+            );
+            return None;
+        }
+        return choices
+            .reference(&choice, file, path, errors)
+            .then(|| (object_name.to_string(), prop, InitialValue::Choice(choice)));
+    }
     let value = parse_scalar_value(value_json, prop, properties, images, file, path, errors)?;
-    Some((object_name.to_string(), prop, value))
+    Some((object_name.to_string(), prop, InitialValue::Fixed(value)))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -9490,7 +10000,8 @@ fn resolve_on_click(
     properties: &PropertyTable,
     images: &[ImageDecl],
     scene_names: &std::collections::HashSet<&str>,
-    initial_values_table: &mut Vec<Vec<(String, PropertyId, Value)>>,
+    choices: &mut ChoiceChecker<'_>,
+    initial_values_table: &mut Vec<Vec<(String, PropertyId, InitialValue)>>,
     runs: &mut RunTable<'_>,
     origin: String,
     file: &str,
@@ -9526,6 +10037,7 @@ fn resolve_on_click(
                             properties,
                             images,
                             scene_names,
+                            choices,
                             file,
                             &join(&values_path, key),
                             errors,
@@ -9764,7 +10276,8 @@ fn resolve_element(
     name_to_id: &std::collections::HashMap<String, ScreenId>,
     parsed_screens: &[ParsedScreen],
     places: &HoverPlaces,
-    initial_values_table: &mut Vec<Vec<(String, PropertyId, Value)>>,
+    choices: &mut ChoiceChecker<'_>,
+    initial_values_table: &mut Vec<Vec<(String, PropertyId, InitialValue)>>,
     runs: &mut RunTable<'_>,
     errors: &mut ErrorSink,
 ) -> Option<Element> {
@@ -9779,6 +10292,8 @@ fn resolve_element(
             tooltip,
             for_,
             hover,
+            choice,
+            choice_image,
             rest_at,
             idle_name,
             particles,
@@ -9807,24 +10322,42 @@ fn resolve_element(
                     .iter()
                     .position(|decl| decl.video && decl.name == name)
             });
-            let fill = match (own_image, video) {
-                (Some(property), _) => Some(PanelFill::Own {
+            let choice_ok = choice_image
+                .as_ref()
+                .is_none_or(|image| choices.reference(image, file, &image_path, errors));
+            let choose_ok = choice.choose.as_deref().is_none_or(|group| {
+                choices.place(
+                    group,
+                    hover.name.as_deref().unwrap_or_default(),
+                    file,
+                    &join(path, "choose"),
+                    &join(path, "name"),
+                    errors,
+                )
+            });
+            let fill = match (choice_image, own_image, video) {
+                (Some(choice), _, _) => Some(PanelFill::Choice {
+                    choice: choice.clone(),
+                    names: images.iter().map(|decl| decl.name.clone()).collect(),
+                    opacity: opacity.unwrap_or(1.0),
+                }),
+                (None, Some(property), _) => Some(PanelFill::Own {
                     image: ImageRef::Own {
                         property: *property,
                         names: images.iter().map(|decl| decl.name.clone()).collect(),
                     },
                     opacity: opacity.unwrap_or(1.0),
                 }),
-                (None, Some(image)) if hover.play_on_hover.is_some() => {
+                (None, None, Some(image)) if hover.play_on_hover.is_some() => {
                     resolve_panel_video(image, *opacity, images, file, &image_path, errors)
                         .map(PanelFill::Fixed)
                 }
                 // «Видео на панели»: видео без `play_on_hover` крутится по кругу, `reverse` ему не нужен.
-                (None, Some(image)) => Some(PanelFill::Fixed(Fill::Image {
+                (None, None, Some(image)) => Some(PanelFill::Fixed(Fill::Image {
                     image,
                     opacity: opacity.unwrap_or(1.0),
                 })),
-                (None, _) => resolve_fill(
+                (None, None, None) => resolve_fill(
                     *color,
                     image_name.as_deref(),
                     *opacity,
@@ -9874,21 +10407,26 @@ fn resolve_element(
                 validate_tooltip_refs(tooltip, scene_names, file, scene_file, path, errors);
             let (fill, show_on_hover, play_on_hover, idle) =
                 (fill?, show_on_hover?, play_on_hover?, idle?);
-            (tooltip_ok && !plays_nothing && !rests_nowhere && !rests_in_a_loop).then(|| {
-                Element::Panel {
+            (tooltip_ok
+                && choice_ok
+                && choose_ok
+                && !plays_nothing
+                && !rests_nowhere
+                && !rests_in_a_loop)
+                .then(|| Element::Panel {
                     placement: *placement,
                     fill,
                     image_scale: image_scale.unwrap_or(1.0),
                     tooltip: tooltip.clone(),
                     for_: for_.clone(),
                     name: hover.name.clone(),
+                    choose: choice.choose.clone(),
                     show_on_hover,
                     play_on_hover,
                     rest_at: *rest_at,
                     idle,
                     particles: *particles,
-                }
-            })
+                })
         }
         ParsedElementData::Bar(bar) => {
             resolve_bar(bar, path, file, scene_file, images, scene_names, errors)
@@ -9922,8 +10460,9 @@ fn resolve_element(
                 &join(path, "text"),
                 errors,
             );
+            let choice_ok = validate_choice_refs(text, choices, file, &join(path, "text"), errors);
             let (font, show_on_hover) = (font?, show_on_hover?);
-            if !text_ok {
+            if !text_ok || !choice_ok {
                 return None;
             }
             Some(Element::Label {
@@ -9957,6 +10496,7 @@ fn resolve_element(
             on_click,
             for_,
             hover,
+            choice,
         } => {
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
             let tooltip_ok =
@@ -9976,6 +10516,7 @@ fn resolve_element(
                 properties,
                 images,
                 scene_names,
+                choices,
                 initial_values_table,
                 runs,
                 format!("экран \"{screen_name}\", кнопка \"{caption}\""),
@@ -10016,7 +10557,21 @@ fn resolve_element(
                 errors,
             );
             let (fill_hover, fill_pressed) = (fill_hover?, fill_pressed?);
-            if !text_ok || !tooltip_ok {
+            let choice_ok = validate_choice_refs(text, choices, file, &join(path, "text"), errors);
+            let choose_ok = choice.choose.as_deref().is_none_or(|group| {
+                choices.place(
+                    group,
+                    hover.name.as_deref().unwrap_or_default(),
+                    file,
+                    &join(path, "choose"),
+                    &join(path, "name"),
+                    errors,
+                )
+            });
+            let needs_ok = choice.needs_choice.as_deref().is_none_or(|group| {
+                choices.needs(group, file, &join(path, "needs_choice"), errors)
+            });
+            if !text_ok || !tooltip_ok || !choice_ok || !choose_ok || !needs_ok {
                 return None;
             }
             Some(Element::Button {
@@ -10033,6 +10588,9 @@ fn resolve_element(
                 on_click,
                 for_: for_.as_deref().cloned(),
                 name: hover.name.clone(),
+                choose: choice.choose.clone(),
+                needs_choice: choice.needs_choice.clone(),
+                text_color_disabled: choice.text_color_disabled,
             })
         }
         ParsedElementData::List {
@@ -10062,6 +10620,7 @@ fn resolve_element(
                         name_to_id,
                         parsed_screens,
                         places,
+                        choices,
                         initial_values_table,
                         runs,
                         errors,
@@ -10749,11 +11308,19 @@ fn parse_and_validate_tables(
 }
 
 /// «Таблицы данных», требование 24: имя таблицы не встречается в тексте кода игры, поиском по
-/// границам слова — та же проверка, что у неиспользуемого свойства (`code_mentions_word`); в игре
-/// без `files.code` предупреждение выходит по каждой объявленной таблице, раз читать их некому.
-fn validate_unused_tables(tables: &[(String, String)], code: Option<&str>, errors: &mut ErrorSink) {
+/// границам слова — та же проверка, что у неиспользуемого свойства (`code_mentions_word`); таблицу,
+/// на которую ссылается экран (`choose`, `needs_choice`, `{choice:…}`), читает движок, и она
+/// используется без кода. В игре без `files.code` предупреждение выходит по остальным объявленным таблицам.
+fn validate_unused_tables(
+    tables: &[(String, String)],
+    code: Option<&str>,
+    used_by_screens: Option<&std::collections::HashMap<String, ChoiceTable>>,
+    errors: &mut ErrorSink,
+) {
     for (name, _path) in tables {
-        if code.is_some_and(|c| code_mentions_word(c, name)) {
+        if used_by_screens.is_some_and(|used| used.contains_key(name))
+            || code.is_some_and(|c| code_mentions_word(c, name))
+        {
             continue;
         }
         errors.push_warning(
@@ -10805,6 +11372,8 @@ fn resolve_screens(
     properties: &PropertyTable,
     has_code: bool,
     declared_functions: Option<&[String]>,
+    declared_tables: &[(String, String)],
+    tables: &[(String, Json)],
     errors: &mut ErrorSink,
 ) -> Option<ScreensConfig> {
     let mut name_to_id: std::collections::HashMap<String, ScreenId> =
@@ -10832,7 +11401,8 @@ fn resolve_screens(
         .filter_map(|o| o.name.as_deref())
         .collect();
 
-    let mut initial_values: Vec<Vec<(String, PropertyId, Value)>> = Vec::new();
+    let mut initial_values: Vec<Vec<(String, PropertyId, InitialValue)>> = Vec::new();
+    let mut choices = ChoiceChecker::new(declared_tables, tables, parsed);
     let mut runs = RunTable {
         calls: Vec::new(),
         has_code,
@@ -10860,6 +11430,7 @@ fn resolve_screens(
                         &name_to_id,
                         parsed,
                         &places,
+                        &mut choices,
                         &mut initial_values,
                         &mut runs,
                         errors,
@@ -10878,6 +11449,7 @@ fn resolve_screens(
                         properties,
                         images,
                         &scene_names,
+                        &mut choices,
                         &mut initial_values,
                         &mut runs,
                         format!("экран \"{}\", клавиша \"{code}\"", screen.name),
@@ -11020,6 +11592,7 @@ fn resolve_screens(
         win_screen,
         loss_screen,
         initial_values,
+        choices: choices.into_tables(),
         // Filled in by `load_rest_with_tables` once this resolves — «Надписи и полоски в мире»
         // resolve separately (`resolve_world_elements`), since they need no scene/screen-name
         // cross-checks `resolve_screens` itself runs.
@@ -11669,7 +12242,7 @@ fn collect_used_images(
                     used.extend(*idle);
                 }
                 Element::Panel {
-                    fill: PanelFill::Own { .. },
+                    fill: PanelFill::Own { .. } | PanelFill::Choice { .. },
                     ..
                 } => {}
                 Element::Button {
@@ -11697,13 +12270,13 @@ fn collect_used_images(
 
 /// «Картинки» → «Видео на панели»: одно видео — на одной панели. Видео панели — по наведению или по
 /// кругу, — которое называет ещё и другая панель, объект мира, картинка над объектом или земля, — ошибка
-/// использования.
+/// использования. Видео из поля таблицы выбора, которое читает панель с `image: "{choice:…}"`, — такое же.
 #[allow(clippy::too_many_arguments)]
 fn validate_panel_videos(
     images: &[ImageDecl],
     scene: &[ParsedObject],
     rules: &RuleSet,
-    screens: &[Screen],
+    config: &ScreensConfig,
     world_elements: &[WorldElement],
     ground: &[GroundLayer],
     screens_file: &str,
@@ -11711,42 +12284,57 @@ fn validate_panel_videos(
 ) {
     let outside_screens = collect_used_images(scene, rules, &[], world_elements, ground, images);
     let mut played = std::collections::HashSet::new();
-    for (screen_index, screen) in screens.iter().enumerate() {
+    for (screen_index, screen) in config.screens.iter().enumerate() {
         for (element_index, element) in screen.elements.iter().enumerate() {
-            let Element::Panel {
-                fill: PanelFill::Fixed(Fill::Image { image, .. }),
-                idle,
-                ..
-            } = element
-            else {
+            let Element::Panel { fill, idle, .. } = element else {
                 continue;
             };
             let field =
                 |key: &str| format!("screens[{screen_index}].elements[{element_index}].{key}");
-            let videos = [(*image, field("image"))]
-                .into_iter()
-                .chain(idle.map(|idle| (idle, field("idle"))));
+            let (mut videos, group): (Vec<(ImageId, String)>, Option<&str>) = match fill {
+                PanelFill::Fixed(Fill::Image { image, .. }) => {
+                    (vec![(*image, field("image"))], None)
+                }
+                PanelFill::Choice { choice, names, .. } => (
+                    config
+                        .choice_images(choice, names)
+                        .into_iter()
+                        .map(|image| (image, field("image")))
+                        .collect(),
+                    Some(choice.group.as_str()),
+                ),
+                _ => continue,
+            };
+            videos.extend(idle.map(|idle| (idle, field("idle"))));
+            let mut seen = Vec::new();
             for (image, path) in videos {
-                if !images[image].video {
+                if !images[image].video || seen.contains(&image) {
                     continue;
                 }
+                seen.push(image);
                 let name = &images[image].name;
+                let source = match group {
+                    Some(group) => format!("берётся из таблицы выбора \"{group}\""),
+                    None => "играет панель".to_string(),
+                };
                 if outside_screens.contains(&image) {
                     errors.push(
                         screens_file,
                         &path,
                         format!(
-                            "видео \"{name}\" играет панель, а его называет ещё и объект мира, картинка над объектом или земля: одно видео — на одной панели"
+                            "видео \"{name}\" {source}, а его называет ещё и объект мира, картинка над объектом или земля: одно видео — на одной панели"
                         ),
                     );
                 } else if !played.insert(image) {
-                    errors.push(
-                        screens_file,
-                        &path,
-                        format!(
+                    let message = match group {
+                        Some(_) => format!(
+                            "видео \"{name}\" {source}, а его уже играет другая панель: одно видео — на одной панели"
+                        ),
+                        None => format!(
                             "видео \"{name}\" уже играет другая панель: одно видео — на одной панели"
                         ),
-                    );
+                    };
+                    errors.push(screens_file, &path, message);
                 }
             }
         }
@@ -11843,16 +12431,14 @@ fn validate_rest_at(
 /// того же экрана — ни `show_on_hover`, ни `play_on_hover` с его именем.
 fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: &mut ErrorSink) {
     for (screen_index, screen) in screens.iter().enumerate() {
-        let answered: std::collections::HashSet<usize> = screen
-            .elements
-            .iter()
-            .flat_map(|element| [element.show_on_hover(), element.play_on_hover()])
-            .flatten()
-            .collect();
+        let answered = answered_places(screen);
         for (element_index, element) in screen.elements.iter().enumerate() {
             let Some(name) = element.place_name() else {
                 continue;
             };
+            if element.choose().is_some() {
+                continue;
+            }
             if !answered.contains(&element_index) {
                 errors.push_warning(
                     screens_file,
@@ -11863,6 +12449,85 @@ fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: 
                     ),
                 );
             }
+        }
+    }
+}
+
+/// «Наведение»: номера мест экрана, на которые откликается хоть один элемент — `show_on_hover` или
+/// `play_on_hover` с их именем.
+fn answered_places(screen: &Screen) -> std::collections::HashSet<usize> {
+    screen
+        .elements
+        .iter()
+        .flat_map(|element| [element.show_on_hover(), element.play_on_hover()])
+        .flatten()
+        .collect()
+}
+
+/// «Выбор»: группы, которые называют подстановки `{choice:…}` текста.
+fn text_choice_groups(text: &[TextPart]) -> impl Iterator<Item = &str> {
+    text.iter().filter_map(|part| match part {
+        TextPart::Choice(choice) => Some(choice.group.as_str()),
+        _ => None,
+    })
+}
+
+/// «Выбор»: группы, которые что-то читает: подпись кнопки или надпись, картинка панели, `needs_choice` или
+/// начальное значение `new_game`.
+fn read_choice_groups(config: &ScreensConfig) -> std::collections::HashSet<&str> {
+    let mut read = std::collections::HashSet::new();
+    for element in config
+        .screens
+        .iter()
+        .flat_map(|screen| &screen.elements)
+        .flat_map(Element::leaves)
+    {
+        match element {
+            Element::Label { text, .. } => read.extend(text_choice_groups(text)),
+            Element::Button {
+                text, needs_choice, ..
+            } => {
+                read.extend(text_choice_groups(text));
+                read.extend(needs_choice.as_deref());
+            }
+            Element::Panel {
+                fill: PanelFill::Choice { choice, .. },
+                ..
+            } => {
+                read.insert(choice.group.as_str());
+            }
+            _ => {}
+        }
+    }
+    for (_, _, value) in config.initial_values.iter().flatten() {
+        if let InitialValue::Choice(choice) = value {
+            read.insert(choice.group.as_str());
+        }
+    }
+    read
+}
+
+/// «Выбор»: предупреждение (игра идёт) о месте с `choose`, на которое не откликается ни один элемент его
+/// экрана и группу которого никто не читает.
+fn warn_unread_choose_places(config: &ScreensConfig, screens_file: &str, errors: &mut ErrorSink) {
+    let read = read_choice_groups(config);
+    for (screen_index, screen) in config.screens.iter().enumerate() {
+        let answered = answered_places(screen);
+        for (element_index, element) in screen.elements.iter().enumerate() {
+            let (Some(group), Some(name)) = (element.choose(), element.place_name()) else {
+                continue;
+            };
+            if answered.contains(&element_index) || read.contains(group) {
+                continue;
+            }
+            errors.push_warning(
+                screens_file,
+                &format!("screens[{screen_index}].elements[{element_index}].choose"),
+                format!(
+                    "место выбора \"{name}\" группы \"{group}\" на экране \"{}\": на него не откликается ни один элемент, и группу не читает ни надпись, ни картинка панели, ни needs_choice, ни new_game; ожидался show_on_hover, play_on_hover или подстановка {{choice:{group}}}",
+                    screen.name
+                ),
+            );
         }
     }
 }
@@ -11878,10 +12543,12 @@ fn validate_unused_images(
     tooltip: Option<&TooltipStyle>,
     world_elements: &[WorldElement],
     ground: &[GroundLayer],
+    choice_images: &[ImageId],
     code: Option<&str>,
     errors: &mut ErrorSink,
 ) {
     let mut used = collect_used_images(scene, rules, screens, world_elements, ground, images);
+    used.extend(choice_images);
     if let Some(tooltip) = tooltip {
         mark_fill_used(&mut used, &tooltip.fill);
     }
@@ -12532,7 +13199,11 @@ pub fn load_rest_with_imports(
         validate_image_files(
             &config.files.images,
             image_data,
-            &looped_video_names(&config.files.images, &parsed_screens),
+            &looped_video_names(
+                &config.files.images,
+                &parsed_screens,
+                &scene_image_ids(&scene_objects, &ground),
+            ),
             &mut errors,
         );
         validate_material_files(&config.files.materials, material_data, &mut errors);
@@ -12568,6 +13239,8 @@ pub fn load_rest_with_imports(
         &properties,
         config.files.code.is_some(),
         declared_functions.as_deref(),
+        &config.files.tables,
+        &tables_json,
         &mut errors,
     );
 
@@ -12687,7 +13360,12 @@ pub fn load_rest_with_imports(
         warn_unanswered_hover_places(screens_for_usage, &config.files.screens, &mut errors);
         validate_unused_sounds(&config.files.sounds, &rules, code_json, &mut errors);
         validate_unreferenced_tracks(&config.files.music, &referenced_music, &mut errors);
-        validate_unused_tables(&config.files.tables, code_json, &mut errors);
+        validate_unused_tables(
+            &config.files.tables,
+            code_json,
+            screens_config.as_ref().map(|sc| &sc.choices),
+            &mut errors,
+        );
         let covers = properties
             .terrain()
             .map_or(&[][..], |terrain| terrain.covers());
@@ -12737,11 +13415,12 @@ pub fn load_rest_with_imports(
         // returns `None` by failing to resolve `start_screen`, which always pushes one.
         if let Some(sc) = &screens_config {
             validate_toggle_sound_presence(&rules, &sc.screens, &config.files.screens, &mut errors);
+            warn_unread_choose_places(sc, &config.files.screens, &mut errors);
             validate_panel_videos(
                 &config.files.images,
                 &scene_objects,
                 &rules,
-                &sc.screens,
+                sc,
                 &world_elements,
                 &ground,
                 &config.files.screens,
@@ -12771,6 +13450,7 @@ pub fn load_rest_with_imports(
                 tooltip.as_ref(),
                 &world_elements,
                 &ground,
+                &sc.choice_panel_images(),
                 code_and_tables.as_deref(),
                 &mut errors,
             );
