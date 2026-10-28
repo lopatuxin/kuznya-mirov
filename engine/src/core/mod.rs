@@ -1,3 +1,4 @@
+pub mod building;
 pub mod camera;
 pub mod clouds;
 pub mod code;
@@ -27,6 +28,7 @@ pub mod scene;
 pub mod screens;
 pub mod shapes;
 pub mod skeleton;
+pub mod solid;
 pub mod sound;
 pub mod step;
 pub mod surface;

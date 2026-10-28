@@ -30,7 +30,10 @@ pub struct Globals3d {
     pub light_view_proj: [[f32; 4]; 4],
     pub sun: [f32; 4],
     pub shade: [f32; 4],
+    /// xyz — место камеры, а при `orthographic` — направление от земли к камере, w — единица при `orthographic`.
     pub eye: [f32; 4],
+    /// rgb — цвет тени моделей `picture` в линейной яркости.
+    pub shade_color: [f32; 4],
     pub sun_light: [f32; 4],
     pub sky_light: [f32; 4],
     /// x — на какой глубине в клетках дна уже не видно, y — длина ряби в клетках, z — часы воды в секундах.
@@ -64,7 +67,7 @@ pub struct GroundVertex {
 }
 
 // Раскладки, которые читает `scene3d.wgsl`: уникальный размер в байтах и смещения атрибутов ниже.
-const _: () = assert!(std::mem::size_of::<Globals3d>() == 224);
+const _: () = assert!(std::mem::size_of::<Globals3d>() == 240);
 const _: () = assert!(std::mem::size_of::<ShapeInstance>() == 48);
 const _: () = assert!(std::mem::size_of::<GroundVertex>() == 76);
 
@@ -104,6 +107,7 @@ pub struct Scene3d {
     skinned_mask_shadow_pipeline: wgpu::RenderPipeline,
     model_pipeline: wgpu::RenderPipeline,
     model_mask_pipeline: wgpu::RenderPipeline,
+    model_dissolve_pipeline: wgpu::RenderPipeline,
     skinned_pipeline: wgpu::RenderPipeline,
     skinned_mask_pipeline: wgpu::RenderPipeline,
     skinned_blend_pipeline: wgpu::RenderPipeline,
@@ -1062,6 +1066,12 @@ impl Scene3d {
             &shape_targets,
             solid_depth.clone(),
         );
+        let model_dissolve_pipeline = model_surface_pipeline(
+            "model_dissolve_pipeline",
+            "fs_model_dissolve",
+            &shape_targets,
+            solid_depth.clone(),
+        );
         let model_mask_pipeline = model_surface_pipeline(
             "model_mask_pipeline",
             "fs_model_mask",
@@ -1164,6 +1174,7 @@ impl Scene3d {
             skinned_mask_shadow_pipeline,
             model_pipeline,
             model_mask_pipeline,
+            model_dissolve_pipeline,
             skinned_pipeline,
             skinned_mask_pipeline,
             model_blend_pipeline,
@@ -1334,13 +1345,13 @@ impl Scene3d {
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
             self.draw_shapes(&mut pass);
             pass.set_pipeline(&self.model_shadow_pipeline);
-            models.draw(&mut pass, AlphaMode::Opaque, false);
+            models.draw_casters(&mut pass, AlphaMode::Opaque, false);
             pass.set_pipeline(&self.model_mask_shadow_pipeline);
-            models.draw(&mut pass, AlphaMode::Mask, true);
+            models.draw_casters(&mut pass, AlphaMode::Mask, true);
             pass.set_pipeline(&self.skinned_shadow_pipeline);
-            models.draw_skinned(&mut pass, AlphaMode::Opaque);
+            models.draw_skinned_casters(&mut pass, AlphaMode::Opaque);
             pass.set_pipeline(&self.skinned_mask_shadow_pipeline);
-            models.draw_skinned(&mut pass, AlphaMode::Mask);
+            models.draw_skinned_casters(&mut pass, AlphaMode::Mask);
             if let Some(terrain) = &self.terrain {
                 pass.set_pipeline(&self.terrain_shadow_pipeline);
                 pass.set_vertex_buffer(0, terrain.buffer.slice(..));
@@ -1388,6 +1399,10 @@ impl Scene3d {
         models.draw(&mut pass, AlphaMode::Opaque, true);
         pass.set_pipeline(&self.model_mask_pipeline);
         models.draw(&mut pass, AlphaMode::Mask, true);
+        pass.set_pipeline(&self.model_dissolve_pipeline);
+        models.draw_dissolving(&mut pass, AlphaMode::Opaque);
+        pass.set_pipeline(&self.model_mask_pipeline);
+        models.draw_dissolving(&mut pass, AlphaMode::Mask);
         pass.set_pipeline(&self.skinned_pipeline);
         models.draw_skinned(&mut pass, AlphaMode::Opaque);
         pass.set_pipeline(&self.skinned_mask_pipeline);

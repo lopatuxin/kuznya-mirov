@@ -366,7 +366,15 @@ fn the_frame_carries_the_eye_and_the_light_of_the_scene() {
         &[],
         &mut FlatShapes::default(),
     );
-    assert_eq!(frame.eye, camera.eye.map(|c| c as f32));
+    assert_eq!(
+        frame.eye,
+        [
+            camera.eye[0] as f32,
+            camera.eye[1] as f32,
+            camera.eye[2] as f32,
+            0.0
+        ]
+    );
     let (sun, sky) = light_colors(&game.scene.light);
     assert_eq!((frame.sun_light, frame.sky_light), (sun, sky));
 }

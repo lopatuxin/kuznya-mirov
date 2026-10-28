@@ -1,0 +1,23 @@
+{
+  "objects": [
+    { "name": "hero", "model": "hero", "position": [11.2, 22.2], "size": [0.6, 0.6], "height": 1.73, "velocity": [0, 0],
+      "camera_follows": true, "hero": true,
+      "keys": {
+        "ArrowLeft":   { "press": [["go_left", true]], "release": [["go_left", false]] },
+        "KeyA":        { "press": [["go_left", true]], "release": [["go_left", false]] },
+        "ArrowRight":  { "press": [["go_right", true]], "release": [["go_right", false]] },
+        "KeyD":        { "press": [["go_right", true]], "release": [["go_right", false]] },
+        "ArrowUp":     { "press": [["go_up", true]], "release": [["go_up", false]] },
+        "KeyW":        { "press": [["go_up", true]], "release": [["go_up", false]] },
+        "ArrowDown":   { "press": [["go_down", true]], "release": [["go_down", false]] },
+        "KeyS":        { "press": [["go_down", true]], "release": [["go_down", false]] },
+        "KeyE":        { "press": [["climb", true]], "release": [["climb", false]] }
+      } },
+
+    { "model": "ground_01", "position": [0, 0, 0], "size": [21.2823, 36] },
+    { "model": "ground_02", "position": [21.2823, 0, 0], "size": [32, 36] },
+
+    { "model": "soil", "position": [8, 15, 0.01], "size": [2, 2] },
+    { "name": "tower", "model": "tower", "position": [8, 15, 0], "size": [2, 2], "tower": true }
+  ]
+}

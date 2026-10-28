@@ -19,7 +19,7 @@ use crate::core::rules::{
     TemplateValue, TurnDir, TurnSpec,
 };
 use crate::core::scene::{
-    CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, SceneConfig,
+    CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, Projection, SceneConfig,
 };
 use crate::core::screens::{
     Align, Anchor, ButtonCommand, ChoiceRef, ChoiceTable, Element, Fill, FontId, ImageRef,
@@ -2596,22 +2596,58 @@ fn parse_player_start(
     None
 }
 
-/// «Трёхмерная сцена» → «Камера», требование 30: `camera` — объект с одним числом `pitch` от 30 до
-/// 90 включительно.
+/// «Трёхмерная сцена» → «Камера», требование 30: `camera` — объект с числом `pitch` от 30 до 90 включительно и
+/// необязательной `projection`: `perspective` или `orthographic`.
 fn parse_camera(value: &Json, errors: &mut ErrorSink) -> Option<CameraConfig> {
     let obj = expect_object(value, "game.json", "scene → camera", errors)?;
-    reject_unknown_keys(obj, &["pitch"], "game.json", "scene → camera", errors);
-    let pitch_json = require_field(obj, "pitch", "game.json", "scene → camera", errors)?;
-    let pitch = expect_number(pitch_json, "game.json", "scene → camera → pitch", errors)?;
-    if !(30.0..=90.0).contains(&pitch) {
-        errors.push(
-            "game.json",
-            "scene → camera → pitch",
-            format!("pitch должен быть от 30 до 90 включительно, получено {pitch}"),
-        );
-        return None;
+    reject_unknown_keys(
+        obj,
+        &["pitch", "projection"],
+        "game.json",
+        "scene → camera",
+        errors,
+    );
+    let pitch_json = require_field(obj, "pitch", "game.json", "scene → camera", errors);
+    let pitch = pitch_json
+        .and_then(|v| expect_number(v, "game.json", "scene → camera → pitch", errors))
+        .and_then(|pitch| {
+            if (30.0..=90.0).contains(&pitch) {
+                return Some(pitch);
+            }
+            errors.push(
+                "game.json",
+                "scene → camera → pitch",
+                format!("pitch должен быть от 30 до 90 включительно, получено {pitch}"),
+            );
+            None
+        });
+    let projection = parse_projection(obj.get("projection"), errors);
+    Some(CameraConfig {
+        pitch: pitch?,
+        projection: projection?,
+    })
+}
+
+/// `projection` камеры: `perspective` или `orthographic`; нет ключа — `perspective`.
+fn parse_projection(value: Option<&Json>, errors: &mut ErrorSink) -> Option<Projection> {
+    let Some(value) = value else {
+        return Some(Projection::Perspective);
+    };
+    let path = "scene → camera → projection";
+    match expect_string(value, "game.json", path, errors)?.as_str() {
+        "perspective" => Some(Projection::Perspective),
+        "orthographic" => Some(Projection::Orthographic),
+        other => {
+            errors.push(
+                "game.json",
+                path,
+                format!(
+                    "projection должен быть \"perspective\" или \"orthographic\", получено \"{other}\""
+                ),
+            );
+            None
+        }
     }
-    Some(CameraConfig { pitch })
 }
 
 /// «Трёхмерная сцена» → «Земля, свет и плоские объекты», требование 30: все три поля необязательны,
@@ -2620,7 +2656,14 @@ fn parse_light(value: &Json, errors: &mut ErrorSink) -> Option<LightConfig> {
     let obj = expect_object(value, "game.json", "scene → light", errors)?;
     reject_unknown_keys(
         obj,
-        &["sun_from", "sun_height", "sun_color", "sky_color", "shadow"],
+        &[
+            "sun_from",
+            "sun_height",
+            "sun_color",
+            "sky_color",
+            "shade_color",
+            "shadow",
+        ],
         "game.json",
         "scene → light",
         errors,
@@ -2667,12 +2710,14 @@ fn parse_light(value: &Json, errors: &mut ErrorSink) -> Option<LightConfig> {
     };
     let sun_color = tint("sun_color", defaults.sun_color);
     let sky_color = tint("sky_color", defaults.sky_color);
+    let shade_color = tint("shade_color", defaults.shade_color);
     Some(LightConfig {
         sun_from: sun_from?,
         sun_height: sun_height?,
         shadow: shadow?,
         sun_color: sun_color?,
         sky_color: sky_color?,
+        shade_color: shade_color?,
     })
 }
 
@@ -3579,6 +3624,21 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             "files → models",
             "files.models есть только в трёхмерной сцене: у scene в game.json нет camera",
         );
+    }
+    if scene.camera.is_none() {
+        for decl in models.as_deref().unwrap_or_default() {
+            let keys = [
+                ("solid", decl.solid.is_some()),
+                ("cutaway", decl.cutaway.is_some()),
+            ];
+            for (key, _) in keys.into_iter().filter(|&(_, present)| present) {
+                errors.push(
+                    "game.json",
+                    &format!("files → models → {} → {key}", decl.name),
+                    format!("{key} есть только в трёхмерной сцене: у scene в game.json нет camera"),
+                );
+            }
+        }
     }
     if stamps.is_some() && scene.camera.is_none() {
         errors.push(
@@ -13662,6 +13722,13 @@ pub fn load_rest_with_motions(
                 .road_junctions
                 .iter()
                 .map(|junction| junction.name.clone()),
+        );
+        named_models.extend(
+            config
+                .files
+                .models
+                .iter()
+                .filter_map(|decl| decl.cutaway.clone()),
         );
         // «Таблицы данных»: таблицы читает код игры, и имя модели, картинки или вида дороги в таблице —
         // такое же упоминание, как в тексте кода. Без кода таблицы читать некому.

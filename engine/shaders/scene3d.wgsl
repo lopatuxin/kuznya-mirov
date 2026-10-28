@@ -25,8 +25,11 @@ struct Globals3d {
     // y — единица глубины карты теней на клетку сцены; z — сдвиг точки вдоль нормали при выборке
     // тени, в клетках: полторы точки карты теней, но не меньше 0,02, чтобы земля не затеняла сама себя.
     shade: vec4<f32>,
-    // Место камеры: от него считается блик.
+    // xyz — место камеры, от него считается блик; при `orthographic` (w — единица) — единичное направление от земли
+    // к камере, одно для всех точек.
     eye: vec4<f32>,
+    // rgb — цвет тени моделей `picture` в линейной яркости.
+    shade_color: vec4<f32>,
     // Цвет и сила солнца и неба в линейной яркости.
     sun_light: vec4<f32>,
     sky_light: vec4<f32>,
@@ -179,6 +182,11 @@ fn finish(color: vec3<f32>) -> vec3<f32> {
     return linear_to_srgb(tone_map(color));
 }
 
+// Единичный вектор от точки `world` к камере.
+fn to_camera(world: vec3<f32>) -> vec3<f32> {
+    return select(normalize(globals.eye.xyz - world), globals.eye.xyz, globals.eye.w > 0.5);
+}
+
 // --- Свет -----------------------------------------------------------------------------------
 
 // Видит ли точку солнце: 1 — да, 0 — тень. Сравнение всегда выполняется, а вне карты его результат
@@ -207,7 +215,7 @@ fn sun_glint(
 ) -> vec3<f32> {
     let to_sun = globals.sun.xyz;
     let n_l = max(dot(normal, to_sun), 0.0);
-    let to_eye = normalize(globals.eye.xyz - world);
+    let to_eye = to_camera(world);
     let half_way = normalize(to_sun + to_eye);
     let n_v = max(dot(normal, to_eye), 0.0);
     let n_h = max(dot(normal, half_way), 0.0);
@@ -722,7 +730,7 @@ fn fs_water(in: WaterOutput) -> @location(0) vec4<f32> {
     // Толща освещена по нормали с ослабленной рябью: сверху рябь видна светом солнца на склонах волн, а не отсветом.
     let body_normal = normalize(surface_normal - vec3<f32>(tilt * WATER_BODY_RIPPLE, 0.0));
     let body = shade_matte(srgb_to_linear(in.color), in.world, body_normal, visible);
-    let to_eye = normalize(globals.eye.xyz - in.world);
+    let to_eye = to_camera(in.world);
     let mirrored = reflect(-to_eye, normal);
     let sky = globals.sky_light.rgb * mix(WATER_SKY_HORIZON, WATER_SKY_ZENITH, clamp(mirrored.z, 0.0, 1.0));
     let sky_reflection = sky * (WATER_SKY_F0 + (1.0 - WATER_SKY_F0) * pow(1.0 - max(dot(normal, to_eye), 0.0), 5.0));
@@ -909,7 +917,8 @@ struct ModelMaterial {
     base: vec4<f32>,
     // x — металл, y — шероховатость, z — `scale` мелкого рельефа, w — `strength` затенения.
     factors: vec4<f32>,
-    // x — `alphaMode`: 0 — `OPAQUE`, 1 — `MASK`, 2 — `BLEND`; y — `alphaCutoff`.
+    // x — `alphaMode`: 0 — `OPAQUE`, 1 — `MASK`, 2 — `BLEND`; y — `alphaCutoff`; z — единица у модели с `look`
+    // `picture`.
     alpha: vec4<f32>,
 };
 
@@ -949,6 +958,9 @@ struct ModelInstance {
     // растянута вдоль своей оси +Y (у кусков дороги; у остальных 1), w — угол наклона вдоль оси +Y в радианах:
     // при положительном конец +Y выше (у машины на подъёме; у остальных 0).
     @location(6) base: vec4<f32>,
+    // «Здания», срез: 0 — модель рисуется целиком; положительное число — доля точек экрана, отданных модели среза, они
+    // здесь не рисуются; отрицательное — экземпляр модели среза: рисуются только эти точки, а тени он не бросает.
+    @location(9) fade: f32,
 };
 
 // Наклон вдоль локальной оси +Y: конец +Y поднимается при положительном угле.
@@ -1041,6 +1053,9 @@ fn skinned_vertex(vertex: ModelVertex, skin: SkinVertex, row: u32) -> ModelVerte
 
 @vertex
 fn vs_shadow_model(vertex: ModelVertex, instance: ModelInstance) -> @builtin(position) vec4<f32> {
+    if (instance.fade < 0.0) {
+        return vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    }
     return globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
 }
 
@@ -1065,6 +1080,9 @@ struct ShadowMaskOutput {
 fn shadow_mask_point(vertex: ModelVertex, instance: ModelInstance) -> ShadowMaskOutput {
     var out: ShadowMaskOutput;
     out.clip_position = globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
+    if (instance.fade < 0.0) {
+        out.clip_position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
+    }
     out.uv = vertex.uv;
     out.vertex_alpha = vertex.color.a;
     return out;
@@ -1117,6 +1135,7 @@ struct ModelOutput {
     @location(2) uv: vec2<f32>,
     @location(3) tangent: vec4<f32>,
     @location(4) color: vec4<f32>,
+    @location(5) fade: f32,
 };
 
 @vertex
@@ -1145,6 +1164,7 @@ fn model_point_out(vertex: ModelVertex, instance: ModelInstance) -> ModelOutput 
     out.uv = vertex.uv;
     out.tangent = vec4<f32>(model_direction(normalize(vertex.tangent.xyz * stretch), instance), vertex.tangent.w);
     out.color = vertex.color;
+    out.fade = instance.fade;
     return out;
 }
 
@@ -1165,7 +1185,7 @@ fn shade_pbr(
     let sun = globals.sun_light.rgb * (n_l * visible);
     let sky = globals.sky_light.rgb * ((1.0 + normal.z) * 0.5 * ao);
 
-    let to_eye = normalize(globals.eye.xyz - world);
+    let to_eye = to_camera(world);
     let half_way = normalize(to_sun + to_eye);
     let n_v = max(dot(normal, to_eye), 0.0);
     let n_h = max(dot(normal, half_way), 0.0);
@@ -1182,6 +1202,12 @@ fn shade_pbr(
     let reflected_sky = globals.sky_light.rgb * f0 * ((1.0 + normal.z) * 0.5 * ao * (1.0 - roughness));
 
     return albedo * (1.0 - metallic) * (sun + sky) + glint + reflected_sky;
+}
+
+// «Рисованный свет и картины»: картина без света. Её цвет, а в тени он умножен на `shade_color` с мягким краем тени;
+// кривой яркости кадра нет, поэтому на экране цвет картинки из файла.
+fn picture_color(albedo: vec3<f32>, visible: f32) -> vec3<f32> {
+    return linear_to_srgb(albedo * mix(globals.shade_color.rgb, vec3<f32>(1.0), visible));
 }
 
 // Точка модели: освещённый цвет после кривой яркости и прозрачность точки — `baseColorFactor` на картинку цвета
@@ -1213,7 +1239,19 @@ fn model_point(in: ModelOutput) -> vec4<f32> {
 
     let visible = shadow_lit(in.world, normal);
     let alpha = model_material.base.a * in.color.a * base_sample.a;
+    if (model_material.alpha.z > 0.5) {
+        return vec4<f32>(picture_color(albedo, visible), alpha);
+    }
     return vec4<f32>(finish(shade_pbr(albedo, metallic, roughness, ao, in.world, normal, visible)), alpha);
+}
+
+// «Здания», срез: у точки экрана свой шум от 0 до 1, одинаковый у обеих моделей. Основная модель отдаёт срезу точки, где
+// шум меньше `fade`, а срез рисует только точки, где шум меньше `-fade`: каждая точка принадлежит ровно одной из
+// моделей, цвета не смешиваются, а глубина и вырез `MASK` работают как всегда.
+fn dissolved(in: ModelOutput) -> bool {
+    let pixel = vec2<u32>(in.clip_position.xy);
+    let noise = f32(hash_u32(pixel.x + hash_u32(pixel.y)) >> 8u) / 16777216.0;
+    return (in.fade > 0.0 && noise < in.fade) || (in.fade < 0.0 && noise >= -in.fade);
 }
 
 // `OPAQUE`: прозрачность не учитывается.
@@ -1223,11 +1261,25 @@ fn fs_model(in: ModelOutput) -> @location(0) vec4<f32> {
     return vec4<f32>(point.rgb, 1.0);
 }
 
+// `OPAQUE` у объектов, чьи точки делят основная модель и модель среза: те же сплошные точки, но отданные другой
+// модели не рисуются. Отдельная точка входа держит остальные сплошные модели без `discard`.
+@fragment
+fn fs_model_dissolve(in: ModelOutput) -> @location(0) vec4<f32> {
+    let point = model_point(in);
+    if (dissolved(in)) {
+        discard;
+    }
+    return vec4<f32>(point.rgb, 1.0);
+}
+
 // `MASK`: точки с прозрачностью меньше порога не рисуются, остальные сплошные; издали прозрачность поднята —
 // `mask_alpha`.
 @fragment
 fn fs_model_mask(in: ModelOutput) -> @location(0) vec4<f32> {
     let point = model_point(in);
+    if (dissolved(in)) {
+        discard;
+    }
     if (mask_alpha(point.a, in.uv) < model_material.alpha.y) {
         discard;
     }
@@ -1240,6 +1292,9 @@ fn fs_model_mask(in: ModelOutput) -> @location(0) vec4<f32> {
 @fragment
 fn fs_model_blend(in: ModelOutput) -> @location(0) vec4<f32> {
     let point = model_point(in);
+    if (dissolved(in)) {
+        discard;
+    }
     let mode = model_material.alpha.x;
     let cut = mask_alpha(point.a, in.uv);
     if (mode > 0.5 && mode < 1.5 && cut < model_material.alpha.y) {
@@ -1260,5 +1315,6 @@ fn vs_junction(vertex: ModelVertex) -> ModelOutput {
     out.uv = vertex.uv;
     out.tangent = vertex.tangent;
     out.color = vertex.color;
+    out.fade = 0.0;
     return out;
 }

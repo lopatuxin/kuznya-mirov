@@ -969,10 +969,13 @@ fn every_view_frames_the_whole_model_so_that_it_fills_about_four_fifths_of_the_w
 #[test]
 fn the_game_view_is_fitted_with_the_same_pitch_it_is_drawn_with_when_the_game_pitch_is_out_of_range()
  {
-    use engine::core::scene::CameraConfig;
+    use engine::core::scene::{CameraConfig, Projection};
     let motions = r#"{"R":{"model":"rig","clip":"Run"}}"#;
     let mut game = Setup::new(motions).game();
-    game.scene.camera = Some(CameraConfig { pitch: 2.0 });
+    game.scene.camera = Some(CameraConfig {
+        pitch: 2.0,
+        projection: Projection::Perspective,
+    });
     let stand = Stand::build(&game, motions, "R", StandView::Game, WINDOW).expect("стенд");
     let camera = stand.camera(WINDOW);
     assert_eq!(
@@ -987,6 +990,50 @@ fn the_game_view_is_fitted_with_the_same_pitch_it_is_drawn_with_when_the_game_pi
     assert!(
         (0.72..=0.85).contains(&share),
         "модель занимает {share:.2} окна"
+    );
+}
+
+#[test]
+fn the_game_view_of_the_stand_honours_an_orthographic_game_camera_and_the_side_views_do_not() {
+    use engine::core::scene::{CameraConfig, Projection};
+    let motions = r#"{"R":{"model":"rig","clip":"Run"}}"#;
+    let mut game = Setup::new(motions).game();
+    game.scene.camera = Some(CameraConfig {
+        pitch: 50.0,
+        projection: Projection::Orthographic,
+    });
+    let seen = |view| {
+        Stand::build(&game, motions, "R", view, WINDOW)
+            .map(|mut stand| {
+                stand.set_view(view, WINDOW);
+                stand
+            })
+            .expect("стенд")
+    };
+    let stand = seen(StandView::Game);
+    let camera = stand.camera(WINDOW);
+    assert_eq!(camera.projection, Projection::Orthographic);
+    assert_eq!(camera.pitch, 50.0);
+    let scene = stand.game().scene;
+    let (x, y) = (f64::from(scene.width) / 2.0, f64::from(scene.height) / 2.0);
+    let feet = camera.project([x, y, 0.0]).expect("видна");
+    let head = camera.project([x, y, 1.8]).expect("видна");
+    let share = (feet[1] - head[1]).abs() / WINDOW[1];
+    assert!(
+        (0.72..=0.85).contains(&share),
+        "модель занимает {share:.2} окна"
+    );
+    let mut rebuilt = seen(StandView::Side);
+    assert_eq!(rebuilt.camera(WINDOW).projection, Projection::Perspective);
+    rebuilt.keep_camera(&stand);
+    assert_eq!(
+        rebuilt.camera(WINDOW),
+        camera,
+        "вид держится после пересборки"
+    );
+    assert_eq!(
+        seen(StandView::Front).camera(WINDOW).projection,
+        Projection::Perspective
     );
 }
 

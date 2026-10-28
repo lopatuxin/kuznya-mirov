@@ -10,7 +10,8 @@ use std::rc::Rc;
 use wgpu::util::{DeviceExt, TextureDataOrder};
 
 use crate::core::model::{
-    AlphaMode, Image, Material, Model, ModelImage, ModelTable, PackedFormat, Sampler, Texture, Wrap,
+    AlphaMode, Image, Look, Material, Model, ModelImage, ModelTable, PackedFormat, Sampler,
+    Texture, Wrap,
 };
 use crate::core::road_kinds::Junction;
 
@@ -24,7 +25,7 @@ use super::models::{
 pub const VERTEX_STRIDE: u64 = 64;
 
 /// Байт на объект: `ModelInstance`.
-pub const INSTANCE_STRIDE: u64 = 32;
+pub const INSTANCE_STRIDE: u64 = 36;
 
 /// Вершина части, как её читает `scene3d.wgsl`.
 pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
@@ -72,7 +73,7 @@ pub const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     },
 ];
 
-pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
+pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x4,
         offset: 0,
@@ -82,6 +83,11 @@ pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
         format: wgpu::VertexFormat::Float32x4,
         offset: 16,
         shader_location: 6,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32,
+        offset: 32,
+        shader_location: 9,
     },
 ];
 
@@ -99,6 +105,8 @@ struct PartGpu {
 struct ModelGpu {
     parts: Vec<PartGpu>,
     bones: Option<BonesGpu>,
+    /// Бросает ли модель тень: модель `picture` — нет, её тени нарисованы на картине.
+    casts_shadow: bool,
 }
 
 /// Матрицы суставов объектов модели со скелетом: строка текстуры данных — один объект, четыре точки на сустав.
@@ -191,6 +199,7 @@ impl BonesGpu {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Group {
     Objects,
+    Dissolving,
     Pieces,
 }
 
@@ -198,6 +207,8 @@ enum Group {
 /// порядок объектов с частью `BLEND`.
 pub struct ModelsFrame<'a> {
     pub objects: &'a [Vec<ModelInstance>],
+    /// «Здания», срез: объекты с растворением → `models::ModelDraws::dissolving`.
+    pub dissolving: &'a [Vec<ModelInstance>],
     /// Матрицы суставов объектов каждой модели со скелетом → `models::ModelDraws::bones`.
     pub bones: &'a [Vec<f32>],
     pub pieces: &'a [Vec<ModelInstance>],
@@ -234,6 +245,7 @@ pub struct ModelsGpu {
     capacity: usize,
     /// Где лежат объекты каждой модели в `instances`: объекты и куски дорог подряд, по моделям.
     objects: Vec<Span>,
+    dissolving: Vec<Span>,
     pieces: Vec<Span>,
     junctions: JunctionsGpu,
     /// Объекты с частью `BLEND` от дальнего к ближнему.
@@ -479,6 +491,7 @@ impl<'a> ModelBuilder<'a> {
                 .skeleton
                 .as_ref()
                 .map(|skeleton| BonesGpu::new(skeleton.joints.len())),
+            casts_shadow: model.casts_shadow(),
         }
     }
 
@@ -523,6 +536,7 @@ impl<'a> ModelBuilder<'a> {
             Some((texture, strength)) => (Some(texture), *strength),
             None => (None, 0.0),
         };
+        let look = model.look;
         let base = self.map_of(model, material.base_texture.as_ref(), true, white);
         let metal = self.map_of(model, material.metal_rough_texture.as_ref(), false, white);
         let normal = self.map_of(model, normal_texture, false, flat_normal);
@@ -546,7 +560,7 @@ impl<'a> ModelBuilder<'a> {
                         AlphaMode::Blend => 2.0,
                     },
                     material.alpha_cutoff,
-                    0.0,
+                    if look == Look::Picture { 1.0 } else { 0.0 },
                     0.0,
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM,
@@ -616,6 +630,7 @@ impl ModelsGpu {
             instances: instance_buffer(device, capacity),
             capacity,
             objects: Vec::new(),
+            dissolving: Vec::new(),
             pieces: Vec::new(),
             junctions: JunctionsGpu::default(),
             blended: Vec::new(),
@@ -643,7 +658,7 @@ impl ModelsGpu {
     /// порядку моделей. Копии перекрёстков заливаются заново, только если пришёл другой список перекрёстков.
     pub fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frame: &ModelsFrame<'_>) {
         self.sync_junctions(device, frame.junctions, frame.bent);
-        let groups = [frame.objects, frame.pieces];
+        let groups = [frame.objects, frame.dissolving, frame.pieces];
         let total: usize = groups
             .iter()
             .flat_map(|lists| lists.iter().take(self.models.len()))
@@ -655,7 +670,7 @@ impl ModelsGpu {
         }
         self.scratch.clear();
         let mut next = 0u32;
-        for (spans, lists) in [&mut self.objects, &mut self.pieces]
+        for (spans, lists) in [&mut self.objects, &mut self.dissolving, &mut self.pieces]
             .into_iter()
             .zip(groups)
         {
@@ -664,7 +679,12 @@ impl ModelsGpu {
                 spans.push((next, list.len() as u32));
                 next += list.len() as u32;
                 for instance in list {
-                    for value in instance.placement.into_iter().chain(instance.base) {
+                    for value in instance
+                        .placement
+                        .into_iter()
+                        .chain(instance.base)
+                        .chain([instance.fade])
+                    {
                         self.scratch.extend(value.to_le_bytes());
                     }
                 }
@@ -729,20 +749,23 @@ impl ModelsGpu {
     }
 
     /// Рисует части моделей, годные `wanted`, из группы `group`: каждую одной командой на все объекты
-    /// модели; `materials` — привязывать ли материалы частей (в проходе теней сплошных их нет).
+    /// модели; `materials` — привязывать ли материалы частей (в проходе теней сплошных их нет);
+    /// `casters_only` — только модели, что бросают тень.
     fn draw_group(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         group: Group,
         wanted: impl Fn(AlphaMode) -> bool,
         materials: bool,
+        casters_only: bool,
     ) {
         let spans = match group {
             Group::Objects => &self.objects,
+            Group::Dissolving => &self.dissolving,
             Group::Pieces => &self.pieces,
         };
         for (model, &(first, count)) in self.models.iter().zip(spans) {
-            if count == 0 || model.bones.is_some() {
+            if count == 0 || model.bones.is_some() || (casters_only && !model.casts_shadow) {
                 continue;
             }
             for part in model.parts.iter().filter(|part| wanted(part.alpha)) {
@@ -763,16 +786,50 @@ impl ModelsGpu {
     /// Рисует части объектов с прозрачностью `alpha` (`OPAQUE` или `MASK`); `materials` — привязывать ли
     /// материалы частей.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode, materials: bool) {
-        self.draw_group(pass, Group::Objects, |mode| mode == alpha, materials);
+        self.draw_group(pass, Group::Objects, |mode| mode == alpha, materials, false);
+    }
+
+    /// «Здания», срез: части объектов с растворением, прозрачности `alpha` (`OPAQUE` или `MASK`).
+    pub fn draw_dissolving(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
+        self.draw_group(pass, Group::Dissolving, |mode| mode == alpha, true, false);
+    }
+
+    /// То же для прохода теней: модели, что теней не бросают, не рисуются.
+    pub fn draw_casters(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode, materials: bool) {
+        self.draw_group(pass, Group::Objects, |mode| mode == alpha, materials, true);
+        self.draw_group(
+            pass,
+            Group::Dissolving,
+            |mode| mode == alpha,
+            materials,
+            true,
+        );
     }
 
     /// Рисует части моделей со скелетом с прозрачностью `alpha` (`OPAQUE` или `MASK`): каждую одной командой на все
     /// объекты модели, с матрицами суставов из текстуры данных и с материалами частей.
     pub fn draw_skinned(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
+        self.draw_skinned_of(pass, alpha, false);
+    }
+
+    /// То же для прохода теней: модели, что теней не бросают, не рисуются.
+    pub fn draw_skinned_casters(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
+        self.draw_skinned_of(pass, alpha, true);
+    }
+
+    fn draw_skinned_of(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        alpha: AlphaMode,
+        casters_only: bool,
+    ) {
         for (model, &(first, count)) in self.models.iter().zip(&self.objects) {
             let Some(bones) = &model.bones else {
                 continue;
             };
+            if casters_only && !model.casts_shadow {
+                continue;
+            }
             let Some((_, group)) = &bones.texture else {
                 continue;
             };
@@ -811,7 +868,12 @@ impl ModelsGpu {
             let Some(model) = self.models.get(draw.model as usize) else {
                 continue;
             };
-            let Some(&(first, count)) = self.objects.get(draw.model as usize) else {
+            let spans = if draw.dissolving {
+                &self.dissolving
+            } else {
+                &self.objects
+            };
+            let Some(&(first, count)) = spans.get(draw.model as usize) else {
                 continue;
             };
             if draw.index >= count {
@@ -860,7 +922,7 @@ impl ModelsGpu {
 
     /// Рисует куски дорог: части любой прозрачности, с материалами.
     pub fn draw_road_pieces(&self, pass: &mut wgpu::RenderPass<'_>) {
-        self.draw_group(pass, Group::Pieces, |_| true, true);
+        self.draw_group(pass, Group::Pieces, |_| true, true, false);
     }
 
     /// Рисует изогнутые копии частей перекрёстков с материалами этих частей.

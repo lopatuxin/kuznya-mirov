@@ -3,6 +3,7 @@
 //! объекта с `position`, и всё, что её ставит, — сборка мира, сдвиг, создание, вызовы редактора —
 //! считает её здесь.
 
+use super::building;
 use super::footprint::Footprint;
 use super::property;
 use super::scene::ground_footprint;
@@ -83,13 +84,17 @@ pub fn walks_on_surfaces(world: &World) -> bool {
 /// Основание, на которое встал бы объект (не настил) с местом `footprint`: с `from` — сдвинувшись с
 /// основания `from` на верх самого высокого настила под собой, чей верх не выше `from` плюс ступенька;
 /// без `from` — на верх самого высокого настила под собой. Без такого настила — на самую нижнюю
-/// точку рельефа под местом. `id` как настил под собой не считается.
+/// точку рельефа под местом. `id` как настил под собой не считается. Верх твёрдой модели (`core::building`), годный
+/// как пол, считается верхом настила; сама твёрдая модель стоит на рельефе: ни на настил, ни на пол не встаёт.
 pub fn rest_height(
     world: &World,
     id: Option<u32>,
     footprint: &Footprint,
     from: Option<f64>,
 ) -> f64 {
+    if id.is_some_and(|id| building::is_solid(world, id)) {
+        return world.terrain().min_under(footprint);
+    }
     let mut best: Option<f64> = None;
     for (deck_id, place, top) in decks(world) {
         if Some(deck_id) == id {
@@ -102,6 +107,9 @@ pub fn rest_height(
             best = Some(best.map_or(top, |b| b.max(top)));
         }
     }
+    if let Some(top) = building::floor_under(world, id, footprint, from) {
+        best = Some(best.map_or(top, |b| b.max(top)));
+    }
     best.unwrap_or_else(|| world.terrain().min_under(footprint))
 }
 
@@ -113,6 +121,7 @@ pub fn ground_at(world: &World, id: u32, point: Vec2, from: f64) -> f64 {
             deck_id != id && top <= from + STEP + TOLERANCE && place.contains(point)
         })
         .map(|(_, _, top)| top)
+        .chain(building::floor_at(world, id, point, from))
         .fold(None, |best: Option<f64>, top| {
             Some(best.map_or(top, |best| best.max(top)))
         })

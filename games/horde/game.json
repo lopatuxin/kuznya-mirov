@@ -1,0 +1,37 @@
+{
+  "name": "Орда",
+  "scene": {
+    "width": 53,
+    "height": 36,
+    "view_height": 32,
+    "background": "#c9b98a",
+    "camera": { "pitch": 30, "projection": "orthographic" },
+    "light": { "sun_from": 60, "sun_height": 50 }
+  },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {},
+    "models": {
+      "ground_01": { "path": "models/ground_01.glb", "look": "picture" },
+      "ground_02": { "path": "models/ground_02.glb", "look": "picture" },
+      "tower": { "path": "models/tower.glb", "look": "picture", "solid": true, "cutaway": "tower_cut" },
+      "tower_cut": { "path": "models/tower_cut.glb", "look": "picture" },
+      "soil": { "path": "models/soil.glb", "look": "picture" },
+      "hero": {
+        "path": "models/hero.glb",
+        "idle": "Стойка",
+        "walk": "бег_героя",
+        "feet": ["mixamorig:LeftFoot", "mixamorig:RightFoot"],
+        "spine": "mixamorig:Spine",
+        "hands": ["mixamorig:LeftHand", "mixamorig:RightHand"]
+      }
+    },
+    "motions": "motions.json"
+  }
+}

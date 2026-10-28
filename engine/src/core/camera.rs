@@ -4,7 +4,7 @@
 
 use super::math3::{self, Mat4, Vec3};
 use super::property;
-use super::scene::{self, SceneConfig, letterbox};
+use super::scene::{self, CameraConfig, Projection, SceneConfig, letterbox};
 use super::surface;
 use super::terrain::Terrain;
 use super::value::Vec2;
@@ -144,6 +144,28 @@ fn view_distance(pitch: f64, view_height: f64) -> f64 {
     view_height * pitch.to_radians().sin() / (2.0 * tan_half_fov())
 }
 
+/// «Трёхмерная сцена» → «Камера», `orthographic`: камера отнесена назад по взгляду от середины окна так, что
+/// всё видимое и высокие модели лежат впереди неё, а глубина сцены целиком — между ближней плоскостью в глазу
+/// и дальней в двух таких расстояниях. Размер на экране от удаления не зависит.
+fn ortho_distance(view_height: f64) -> f64 {
+    view_height * ORTHO_BACK_PER_VIEW + ORTHO_BACK_BASE
+}
+
+const ORTHO_BACK_PER_VIEW: f64 = 2.0;
+const ORTHO_BACK_BASE: f64 = 100.0;
+
+fn eye_distance(projection: Projection, pitch: f64, view_height: f64) -> f64 {
+    match projection {
+        Projection::Perspective => view_distance(pitch, view_height),
+        Projection::Orthographic => ortho_distance(view_height),
+    }
+}
+
+/// Половина высоты окна вдоль `up` камеры при `orthographic`: окно целиком — `view_height · sin(pitch)` единиц.
+fn ortho_half_height(pitch: f64, view_height: f64) -> f64 {
+    view_height * pitch.to_radians().sin() / 2.0
+}
+
 /// Обратное к `view_distance`: `view_height`, при котором камера стоит на `distance` от середины окна.
 fn view_height_at(pitch: f64, distance: f64) -> f64 {
     distance * 2.0 * tan_half_fov() / pitch.to_radians().sin()
@@ -171,7 +193,8 @@ pub struct Camera3d {
     pub eye: Vec3,
     /// Точка земли в середине окна.
     pub target: Vec2,
-    /// Высота этой точки; глаз стоит выше неё на `view_distance · sin(pitch)`.
+    /// Высота этой точки; глаз стоит выше неё на `view_distance · sin(pitch)`, без перспективы — на
+    /// `ortho_distance · sin(pitch)`.
     pub target_z: f64,
     /// Поворот вокруг вертикали по часовой стрелке, если смотреть сверху, в градусах; 0 — вглубь
     /// сцены, как у камеры игры.
@@ -183,17 +206,62 @@ pub struct Camera3d {
     /// Вид, по которому считается клетка надписей: с камерой игрока — `view_height` из `game.json`,
     /// а не нынешний вид «Камера игрока».
     pub label_view_height: f64,
+    pub projection: Projection,
 }
 
 impl Camera3d {
-    /// Камера игры: без поворота, с серединой окна в `target`.
+    /// Камера игры с перспективой: без поворота, с серединой окна в `target`.
     pub fn looking_at(target: Vec2, pitch: f64, view_height: f64, viewport: [f64; 2]) -> Camera3d {
-        Camera3d::placed(target, 0.0, pitch, view_height, viewport)
+        Camera3d::placed(
+            target,
+            0.0,
+            pitch,
+            view_height,
+            viewport,
+            Projection::Perspective,
+        )
+    }
+
+    /// Камера игры по `scene.camera`: наклон и проекция из данных, середина окна в `target`.
+    pub fn game(
+        config: CameraConfig,
+        target: Vec2,
+        view_height: f64,
+        viewport: [f64; 2],
+    ) -> Camera3d {
+        Camera3d::placed(
+            target,
+            0.0,
+            config.pitch,
+            view_height,
+            viewport,
+            config.projection,
+        )
     }
 
     /// Камера редактора: смотрит на `target` под поворотом `yaw` и наклоном `pitch` (от 5° до 90°)
     /// с `distance` клеток по лучу взгляда.
     pub fn orbiting(
+        target: Vec2,
+        yaw: f64,
+        pitch: f64,
+        distance: f64,
+        viewport: [f64; 2],
+    ) -> Camera3d {
+        Camera3d::orbiting_in(
+            Projection::Perspective,
+            target,
+            yaw,
+            pitch,
+            distance,
+            viewport,
+        )
+    }
+
+    /// Камера редактора с проекцией `projection`; при `orthographic` вид тот же, что у перспективы на
+    /// расстоянии `distance`: в точке `target` клетка земли того же размера.
+    pub fn orbiting_in(
+        projection: Projection,
         target: Vec2,
         yaw: f64,
         pitch: f64,
@@ -206,6 +274,7 @@ impl Camera3d {
             pitch,
             view_height_at(pitch, distance),
             viewport,
+            projection,
         )
     }
 
@@ -215,8 +284,9 @@ impl Camera3d {
         pitch: f64,
         view_height: f64,
         viewport: [f64; 2],
+        projection: Projection,
     ) -> Camera3d {
-        let distance = view_distance(pitch, view_height);
+        let distance = eye_distance(projection, pitch, view_height);
         let (sin_pitch, cos_pitch, sin_yaw, cos_yaw) = angles(pitch, yaw);
         Camera3d {
             eye: [
@@ -231,6 +301,7 @@ impl Camera3d {
             view_height,
             viewport,
             label_view_height: view_height,
+            projection,
         }
     }
 
@@ -277,9 +348,23 @@ impl Camera3d {
         self.viewport[1] / self.label_view_height
     }
 
-    /// Точка в окне (в точках) для точки мира; `None`, если она за камерой.
+    /// Точек окна на единицу длины поперёк взгляда при `orthographic`: высота окна вдоль `up` —
+    /// `view_height · sin(pitch)` единиц.
+    fn ortho_points_per_unit(&self) -> f64 {
+        self.viewport[1] / 2.0 / ortho_half_height(self.pitch, self.view_height)
+    }
+
+    /// Точка в окне (в точках) для точки мира; `None`, если она за камерой. При `orthographic` за камерой
+    /// ничего нет: любая точка мира ложится в окно.
     pub fn project(&self, p: Vec3) -> Option<[f64; 2]> {
         let rel = math3::sub(p, self.eye);
+        if self.projection == Projection::Orthographic {
+            let per_unit = self.ortho_points_per_unit();
+            return Some([
+                self.viewport[0] / 2.0 + per_unit * math3::dot(rel, self.right()),
+                self.viewport[1] / 2.0 - per_unit * math3::dot(rel, self.up()),
+            ]);
+        }
         let depth = math3::dot(rel, self.forward());
         if depth <= 1e-6 {
             return None;
@@ -291,8 +376,40 @@ impl Camera3d {
         ])
     }
 
-    /// Единичное направление луча через точку окна (в точках).
+    /// Откуда идёт луч через точку окна (в точках): из глаза; при `orthographic` — из точки глазной плоскости,
+    /// сдвинутой от глаза на место точки окна по `right` и `up`.
+    pub fn ray_origin(&self, window: [f64; 2]) -> Vec3 {
+        if self.projection == Projection::Perspective {
+            return self.eye;
+        }
+        let per_unit = self.ortho_points_per_unit();
+        let across = (window[0] - self.viewport[0] / 2.0) / per_unit;
+        let down = (window[1] - self.viewport[1] / 2.0) / per_unit;
+        math3::add(
+            self.eye,
+            math3::add(
+                math3::scale(self.right(), across),
+                math3::scale(self.up(), -down),
+            ),
+        )
+    }
+
+    /// Насколько точка `p` далека от камеры, для порядка рисования: квадрат расстояния до глаза, а при
+    /// `orthographic` — глубина вдоль взгляда.
+    pub fn depth_key(&self, p: Vec3) -> f64 {
+        let rel = math3::sub(p, self.eye);
+        match self.projection {
+            Projection::Perspective => math3::dot(rel, rel),
+            Projection::Orthographic => math3::dot(rel, self.forward()),
+        }
+    }
+
+    /// Единичное направление луча через точку окна (в точках); при `orthographic` — взгляд камеры для любой
+    /// точки.
     pub fn ray_direction(&self, window: [f64; 2]) -> Vec3 {
+        if self.projection == Projection::Orthographic {
+            return self.forward();
+        }
         let focal = self.focal();
         let dx = (window[0] - self.viewport[0] / 2.0) / focal;
         let dy = (window[1] - self.viewport[1] / 2.0) / focal;
@@ -310,11 +427,9 @@ impl Camera3d {
         if direction[2] >= 0.0 {
             return None;
         }
-        let t = -self.eye[2] / direction[2];
-        Some([
-            self.eye[0] + t * direction[0],
-            self.eye[1] + t * direction[1],
-        ])
+        let origin = self.ray_origin(window);
+        let t = -origin[2] / direction[2];
+        Some([origin[0] + t * direction[0], origin[1] + t * direction[1]])
     }
 
     /// «Мышь», требование 21: место на земле, куда смотрит точка окна. У камеры игры луч всегда
@@ -324,17 +439,67 @@ impl Camera3d {
         self.ground_hit(window).unwrap_or(self.target)
     }
 
-    /// Матрица «мир → вырез»: вид и перспектива с глубиной `0..1`.
+    /// Матрица «мир → вырез»: вид и проекция с глубиной `0..1`. При `orthographic` окно вдоль `up` —
+    /// `view_height · sin(pitch)` единиц, а глубина от глаза до двух его отнесений назад.
     pub fn view_proj(&self) -> Mat4 {
-        let distance = view_distance(self.pitch, self.view_height);
         let view = math3::view(self.eye, self.right(), self.up(), self.forward());
-        let projection = math3::perspective(
-            FOV_Y_DEGREES.to_radians(),
-            self.viewport[0] / self.viewport[1].max(1.0),
-            distance * 0.1,
-            distance * 8.0 + 100.0,
-        );
+        let aspect = self.viewport[0] / self.viewport[1].max(1.0);
+        let projection = match self.projection {
+            Projection::Perspective => {
+                let distance = view_distance(self.pitch, self.view_height);
+                math3::perspective(
+                    FOV_Y_DEGREES.to_radians(),
+                    aspect,
+                    distance * 0.1,
+                    distance * 8.0 + 100.0,
+                )
+            }
+            Projection::Orthographic => {
+                let half_height = ortho_half_height(self.pitch, self.view_height);
+                let half_width = half_height * aspect;
+                math3::ortho(
+                    -half_width,
+                    half_width,
+                    -half_height,
+                    half_height,
+                    0.0,
+                    2.0 * ortho_distance(self.view_height),
+                )
+            }
+        };
         math3::mul(&projection, &view)
+    }
+
+    /// Четыре боковые плоскости видимой части — пирамиды при перспективе, коробки при `orthographic`: внутри
+    /// видимого для каждой пары `(нормаль, сдвиг)` выполнено `нормаль · точка + сдвиг ≥ 0`.
+    pub fn side_planes(&self) -> [(Vec3, f64); 4] {
+        let (forward, up, right) = (self.forward(), self.up(), self.right());
+        let aspect = self.viewport[0] / self.viewport[1].max(1.0);
+        let negative = |axis: Vec3| math3::scale(axis, -1.0);
+        match self.projection {
+            Projection::Perspective => {
+                let tan_y = tan_half_fov();
+                let tan_x = tan_y * aspect;
+                [
+                    math3::add(right, math3::scale(forward, tan_x)),
+                    math3::add(negative(right), math3::scale(forward, tan_x)),
+                    math3::add(up, math3::scale(forward, tan_y)),
+                    math3::add(negative(up), math3::scale(forward, tan_y)),
+                ]
+                .map(|normal| (normal, -math3::dot(normal, self.eye)))
+            }
+            Projection::Orthographic => {
+                let half_height = ortho_half_height(self.pitch, self.view_height);
+                let half_width = half_height * aspect;
+                [
+                    (right, half_width),
+                    (negative(right), half_width),
+                    (up, half_height),
+                    (negative(up), half_height),
+                ]
+                .map(|(axis, half)| (axis, half - math3::dot(axis, self.eye)))
+            }
+        }
     }
 
     /// Прямоугольник по осям `[низ, верх]`, охватывающий землю в пределах сцены, которую камера
@@ -343,21 +508,9 @@ impl Camera3d {
     pub fn visible_ground(&self, scene: &SceneConfig) -> Option<[Vec2; 2]> {
         let (width, height) = (scene.width as f64, scene.height as f64);
         let mut ground = vec![[0.0, 0.0], [width, 0.0], [width, height], [0.0, height]];
-        let tan_y = tan_half_fov();
-        let tan_x = tan_y * self.viewport[0] / self.viewport[1].max(1.0);
-        let (forward, up, right) = (self.forward(), self.up(), self.right());
-        let inward = [
-            math3::add(right, math3::scale(forward, tan_x)),
-            math3::add(math3::scale(right, -1.0), math3::scale(forward, tan_x)),
-            math3::add(up, math3::scale(forward, tan_y)),
-            math3::add(math3::scale(up, -1.0), math3::scale(forward, tan_y)),
-        ];
-        for normal in inward {
+        for (normal, offset) in self.side_planes() {
             ground = clip_ground(&ground, |point| {
-                math3::dot(
-                    normal,
-                    [point[0] - self.eye[0], point[1] - self.eye[1], -self.eye[2]],
-                )
+                math3::dot(normal, [point[0], point[1], 0.0]) + offset
             });
             if ground.is_empty() {
                 return None;
@@ -398,22 +551,31 @@ fn clip_ground(polygon: &[Vec2], side: impl Fn(Vec2) -> f64) -> Vec<Vec2> {
 /// столбце не выходили за сцену; если по оси сцена меньше этого отрезка, она стоит по середине отрезка.
 pub fn clamp_center_3d(
     scene: &SceneConfig,
-    pitch: f64,
+    camera: CameraConfig,
     view_height: f64,
     viewport: [f64; 2],
     center: Vec2,
 ) -> Vec2 {
-    let distance = view_distance(pitch, view_height);
-    let radians = pitch.to_radians();
-    let half_fov = FOV_Y_DEGREES.to_radians() / 2.0;
     let aspect = viewport[0] / viewport[1].max(1.0);
-    let half_width = distance * aspect * tan_half_fov();
-    let depth_offset =
-        |angle: f64| distance * radians.cos() - distance * radians.sin() / angle.tan();
-    let (top, bottom) = (
-        depth_offset(radians - half_fov),
-        depth_offset(radians + half_fov),
-    );
+    let (half_width, top, bottom) = match camera.projection {
+        Projection::Perspective => {
+            let distance = view_distance(camera.pitch, view_height);
+            let radians = camera.pitch.to_radians();
+            let half_fov = FOV_Y_DEGREES.to_radians() / 2.0;
+            let depth_offset =
+                |angle: f64| distance * radians.cos() - distance * radians.sin() / angle.tan();
+            (
+                distance * aspect * tan_half_fov(),
+                depth_offset(radians - half_fov),
+                depth_offset(radians + half_fov),
+            )
+        }
+        Projection::Orthographic => (
+            ortho_half_height(camera.pitch, view_height) * aspect,
+            -view_height / 2.0,
+            view_height / 2.0,
+        ),
+    };
     [
         clamp_axis(center[0], scene.width as f64, -half_width, half_width),
         clamp_axis(center[1], scene.height as f64, top, bottom),
@@ -613,10 +775,11 @@ pub fn dragged_target(camera: &Camera3d, anchor: Vec3, pointer: [f64; 2]) -> Opt
     if direction[2] >= -1e-9 {
         return None;
     }
-    let reach = (anchor[2] - camera.eye[2]) / direction[2];
+    let origin = camera.ray_origin(pointer);
+    let reach = (anchor[2] - origin[2]) / direction[2];
     Some([
-        camera.target[0] + anchor[0] - reach * direction[0] - camera.eye[0],
-        camera.target[1] + anchor[1] - reach * direction[1] - camera.eye[1],
+        camera.target[0] + anchor[0] - reach * direction[0] - origin[0],
+        camera.target[1] + anchor[1] - reach * direction[1] - origin[1],
     ])
 }
 
@@ -651,14 +814,27 @@ impl EditorCamera {
     }
 
     pub fn camera(&self, viewport: [f64; 2]) -> Camera3d {
-        Camera3d::orbiting(self.target, self.yaw, self.pitch, self.distance, viewport)
-            .raised(self.target_z)
+        self.camera_in(Projection::Perspective, viewport)
+    }
+
+    /// Та же камера с проекцией `projection`.
+    pub fn camera_in(&self, projection: Projection, viewport: [f64; 2]) -> Camera3d {
+        Camera3d::orbiting_in(
+            projection,
+            self.target,
+            self.yaw,
+            self.pitch,
+            self.distance,
+            viewport,
+        )
+        .raised(self.target_z)
     }
 }
 
-/// Наименьшее расстояние, с которого камера с точкой `target` на высоте `target_z` под `yaw` и
-/// `pitch` видит в окне все `points`.
+/// Наименьшее расстояние, с которого камера с проекцией `projection` и точкой `target` на высоте `target_z`
+/// под `yaw` и `pitch` видит в окне все `points`.
 pub fn fit_distance(
+    projection: Projection,
     points: &[Vec3],
     target: Vec2,
     target_z: f64,
@@ -676,7 +852,10 @@ pub fn fit_distance(
             point[1] - target[1],
             point[2] - target_z,
         ];
-        let ahead = math3::dot(q, forward);
+        let ahead = match projection {
+            Projection::Perspective => math3::dot(q, forward),
+            Projection::Orthographic => 0.0,
+        };
         distance
             .max(math3::dot(q, right).abs() / (tan * aspect) - ahead)
             .max(math3::dot(q, up).abs() / tan - ahead)
@@ -712,7 +891,15 @@ pub fn fit_ground(
         target_z,
         yaw: 0.0,
         pitch,
-        distance: fit_distance(&points, target, target_z, 0.0, pitch, viewport),
+        distance: fit_distance(
+            Projection::Perspective,
+            &points,
+            target,
+            target_z,
+            0.0,
+            pitch,
+            viewport,
+        ),
     })
 }
 
@@ -741,7 +928,15 @@ pub fn fit_object(
         target_z,
         yaw,
         pitch,
-        distance: fit_distance(&points, target, target_z, yaw, pitch, viewport),
+        distance: fit_distance(
+            Projection::Perspective,
+            &points,
+            target,
+            target_z,
+            yaw,
+            pitch,
+            viewport,
+        ),
     })
 }
 
@@ -950,9 +1145,17 @@ mod tests {
 
     const WINDOW: [f64; 2] = [1920.0, 1080.0];
 
+    const PERSPECTIVE_55: CameraConfig = CameraConfig {
+        pitch: 55.0,
+        projection: Projection::Perspective,
+    };
+
     fn scene_3d(width: u32, height: u32) -> SceneConfig {
         SceneConfig {
-            camera: Some(crate::core::scene::CameraConfig { pitch: 55.0 }),
+            camera: Some(CameraConfig {
+                pitch: 55.0,
+                projection: Projection::Perspective,
+            }),
             ..scene(width, height, Some(12.0))
         }
     }
@@ -1032,7 +1235,7 @@ mod tests {
     fn the_follow_camera_stops_at_every_edge_of_the_scene() {
         let scene = scene_3d(32, 24);
         let ground = |center: Vec2| {
-            let center = clamp_center_3d(&scene, 55.0, 12.0, WINDOW, center);
+            let center = clamp_center_3d(&scene, PERSPECTIVE_55, 12.0, WINDOW, center);
             let camera = Camera3d::looking_at(center, 55.0, 12.0, WINDOW);
             (
                 camera.ground_point([0.0, WINDOW[1] / 2.0]),
@@ -1050,7 +1253,7 @@ mod tests {
         let (_, _, _, bottom) = ground([16.0, 99.0]);
         assert!((bottom[1] - 24.0).abs() < 1e-9, "{bottom:?}");
         // Далеко от краёв камера просто на объекте.
-        let free = clamp_center_3d(&scene, 55.0, 12.0, WINDOW, [16.0, 12.0]);
+        let free = clamp_center_3d(&scene, PERSPECTIVE_55, 12.0, WINDOW, [16.0, 12.0]);
         assert_eq!(free, [16.0, 12.0]);
     }
 
@@ -1058,7 +1261,7 @@ mod tests {
     #[test]
     fn a_scene_smaller_than_the_visible_stretch_stands_in_the_middle_of_it() {
         let scene = scene_3d(4, 4);
-        let center = clamp_center_3d(&scene, 55.0, 12.0, WINDOW, [1.0, 1.0]);
+        let center = clamp_center_3d(&scene, PERSPECTIVE_55, 12.0, WINDOW, [1.0, 1.0]);
         let camera = Camera3d::looking_at(center, 55.0, 12.0, WINDOW);
         let left = camera.ground_point([0.0, WINDOW[1] / 2.0]);
         let right = camera.ground_point([WINDOW[0], WINDOW[1] / 2.0]);
@@ -1101,5 +1304,245 @@ mod tests {
             let middle = camera.project([16.0, 12.0, 0.0]).expect("in front");
             assert!((middle[0] - viewport[0] / 2.0).abs() < 1e-9);
         }
+    }
+
+    fn orthographic(pitch: f64) -> CameraConfig {
+        CameraConfig {
+            pitch,
+            projection: Projection::Orthographic,
+        }
+    }
+
+    /// «Камера», `orthographic`: высота окна вдоль `up` — `view_height · sin(pitch)` единиц, поэтому клетка земли
+    /// вглубь занимает высоту окна, делённую на `view_height`, на любом удалении, а поперёк — на `sin(pitch)`
+    /// больше.
+    #[test]
+    fn an_orthographic_cell_has_one_size_everywhere() {
+        let camera = Camera3d::game(orthographic(55.0), [16.0, 12.0], 12.0, WINDOW);
+        let middle = camera.project([16.0, 12.0, 0.0]).expect("видна");
+        assert!((middle[0] - 960.0).abs() < 1e-9 && (middle[1] - 540.0).abs() < 1e-9);
+        let (sin, cos) = 55.0_f64.to_radians().sin_cos();
+        let across = 90.0 / sin;
+        for y in [2.0, 11.5, 12.0, 20.0] {
+            let far = camera.project([16.0, y, 0.0]).expect("видна");
+            let near = camera.project([16.0, y + 1.0, 0.0]).expect("видна");
+            assert!(((near[1] - far[1]) - 90.0).abs() < 1e-9, "{y}");
+            let left = camera.project([10.0, y, 0.0]).expect("видна");
+            let right = camera.project([11.0, y, 0.0]).expect("видна");
+            assert!(((right[0] - left[0]) - across).abs() < 1e-9, "{y}");
+        }
+        let low = camera.project([16.0, 12.0, 0.0]).expect("видна");
+        let high = camera.project([16.0, 12.0, 3.0]).expect("видна");
+        assert!(
+            ((low[1] - high[1]) - 3.0 * cos * 90.0 / sin).abs() < 1e-9,
+            "высота поднимает точку на экране на cos(pitch) за единицу"
+        );
+    }
+
+    /// `orthographic` при `pitch: 90` — земля видна так же, как в плоской сцене.
+    #[test]
+    fn an_orthographic_camera_at_ninety_degrees_lands_where_the_flat_scene_puts_it() {
+        let flat = scene(40, 30, Some(12.0));
+        let center = [17.0, 11.0];
+        let (scale, offset) = frame(&flat, center, [WINDOW[0] as f32, WINDOW[1] as f32]);
+        let camera = Camera3d::game(orthographic(90.0), center, 12.0, WINDOW);
+        for point in [[17.0, 11.0], [12.5, 8.0], [21.25, 15.75]] {
+            let flat_px = [
+                offset[0] as f64 + point[0] * scale as f64,
+                offset[1] as f64 + point[1] * scale as f64,
+            ];
+            let px = camera.project([point[0], point[1], 0.0]).expect("видна");
+            assert!((px[0] - flat_px[0]).abs() < 1e-3 && (px[1] - flat_px[1]).abs() < 1e-3);
+        }
+    }
+
+    /// Луч `orthographic` параллелен взгляду, а начало его сдвинуто от глаза по `right` и `up`; луч через пиксель,
+    /// в который лёг `project`, приходит в ту же точку.
+    #[test]
+    fn orthographic_rays_run_along_the_view_from_shifted_origins() {
+        for raised in [0.0, 2.5] {
+            let camera = Camera3d::game(orthographic(40.0), [10.0, 9.0], 10.0, [1000.0, 700.0])
+                .raised(raised);
+            assert_eq!(camera.ray_origin([500.0, 350.0]), camera.eye);
+            for window in [[0.0, 0.0], [1000.0, 700.0], [123.0, 456.0]] {
+                assert_eq!(camera.ray_direction(window), camera.forward());
+            }
+            for point in [
+                [10.0, 9.0, raised],
+                [6.5, 12.25, raised],
+                [14.0, 5.0, raised],
+            ] {
+                let px = camera.project(point).expect("видна");
+                let origin = camera.ray_origin(px);
+                let along = math3::sub(point, origin);
+                let forward = camera.forward();
+                let shift = math3::sub(along, math3::scale(forward, math3::dot(along, forward)));
+                assert!(math3::dot(shift, shift) < 1e-18, "{point:?}: {shift:?}");
+            }
+            for point in [[10.0, 9.0], [6.5, 12.25], [14.0, 5.0]] {
+                let px = camera.project([point[0], point[1], 0.0]).expect("видна");
+                let back = camera.ground_point(px);
+                assert!(
+                    (back[0] - point[0]).abs() < 1e-9 && (back[1] - point[1]).abs() < 1e-9,
+                    "{raised}: {point:?} → {back:?}"
+                );
+            }
+        }
+    }
+
+    /// Требование 5, `orthographic`: у каждого края земля под краем окна на средней строке или столбце не выходит за
+    /// сцену; камера прижата ровно к нему; сцена меньше видимого отрезка стоит по его середине.
+    #[test]
+    fn the_orthographic_follow_camera_stops_at_every_edge_of_the_scene() {
+        for pitch in [30.0, 55.0, 90.0] {
+            let config = orthographic(pitch);
+            let scene = scene_3d(32, 24);
+            let ground = |center: Vec2| {
+                let center = clamp_center_3d(&scene, config, 12.0, WINDOW, center);
+                let camera = Camera3d::game(config, center, 12.0, WINDOW);
+                (
+                    camera.ground_point([0.0, WINDOW[1] / 2.0]),
+                    camera.ground_point([WINDOW[0], WINDOW[1] / 2.0]),
+                    camera.ground_point([WINDOW[0] / 2.0, 0.0]),
+                    camera.ground_point([WINDOW[0] / 2.0, WINDOW[1]]),
+                )
+            };
+            assert!(ground([0.0, 12.0]).0[0].abs() < 1e-9, "{pitch}");
+            assert!((ground([99.0, 12.0]).1[0] - 32.0).abs() < 1e-9, "{pitch}");
+            assert!(ground([16.0, -50.0]).2[1].abs() < 1e-9, "{pitch}");
+            assert!((ground([16.0, 99.0]).3[1] - 24.0).abs() < 1e-9, "{pitch}");
+            assert_eq!(
+                clamp_center_3d(&scene, config, 12.0, WINDOW, [16.0, 12.0]),
+                [16.0, 12.0]
+            );
+
+            let small = scene_3d(4, 4);
+            let center = clamp_center_3d(&small, config, 12.0, WINDOW, [1.0, 1.0]);
+            let camera = Camera3d::game(config, center, 12.0, WINDOW);
+            let left = camera.ground_point([0.0, WINDOW[1] / 2.0]);
+            let right = camera.ground_point([WINDOW[0], WINDOW[1] / 2.0]);
+            let top = camera.ground_point([WINDOW[0] / 2.0, 0.0]);
+            let bottom = camera.ground_point([WINDOW[0] / 2.0, WINDOW[1]]);
+            assert!(((left[0] + right[0]) / 2.0 - 2.0).abs() < 1e-9, "{pitch}");
+            assert!(((top[1] + bottom[1]) / 2.0 - 2.0).abs() < 1e-9, "{pitch}");
+        }
+    }
+
+    /// `visible_ground` у `orthographic`: прямоугольник по краям окна, и сцена обрезается им.
+    #[test]
+    fn the_orthographic_visible_ground_is_the_window_box_clipped_to_the_scene() {
+        let big = scene_3d(200, 200);
+        let camera = Camera3d::game(orthographic(55.0), [100.0, 100.0], 12.0, WINDOW);
+        let [low, high] = camera.visible_ground(&big).expect("видно");
+        let corners = [
+            [0.0, 0.0],
+            [WINDOW[0], 0.0],
+            [WINDOW[0], WINDOW[1]],
+            [0.0, WINDOW[1]],
+        ]
+        .map(|window| camera.ground_point(window));
+        let (mut want_low, mut want_high) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for corner in corners {
+            for axis in 0..2 {
+                want_low[axis] = want_low[axis].min(corner[axis]);
+                want_high[axis] = want_high[axis].max(corner[axis]);
+            }
+        }
+        for axis in 0..2 {
+            assert!(
+                (low[axis] - want_low[axis]).abs() < 1e-9,
+                "{low:?} {want_low:?}"
+            );
+            assert!(
+                (high[axis] - want_high[axis]).abs() < 1e-9,
+                "{high:?} {want_high:?}"
+            );
+        }
+        let far = Camera3d::game(orthographic(55.0), [100.0, 400.0], 12.0, WINDOW);
+        assert_eq!(far.visible_ground(&big), None);
+    }
+
+    /// Глубина `orthographic` держит высокие модели: от самой низкой до самой высокой видимой точки всё в `0..1`,
+    /// а `view_proj` кладёт точку туда же, куда `project`.
+    #[test]
+    fn the_orthographic_depth_range_holds_tall_models_and_agrees_with_project() {
+        for view_height in [4.0, 12.0, 80.0] {
+            let camera =
+                Camera3d::game(orthographic(30.0), [20.0, 20.0], view_height, WINDOW).raised(1.5);
+            let matrix = camera.view_proj();
+            let span = view_height / 2.0;
+            for x in [-1.0, 0.0, 1.0] {
+                for y in [-1.0, 0.0, 1.0] {
+                    for height in [-6.0, 0.0, 40.0, 90.0] {
+                        let point = [20.0 + x * span, 20.0 + y * span, height];
+                        let clip = math3::transform_point(&matrix, point);
+                        assert!((clip[3] - 1.0).abs() < 1e-6, "{clip:?}");
+                        assert!(
+                            (0.0..=1.0).contains(&clip[2]),
+                            "{point:?}: глубина {}",
+                            clip[2]
+                        );
+                        let px = camera.project(point).expect("видна");
+                        let window = [
+                            (clip[0] * 0.5 + 0.5) * WINDOW[0],
+                            (0.5 - clip[1] * 0.5) * WINDOW[1],
+                        ];
+                        assert!(
+                            (px[0] - window[0]).abs() < 0.05 && (px[1] - window[1]).abs() < 0.05,
+                            "{point:?}: {px:?} против {window:?}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Камера игрока с `orthographic`: схваченное место остаётся под указателем после сдвига.
+    #[test]
+    fn a_dragged_orthographic_camera_keeps_the_grabbed_place_under_the_pointer() {
+        let camera = Camera3d::game(orthographic(50.0), [30.0, 30.0], 14.0, WINDOW).raised(1.0);
+        let anchor = [33.0, 28.0, 1.0];
+        let from = camera.project(anchor).expect("видна");
+        let to = [from[0] + 120.0, from[1] - 80.0];
+        let target = dragged_target(&camera, anchor, to).expect("тащится");
+        let moved = Camera3d::game(orthographic(50.0), target, 14.0, WINDOW).raised(1.0);
+        let now = moved.project(anchor).expect("видна");
+        assert!(
+            (now[0] - to[0]).abs() < 1e-6 && (now[1] - to[1]).abs() < 1e-6,
+            "{now:?}"
+        );
+    }
+
+    /// Расстояние, с которого камера `orthographic` видит все точки, не зависит от их глубины: окно с этим
+    /// расстоянием касается самой крайней.
+    #[test]
+    fn the_orthographic_fit_distance_just_holds_the_points() {
+        let points = [[10.0, 4.0, 0.0], [22.0, 15.0, 3.0], [14.0, 9.0, 8.0]];
+        let (target, target_z, pitch) = ([16.0, 10.0], 1.0, 50.0);
+        let distance = fit_distance(
+            Projection::Orthographic,
+            &points,
+            target,
+            target_z,
+            0.0,
+            pitch,
+            WINDOW,
+        );
+        let camera = EditorCamera {
+            target,
+            target_z,
+            yaw: 0.0,
+            pitch,
+            distance,
+        }
+        .camera_in(Projection::Orthographic, WINDOW);
+        let mut extreme = 0.0_f64;
+        for point in points {
+            let px = camera.project(point).expect("видна");
+            extreme = extreme
+                .max((px[0] - WINDOW[0] / 2.0).abs() / (WINDOW[0] / 2.0))
+                .max((px[1] - WINDOW[1] / 2.0).abs() / (WINDOW[1] / 2.0));
+        }
+        assert!((extreme - 1.0).abs() < 1e-9, "{extreme}");
     }
 }

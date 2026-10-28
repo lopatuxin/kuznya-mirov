@@ -185,6 +185,9 @@ pub struct World {
     jump: Vec<JumpState>,
     /// «Трёхмерная сцена» → «Модели и движения»: какое движение играет у каждого объекта со скелетом.
     motion: Vec<MotionState>,
+    /// «Трёхмерная сцена» → «Здания»: сколько шагов растворения прошёл срез каждого здания — от 0 (виден основной вид) до
+    /// `building::DISSOLVE_STEPS` (виден срез).
+    cutaway: Vec<u8>,
     /// «Мир на экране» → «Камера игрока»: сколько раз объектам записали `camera_follows` — признак
     /// «записали», а не «есть»: запись тому же объекту заново тоже возвращает слежение.
     camera_follow_writes: u64,
@@ -232,6 +235,7 @@ impl World {
             walk_to_z: Vec::new(),
             jump: Vec::new(),
             motion: Vec::new(),
+            cutaway: Vec::new(),
             camera_follow_writes: 0,
             decks: Vec::new(),
             surface_revision: next_surface_revision(),
@@ -383,6 +387,17 @@ impl World {
     pub fn set_tilt(&mut self, id: u32, angle: f64) {
         if let Some(slot) = self.tilt.get_mut(id as usize) {
             *slot = angle;
+        }
+    }
+
+    /// Сколько шагов растворения набрал срез здания `id` → `core::building`.
+    pub fn cutaway_steps(&self, id: u32) -> u8 {
+        self.cutaway.get(id as usize).copied().unwrap_or(0)
+    }
+
+    pub fn set_cutaway_steps(&mut self, id: u32, steps: u8) {
+        if let Some(slot) = self.cutaway.get_mut(id as usize) {
+            *slot = steps;
         }
     }
 
@@ -542,6 +557,7 @@ impl World {
         self.walk_to_z.push(None);
         self.jump.push(JumpState::default());
         self.motion.push(MotionState::default());
+        self.cutaway.push(0);
         for column in &mut self.columns {
             column.push_empty();
         }
@@ -591,6 +607,7 @@ impl World {
         self.walk_to_z[idx] = None;
         self.jump[idx] = JumpState::default();
         self.motion[idx] = MotionState::default();
+        self.cutaway[idx] = 0;
         self.free_list.push(id);
         if was_road {
             self.roads_changed();

@@ -1031,15 +1031,17 @@ fn objects_with_a_blend_part_are_drawn_far_to_near_and_solid_ones_are_not_in_tha
     let draws = model_draws(&game);
     let window = game.world.models().index_of("window").expect("модель") as u32;
     assert_eq!(
-        draws.blended_far_to_near(camera.eye),
+        draws.blended_far_to_near(&camera),
         [
             BlendedDraw {
                 model: window,
-                index: 1
+                index: 1,
+                dissolving: false
             },
             BlendedDraw {
                 model: window,
-                index: 0
+                index: 0,
+                dissolving: false
             },
         ],
         "камера смотрит вглубь сцены: дальше — меньше y"
@@ -1147,6 +1149,8 @@ fn the_alpha_shaders_validate_and_translate_to_glsl_es_300() {
             &[(0, 0)][..],
         ),
         (naga::ShaderStage::Vertex, "vs_junction", &[(0, 0)][..]),
+        (naga::ShaderStage::Vertex, "vs_shadow_model", &[(0, 0)][..]),
+        (naga::ShaderStage::Fragment, "fs_model_dissolve", &all[..]),
         (
             naga::ShaderStage::Fragment,
             "fs_shadow_model_mask",
@@ -1158,6 +1162,17 @@ fn the_alpha_shaders_validate_and_translate_to_glsl_es_300() {
         let glsl = to_webgl2_glsl(&module, &info, stage, entry, bindings);
         assert!(glsl.starts_with("#version 300 es"), "{entry}: {glsl}");
     }
+    let dissolving = to_webgl2_glsl(
+        &module,
+        &info,
+        naga::ShaderStage::Fragment,
+        "fs_model_dissolve",
+        &all,
+    );
+    assert!(
+        dissolving.contains("discard"),
+        "«Здания», срез: точки, отданные модели среза, отбрасываются"
+    );
     for entry in ["fs_model_mask", "fs_shadow_model_mask"] {
         let bindings = if entry == "fs_model_mask" {
             &all[..]

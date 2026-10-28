@@ -15,8 +15,8 @@ use serde_json::Value as Json;
 
 use crate::core::math3::IDENTITY;
 use crate::core::model::{
-    AlphaMode, DEFAULT_ALPHA_CUTOFF, Material, Model, ModelImage, ModelVertex, Part, Sampler,
-    SkinVertex, Texture, Wrap,
+    AlphaMode, Building, DEFAULT_ALPHA_CUTOFF, InsideBox, Look, Material, Model, ModelImage,
+    ModelVertex, Part, Sampler, SkinVertex, Texture, Wrap,
 };
 use crate::core::skeleton::Skeleton;
 
@@ -25,6 +25,9 @@ use super::rig;
 type Vec3 = [f32; 3];
 /// Матрица 4 × 4 по столбцам, как в glTF.
 type Mat4 = [[f32; 4]; 4];
+
+/// Узлы файла с именем, начинающимся так, — коробки внутренности здания.
+const INSIDE_PREFIX: &str = "inside";
 
 /// `mimeType` картинки, которую служба сжатия положила рядом с облегчённой моделью.
 const KTX2_MIME_TYPE: &str = "image/ktx2";
@@ -172,6 +175,7 @@ pub fn parse_model_images(
         images: Vec::new(),
         image_of: HashMap::new(),
         parts: Vec::new(),
+        insides: Vec::new(),
         load_image: image,
     };
     for node in scene.nodes() {
@@ -265,6 +269,8 @@ struct Builder<'a, F> {
     images: Vec<ModelImage>,
     image_of: HashMap<usize, usize>,
     parts: Vec<(usize, Vec<FileVertex>, Vec<[u32; 3]>)>,
+    /// Узлы `inside`: низ и верх коробки в осях самого узла и матрица узла в оси файла.
+    insides: Vec<(Vec3, Vec3, Mat4)>,
     load_image: F,
 }
 
@@ -277,6 +283,13 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
         holder: Option<usize>,
     ) -> Result<(), String> {
         let matrix = multiply(parent, &node.transform().matrix());
+        if node
+            .name()
+            .is_some_and(|name| name.starts_with(INSIDE_PREFIX))
+        {
+            self.add_inside(node, &matrix);
+            return Ok(());
+        }
         let holder = self.joint_of.get(&node.index()).copied().or(holder);
         if let Some(mesh) = node.mesh() {
             let (placed, binding) = if node.skin().is_some() && self.joints.is_some() {
@@ -292,6 +305,32 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
             self.visit(&child, &matrix, holder)?;
         }
         Ok(())
+    }
+
+    /// «Здания»: сетки узла `inside` и его потомков не рисуются и не твёрдые — каждая даёт коробку внутренности.
+    /// Коробка — габарит сетки в осях её узла, поэтому в файле её строят прямой в этих осях, а поворачивают узлом.
+    fn add_inside(&mut self, node: &Node<'_>, matrix: &Mat4) {
+        if let Some(mesh) = node.mesh() {
+            let blob = self.blob;
+            let mut low = [f32::INFINITY; 3];
+            let mut high = [f32::NEG_INFINITY; 3];
+            for primitive in mesh.primitives() {
+                let reader = primitive.reader(|_| blob);
+                for position in reader.read_positions().into_iter().flatten() {
+                    for axis in 0..3 {
+                        low[axis] = low[axis].min(position[axis]);
+                        high[axis] = high[axis].max(position[axis]);
+                    }
+                }
+            }
+            if low.iter().chain(&high).all(|c| c.is_finite()) {
+                self.insides.push((low, high, *matrix));
+            }
+        }
+        for child in node.children() {
+            let child_matrix = multiply(matrix, &child.transform().matrix());
+            self.add_inside(&child, &child_matrix);
+        }
     }
 
     fn add_primitive(
@@ -529,6 +568,18 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
             Some(skeleton) => rig::recentre(skeleton, shift),
             None => skin.clear(),
         }
+        let inside = self
+            .insides
+            .iter()
+            .filter_map(|(low, high, node_to_file)| {
+                let to_node = model_to_node(node_to_file, shift)?;
+                Some(InsideBox {
+                    low: swap_yz(*low),
+                    high: swap_yz(*high),
+                    to_node,
+                })
+            })
+            .collect();
         Ok(Model {
             name: name.to_string(),
             parts,
@@ -538,8 +589,56 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
             origin: [-shift[0], -shift[1]],
             skeleton,
             skin,
+            look: Look::Lit,
+            building: Building {
+                inside,
+                shift,
+                ..Building::default()
+            },
         })
     }
+}
+
+fn swap_yz(v: Vec3) -> Vec3 {
+    [v[0], v[2], v[1]]
+}
+
+/// Матрица из точки осей модели (оси сцены, начало сдвинуто на `shift`) в ту же точку осей узла (оси сцены) для узла с
+/// матрицей `node_to_file`; `None`, если матрица узла вырождена.
+fn model_to_node(node_to_file: &Mat4, shift: Vec3) -> Option<Mat4> {
+    let to_node_file = invert_affine(node_to_file)?;
+    let swapped = |m: &Mat4| -> Mat4 {
+        const AXIS: [usize; 4] = [0, 2, 1, 3];
+        std::array::from_fn(|column| std::array::from_fn(|row| m[AXIS[column]][AXIS[row]]))
+    };
+    let mut unshift = IDENTITY;
+    unshift[3] = [shift[0], shift[1], shift[2], 1.0];
+    Some(multiply(&swapped(&to_node_file), &unshift))
+}
+
+/// Обратная к матрице без перспективы; `None`, если у неё нет обратной.
+fn invert_affine(m: &Mat4) -> Option<Mat4> {
+    let a = |row: usize, column: usize| f64::from(m[column][row]);
+    let cofactor = |row: usize, column: usize| {
+        let (r1, r2) = ((row + 1) % 3, (row + 2) % 3);
+        let (c1, c2) = ((column + 1) % 3, (column + 2) % 3);
+        a(r1, c1) * a(r2, c2) - a(r1, c2) * a(r2, c1)
+    };
+    let determinant = (0..3)
+        .map(|column| a(0, column) * cofactor(0, column))
+        .sum::<f64>();
+    if !determinant.is_finite() || determinant.abs() < 1e-12 {
+        return None;
+    }
+    let linear = |row: usize, column: usize| cofactor(column, row) / determinant;
+    Some(std::array::from_fn(|column| {
+        std::array::from_fn(|row| match (column, row) {
+            (3, 3) => 1.0,
+            (3, row) => -(0..3).map(|k| linear(row, k) * a(k, 3)).sum::<f64>() as f32,
+            (_, 3) => 0.0,
+            (column, row) => linear(row, column) as f32,
+        })
+    }))
 }
 
 /// Двигает ли сустав скелета эту вершину: у вершины с нулевыми весами сустава нет, она стоит на месте.

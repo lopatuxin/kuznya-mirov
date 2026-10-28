@@ -1,5 +1,6 @@
 use std::collections::{HashMap, HashSet};
 
+use super::building;
 use super::code::{CodeError, Runner as CodeRunner};
 use super::footprint::Footprint;
 use super::grid::{Rect, SpatialGrid, largest_dimension};
@@ -327,8 +328,17 @@ pub fn apply_follow_mouse(world: &mut World, cursor: Option<Vec3>, scene: &Scene
         if axis.affects_y() {
             new_pos[1] = fit_center_in_scene(cursor[1], size[1], scene.height);
         }
+        let set_height = height.filter(|_| axis.affects_x() && axis.affects_y());
+        let wanted = new_pos;
+        let new_pos = building::constrain(world, id, pos, new_pos, set_height);
         match height {
             Some(z) if axis.affects_x() && axis.affects_y() => {
+                let z = if new_pos == wanted {
+                    z
+                } else {
+                    let from = Some(world.base_z(id));
+                    surface::rest_height_at(world, id, new_pos, from).unwrap_or(z)
+                };
                 world.set_position_keeping_grade(id, new_pos, z);
             }
             _ => world.set_vec2(id, property::POSITION, new_pos),
@@ -406,6 +416,7 @@ fn apply_move_rule(
         } else {
             [pos[0] + vel[0] / 60.0, pos[1] + vel[1] / 60.0]
         };
+        let new_pos = building::constrain(world, id, pos, new_pos, None);
         if new_pos != pos {
             world.set_vec2(id, property::POSITION, new_pos);
             face_along(world, id, [new_pos[0] - pos[0], new_pos[1] - pos[1]]);
@@ -603,11 +614,8 @@ fn execute_shift(
         let p = world
             .vec2(id, property::POSITION)
             .expect("group has position");
-        world.set_vec2(
-            id,
-            property::POSITION,
-            [p[0] + spec.by[0], p[1] + spec.by[1]],
-        );
+        let to = building::constrain(world, id, p, [p[0] + spec.by[0], p[1] + spec.by[1]], None);
+        world.set_vec2(id, property::POSITION, to);
     }
     let blocked = spec
         .blocked_by
@@ -899,6 +907,8 @@ fn apply_walk_rule(
                 walk_paths,
             )
         };
+        let (new_center, arrived) =
+            keep_out_of_buildings(world, id, center_from, size, new_center, arrived);
         if new_center != center_from {
             world.set_vec2(
                 id,
@@ -927,6 +937,29 @@ fn apply_walk_rule(
             rule: format!("rules[{rule_index}]"),
             objects: moved_objects,
         });
+    }
+}
+
+/// «Здания»: идущий не заходит в части твёрдой модели — шаг упирается и скользит вдоль; упёршийся не пришёл.
+fn keep_out_of_buildings(
+    world: &World,
+    id: u32,
+    center_from: Vec2,
+    size: Vec2,
+    center_to: Vec2,
+    arrived: bool,
+) -> (Vec2, bool) {
+    let Some(from) = world.vec2(id, property::POSITION) else {
+        return (center_to, arrived);
+    };
+    let to = [center_to[0] - size[0] / 2.0, center_to[1] - size[1] / 2.0];
+    let held = building::constrain(world, id, from, to, None);
+    if held == to {
+        (center_to, arrived)
+    } else if held == from {
+        (center_from, false)
+    } else {
+        ([held[0] + size[0] / 2.0, held[1] + size[1] / 2.0], false)
     }
 }
 

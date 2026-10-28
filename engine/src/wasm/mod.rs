@@ -1104,7 +1104,8 @@ enum View {
 }
 
 /// «Курсор в мире», «Трёхмерная сцена» → «Мышь», требования 21, 23: точка под курсором в окне (в
-/// трёхмерной сцене — с высотой) и место камеры, от которого щелчок идёт лучом. В трёхмерной сцене
+/// трёхмерной сцене — с высотой) и место камеры, от которого щелчок идёт лучом, а при `orthographic` — начало
+/// луча через точку окна: он идёт вдоль взгляда, а не из одного глаза. В трёхмерной сцене
 /// точка не прижата к краю сцены: прижимает её шаг там, где она идёт как место сцены. Над горизонтом
 /// камеры редактора — её точка на земле.
 fn pointer_at(game: &Game, view: &View, window: [f32; 2]) -> (Vec3, Option<Vec3>) {
@@ -1121,7 +1122,10 @@ fn pointer_at(game: &Game, view: &View, window: [f32; 2]) -> (Vec3, Option<Vec3>
                 [window[0] as f64, window[1] as f64],
             )
             .unwrap_or([camera.target[0], camera.target[1], camera.target_z]);
-            (point, Some(camera.eye))
+            (
+                point,
+                Some(camera.ray_origin([window[0] as f64, window[1] as f64])),
+            )
         }
     }
 }
@@ -1803,7 +1807,13 @@ fn gpu_frame_parts(frame: &Frame3d) -> (Globals3d, Vec<GroundVertex>, [Vec<Shape
         light_view_proj: frame.light_view_proj,
         sun: frame.sun,
         shade: [frame.shadow, frame.depth_per_cell, frame.shadow_offset, 0.0],
-        eye: [frame.eye[0], frame.eye[1], frame.eye[2], 0.0],
+        eye: frame.eye,
+        shade_color: [
+            frame.shade_color[0],
+            frame.shade_color[1],
+            frame.shade_color[2],
+            0.0,
+        ],
         sun_light: [
             frame.sun_light[0],
             frame.sun_light[1],
@@ -1921,6 +1931,7 @@ fn render_world(
                 shapes: [&shapes[0], &shapes[1], &shapes[2], &shapes[3]],
                 models: ModelsFrame {
                     objects: &frame.models,
+                    dissolving: &frame.models_dissolving,
                     bones: &frame.model_bones,
                     pieces: &frame.road_pieces,
                     junctions: &frame.road_junctions,
