@@ -59,6 +59,10 @@ pub struct DrawRect {
     /// «Картинки» → «Растягивание рамки»: `[x, y, ширина, высота]` кадра в точках листа, к краю которого
     /// прижимается выборка; у всего, кроме кусков рамки, — тот же прямоугольник, что `atlas_pos`/`atlas_size`.
     pub clamp_rect: [f32; 4],
+    /// «Картинки» → «Атлас»: доли высоты рисунка, отрезанные от него снизу и сверху, когда `atlas_pos`/
+    /// `atlas_size` — кусок кадра без прозрачной каймы; наклон `lean` считается от низа и высоты рисунка
+    /// целиком. `[0, 0]` — прямоугольник и есть рисунок.
+    pub lean_cut: [f32; 2],
 }
 
 /// Интерфейс кадра: прямоугольники и надписи элементов экрана, а над ними, поверх текста всех элементов, —
@@ -581,14 +585,9 @@ impl Renderer {
                     shader_location: 10,
                 },
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
+                    format: wgpu::VertexFormat::Float32x2,
                     offset: 68,
                     shader_location: 11,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 72,
-                    shader_location: 12,
                 },
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32,
@@ -604,6 +603,11 @@ impl Renderer {
                     format: wgpu::VertexFormat::Float32x4,
                     offset: 96,
                     shader_location: 15,
+                },
+                wgpu::VertexAttribute {
+                    format: wgpu::VertexFormat::Float32x2,
+                    offset: 112,
+                    shader_location: 12,
                 },
             ],
         };
@@ -810,7 +814,7 @@ impl Renderer {
         );
     }
 
-    /// «Картинки» → «Атлас», требование 14: packs `images` (already checked, one whole strip per
+    /// «Картинки» → «Атлас», требование 14: packs `images` (already checked, one entry per
     /// declared picture) into a stack of sheets and uploads each one its own texture layer —
     /// «Стек и инфраструктура» → «Ловушка WebGL2»: the WebGL2 backend gets a bumped layer count
     /// (`atlas::webgl2_safe_layer_count`) instead of the exact number of sheets, since `wgpu-hal`
@@ -818,14 +822,14 @@ impl Renderer {
     /// with a layer count divisible by 6 into a cube map, either of which breaks this module's
     /// `D2Array` view; WebGPU always gets exactly as many layers as there are sheets. Recreates
     /// the texture (and both bind groups, which reference its view) only when that layer count
-    /// actually changes from one game to the next. Returns the packed rectangles, indexed the same
-    /// way `images` was — i.e. by `ImageId`. The points go through one sheet-sized buffer, filled
+    /// actually changes from one game to the next. Returns where each picture landed — whole, or
+    /// frame by frame — indexed the same way `images` was, i.e. by `ImageId`. The points go through one sheet-sized buffer, filled
     /// and uploaded sheet by sheet (`write_texture` copies it before returning), so no more than
     /// one sheet's bytes ever exist at once, and it is dropped right after the last upload.
     pub fn build_atlas(
         &mut self,
         images: &[atlas::AtlasImage],
-    ) -> Result<Vec<atlas::AtlasRect>, String> {
+    ) -> Result<Vec<atlas::ImagePlace>, String> {
         self.videos.release();
         let packed = atlas::pack(images)?;
         let layers = match self.backend {

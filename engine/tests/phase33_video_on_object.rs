@@ -359,10 +359,12 @@ fn a_video_takes_the_place_of_one_frame_not_of_the_file() {
             width: 64,
             height: 32,
             pixels: vec![9u8; 64 * 32 * 4],
+            grid: None,
         },
     ])
     .expect("умещаются");
-    assert_eq!((atlas.rects[0].w, atlas.rects[0].h), (1280, 498));
+    let video = atlas.rects[0].whole().expect("лента целиком");
+    assert_eq!((video.w, video.h), (1280, 498));
     assert_eq!(atlas.sheet_count, 1);
 }
 
@@ -374,6 +376,7 @@ fn the_place_of_a_video_stays_transparent_and_its_neighbours_are_drawn() {
             width: 4,
             height: 4,
             pixels: [200u8, 100, 50, 255].repeat(16),
+            grid: None,
         },
     ];
     let atlas = pack(&images).expect("умещаются");
@@ -383,8 +386,8 @@ fn the_place_of_a_video_stays_transparent_and_its_neighbours_are_drawn() {
         let start = ((y * ATLAS_SIZE + x) * 4) as usize;
         sheet[start..start + 4].to_vec()
     };
-    let place = atlas.rects[0];
-    let drawn = atlas.rects[1];
+    let place = atlas.rects[0].whole().expect("лента целиком");
+    let drawn = atlas.rects[1].whole().expect("лента целиком");
     for (x, y) in [
         (place.x, place.y),
         (place.x + place.w - 1, place.y + place.h - 1),
@@ -402,8 +405,9 @@ fn videos_and_pictures_together_fit_the_sixteen_sheets_and_not_one_more() {
         width: ATLAS_SIZE,
         height: ATLAS_SIZE,
         pixels: vec![5u8; SHEET_BYTES],
+        grid: None,
     }];
-    images.extend((0..13).map(|_| sheet()));
+    images.extend((0..14).map(|_| sheet()));
     images.push(AtlasImage::video_frame(1280, 498));
     let atlas = pack(&images).expect("шестнадцать листов умещаются");
     assert_eq!(atlas.sheet_count, 16);
@@ -428,7 +432,10 @@ fn an_object_draws_the_whole_frame_place_of_its_video() {
         &LayerView::default(),
     );
     assert_eq!(paints.len(), 1);
-    assert_eq!(paints[0].atlas_rect, atlas.rects[0]);
+    assert_eq!(
+        paints[0].atlas_rect,
+        atlas.rects[0].whole().expect("лента целиком")
+    );
     assert_eq!(
         paints[0].size,
         [4.0, 2.0],
@@ -453,7 +460,10 @@ fn a_video_with_its_own_size_is_drawn_at_that_size() {
         &LayerView::default(),
     );
     assert_eq!(paints[0].size, [12.5, 6.0]);
-    assert_eq!(paints[0].atlas_rect, atlas.rects[0]);
+    assert_eq!(
+        paints[0].atlas_rect,
+        atlas.rects[0].whole().expect("лента целиком")
+    );
 }
 
 // -------------------------------------------------------------------------------------------

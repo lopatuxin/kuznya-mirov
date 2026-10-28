@@ -1579,6 +1579,7 @@ fn the_frame_lists_shapes_with_their_place_and_flat_objects_by_layer_over_the_gr
         width: 4,
         height: 4,
         pixels: vec![255; 64],
+        grid: None,
     }])
     .expect("влезает");
     let camera = game.camera_3d(WINDOW).expect("камера");

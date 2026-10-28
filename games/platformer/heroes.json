@@ -10,7 +10,9 @@
     "wisdom": 2,
     "spirit": "Удаль — копится, когда он держит удары",
     "growth": "больше всего растёт Сила богатырская",
-    "portrait": "ilya_portrait"
+    "portrait": "ilya_portrait",
+    "sheet": "hero_ilya",
+    "reach": 1.5
   },
   "alyosha": {
     "name": "Алёша Попович",
@@ -23,7 +25,9 @@
     "wisdom": 3,
     "spirit": "Задор — копится, когда он уходит от ударов",
     "growth": "больше всего растёт Прыть",
-    "portrait": "alyosha_portrait"
+    "portrait": "alyosha_portrait",
+    "sheet": "hero_alyosha",
+    "reach": 1.3
   },
   "vasilisa": {
     "name": "Василиса Премудрая",
@@ -36,6 +40,8 @@
     "wisdom": 8,
     "spirit": "Чары — восстанавливаются сами",
     "growth": "больше всего растёт Мудрость",
-    "portrait": "vasilisa_portrait"
+    "portrait": "vasilisa_portrait",
+    "sheet": "hero_vasilisa",
+    "reach": 1.6
   }
 }

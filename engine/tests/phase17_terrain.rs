@@ -19,7 +19,7 @@ use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{
     ImageDecl, ImageVerdict, load_game_from_texts_with_terrain, load_rest_with_terrain, read_entry,
 };
-use engine::render::atlas::{self, AtlasImage, AtlasRect};
+use engine::render::atlas::{self, AtlasImage, ImagePlace};
 use engine::render::relief::{FlatShapes, SurfaceVertex, TerrainMesh};
 use engine::render::scene3d::{Frame3d, compose_frame3d};
 use engine::render::wind::Motion;
@@ -2841,7 +2841,7 @@ fn walk_over_random_scenes(seed: u64, rounds: u32) {
 // -------------------------------------------------------------------------------------------
 
 /// Игра 20×12 с плитками травы на всей земле и, если дан, файлом рельефа.
-fn load_tiled(terrain: Option<&str>, objects: &str) -> (Game, Vec<ImageDecl>, Vec<AtlasRect>) {
+fn load_tiled(terrain: Option<&str>, objects: &str) -> (Game, Vec<ImageDecl>, Vec<ImagePlace>) {
     let text = game_json(20, 12, true, terrain.is_some()).replace(
         r#""fonts":{}"#,
         r#""fonts":{},"images":{"grass":{"path":"grass.png","frames":4,"columns":2}}"#,
@@ -2880,6 +2880,7 @@ fn load_tiled(terrain: Option<&str>, objects: &str) -> (Game, Vec<ImageDecl>, Ve
         width: 4,
         height: 4,
         pixels: vec![255; 64],
+        grid: None,
     }])
     .expect("влезает");
     (game, images, packed.rects)
@@ -2889,7 +2890,7 @@ fn frame_from(
     game: &Game,
     camera: &Camera3d,
     images: &[ImageDecl],
-    rects: &[AtlasRect],
+    rects: &[ImagePlace],
 ) -> Frame3d {
     compose_frame3d(
         game,
@@ -2901,7 +2902,7 @@ fn frame_from(
     )
 }
 
-fn game_frame(game: &Game, images: &[ImageDecl], rects: &[AtlasRect]) -> Frame3d {
+fn game_frame(game: &Game, images: &[ImageDecl], rects: &[ImagePlace]) -> Frame3d {
     let camera = game.camera_3d(WINDOW_F32).expect("камера");
     frame_from(game, &camera, images, rects)
 }

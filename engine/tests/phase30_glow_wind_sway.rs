@@ -14,7 +14,7 @@ use engine::data::load::{
 };
 use engine::data::session::{self, PlaySession};
 use engine::render::atlas::{
-    AtlasImage, AtlasRect, RectPaint, compose_ground_paints, compose_world_paints, fill_paint,
+    AtlasImage, ImagePlace, RectPaint, compose_ground_paints, compose_world_paints, fill_paint,
     pack, sway_objects,
 };
 use engine::render::wind::{Motion, wind_at};
@@ -372,7 +372,7 @@ fn picture_verdicts() -> Vec<(&'static str, ImageVerdict)> {
 struct Pictures {
     game: Game,
     images: Vec<ImageDecl>,
-    rects: Vec<AtlasRect>,
+    rects: Vec<ImagePlace>,
 }
 
 fn load_pictures(scene: &str) -> Pictures {
@@ -399,6 +399,7 @@ fn load_pictures_in(game: &str, scene: &str) -> Pictures {
                     width,
                     height,
                     pixels,
+                    grid: None,
                 },
                 _ => unreachable!("все картинки теста — ok"),
             }
@@ -422,7 +423,9 @@ impl Pictures {
 
     /// Номер кадра, который нарисован у объекта `id`, в ленте картинки `strip` из `frames` кадров.
     fn frame_of(&self, motion: &Motion, id: u32, strip: &str, frames: u32) -> u32 {
-        let whole = self.rects[self.image_id(strip)];
+        let whole = self.rects[self.image_id(strip)]
+            .whole()
+            .expect("лента целиком");
         let rect = self.paint_of(motion, id).atlas_rect;
         (rect.x - whole.x) / (whole.w / frames)
     }

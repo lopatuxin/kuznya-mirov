@@ -1001,6 +1001,7 @@ fn repeated_layers_cover_a_window_of_any_width() {
                 width,
                 height,
                 pixels,
+                grid: None,
             },
             ImageVerdict::Video { width, height, .. } => AtlasImage::video_frame(width, height / 2),
             ImageVerdict::Missing | ImageVerdict::Rejected => unreachable!("файл уровня на месте"),

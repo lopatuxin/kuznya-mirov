@@ -6,6 +6,7 @@
     "skill": "number",
     "agility": "number",
     "wisdom": "number",
+    "reach": "number",
     "ground": "flag",
     "ledge": "flag",
     "pit": "flag",

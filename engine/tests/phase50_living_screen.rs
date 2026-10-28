@@ -19,7 +19,7 @@ use engine::data::load::{
 };
 use engine::data::session;
 use engine::render::atlas::{
-    AtlasImage, AtlasRect, BUTTERFLY_RECT, FLUFF_RECT, compose_world_paints, opaque_masks, pack,
+    AtlasImage, BUTTERFLY_RECT, FLUFF_RECT, ImagePlace, compose_world_paints, opaque_masks, pack,
     particle_emitters, screen_emitters, screen_particle_paint, screen_particle_paints,
 };
 use engine::render::particles::Particles;
@@ -900,6 +900,7 @@ fn atlas_images(images: &[ImageDecl]) -> Vec<AtlasImage> {
                     width,
                     height,
                     pixels,
+                    grid: None,
                 },
                 ImageVerdict::Video { width, height, .. } => {
                     AtlasImage::video_frame(width, height / 2)
@@ -1530,7 +1531,7 @@ fn rules_and_code_set_the_new_properties_and_outside_a_party_the_editor_does_too
 struct Meadow {
     game: Game,
     images: Vec<ImageDecl>,
-    rects: Vec<AtlasRect>,
+    rects: Vec<ImagePlace>,
     motion: Motion,
 }
 

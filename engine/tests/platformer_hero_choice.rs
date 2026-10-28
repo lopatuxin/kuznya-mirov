@@ -1,6 +1,6 @@
 //! Фаза 10 платформера — экран героя `games/platformer`: выбранный на «Распутье» герой, «Новая игра» открывает его
 //! экран с портретом и числами таблицы `heroes`, «Назад» возвращает к выбору, «В путь» начинает партию, в которой
-//! герой получает числа своей строки. Вид экрана — только QA на стенде.
+//! герой получает лист кадров, дальность удара и числа своей строки. Вид экрана — только QA на стенде.
 
 use std::fs;
 
@@ -26,6 +26,13 @@ const HEROES: [(&str, &str, &str, [f64; 4]); 3] = [
         "чародейка",
         [3.0, 4.0, 4.0, 8.0],
     ),
+];
+
+/// Лист кадров героя и дальность его удара в клетках — как в `heroes.json`: докуда достаёт нарисованное оружие.
+const SHEETS: [(&str, &str, f64); 3] = [
+    ("ilya", "hero_ilya", 1.5),
+    ("alyosha", "hero_alyosha", 1.3),
+    ("vasilisa", "hero_vasilisa", 1.6),
 ];
 
 fn load() -> (Ui, Vec<ImageDecl>) {
@@ -192,6 +199,23 @@ fn on_the_road_the_hero_gets_the_numbers_of_his_row() {
         assert_eq!(ui.text(id, "hero_id").as_deref(), Some(hero));
         let got = ["strength", "skill", "agility", "wisdom"].map(|p| ui.number(id, p));
         assert_eq!(got, numbers.map(Some), "{hero}");
+    }
+}
+
+#[test]
+fn on_the_road_the_hero_gets_the_sheet_and_reach_of_his_row() {
+    for (hero, sheet, reach) in SHEETS {
+        let (mut ui, images) = hero_screen_of(hero);
+        click_place(&mut ui, "go");
+        ui.ticks(2, 1.0 / 60.0);
+        let id = ui.id_of("Герой");
+        let image = ui
+            .game
+            .world
+            .image(id, engine::core::property::IMAGE)
+            .expect("картинка героя");
+        assert_eq!(images[image].name, sheet, "{hero}");
+        assert_eq!(ui.number(id, "reach"), Some(reach), "{hero}");
     }
 }
 

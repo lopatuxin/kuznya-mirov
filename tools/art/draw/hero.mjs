@@ -225,10 +225,10 @@ const inAir = (poses) => poses.map((p) => ({ ...p, ...AIR_LEGS, dx: 0 }));
  * Лист кадров по 6 в строке: стойка 0–3, бег 4–11, прыжок 12–14, удар на земле 15–19 и в прыжке 20–24,
  * парирование 25–26 и 27–28, уклонение 29–30 и 31–32, пропущенный удар 33–34 и 35–36.
  */
-const SHEET = [...IDLE, ...RUN, ...JUMP, ...CHOP, ...inAir(CHOP), ...PARRY, ...inAir(PARRY), ...DODGE, ...inAir(DODGE), ...HURT, ...inAir(HURT)];
-const COLUMNS = 6;
+export const SHEET = [...IDLE, ...RUN, ...JUMP, ...CHOP, ...inAir(CHOP), ...PARRY, ...inAir(PARRY), ...DODGE, ...inAir(DODGE), ...HURT, ...inAir(HURT)];
+export const COLUMNS = 6;
 /** Кадр 3,5 × 3 клетки: топор в ударе уходит от середины на полторы клетки. */
-const FRAME = [336, 288];
+export const FRAME = [336, 288];
 
 export function sheetSvg() {
   return sheet(SHEET, ILYA, FRAME, COLUMNS);

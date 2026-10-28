@@ -467,9 +467,10 @@ fn ground_end_to_end_through_a_real_atlas_lands_tiles_on_their_own_cells() {
         width: 20,
         height: 20,
         pixels: vec![0u8; 20 * 20 * 4],
+        grid: None,
     }];
     let atlas = atlas::pack(&atlas_images).expect("одна картинка всегда умещается");
-    let whole = atlas.rects[0];
+    let whole = atlas.rects[0].whole().expect("лента целиком");
 
     let visible = CellRange {
         x0: 0,
@@ -572,6 +573,7 @@ fn ground_computation_for_three_layers_of_a_64_by_40_scene_is_fast() {
         width: 20,
         height: 20,
         pixels: vec![0u8; 20 * 20 * 4],
+        grid: None,
     }];
     let atlas = atlas::pack(&atlas_images).unwrap();
     let visible = CellRange {

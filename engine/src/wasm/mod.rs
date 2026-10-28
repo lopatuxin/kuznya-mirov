@@ -28,7 +28,7 @@ use crate::data::load::{
     NeededMedia, ReverseVerdict,
 };
 use crate::data::session::{self, PlaySession};
-use crate::render::atlas::{self, AtlasRect, FillPaint, RectPaint, UiPaint};
+use crate::render::atlas::{self, FillPaint, ImagePlace, RectPaint, UiPaint};
 use crate::render::clouds::Camera;
 use crate::render::materials::Relief;
 use crate::render::relief::{FlatShapes, TerrainMesh};
@@ -830,13 +830,16 @@ fn parse_video_answers(
 fn video_sources(
     images: &[ImageDecl],
     atlas_images: &[atlas::AtlasImage],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
     panel_videos: &[usize],
     loop_videos: &[usize],
     mut players: Vec<VideoPlayer>,
 ) -> Vec<VideoSource> {
     let mut sources = Vec::new();
     for (index, decl) in images.iter().enumerate().filter(|(_, decl)| decl.video) {
+        let Some(place) = atlas_rects[index].whole() else {
+            continue;
+        };
         let at = players
             .iter()
             .position(|video| video.name == decl.name)
@@ -857,7 +860,7 @@ fn video_sources(
             },
             width: atlas_images[index].width,
             height: atlas_images[index].height * 2,
-            place: atlas_rects[index],
+            place,
         });
     }
     sources
@@ -1061,6 +1064,7 @@ fn draw_rect(paint: &RectPaint) -> DrawRect {
             atlas_rect.w as f32,
             atlas_rect.h as f32,
         ],
+        lean_cut: paint.lean_cut,
     }
 }
 
@@ -1198,7 +1202,7 @@ fn compose_instances(
     game: &Game,
     motion: &Motion,
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
     layers: &LayerView,
 ) -> Vec<DrawRect> {
     to_draw_rects(atlas::compose_world_paints(
@@ -1219,7 +1223,7 @@ fn compose_ground_instances(
     ground: &[GroundLayer],
     visible: CellRange,
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
 ) -> Vec<DrawRect> {
     to_draw_rects(atlas::compose_ground_paints(
         ground,
@@ -1229,8 +1233,9 @@ fn compose_ground_instances(
     ))
 }
 
-/// A rectangle filled by `paint` — a world image over its object.
-fn fill_rect(position: [f32; 2], size: [f32; 2], paint: FillPaint) -> RectPaint {
+/// A rectangle filled by `paint` — a world image over its object; `None` for a frame with no
+/// opaque points.
+fn fill_rect(position: [f32; 2], size: [f32; 2], paint: FillPaint) -> Option<RectPaint> {
     RectPaint::flat(
         position,
         size,
@@ -1239,6 +1244,7 @@ fn fill_rect(position: [f32; 2], size: [f32; 2], paint: FillPaint) -> RectPaint 
         paint.smooth,
         paint.glow,
     )
+    .cropped(paint.crop)
 }
 
 /// «Подсказка»: что нужно подсказке этого кадра — память о том, над чем курсор, сам курсор в точках окна
@@ -1273,7 +1279,7 @@ fn push_fill(
     image_scale: f32,
     ui_elapsed_steps: f64,
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
 ) {
     paints.clear();
     atlas::ui_fill_paints(
@@ -1310,7 +1316,7 @@ fn compose_ui(
     tooltip: TooltipInput<'_>,
     window: [f32; 2],
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
     ui_elapsed_steps: f64,
 ) -> UiLayers {
     let frame = config.ui_frame(window);
@@ -1603,7 +1609,7 @@ fn compose_tooltip(
     style: &screens::TooltipStyle,
     viewport: [f32; 2],
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
     ui_elapsed_steps: f64,
 ) {
     let text_width = renderer.text_width(&shown.text, style.font, style.font_size);
@@ -1702,9 +1708,13 @@ fn image_object_under(
 }
 
 /// Прямоугольник картинки в мире — всегда её первый кадр.
-fn world_image_rect(draw: &ImageDraw, images: &[ImageDecl], atlas_rects: &[AtlasRect]) -> DrawRect {
+fn world_image_rect(
+    draw: &ImageDraw,
+    images: &[ImageDecl],
+    atlas_rects: &[ImagePlace],
+) -> Option<DrawRect> {
     let paint = atlas::first_frame_paint(draw.image, images, atlas_rects);
-    draw_rect(&fill_rect(draw.position, draw.size, paint))
+    fill_rect(draw.position, draw.size, paint).map(|rect| draw_rect(&rect))
 }
 
 /// «Надписи, полоски и картинки в мире», требования 5, 13, 17, 37: слой мира над готовыми
@@ -1720,7 +1730,7 @@ fn compose_world_elements(
     layers: &LayerView,
     cell: f64,
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
     mut instances: Vec<DrawRect>,
 ) -> WorldOverlay {
     let (bars, labels, image_draws) =
@@ -1755,7 +1765,7 @@ fn compose_world_elements(
                     image_draws
                         .by_ref()
                         .take(count)
-                        .map(|draw| world_image_rect(draw, images, atlas_rects)),
+                        .filter_map(|draw| world_image_rect(draw, images, atlas_rects)),
                 );
                 runs.push(WorldRun::Rects(start..instances.len()));
             }
@@ -1843,7 +1853,7 @@ fn render_world(
     motion: &Motion,
     config: Option<&ScreensConfig>,
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
     terrain: Option<&TerrainMesh>,
     flat_shapes: &mut FlatShapes,
     view: &View,
@@ -2014,7 +2024,7 @@ pub struct Engine {
     /// the core knowing anything about frames or atlases.
     images: Vec<ImageDecl>,
     /// Where `load()`'s atlas build put each declared image's whole strip — parallel to `images`.
-    atlas_rects: Vec<AtlasRect>,
+    atlas_rects: Vec<ImagePlace>,
     /// «Рельеф» → «Вид»: сетка рельефа и воды, построенная при загрузке; `None`, пока в сцене нет файла
     /// высот.
     terrain_mesh: Option<TerrainMesh>,
@@ -2331,6 +2341,7 @@ impl Engine {
                                 width,
                                 height,
                                 pixels,
+                                grid: atlas::frame_grid(decl),
                             },
                             ImageVerdict::Video { width, height, .. } => {
                                 atlas::AtlasImage::video_frame(width, height / 2)

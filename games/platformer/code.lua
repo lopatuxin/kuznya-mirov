@@ -5,7 +5,7 @@ local DT = 1 / 60
 local START_X = 3
 local START_Y = 7.1
 
--- Кадры листа hero.png, по 6 в строке: стойка, бег, прыжок (подъём, верх, падение), затем бой —
+-- Кадры листа героя (hero_ilya.png, hero_alyosha.png, hero_vasilisa.png — раскладка одна), по 6 в строке: стойка, бег, прыжок (подъём, верх, падение), затем бой —
 -- у каждого движения кадры на земле и следом такие же в прыжке.
 local IDLE_FIRST, IDLE_COUNT = 0, 4
 local RUN_FIRST, RUN_COUNT = 4, 8
@@ -25,9 +25,10 @@ local STILL_SPEED = 0.5
 local TOP_SHARE = 0.3
 local HERO_RUN_SPEED = 7
 
--- Удар Ильи: секунды замаха, удара и возврата; место удара — клеток вперёд от середины и выше макушки.
+-- Удар героя: секунды замаха, удара и возврата; место удара — клеток выше макушки, а вперёд от середины —
+-- докуда достаёт его оружие, reach из таблицы героев.
 local CHOP_WINDUP, CHOP_STRIKE, CHOP_RECOVER = 0.18, 0.08, 0.22
-local CHOP_REACH, CHOP_ABOVE = 1.5, 0.4
+local CHOP_ABOVE = 0.4
 
 -- Защита Ильи: секунды каждой и шансы из ста; остальное — пропущенный удар.
 local DEFENCE_TIME = { parry = 0.3, dodge = 0.35, hurt = 0.35 }
@@ -217,7 +218,7 @@ local function chop_hits(hero)
   if t < CHOP_WINDUP or t >= CHOP_WINDUP + CHOP_STRIKE then
     return
   end
-  local x0, x1 = ahead(hero, CHOP_REACH)
+  local x0, x1 = ahead(hero, hero.reach)
   local y0, y1 = hero.position.y - CHOP_ABOVE, bottom(hero)
   for _, robber in ipairs(find({ has = { "robber" } })) do
     if robber.last_swing ~= hero.swing and touches(robber, x0, x1, y0, y1) then
@@ -288,7 +289,8 @@ local function animate(hero)
   end
 end
 
--- Числа героя — из таблицы героев по его hero_id, один раз за партию. Бой их пока не читает.
+-- Лист кадров, дальность удара и числа героя — из таблицы героев по его hero_id, один раз за партию.
+-- Числа бой пока не читает.
 local function take_stats(hero)
   if hero.strength ~= nil then
     return
@@ -298,6 +300,8 @@ local function take_stats(hero)
     error("нет героя " .. tostring(hero.hero_id) .. " в таблице heroes")
   end
   hero.strength, hero.skill, hero.agility, hero.wisdom = row.strength, row.skill, row.agility, row.wisdom
+  hero.image = row.sheet
+  hero.reach = row.reach
 end
 
 function fight_hero(hero)
