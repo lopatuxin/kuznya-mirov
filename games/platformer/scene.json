@@ -72,7 +72,7 @@
     { "name": "отсвет разбойника", "position": [123.6, 6.3], "size": [0.8, 1.9], "image": "robber_aura", "opacity": 0, "layer": 49, "robber_glow": true, "robber_no": 3 },
     { "name": "разбойник", "position": [129.6, 6.3], "size": [0.8, 1.9], "velocity": [0, 0], "image": "robber", "layer": 48, "robber": true, "robber_no": 4, "home_left": 119, "home_right": 138, "run_speed": 1.5, "jump_height": 1 },
     { "name": "отсвет разбойника", "position": [129.6, 6.3], "size": [0.8, 1.9], "image": "robber_aura", "opacity": 0, "layer": 49, "robber_glow": true, "robber_no": 4 },
-    { "name": "Герой", "position": [3, 7.1], "hero_id": "ilya", "size": [0.8, 1.9], "velocity": [0, 0], "image": "hero", "layer": 50, "hero": true, "collides": true, "camera_follows": true, "run_speed": 7, "jump_height": 3, "jump_time": 0.4, "hero_frame": 0, "idle_time": 0, "run_dist": 0,
+    { "name": "Герой", "position": [3, 7.1], "hero_id": "ilya", "size": [0.8, 1.9], "velocity": [0, 0], "image": "hero_ilya", "layer": 50, "hero": true, "collides": true, "camera_follows": true, "run_speed": 7, "jump_height": 3, "jump_time": 0.4, "hero_frame": 0, "idle_time": 0, "run_dist": 0,
       "keys": {
         "ArrowLeft": { "press": [["hold_left", true]], "release": [["hold_left", false]] },
         "KeyA": { "press": [["hold_left", true]], "release": [["hold_left", false]] },

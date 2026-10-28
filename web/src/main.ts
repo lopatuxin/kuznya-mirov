@@ -31,13 +31,16 @@ function goToGameList(): void {
 }
 
 /**
- * Выход из открытой игры кнопкой страницы; команда `exit` игры ведёт на тот же адрес. Показывается на игре и на
- * экране ошибки, но не на самом списке — там возвращаться некуда.
+ * Ошибка открытой игры: экран ошибки с кнопкой страницы «← К играм» — игра не идёт, и своего выхода у неё уже нет.
+ * Поверх идущей игры кнопки нет: из игры выходят её собственной командой `exit`, она ведёт на тот же адрес. На
+ * самом списке кнопки тоже нет — там возвращаться некуда.
  */
-function showBackToGames(): void {
-  if (!backToGames) return;
-  backToGames.hidden = false;
-  backToGames.addEventListener("click", goToGameList);
+function showGameError(text: string): void {
+  if (backToGames) {
+    backToGames.hidden = false;
+    backToGames.addEventListener("click", goToGameList);
+  }
+  showError(text);
 }
 
 function showError(text: string): void {
@@ -272,7 +275,7 @@ function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundP
     drainMessages();
     soundPlayer.handleTabHidden();
     videoPlayers.releaseAll();
-    showError(formatError(error));
+    showGameError(formatError(error));
   }
 
   function tick(now: number): void {
@@ -318,7 +321,7 @@ async function runGame(gameName: string): Promise<void> {
 
   const gameJsonText = await reader.readText("game.json");
   if (gameJsonText === null) {
-    showError(`Не удалось получить game.json игры «${gameName}» по адресу ${baseUrl}game.json.`);
+    showGameError(`Не удалось получить game.json игры «${gameName}» по адресу ${baseUrl}game.json.`);
     return;
   }
 
@@ -331,7 +334,7 @@ async function runGame(gameName: string): Promise<void> {
   try {
     engine = await Engine.create(canvas);
   } catch (error) {
-    showError(error instanceof Error ? error.message : String(error));
+    showGameError(error instanceof Error ? error.message : String(error));
     return;
   }
   logEngineBackend(engine);
@@ -343,7 +346,7 @@ async function runGame(gameName: string): Promise<void> {
   const result = await loadProject(engine, reader, gameJsonText, () => new AudioContext(), videoPlayers);
   logWarnings(result.warnings);
   if (result.status === "rejected") {
-    showError(formatErrorScreen(result.errors, result.warnings));
+    showGameError(formatErrorScreen(result.errors, result.warnings));
     return;
   }
 
@@ -372,14 +375,18 @@ async function boot(): Promise<void> {
       await showGameSelection();
       return;
     case "invalid":
-      showBackToGames();
-      showError(
+      showGameError(
         `Параметр game=«${resolution.value}» недопустим — разрешены только латинские буквы, цифры, «_» и «-». Кнопка «← К играм» внизу слева вернёт к списку.`,
       );
       return;
     case "valid":
-      showBackToGames();
-      await runGame(resolution.name);
+      // Непойманный сбой запуска (не скачался wasm, упала загрузка) — тоже экран ошибки с кнопкой «← К играм»:
+      // поверх игры её нет, а без неё со страницы не уйти.
+      try {
+        await runGame(resolution.name);
+      } catch (error) {
+        showGameError(error instanceof Error ? error.message : String(error));
+      }
       return;
   }
 }

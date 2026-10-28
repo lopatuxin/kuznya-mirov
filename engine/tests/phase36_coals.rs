@@ -11,7 +11,7 @@ use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{ImageDecl, ImageVerdict, load_rest_with_stamps, read_entry};
 use engine::data::session;
 use engine::render::atlas::{
-    AtlasImage, AtlasRect, FireKind, HALO_RECT, RectPaint, WHITE_PIXEL, compose_world_paints,
+    AtlasImage, FireKind, HALO_RECT, ImagePlace, RectPaint, WHITE_PIXEL, compose_world_paints,
     fire_objects, pack, particle_emitters, sway_objects,
 };
 use engine::render::wind::Motion;
@@ -416,7 +416,7 @@ fn position_or_size_edited_on_an_object_with_only_coals_outside_a_party_is_refus
 struct Rig {
     game: Game,
     images: Vec<ImageDecl>,
-    rects: Vec<AtlasRect>,
+    rects: Vec<ImagePlace>,
     motion: Motion,
 }
 
@@ -433,6 +433,7 @@ impl Rig {
             width: 8,
             height: 8,
             pixels: vec![255u8; 8 * 8 * 4],
+            grid: None,
         };
         let rects = pack(&[plain]).expect("умещается").rects;
         Rig {

@@ -13,7 +13,7 @@ use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{ImageDecl, ImageVerdict, load_rest, read_entry};
 use engine::data::session::{self, PlaySession};
 use engine::render::atlas::{
-    AtlasImage, AtlasRect, RectPaint, cloud_base_sizes, cloud_skies, compose_world_paints, pack,
+    AtlasImage, ImagePlace, RectPaint, cloud_base_sizes, cloud_skies, compose_world_paints, pack,
 };
 use engine::render::clouds::Camera;
 use engine::render::wind::Motion;
@@ -669,7 +669,7 @@ const SCENE_DRAWN: &str = r##"{"objects":[
 struct Rig {
     game: Game,
     images: Vec<ImageDecl>,
-    rects: Vec<AtlasRect>,
+    rects: Vec<ImagePlace>,
     motion: Motion,
     view: LayerView,
 }
@@ -698,6 +698,7 @@ impl Rig {
                         width,
                         height,
                         pixels,
+                        grid: None,
                     },
                     ImageVerdict::Video { width, height, .. } => {
                         AtlasImage::video_frame(width, height / 2)
@@ -931,6 +932,7 @@ fn the_base_size_is_the_size_of_the_picture_or_its_points_over_cell_pixels() {
                     width,
                     height,
                     pixels,
+                    grid: None,
                 },
                 ImageVerdict::Video { width, height, .. } => {
                     AtlasImage::video_frame(width, height / 2)
@@ -1202,6 +1204,7 @@ fn a_reload_of_the_files_keeps_the_clouds_and_new_picture_sizes_regrow_them_from
                         width,
                         height,
                         pixels,
+                        grid: None,
                     },
                     _ => AtlasImage::video_frame(8, 8),
                 }

@@ -14,9 +14,9 @@ use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{ImageDecl, ImageVerdict, load_rest_with_stamps, read_entry};
 use engine::data::session::{self, PlaySession};
 use engine::render::atlas::{
-    ATLAS_SIZE, AtlasImage, AtlasRect, LEAF_RECT, RectPaint, SHEET_BYTES, SMOKE_RECT, SPARK_RECT,
-    WHITE_LEAF_RECT, compose_world_paints, fill_sheet, opaque_masks, pack, particle_emitters,
-    sway_objects,
+    ATLAS_SIZE, AtlasImage, AtlasRect, ImagePlace, LEAF_RECT, RectPaint, SHEET_BYTES, SMOKE_RECT,
+    SPARK_RECT, WHITE_LEAF_RECT, compose_world_paints, fill_sheet, opaque_masks, pack,
+    particle_emitters, sway_objects,
 };
 use engine::render::wind::Motion;
 use serde_json::json;
@@ -609,7 +609,7 @@ fn in_a_party_the_property_edit_is_recorded_and_in_a_replay_the_world_is_not_edi
 struct Rig {
     game: Game,
     images: Vec<ImageDecl>,
-    rects: Vec<AtlasRect>,
+    rects: Vec<ImagePlace>,
     motion: Motion,
 }
 
@@ -637,6 +637,7 @@ impl Rig {
                         width,
                         height,
                         pixels,
+                        grid: None,
                     },
                     _ => unreachable!("все картинки теста — ok"),
                 }
@@ -1206,6 +1207,7 @@ fn many_images() -> Vec<AtlasImage> {
         width,
         height,
         pixels: vec![255u8; (width * height * 4) as usize],
+        grid: None,
     };
     let mut images = vec![image(8, 8), image(1700, 70)];
     images.extend((0..40).map(|_| image(500, 300)));
@@ -1222,9 +1224,9 @@ fn the_built_in_pictures_lie_apart_from_each_other_and_from_the_pictures_on_ever
     }
     for images in [vec![], many_images()] {
         let atlas = pack(&images).expect("умещаются");
-        for rect in &atlas.rects {
+        for rect in atlas.rects.iter().filter_map(ImagePlace::whole) {
             for built_in in BUILT_IN_RECTS {
-                assert!(!overlaps(*rect, built_in), "{rect:?} лёг на {built_in:?}");
+                assert!(!overlaps(rect, built_in), "{rect:?} лёг на {built_in:?}");
             }
         }
     }

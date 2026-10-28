@@ -97,6 +97,7 @@ fn paint(width: u32, height: u32, point: impl Fn(u32, u32) -> [f32; 4]) -> Atlas
         width,
         height,
         pixels,
+        grid: None,
     }
 }
 

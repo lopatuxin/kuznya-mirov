@@ -15,7 +15,7 @@ use crate::core::value::Shape;
 use crate::core::water::{DEFAULT_CLARITY, DEFAULT_RIPPLE};
 use crate::data::load::ImageDecl;
 
-use super::atlas::{self, AtlasRect, RectPaint};
+use super::atlas::{self, ImagePlace, RectPaint};
 use super::models::{self, BlendedDraw, ModelInstance};
 use super::relief::{self, FlatShapes, SurfaceVertex};
 use super::wind::Motion;
@@ -302,7 +302,7 @@ pub fn compose_frame3d(
     camera: &Camera3d,
     motion: &Motion,
     images: &[ImageDecl],
-    atlas_rects: &[AtlasRect],
+    atlas_rects: &[ImagePlace],
     flat_shapes: &mut FlatShapes,
 ) -> Frame3d {
     let shapes = shape_draws(game);

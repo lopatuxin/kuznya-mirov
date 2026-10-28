@@ -13,7 +13,7 @@ use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::{
     FontSettings, ImageDecl, ImageVerdict, load_rest_with_tables, read_entry, read_texts,
 };
-use engine::render::atlas::{self, AtlasRect};
+use engine::render::atlas::{self, AtlasRect, ImagePlace};
 use support::{Ui, VIEWPORT};
 
 const FONT_BYTES: &[u8] = &[0x00, 0x01, 0x00, 0x00];
@@ -314,20 +314,20 @@ fn an_image_fill_squeezes_its_corners_when_the_fill_is_short() {
     let Element::Bar { fill, .. } = &ui.config.screens[0].elements[3] else {
         panic!("четвёртый элемент — шкала");
     };
-    let atlas_rects: Vec<AtlasRect> = images
+    let atlas_rects: Vec<ImagePlace> = images
         .iter()
         .map(|decl| {
             let (_, w, h) = IMAGE_FILES
                 .iter()
                 .find(|(name, _, _)| *name == decl.name)
                 .expect("файл картинки");
-            AtlasRect {
+            ImagePlace::Whole(AtlasRect {
                 x: 0,
                 y: 0,
                 w: *w,
                 h: *h,
                 sheet: 0,
-            }
+            })
         })
         .collect();
     let mut paints = Vec::new();

@@ -51,11 +51,14 @@ struct InstanceInput {
     // «Картинки», «Таблица картинок»: 0.0/1.0 — светящаяся картинка: фрагмент отдаёт `(цвет, 0)`, и
     // смешивание `PREMULTIPLIED_ALPHA_BLENDING` прибавляет цвет к тому, что под ней.
     @location(10) glow_flag: f32,
-    // «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх рисунка.
-    @location(11) lean: f32,
+    // «Ветер и частицы» → «Качание», требование 14: на сколько клеток вбок ушёл верх рисунка (x).
     // «Ветер и частицы» → «Частица», требование 13: поворот вокруг середины прямоугольника на любой
-    // угол, градусов по часовой стрелке; 0 — прямоугольник стоит, как стоял.
-    @location(12) angle: f32,
+    // угол, градусов по часовой стрелке; 0 — прямоугольник стоит, как стоял (y).
+    @location(11) lean_angle: vec2<f32>,
+    // «Картинки» → «Атлас»: доли высоты рисунка, отрезанные от него снизу (x) и сверху (y), когда
+    // прямоугольник — только кусок кадра без прозрачной каймы; наклон считается от низа и высоты
+    // рисунка целиком. `(0, 0)` — прямоугольник и есть рисунок.
+    @location(12) lean_cut: vec2<f32>,
     // «Огонь»: 0.0/1.0/2.0 — экземпляр рисует пламя (1.0) или угли (2.0) по формуле, а не картинку из атласа.
     @location(13) flame_flag: f32,
     // «Огонь»: сила (у углей — накал), зерно узора, целая и дробная части хода узора; нули у всего, кроме
@@ -90,22 +93,23 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     // крае на `√(y² − сдвиг²)` — идёт по дуге и не растягивается. Опускание `y − √(y² − сдвиг²)`
     // записано как `сдвиг² / (y + √(y² − сдвиг²))`: без вычитания близких чисел, и без наклона оно
     // ровно ноль — углы там же, где были.
-    let along = 1.0 - vertex.unit.y;
-    let above = along * instance.size.y;
-    let shift = instance.lean * along * along;
+    let drawn_share = 1.0 - instance.lean_cut.x - instance.lean_cut.y;
+    let along = instance.lean_cut.x + (1.0 - vertex.unit.y) * drawn_share;
+    let above = along * instance.size.y / drawn_share;
+    let shift = instance.lean_angle.x * along * along;
     let reach = sqrt(max(above * above - shift * shift, 0.0));
     let drop = shift * shift / max(above + reach, 0.000001);
     let straight = instance.position + vertex.unit * instance.size + vec2<f32>(shift, drop);
     // Поворот частицы по часовой стрелке (`y` вниз); без угла `select` отдаёт угол прямоугольника как
     // был, не пересчитанный через середину.
-    let radians = instance.angle * 0.017453292519943295;
+    let radians = instance.lean_angle.y * 0.017453292519943295;
     let middle = instance.position + instance.size * 0.5;
     let from_middle = straight - middle;
     let turned = middle + vec2<f32>(
         from_middle.x * cos(radians) - from_middle.y * sin(radians),
         from_middle.x * sin(radians) + from_middle.y * cos(radians),
     );
-    let corner = select(straight, turned, instance.angle != 0.0);
+    let corner = select(straight, turned, instance.lean_angle.y != 0.0);
     let px = globals.offset + corner * globals.scale;
     let ndc_x = (px.x / globals.canvas_size_px.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (px.y / globals.canvas_size_px.y) * 2.0;

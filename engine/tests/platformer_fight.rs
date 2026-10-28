@@ -28,6 +28,11 @@ struct Fight {
 
 impl Fight {
     fn start(hero_at: [f64; 2]) -> Self {
+        Fight::start_as(hero_at, "ilya")
+    }
+
+    /// То же за героя `hero_id` из таблицы героев.
+    fn start_as(hero_at: [f64; 2], hero_id: &str) -> Self {
         let game_json = read("game.json");
         let (config, _) = read_entry(&game_json).expect("game.json разобран");
         let images = support::image_verdicts(&config.files.images);
@@ -47,6 +52,7 @@ impl Fight {
                 hero_at[0], hero_at[1]
             ),
         );
+        let scene = scene.replace(r#""hero_id": "ilya""#, &format!(r#""hero_id": "{hero_id}""#));
         let (mut game, config, _, _) = load_rest_with_stamps(
             &game_json,
             config,
@@ -335,6 +341,21 @@ fn a_chop_staggers_a_resting_robber_but_only_flashes_one_winding_up() {
         after.moods
     );
     assert!(after.pushed > 0.25, "отлетел на {} клетки", after.pushed);
+}
+
+#[test]
+fn every_hero_staggers_a_resting_robber_with_his_own_weapon() {
+    for hero_id in ["ilya", "alyosha", "vasilisa"] {
+        let mut fight = Fight::start_as(BY_THE_FIRST_ROBBER, hero_id);
+        let robber = fight.robber(1.0);
+        until_mood(&mut fight, robber, "rest", None);
+        let after = after_chop(&mut fight, robber);
+        assert!(
+            after.moods.iter().any(|m| m == "stagger"),
+            "{hero_id}: не отшатнулся: {:?}",
+            after.moods
+        );
+    }
 }
 
 #[test]

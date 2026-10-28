@@ -14,7 +14,8 @@
 | `ilya_portrait.mp4`, `alyosha_portrait.mp4`, `vasilisa_portrait.mp4` | портреты для экрана на одном холсте 900 × 1016 (ролики двойной высоты: сверху цвет, снизу маска; у Василисы — две секунды одного кадра) | `node tools/art/portrait.mjs <ролик покоя или vasilisa_maiden.png> <выход.mp4> <рост>`: Илья и Алёша — 760, Василиса — 709 |
 
 В игру: `background_wide.png`, уменьшенный до 2048 × 930, — `games/platformer/images/hero_bg.png`; портреты — копиями
-в `games/platformer/images/`.
+в `games/platformer/images/`. Лист в рамке, вырезанный из `background_wide.png` (`ffmpeg -vf crop=806:787:996:52`), —
+`games/platformer/images/pause_sheet.png`, подложка меню паузы.
 
 ## Запрос фона (Codex, образец стиля — `art/platformer/start/sample.png`)
 

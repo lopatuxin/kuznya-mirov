@@ -8,6 +8,8 @@ import { bigSpruce, pine, weepingBirch } from "./trees.mjs";
 import { sky, cloud, mountains, forest, kremlin } from "./background.mjs";
 import { gorge, hangingLog, fallenLog, boulder, mushrooms, gate, foreground } from "./props.mjs";
 import { sheetSvg } from "./hero.mjs";
+import { alyoshaSvg } from "./alyosha.mjs";
+import { vasilisaSvg } from "./vasilisa.mjs";
 import { robberSvg, robberFlashSvg, robberAuraSvg } from "./robber.mjs";
 import { clashSvg, impactSvg } from "./fx.mjs";
 
@@ -50,7 +52,9 @@ export const IMAGES = {
   mushrooms_glow: { draw: () => mushrooms({ seed: 61, glow: true }), cells: [1.4, 1.0] },
   gate: { draw: () => gate(), cells: [4.6, 5.4] },
   foreground: { draw: () => foreground({ w: 30, h: 2.4, seed: 71 }), cells: [30, 2.4], ppc: 48 },
-  hero: { draw: () => ({ svg: sheetSvg() }) },
+  hero_ilya: { draw: () => ({ svg: sheetSvg() }) },
+  hero_alyosha: { draw: () => ({ svg: alyoshaSvg() }) },
+  hero_vasilisa: { draw: () => ({ svg: vasilisaSvg() }) },
   robber: { draw: () => ({ svg: robberSvg() }) },
   robber_flash: { draw: () => ({ svg: robberFlashSvg() }) },
   robber_aura: { draw: () => ({ svg: robberAuraSvg() }) },
