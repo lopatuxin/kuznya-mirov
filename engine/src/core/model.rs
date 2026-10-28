@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use super::skeleton::Skeleton;
+use super::solid::SolidGrid;
 
 /// Вершина части модели.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -179,6 +180,15 @@ pub enum ModelImage {
     Packed(Arc<PackedImage>),
 }
 
+/// «Свет и материалы», «Рисованный свет и картины»: как освещена модель. `Picture` показывает цвет своей картинки
+/// как есть, без солнца и неба, не отбрасывает теней, но принимает чужие.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Look {
+    #[default]
+    Lit,
+    Picture,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
     pub name: String,
@@ -194,6 +204,49 @@ pub struct Model {
     pub skeleton: Option<Skeleton>,
     /// Веса вершин каждой части по порядку частей; пусто у модели без скелета.
     pub skin: Vec<Vec<SkinVertex>>,
+    pub look: Look,
+    pub building: Building,
+}
+
+/// Допуск на нижнюю границу коробки `inside`: стоящий на полу — в коробке, что начинается с пола.
+const INSIDE_SLACK: f64 = 1e-6;
+
+/// «Трёхмерная сцена» → «Здания»: коробка внутренности здания — узел файла с именем на `inside`. Коробка лежит в осях
+/// своего узла (с обменом осей файла на оси сцены) и поворачивается вместе с ним: автор строит её прямой в осях узла.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct InsideBox {
+    /// Низ и верх коробки в осях узла.
+    pub low: [f32; 3],
+    pub high: [f32; 3],
+    /// Точка осей модели → та же точка в осях узла; матрица по столбцам, как в glTF.
+    pub to_node: [[f32; 4]; 4],
+}
+
+impl InsideBox {
+    /// Лежит ли точка осей модели в коробке: низ включительно, верх нет.
+    pub fn contains(&self, point: [f64; 3]) -> bool {
+        (0..3).all(|axis| {
+            let local = (0..3)
+                .map(|k| f64::from(self.to_node[k][axis]) * point[k])
+                .sum::<f64>()
+                + f64::from(self.to_node[3][axis]);
+            local >= f64::from(self.low[axis]) - INSIDE_SLACK && local < f64::from(self.high[axis])
+        })
+    }
+}
+
+/// «Трёхмерная сцена» → «Здания»: что делает модель зданием.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Building {
+    /// Точка файла (в осях сцены), что легла в начало осей модели: середина коробки по плану и её низ. Модель среза
+    /// встаёт на модель здания по этой точке, а не по своим коробкам.
+    pub shift: [f32; 3],
+    /// Сетка столбов твёрдой модели (`solid: true`); `None` у остальных.
+    pub solid: Option<Arc<SolidGrid>>,
+    /// Номер модели среза в таблице (`cutaway`).
+    pub cutaway: Option<usize>,
+    /// Коробки внутренности; их узлы не рисуются и не твёрдые.
+    pub inside: Vec<InsideBox>,
 }
 
 impl Model {
@@ -208,7 +261,14 @@ impl Model {
             origin: [0.0; 2],
             skeleton: None,
             skin: Vec::new(),
+            look: Look::Lit,
+            building: Default::default(),
         }
+    }
+
+    /// Бросает ли модель тень: модель `picture` — нет, её тени нарисованы на картине.
+    pub fn casts_shadow(&self) -> bool {
+        self.look == Look::Lit
     }
 
     /// Есть ли у модели часть `BLEND`: её рисуют отдельно от сплошных частей, по порядку от дальнего к ближнему.
@@ -236,11 +296,27 @@ impl Model {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct ModelTable {
     models: Vec<Model>,
+    any_solid: bool,
+    any_cutaway: bool,
 }
 
 impl ModelTable {
     pub fn new(models: Vec<Model>) -> ModelTable {
-        ModelTable { models }
+        ModelTable {
+            any_solid: models.iter().any(|model| model.building.solid.is_some()),
+            any_cutaway: models.iter().any(|model| model.building.cutaway.is_some()),
+            models,
+        }
+    }
+
+    /// Есть ли в игре твёрдая модель: без неё ход игры зданий не ищет.
+    pub fn any_solid(&self) -> bool {
+        self.any_solid
+    }
+
+    /// Есть ли в игре модель со срезом.
+    pub fn any_cutaway(&self) -> bool {
+        self.any_cutaway
     }
 
     pub fn len(&self) -> usize {

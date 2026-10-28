@@ -7,7 +7,7 @@ use engine::core::game::{Game, PlayerView};
 use engine::core::input::{MouseState, UiQueue};
 use engine::core::property;
 use engine::core::runner::Runner;
-use engine::core::scene::pointer_hit;
+use engine::core::scene::{CameraConfig, Projection, pointer_hit};
 use engine::core::screens::{self, ScreenState, ScreensConfig};
 use engine::data::error::{GameError, LoadFailure};
 use engine::data::load::load_game_from_texts;
@@ -477,7 +477,11 @@ fn the_space_camera_never_looks_past_the_edge() {
     game.camera_key_down("KeyW");
     game.camera_key_down("KeyD");
     game.camera_pan(100.0, VIEWPORT);
-    let limit = camera::clamp_center_3d(&game.scene, 60.0, 20.0, [1000.0, 600.0], [1.0e6, -1.0e6]);
+    let space = CameraConfig {
+        pitch: 60.0,
+        projection: Projection::Perspective,
+    };
+    let limit = camera::clamp_center_3d(&game.scene, space, 20.0, [1000.0, 600.0], [1.0e6, -1.0e6]);
     near_pair(space_center(&game), limit, 1e-6);
     let corner = space_point_under(&game, [500.0, 300.0]);
     assert!(corner[0] <= 80.0 + 1e-6 && corner[1] >= -1e-6);

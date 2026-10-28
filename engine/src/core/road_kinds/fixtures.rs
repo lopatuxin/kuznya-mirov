@@ -4,7 +4,7 @@
 
 use std::collections::HashMap;
 
-use super::super::model::{Material, Model, ModelTable, ModelVertex, Part};
+use super::super::model::{Look, Material, Model, ModelTable, ModelVertex, Part};
 use super::{JunctionArm, JunctionModel, PieceModel, RoadKind, RoadKindTable};
 
 pub(super) const STREET: usize = 0;
@@ -103,6 +103,8 @@ pub(super) fn strips(name: &str, arms: &[(f64, f64, f64)]) -> Model {
         origin: [-shift[0] as f32, -shift[1] as f32],
         skeleton: None,
         skin: Vec::new(),
+        look: Look::Lit,
+        building: Default::default(),
     }
 }
 
@@ -250,5 +252,7 @@ pub(super) fn ribbon(name: &str, width: f64, length: f64, across: usize, along: 
         origin: [0.0; 2],
         skeleton: None,
         skin: Vec::new(),
+        look: Look::Lit,
+        building: Default::default(),
     }
 }

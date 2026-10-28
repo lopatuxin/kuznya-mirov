@@ -9,14 +9,15 @@ use std::sync::Arc;
 use block_compression::decode::decompress_blocks_as_rgba8;
 use block_compression::{BC7Settings, CompressionVariant};
 
+use crate::core::building;
+use crate::core::camera::Camera3d;
 use crate::core::game::Game;
 use crate::core::math3::Mat4;
-use crate::core::model::{Image, ModelImage, PackedFormat, PackedImage};
+use crate::core::model::{Image, Model, ModelImage, ModelTable, PackedFormat, PackedImage};
 use crate::core::property;
 use crate::core::road_kinds::Junction;
 use crate::core::skeleton::{PoseScratch, Skeleton, Stance};
 use crate::core::surface;
-use crate::core::value::Rotation;
 use crate::core::world::World;
 
 use super::materials::{linear_to_srgb, srgb_to_linear};
@@ -31,6 +32,10 @@ pub struct ModelInstance {
     /// `[z, scale, stretch, tilt]`; `stretch` — единица у всего, кроме кусков дороги, `tilt` — наклон вдоль длины
     /// модели в радианах, нос выше при положительном, ноль у всего, кроме машины на подъёме.
     pub base: [f32; 4],
+    /// «Здания», срез: 0 — модель рисуется целиком; положительное число — доля точек экрана, что отданы модели
+    /// среза и у этой модели не рисуются; отрицательное — экземпляр модели среза, он рисует эту долю точек и тени
+    /// не бросает.
+    pub fade: f32,
 }
 
 /// Объект с частью `BLEND`: номер модели и номер объекта в её списке кадра.
@@ -38,6 +43,8 @@ pub struct ModelInstance {
 pub struct BlendedDraw {
     pub model: u32,
     pub index: u32,
+    /// Объект лежит в списке растворяющихся (`ModelDraws::dissolving`), а не в обычном.
+    pub dissolving: bool,
 }
 
 /// Объекты каждой модели кадра по номеру модели, самая высокая точка среди них — по ней охватывается карта
@@ -45,6 +52,9 @@ pub struct BlendedDraw {
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ModelDraws {
     pub instances: Vec<Vec<ModelInstance>>,
+    /// «Здания», срез: объекты, чьи точки делят основная модель и модель среза (`ModelInstance::fade` не ноль), по номеру
+    /// модели. Рисуются конвейером с растворением; тени основной модели падают и от них.
+    pub dissolving: Vec<Vec<ModelInstance>>,
     /// «Скелет и движения»: у модели со скелетом — матрицы суставов каждого её объекта в кадре, по порядку
     /// `instances`, по шестнадцать чисел на сустав, столбцами; у остальных пусто.
     pub bones: Vec<Vec<f32>>,
@@ -53,14 +63,32 @@ pub struct ModelDraws {
 }
 
 impl ModelDraws {
+    /// Кладёт объект модели `model` с номером `at` в список кадра — обычный или растворяющихся; объект с частью
+    /// `BLEND` встаёт ещё и в порядок смешивания по своей середине `reach`.
+    fn add(&mut self, at: usize, model: &Model, instance: ModelInstance, reach: [f64; 3]) {
+        let dissolving = instance.fade != 0.0;
+        let list = if dissolving {
+            &mut self.dissolving[at]
+        } else {
+            &mut self.instances[at]
+        };
+        if model.has_blend() {
+            self.blended.push((
+                BlendedDraw {
+                    model: at as u32,
+                    index: list.len() as u32,
+                    dissolving,
+                },
+                reach,
+            ));
+        }
+        list.push(instance);
+    }
+
     /// «Свет и материалы», прозрачность: объекты с частью `BLEND` от дальнего к ближнему по середине объекта,
     /// как их рисовать; равноудалённые — в порядке моделей и объектов.
-    pub fn blended_far_to_near(&self, eye: [f64; 3]) -> Vec<BlendedDraw> {
-        let reach = |middle: &[f64; 3]| {
-            (0..3)
-                .map(|axis| (middle[axis] - eye[axis]).powi(2))
-                .sum::<f64>()
-        };
+    pub fn blended_far_to_near(&self, camera: &Camera3d) -> Vec<BlendedDraw> {
+        let reach = |middle: &[f64; 3]| camera.depth_key(*middle);
         let mut order: Vec<&(BlendedDraw, [f64; 3])> = self.blended.iter().collect();
         order.sort_by(|a, b| reach(&b.1).total_cmp(&reach(&a.1)));
         order.into_iter().map(|(draw, _)| *draw).collect()
@@ -95,6 +123,7 @@ pub fn road_draws(game: &Game) -> RoadDraws {
                 piece.stretch as f32,
                 0.0,
             ],
+            fade: 0.0,
         });
     }
     RoadDraws {
@@ -192,6 +221,7 @@ pub fn model_draws(game: &Game) -> ModelDraws {
     let models = world.models();
     let mut draws = ModelDraws {
         instances: vec![Vec::new(); models.len()],
+        dissolving: vec![Vec::new(); models.len()],
         bones: vec![Vec::new(); models.len()],
         top: f64::NEG_INFINITY,
         blended: Vec::new(),
@@ -218,18 +248,11 @@ pub fn model_draws(game: &Game) -> ModelDraws {
             continue;
         }
         let scale = model.scale(world.number_like(id, property::HEIGHT));
-        let (sin, cos) = view_rotation(world, id).sin_cos();
+        let (sin, cos) = building::view_rotation(world, id).sin_cos();
         let base = world.base_z(id);
         let middle = [position[0] + size[0] / 2.0, position[1] + size[1] / 2.0];
-        draws.top = draws.top.max(base + model.size[2] * scale);
-        if model.has_blend() {
-            draws.blended.push((
-                BlendedDraw {
-                    model: index as u32,
-                    index: draws.instances[index].len() as u32,
-                },
-                [middle[0], middle[1], base + model.size[2] * scale / 2.0],
-            ));
+        if model.casts_shadow() {
+            draws.top = draws.top.max(base + model.size[2] * scale);
         }
         if let Some(skeleton) = &model.skeleton {
             let stance = Stance {
@@ -241,19 +264,66 @@ pub fn model_draws(game: &Game) -> ModelDraws {
             };
             posing.pose(game, id, skeleton, &stance, &mut draws.bones[index]);
         }
-        draws.instances[index].push(ModelInstance {
+        let cutaway = cutaway_of(world, models, id, model);
+        let instance = ModelInstance {
             placement: [middle[0] as f32, middle[1] as f32, cos as f32, sin as f32],
             base: [base as f32, scale as f32, 1.0, world.tilt(id) as f32],
-        });
+            fade: cutaway.map_or(0.0, |(_, _, share)| share),
+        };
+        let reach = [middle[0], middle[1], base + model.size[2] * scale / 2.0];
+        draws.add(index, model, instance, reach);
+        if let Some((at, cut, share)) = cutaway {
+            push_cutaway(&mut draws, (at, cut, share), model, instance, (sin, cos));
+        }
     }
     draws
 }
 
-/// Куда смотрит вид объекта: `rotation` вместе с `facing`.
-pub(super) fn view_rotation(world: &World, id: u32) -> Rotation {
-    let angle = |prop| world.rotation(id, prop).map_or(0.0, Rotation::angle);
-    let sum = angle(property::ROTATION) + angle(property::FACING);
-    Rotation::from_degrees(sum).unwrap_or_else(|| Rotation::from_quarters(0))
+/// «Здания»: модель среза объекта `id` и доля точек, отданных ей, пока эта доля больше нуля. Срез со скелетом не
+/// рисуется: ряды матриц суставов считаются по моделям с объектами.
+fn cutaway_of<'a>(
+    world: &World,
+    models: &'a ModelTable,
+    id: u32,
+    model: &Model,
+) -> Option<(usize, &'a Model, f32)> {
+    let at = model.building.cutaway?;
+    let cut = models.get(at)?;
+    let share = building::dissolve_share(world, id);
+    let drawable = !cut.parts.is_empty() && cut.skeleton.is_none() && model.skeleton.is_none();
+    (share > 0.0 && drawable).then_some((at, cut, share))
+}
+
+/// «Здания»: экземпляр модели среза на месте основного `instance` `main`: файлы обеих моделей лежат в одних осях, поэтому
+/// срез сдвигается на разницу точек, что легли у них в начало осей, и тот же размер. Тени он не бросает.
+fn push_cutaway(
+    draws: &mut ModelDraws,
+    (at, cut, share): (usize, &Model, f32),
+    main: &Model,
+    instance: ModelInstance,
+    (sin, cos): (f64, f64),
+) {
+    let shift: [f64; 3] =
+        std::array::from_fn(|axis| f64::from(cut.building.shift[axis] - main.building.shift[axis]));
+    let scale = f64::from(instance.base[1]);
+    let (dx, dy) = (shift[0] * scale, shift[1] * scale);
+    let place = [
+        f64::from(instance.placement[0]) + cos * dx - sin * dy,
+        f64::from(instance.placement[1]) + sin * dx + cos * dy,
+    ];
+    let base = f64::from(instance.base[0]) + shift[2] * scale;
+    let reach = [place[0], place[1], base + cut.size[2] * scale / 2.0];
+    let cutaway = ModelInstance {
+        placement: [
+            place[0] as f32,
+            place[1] as f32,
+            instance.placement[2],
+            instance.placement[3],
+        ],
+        base: [base as f32, instance.base[1], 1.0, 0.0],
+        fade: -share,
+    };
+    draws.add(at, cut, cutaway, reach);
 }
 
 /// Рабочие буферы поз, общие на все объекты кадра.

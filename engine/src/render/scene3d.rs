@@ -4,12 +4,13 @@
 
 use std::rc::Rc;
 
-use crate::core::camera::{Camera3d, FOV_Y_DEGREES};
+use crate::core::building;
+use crate::core::camera::Camera3d;
 use crate::core::game::Game;
 use crate::core::math3::{self, Mat4, Vec3};
 use crate::core::property;
 use crate::core::road_kinds::Junction;
-use crate::core::scene::{CellRange, LayerView, LightConfig, SceneConfig};
+use crate::core::scene::{CellRange, LayerView, LightConfig, Projection, SceneConfig};
 use crate::core::shapes::Body;
 use crate::core::value::Shape;
 use crate::core::water::{DEFAULT_CLARITY, DEFAULT_RIPPLE};
@@ -56,6 +57,8 @@ pub struct Frame3d {
     pub shapes: Vec<ShapeDraw>,
     /// Объекты каждой модели игры по номеру модели.
     pub models: Vec<Vec<ModelInstance>>,
+    /// «Здания», срез: объекты, чьи точки делят основная модель и модель среза → `models::ModelDraws::dissolving`.
+    pub models_dissolving: Vec<Vec<ModelInstance>>,
     /// Матрицы суставов объектов каждой модели со скелетом → `models::ModelDraws::bones`.
     pub model_bones: Vec<Vec<f32>>,
     /// «Вид дороги»: куски дорог по номеру модели и перекрёстки; рисуются после моделей и до плоских объектов.
@@ -77,8 +80,11 @@ pub struct Frame3d {
     pub shadow: f32,
     pub depth_per_cell: f32,
     pub shadow_offset: f32,
-    /// Место камеры: от него считается блик.
-    pub eye: [f32; 3],
+    /// Откуда считается блик: xyz — место камеры, а при `orthographic` — единичное направление от земли к камере,
+    /// w — единица при `orthographic`.
+    pub eye: [f32; 4],
+    /// Цвет тени моделей `picture` в линейной яркости: цвет картины в тени умножается на него.
+    pub shade_color: [f32; 3],
     /// Цвет и сила солнца и неба в линейной яркости.
     pub sun_light: [f32; 3],
     pub sky_light: [f32; 3],
@@ -87,17 +93,20 @@ pub struct Frame3d {
     pub water: [f32; 3],
 }
 
+/// Канал цвета данных в sRGB — в линейную яркость.
+fn linear_channel(c: f32) -> f64 {
+    let c = f64::from(c);
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055).powf(2.4)
+    }
+}
+
 /// Оттенок цвета данных `srgb`: цвет в линейной яркости, поделённый на свою яркость (Rec. 709), так что
 /// яркость оттенка — единица. Чёрный цвет оттенка не имеет: источник не светит.
 fn light_tint(srgb: [f32; 3]) -> [f64; 3] {
-    let linear = srgb.map(|c| {
-        let c = f64::from(c);
-        if c <= 0.04045 {
-            c / 12.92
-        } else {
-            ((c + 0.055) / 1.055).powf(2.4)
-        }
-    });
+    let linear = srgb.map(linear_channel);
     let luminance = 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2];
     if luminance <= 0.0 {
         return [0.0; 3];
@@ -122,7 +131,7 @@ fn shape_draws(game: &Game) -> Vec<ShapeDraw> {
             let body = Body::of_object(&game.world, id)?;
             let color = game.world.color(id, property::COLOR)?;
             let solid = body.size[0] > 0.0 && body.size[1] > 0.0 && body.height > 0.0;
-            let (sin, cos) = models::view_rotation(&game.world, id).sin_cos();
+            let (sin, cos) = building::view_rotation(&game.world, id).sin_cos();
             solid.then(|| ShapeDraw {
                 shape: body.shape,
                 center: [body.center[0] as f32, body.center[1] as f32],
@@ -149,21 +158,7 @@ fn visible_bounds(
     low: f64,
     high: f64,
 ) -> Option<[[f64; 2]; 2]> {
-    let tan_y = (FOV_Y_DEGREES.to_radians() / 2.0).tan();
-    let tan_x = tan_y * camera.viewport[0] / camera.viewport[1].max(1.0);
-    let (forward, up, right) = (camera.forward(), camera.up(), camera.right());
-    let inward = |axis: Vec3, sign: f64, tan: f64| {
-        math3::add(math3::scale(axis, sign), math3::scale(forward, tan))
-    };
-    let mut planes: Vec<(Vec3, f64)> = [
-        inward(right, 1.0, tan_x),
-        inward(right, -1.0, tan_x),
-        inward(up, 1.0, tan_y),
-        inward(up, -1.0, tan_y),
-    ]
-    .into_iter()
-    .map(|normal| (normal, -math3::dot(normal, camera.eye)))
-    .collect();
+    let mut planes: Vec<(Vec3, f64)> = camera.side_planes().to_vec();
     planes.extend([
         ([1.0, 0.0, 0.0], 0.0),
         ([-1.0, 0.0, 0.0], f64::from(scene.width)),
@@ -294,6 +289,20 @@ fn shadow_offset(texel: f64) -> f64 {
     (SHADOW_OFFSET_TEXELS * texel).max(MIN_SHADOW_OFFSET)
 }
 
+/// `Frame3d::eye` камеры `camera`.
+fn view_origin(camera: &Camera3d) -> [f32; 4] {
+    match camera.projection {
+        Projection::Perspective => {
+            let [x, y, z] = camera.eye;
+            [x as f32, y as f32, z as f32, 0.0]
+        }
+        Projection::Orthographic => {
+            let [x, y, z] = math3::scale(camera.forward(), -1.0);
+            [x as f32, y as f32, z as f32, 1.0]
+        }
+    }
+}
+
 /// Кадр трёхмерной сцены по миру `game` и камере `camera`. `motion` — часы движения, по ним
 /// выбирается кадр анимации картинок, как у плоской сцены. `flat_shapes` хранит готовые формы плоских
 /// объектов от кадра к кадру.
@@ -320,7 +329,7 @@ pub fn compose_frame3d(
         });
     let model_draws = models::model_draws(game);
     let road_draws = models::road_draws(game);
-    let blended = model_draws.blended_far_to_near(camera.eye);
+    let blended = model_draws.blended_far_to_near(camera);
     let top = shapes
         .iter()
         .map(|s| f64::from(s.base + s.height))
@@ -351,6 +360,7 @@ pub fn compose_frame3d(
     Frame3d {
         shapes,
         models: model_draws.instances,
+        models_dissolving: model_draws.dissolving,
         model_bones: model_draws.bones,
         road_pieces: road_draws.pieces,
         road_junctions: road_draws.junctions,
@@ -369,7 +379,12 @@ pub fn compose_frame3d(
         shadow: game.scene.light.shadow as f32,
         depth_per_cell: (1.0 / depth.max(1e-6)) as f32,
         shadow_offset: shadow_offset(texel) as f32,
-        eye: camera.eye.map(|c| c as f32),
+        eye: view_origin(camera),
+        shade_color: game
+            .scene
+            .light
+            .shade_color
+            .map(|c| linear_channel(c) as f32),
         sun_light,
         sky_light,
         water: [
@@ -392,7 +407,10 @@ mod tests {
             background: [0.0; 4],
             view_height: Some(12.0),
             y_sort: false,
-            camera: Some(CameraConfig { pitch: 55.0 }),
+            camera: Some(CameraConfig {
+                pitch: 55.0,
+                projection: Projection::Perspective,
+            }),
             light: LightConfig::default(),
             cell_pixels: None,
             player_camera: None,
@@ -433,6 +451,91 @@ mod tests {
         }
     }
 
+    fn orthographic(target: [f64; 2], view_height: f64, viewport: [f64; 2]) -> Camera3d {
+        let config = CameraConfig {
+            pitch: 55.0,
+            projection: Projection::Orthographic,
+        };
+        Camera3d::game(config, target, view_height, viewport)
+    }
+
+    /// «Свет и тени», `orthographic`: карта теней охватывает всё видимое — землю под каждой точкой окна и каждую
+    /// точку выше неё до самой высокой фигуры, чья тень падает на эту землю.
+    #[test]
+    fn the_sun_projection_holds_everything_an_orthographic_window_sees_and_the_casters_over_it() {
+        let scene = scene();
+        let tallest = 4.2;
+        for (target, view_height, viewport) in [
+            ([16.0, 12.0], 12.0, [1920.0, 1080.0]),
+            ([10.0, 8.0], 7.0, [800.0, 1000.0]),
+            ([30.0, 22.0], 16.0, [1280.0, 800.0]),
+        ] {
+            let camera = orthographic(target, view_height, viewport);
+            let (matrix, depth, _) = sun_projection(&scene, &camera, (0.0, 0.0), tallest);
+            assert!(depth > 0.0);
+            let toward_sun = scene.light.direction();
+            let range = visible_cells(&scene, &camera, 0.0, tallest);
+            for window_x in [0.0, 0.5, 1.0] {
+                for window_y in [0.0, 0.5, 1.0] {
+                    let window = [window_x * viewport[0], window_y * viewport[1]];
+                    let ground = camera.ground_point(window);
+                    if !(0.0..=32.0).contains(&ground[0]) || !(0.0..=24.0).contains(&ground[1]) {
+                        continue;
+                    }
+                    assert!(
+                        (range.x0 as f64 - 1e-9..=range.x1 as f64 + 1e-9).contains(&ground[0])
+                            && (range.y0 as f64 - 1e-9..=range.y1 as f64 + 1e-9)
+                                .contains(&ground[1]),
+                        "{ground:?} вне {range:?}"
+                    );
+                    for height in [0.0, tallest / 2.0, tallest] {
+                        let lift = height / toward_sun[2];
+                        let point =
+                            math3::add([ground[0], ground[1], 0.0], math3::scale(toward_sun, lift));
+                        let clip = math3::transform_point(&matrix, point);
+                        let (x, y, z) = (clip[0] / clip[3], clip[1] / clip[3], clip[2] / clip[3]);
+                        assert!(x.abs() <= 1.0 && y.abs() <= 1.0, "{point:?} → {x} {y}");
+                        assert!((0.0..=1.0).contains(&z), "{point:?} → глубина {z}");
+                    }
+                }
+            }
+        }
+    }
+
+    /// «Свет и тени»: видимые клетки `orthographic` охватывают землю под окном на любой высоте тела — точка на луче
+    /// через пиксель на высоте `h` лежит в клетках для высот от 0 до `h`.
+    #[test]
+    fn the_visible_cells_of_an_orthographic_camera_hold_a_tall_body_seen_through_every_pixel() {
+        let scene = scene();
+        let viewport = [1600.0, 900.0];
+        let camera = orthographic([16.0, 12.0], 10.0, viewport);
+        let tall = 6.0;
+        let range = visible_cells(&scene, &camera, 0.0, tall);
+        for window_x in [0.0, 0.25, 0.5, 0.75, 1.0] {
+            for window_y in [0.0, 0.5, 1.0] {
+                let window = [window_x * viewport[0], window_y * viewport[1]];
+                let origin = camera.ray_origin(window);
+                let direction = camera.ray_direction(window);
+                for height in [0.0, tall] {
+                    let reach = (height - origin[2]) / direction[2];
+                    let point = [
+                        origin[0] + reach * direction[0],
+                        origin[1] + reach * direction[1],
+                    ];
+                    if !(0.0..=32.0).contains(&point[0]) || !(0.0..=24.0).contains(&point[1]) {
+                        continue;
+                    }
+                    assert!(
+                        (range.x0 as f64 - 1e-9..=range.x1 as f64 + 1e-9).contains(&point[0])
+                            && (range.y0 as f64 - 1e-9..=range.y1 as f64 + 1e-9)
+                                .contains(&point[1]),
+                        "высота {height}: {point:?} вне {range:?}"
+                    );
+                }
+            }
+        }
+    }
+
     /// «Свет и тени»: земля не затеняет сама себя ни вблизи, ни когда камера видит всю большую сцену.
     /// Выборка тени сравнивает глубину точки, сдвинутой вдоль нормали, с четырьмя соседними точками
     /// карты теней; земля под каждой из них не ближе к солнцу — на ровном месте и на склонах в 40° в
@@ -456,6 +559,7 @@ mod tests {
                 large,
                 Camera3d::looking_at([200.0, 200.0], 55.0, 400.0, [1280.0, 800.0]),
             ),
+            (scene(), orthographic([16.0, 12.0], 12.0, [1920.0, 1080.0])),
         ];
         let tilt = 40f64.to_radians();
         let size = f64::from(SHADOW_MAP_SIZE);

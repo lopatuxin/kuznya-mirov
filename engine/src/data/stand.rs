@@ -11,7 +11,7 @@ use crate::core::model::{Model, ModelTable};
 use crate::core::motion::MotionState;
 use crate::core::property::{self, PropertyTable};
 use crate::core::rules::RuleSet;
-use crate::core::scene::ObjectSpec;
+use crate::core::scene::{ObjectSpec, Projection};
 use crate::core::skeleton::{Blend, Playing, PoseScratch, Skeleton};
 use crate::core::value::Value;
 
@@ -139,6 +139,7 @@ pub struct Stand {
     center: [f64; 2],
     scale: f64,
     camera: EditorCamera,
+    projection: Projection,
     scratch: PoseScratch,
     grab: Option<Grab>,
     /// Повторяется ли движение: у движения без `loop` на стенде — да.
@@ -291,6 +292,7 @@ impl Stand {
                 pitch: LEVEL_PITCH,
                 distance: 4.0,
             },
+            projection: Projection::Perspective,
             scratch: PoseScratch::default(),
             grab: None,
             looped: true,
@@ -312,7 +314,7 @@ impl Stand {
 
     /// Камера, которой мир просмотра виден в окне `viewport`.
     pub fn camera(&self, viewport: [f64; 2]) -> Camera3d {
-        self.camera.clamped().camera(viewport)
+        self.camera.clamped().camera_in(self.projection, viewport)
     }
 
     /// Ставит камеру на вид `view`: модель от ступней до макушки занимает `FILL` высоты окна и стоит посередине него.
@@ -320,11 +322,16 @@ impl Stand {
         if viewport[0] < 1.0 || viewport[1] < 1.0 {
             return;
         }
+        let game_camera = self.game.scene.camera;
         let pitch = match view {
             StandView::Side | StandView::Front => LEVEL_PITCH,
-            StandView::Game => self.game.scene.camera.map_or(55.0, |camera| camera.pitch),
+            StandView::Game => game_camera.map_or(55.0, |camera| camera.pitch),
         }
         .clamp(EDITOR_PITCH_RANGE.0, EDITOR_PITCH_RANGE.1);
+        let projection = match (view, game_camera) {
+            (StandView::Game, Some(camera)) => camera.projection,
+            _ => Projection::Perspective,
+        };
         let yaw = if view == StandView::Side { 90.0 } else { 0.0 };
         let looking = |target_z: f64, distance: f64| EditorCamera {
             target: self.center,
@@ -334,7 +341,7 @@ impl Stand {
             distance,
         };
         let ends = |camera: &EditorCamera| {
-            let camera = camera.camera(viewport);
+            let camera = camera.camera_in(projection, viewport);
             let feet = camera.project([self.center[0], self.center[1], 0.0])?;
             let head = camera.project([self.center[0], self.center[1], HEIGHT])?;
             Some((feet[1], head[1]))
@@ -363,13 +370,23 @@ impl Stand {
                 target_z,
             ]
         });
-        let wide = camera::fit_distance(&corners, self.center, target_z, yaw, pitch, viewport);
+        let wide = camera::fit_distance(
+            projection,
+            &corners,
+            self.center,
+            target_z,
+            yaw,
+            pitch,
+            viewport,
+        );
+        self.projection = projection;
         self.camera = looking(target_z, distance_for(target_z).max(wide * WIDTH_MARGIN));
     }
 
     /// Камера прежнего стенда `old` — вид не сбрасывается, когда стенд собран заново после правки.
     pub fn keep_camera(&mut self, old: &Stand) {
         self.camera = old.camera;
+        self.projection = old.projection;
     }
 
     /// Колесо мыши приближает и отдаляет модель.
@@ -752,18 +769,19 @@ fn ring_angle(camera: &Camera3d, grab: &Grab, point: [f64; 2]) -> Option<f64> {
     if along.abs() < 1e-9 {
         return None;
     }
+    let origin = camera.ray_origin(point);
     let reach = dot(
         [
-            grab.center[0] - camera.eye[0],
-            grab.center[1] - camera.eye[1],
-            grab.center[2] - camera.eye[2],
+            grab.center[0] - origin[0],
+            grab.center[1] - origin[1],
+            grab.center[2] - origin[2],
         ],
         grab.normal,
     ) / along;
     if reach <= 0.0 {
         return None;
     }
-    let offset = std::array::from_fn(|k| camera.eye[k] + direction[k] * reach - grab.center[k]);
+    let offset = std::array::from_fn(|k| origin[k] + direction[k] * reach - grab.center[k]);
     Some(dot(offset, grab.second).atan2(dot(offset, grab.first)))
 }
 

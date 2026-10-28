@@ -125,13 +125,16 @@ impl<'a> PackedFiles<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::PackedFormat;
+    use crate::core::model::{Look, PackedFormat};
     use crate::data::ktx2::write_ktx2;
 
     fn decl(name: &str, path: &str) -> ModelDecl {
         ModelDecl {
             name: name.to_string(),
             path: path.to_string(),
+            look: Look::Lit,
+            solid: None,
+            cutaway: None,
             idle: None,
             walk: None,
             feet: None,

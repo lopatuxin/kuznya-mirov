@@ -1,3 +1,4 @@
+use super::building;
 use super::property;
 use super::surface::{self, Lies};
 use super::value::{ImageId, Vec2};
@@ -14,10 +15,19 @@ pub struct GroundLayer {
     pub cells: Vec<Vec<i32>>,
 }
 
-/// «Трёхмерная сцена» → «Камера»: `scene.camera` — наклон камеры к земле в градусах, 30–90.
+/// «Трёхмерная сцена» → «Камера»: с перспективой камера смотрит на землю или без неё.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Projection {
+    #[default]
+    Perspective,
+    Orthographic,
+}
+
+/// «Трёхмерная сцена» → «Камера»: `scene.camera` — наклон камеры к земле в градусах, 30–90, и проекция.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CameraConfig {
     pub pitch: f64,
+    pub projection: Projection,
 }
 
 /// «Мир на экране» → «Камера игрока»: `scene.player_camera` — самый близкий и самый дальний вид (сколько
@@ -42,6 +52,8 @@ pub struct LightConfig {
     pub sun_color: [f32; 3],
     /// Цвет неба — рассеянного света сверху — в sRGB: задаёт только оттенок.
     pub sky_color: [f32; 3],
+    /// Цвет тени моделей `picture` в sRGB: цвет картины в тени умножается на него.
+    pub shade_color: [f32; 3],
 }
 
 impl Default for LightConfig {
@@ -52,6 +64,7 @@ impl Default for LightConfig {
             shadow: 0.4,
             sun_color: [1.0, 242.0 / 255.0, 220.0 / 255.0],
             sky_color: [169.0 / 255.0, 200.0 / 255.0, 238.0 / 255.0],
+            shade_color: [91.0 / 255.0, 106.0 / 255.0, 158.0 / 255.0],
         }
     }
 }
@@ -596,7 +609,7 @@ pub fn editor_target_ray(
     nearest_along_ray(
         world,
         scene,
-        camera.eye,
+        camera.ray_origin(window),
         camera.ray_direction(window),
         |id| {
             world.shape(id, property::SHAPE).is_some()
@@ -712,7 +725,7 @@ fn first_blocker(
 }
 
 /// «Трёхмерная сцена» → «Мышь и надписи», требование 26: место с высотой, где луч первым встретил
-/// рельеф в пределах сцены, воду или верх настила. Настил встречает луч только своим верхом: луч,
+/// рельеф в пределах сцены, воду, верх настила или пол твёрдой модели. Настил встречает луч только своим верхом: луч,
 /// прошедший под верхом моста, попадает в берег под ним.
 pub fn surface_hit(
     world: &World,
@@ -729,6 +742,9 @@ pub fn surface_hit(
                 nearest = t;
             }
         }
+        if let Some(t) = building::floor_hit(world, origin, direction, nearest) {
+            nearest = t;
+        }
     }
     nearest.is_finite().then(|| {
         [
@@ -740,7 +756,7 @@ pub fn surface_hit(
 }
 
 /// «Рельеф» → «Мышь», требование 26: место с высотой под точкой окна `window` камеры — где луч первым
-/// встретил рельеф в пределах сцены, воду или верх настила; мимо сцены — пересечение с плоскостью
+/// встретил рельеф в пределах сцены, воду, верх настила или пол твёрдого здания; мимо сцены — пересечение с плоскостью
 /// высоты 0 без прижатия к краю. `None`, если луч не идёт вниз.
 pub fn pointer_hit(
     world: &World,
@@ -748,7 +764,13 @@ pub fn pointer_hit(
     camera: &super::camera::Camera3d,
     window: [f64; 2],
 ) -> Option<super::math3::Vec3> {
-    surface_hit(world, scene, camera.eye, camera.ray_direction(window)).or_else(|| {
+    surface_hit(
+        world,
+        scene,
+        camera.ray_origin(window),
+        camera.ray_direction(window),
+    )
+    .or_else(|| {
         camera
             .ground_hit(window)
             .map(|ground| [ground[0], ground[1], 0.0])
@@ -768,13 +790,14 @@ pub fn terrain_hit(
     if direction[2] >= 0.0 {
         return None;
     }
+    let origin = camera.ray_origin(window);
     let t = world
         .terrain()
-        .ray_hit(scene_extent(scene), camera.eye, direction)?;
+        .ray_hit(scene_extent(scene), origin, direction)?;
     Some([
-        camera.eye[0] + t * direction[0],
-        camera.eye[1] + t * direction[1],
-        camera.eye[2] + t * direction[2],
+        origin[0] + t * direction[0],
+        origin[1] + t * direction[1],
+        origin[2] + t * direction[2],
     ])
 }
 

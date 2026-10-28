@@ -1,5 +1,6 @@
 use std::cell::{Ref, RefCell};
 
+use super::building;
 use super::camera::{
     self, Camera3d, CameraHeight, EditorCamera, FlatEditorCamera, FreeView, PlayerCamera,
 };
@@ -15,7 +16,7 @@ use super::rng::Rng;
 use super::road_kinds::RoadKindLayout;
 use super::roads::{RoadLinks, RoadState};
 use super::rules::{Outcome, RuleSet};
-use super::scene::{self, GroundLayer, ObjectSpec, SceneConfig, letterbox};
+use super::scene::{self, GroundLayer, ObjectSpec, Projection, SceneConfig, letterbox};
 use super::sound::SoundWindow;
 use super::step;
 use super::surface;
@@ -750,11 +751,20 @@ impl Game {
         }
     }
 
-    /// Середина камеры, не заглядывающей за край сцены при виде `view_height`.
-    fn clamp_center(&self, view_height: f64, viewport: [f64; 2], center: Vec2) -> Vec2 {
+    /// Середина камеры, поднятой на высоту `z`, не заглядывающей за край сцены при виде `view_height`.
+    /// «Камера», требование 5: без перспективы поднятая середина видна там же, где точка земли за ней по
+    /// взгляду, — у края сцены держится эта точка, иначе герой на балконе открыл бы фон за краем.
+    fn clamp_center(&self, view_height: f64, viewport: [f64; 2], center: Vec2, z: f64) -> Vec2 {
         match self.scene.camera {
             Some(camera) => {
-                camera::clamp_center_3d(&self.scene, camera.pitch, view_height, viewport, center)
+                let behind = match camera.projection {
+                    Projection::Orthographic => z / camera.pitch.to_radians().tan(),
+                    Projection::Perspective => 0.0,
+                };
+                let ground = [center[0], center[1] - behind];
+                let ground =
+                    camera::clamp_center_3d(&self.scene, camera, view_height, viewport, ground);
+                [ground[0], ground[1] + behind]
             }
             None => camera::clamp_center_flat(&self.scene, view_height, viewport, center),
         }
@@ -764,14 +774,14 @@ impl Game {
     /// остановленная у края сцены; `None` в плоской сцене. «Мир на экране» → «Камера игрока»: камера
     /// игрока смотрит с её видом и места, а клетка надписей остаётся по `view_height` из `game.json`.
     pub fn camera_3d(&self, viewport: [f32; 2]) -> Option<Camera3d> {
-        let pitch = self.scene.camera?.pitch;
+        let config = self.scene.camera?;
         let base_view_height = self.scene.view_height?;
         let viewport = [viewport[0] as f64, viewport[1] as f64];
         let (view_height, center, z) = self.camera_state();
         let view_height = view_height.unwrap_or(base_view_height);
-        let center = self.clamp_center(view_height, viewport, center);
+        let center = self.clamp_center(view_height, viewport, center, z);
         Some(
-            Camera3d::looking_at(center, pitch, view_height, viewport)
+            Camera3d::game(config, center, view_height, viewport)
                 .raised(z)
                 .with_label_view_height(base_view_height),
         )
@@ -864,7 +874,7 @@ impl Game {
                 free.z,
             ),
         };
-        let center = self.clamp_center(next, viewport64, center);
+        let center = self.clamp_center(next, viewport64, center, z);
         self.set_player_free(center, z);
         if let Some(player) = self.player.as_mut() {
             player.set_view_height(next);
@@ -912,7 +922,7 @@ impl Game {
                 0.0,
             ),
         };
-        let center = self.clamp_center(view_height, viewport64, center);
+        let center = self.clamp_center(view_height, viewport64, center, z);
         self.set_player_free(center, z);
         true
     }
@@ -967,13 +977,13 @@ impl Game {
         let view_height = player.view_height();
         let viewport64 = [viewport[0] as f64, viewport[1] as f64];
         let (_, center, z) = self.camera_state();
-        let center = self.clamp_center(view_height, viewport64, center);
+        let center = self.clamp_center(view_height, viewport64, center, z);
         let step = camera::PAN_VIEW_SHARE_PER_SECOND * view_height * seconds;
         let moved = [
             center[0] + direction[0] * step,
             center[1] + direction[1] * step,
         ];
-        let moved = self.clamp_center(view_height, viewport64, moved);
+        let moved = self.clamp_center(view_height, viewport64, moved, z);
         self.set_player_free(moved, z);
         true
     }
@@ -1618,6 +1628,7 @@ impl Game {
             self.outcome = Some((outcome, self.step_count));
         }
         motion::advance(&mut self.world);
+        building::advance_cutaways(&mut self.world);
         // «Камера», требование 6: без отставания — сразу после последнего шага, здесь, а не при
         // следующей отрисовке.
         self.step_camera();

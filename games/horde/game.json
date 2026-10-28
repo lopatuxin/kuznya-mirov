@@ -2,11 +2,11 @@
   "name": "Орда",
   "scene": {
     "width": 53,
-    "height": 18,
-    "view_height": 16,
+    "height": 36,
+    "view_height": 32,
     "background": "#c9b98a",
-    "cell_pixels": 52,
-    "y_sort": true
+    "camera": { "pitch": 30, "projection": "orthographic" },
+    "light": { "sun_from": 60, "sun_height": 50 }
   },
   "max_objects": 64,
   "start_screen": "game",
@@ -17,81 +17,21 @@
     "screens": "screens.json",
     "code": "code.lua",
     "fonts": {},
-    "images": {
-      "ground_01": {
-        "path": "images/ground_01.png",
-        "smooth": true
-      },
-      "ground_02": {
-        "path": "images/ground_02.png",
-        "smooth": true
-      },
-      "tower": {
-        "path": "images/tower.png",
-        "smooth": true,
-        "size": [
-          4.955,
-          8.5
-        ],
-        "anchor": "bottom"
-      },
-      "hero_down": {
-        "path": "images/hero_down.png",
-        "smooth": true,
-        "size": [
-          0.725,
-          1.5
-        ],
-        "anchor": "bottom"
-      },
-      "hero_down_right": {
-        "path": "images/hero_down_right.png",
-        "smooth": true,
-        "size": [
-          1.05,
-          1.5
-        ],
-        "anchor": "bottom"
-      },
-      "hero_right": {
-        "path": "images/hero_right.png",
-        "smooth": true,
-        "size": [
-          1.05,
-          1.5
-        ],
-        "anchor": "bottom"
-      },
-      "hero_up_right": {
-        "path": "images/hero_up_right.png",
-        "smooth": true,
-        "size": [
-          1.02,
-          1.5
-        ],
-        "anchor": "bottom"
-      },
-      "hero_up": {
-        "path": "images/hero_up.png",
-        "smooth": true,
-        "size": [
-          1.055,
-          1.5
-        ],
-        "anchor": "bottom"
-      },
-      "hero_run_down_right": {
-        "path": "images/hero_run_down_right.png",
-        "smooth": true,
-        "frames": 20,
-        "columns": 7,
-        "frame_by": "hero_frame",
-        "size": [
-          1.39,
-          1.5
-        ],
-        "anchor": "bottom"
+    "models": {
+      "ground_01": { "path": "models/ground_01.glb", "look": "picture" },
+      "ground_02": { "path": "models/ground_02.glb", "look": "picture" },
+      "tower": { "path": "models/tower.glb", "look": "picture", "solid": true, "cutaway": "tower_cut" },
+      "tower_cut": { "path": "models/tower_cut.glb", "look": "picture" },
+      "soil": { "path": "models/soil.glb", "look": "picture" },
+      "hero": {
+        "path": "models/hero.glb",
+        "idle": "Стойка",
+        "walk": "бег_героя",
+        "feet": ["mixamorig:LeftFoot", "mixamorig:RightFoot"],
+        "spine": "mixamorig:Spine",
+        "hands": ["mixamorig:LeftHand", "mixamorig:RightHand"]
       }
-    }
+    },
+    "motions": "motions.json"
   }
 }

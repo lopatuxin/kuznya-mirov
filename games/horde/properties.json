@@ -3,14 +3,10 @@
     "hero": "flag",
     "tower": "flag",
     "climb": "flag",
-    "on_deck": "flag",
     "climbed": "flag",
     "go_left": "flag",
     "go_right": "flag",
     "go_up": "flag",
-    "go_down": "flag",
-    "hero_frame": "number",
-    "run_dist": "number",
-    "heading": "number"
+    "go_down": "flag"
   }
 }

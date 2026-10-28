@@ -2,13 +2,15 @@
 //! страница уже прочитала и чьи картинки разжала.
 
 use std::collections::HashSet;
+use std::sync::Arc;
 
 use serde_json::Value as Json;
 
 use crate::core::keys::{EditValue, KeyEdit};
-use crate::core::model::{Image, Model, ModelImage, ModelTable};
+use crate::core::model::{Image, Look, Model, ModelImage, ModelTable};
 use crate::core::property::PropertyId;
 use crate::core::skeleton::{Leg, Skeleton};
+use crate::core::solid::SolidGrid;
 use crate::core::value::Value;
 use crate::data::glb::{self, FileImage};
 
@@ -20,12 +22,17 @@ use super::{
     find_value, join, kind_name, reject_unknown_keys, require_field,
 };
 
-/// Одна модель `files.models`: имя, путь файла `.glb` от папки игры и, у модели со скелетом, движения стойки и
-/// ходьбы, кости ступней, кость начала верха тела и две кисти.
+/// Одна модель `files.models`: имя, путь файла `.glb` от папки игры, как она освещена и, у модели со скелетом,
+/// движения стойки и ходьбы, кости ступней, кость начала верха тела и две кисти.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelDecl {
     pub name: String,
     pub path: String,
+    pub look: Look,
+    /// `solid`: есть ли ключ и его значение.
+    pub solid: Option<bool>,
+    /// `cutaway`: имя модели среза.
+    pub cutaway: Option<String>,
     pub idle: Option<String>,
     pub walk: Option<String>,
     pub feet: Option<[String; 2]>,
@@ -73,6 +80,8 @@ pub(super) fn parse_models_table(
         }
     }
     out.sort_by_key(|decl| order.iter().position(|name| name == &decl.name));
+    let declared: Vec<&String> = obj.keys().collect();
+    check_cutaways(&out, &declared, file, path, errors);
     Some(out)
 }
 
@@ -84,7 +93,9 @@ fn parse_model_decl(
     errors: &mut ErrorSink,
 ) -> Option<ModelDecl> {
     let obj = expect_object(value, file, path, errors)?;
-    let known = ["path", "idle", "walk", "feet", "spine", "hands"];
+    let known = [
+        "path", "look", "solid", "cutaway", "idle", "walk", "feet", "spine", "hands",
+    ];
     reject_unknown_keys(obj, &known, file, path, errors);
     if !obj.keys().all(|key| known.contains(&key.as_str())) {
         return None;
@@ -103,6 +114,12 @@ fn parse_model_decl(
         }
     };
     let spine = motion("spine", errors);
+    let look = parse_look(obj.get("look"), file, &join(path, "look"), errors);
+    let solid = parse_solid(obj.get("solid"), file, &join(path, "solid"), errors);
+    let cutaway = match obj.get("cutaway") {
+        None => Some(None),
+        Some(value) => expect_string(value, file, &join(path, "cutaway"), errors).map(Some),
+    };
     let hands = match obj.get("hands") {
         None => Some(None),
         Some(value) => {
@@ -129,12 +146,111 @@ fn parse_model_decl(
     Some(ModelDecl {
         name: name.to_string(),
         path: model_path,
+        look: look?,
+        solid: solid?,
+        cutaway: cutaway?,
         idle: idle?,
         walk: walk?,
         feet: feet?,
         spine: spine?,
         hands: hands?,
     })
+}
+
+/// «Свет и материалы» → «Рисованный свет и картины»: `look` — `lit` или `picture`; нет ключа — `lit`.
+fn parse_look(
+    value: Option<&Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Look> {
+    let Some(value) = value else {
+        return Some(Look::Lit);
+    };
+    match expect_string(value, file, path, errors)?.as_str() {
+        "lit" => Some(Look::Lit),
+        "picture" => Some(Look::Picture),
+        other => {
+            errors.push(
+                file,
+                path,
+                format!("look должен быть \"lit\" или \"picture\", получено \"{other}\""),
+            );
+            None
+        }
+    }
+}
+
+/// «Трёхмерная сцена» → «Здания»: `solid` — `true` или `false`.
+fn parse_solid(
+    value: Option<&Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<bool>> {
+    let Some(value) = value else {
+        return Some(None);
+    };
+    let flag = value.as_bool();
+    if flag.is_none() {
+        errors.push(
+            file,
+            path,
+            format!(
+                "solid должен быть true или false, получено {}",
+                kind_name(value)
+            ),
+        );
+    }
+    flag.map(Some)
+}
+
+/// «Трёхмерная сцена» → «Здания»: `cutaway` есть только у твёрдой модели и называет другую модель из
+/// `files.models`.
+fn check_cutaways(
+    decls: &[ModelDecl],
+    declared: &[&String],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    for decl in decls {
+        let Some(cutaway) = &decl.cutaway else {
+            continue;
+        };
+        let field = join(&join(path, &decl.name), "cutaway");
+        if decl.solid != Some(true) {
+            errors.push(
+                file,
+                &field,
+                format!(
+                    "cutaway у модели \"{}\" без solid: модель среза есть только у твёрдой модели (solid: true)",
+                    decl.name
+                ),
+            );
+        }
+        if cutaway == &decl.name {
+            errors.push(
+                file,
+                &field,
+                format!(
+                    "cutaway модели \"{}\" называет её саму; нужна другая модель — здание без стен и крыши",
+                    decl.name
+                ),
+            );
+        } else if !declared.contains(&cutaway) {
+            let known = declared
+                .iter()
+                .map(|name| format!("\"{name}\""))
+                .collect::<Vec<_>>()
+                .join(", ");
+            errors.push(
+                file,
+                &field,
+                format!("cutaway \"{cutaway}\": такой модели нет; объявлены {known}"),
+            );
+        }
+    }
 }
 
 /// `feet` и `hands`: имена костей левой и правой ступни или кисти; `whose` — «ступни» или «кисти».
@@ -210,7 +326,7 @@ pub(super) fn load_models(
     errors: &mut ErrorSink,
 ) -> ModelTable {
     let mut packed = PackedFiles::new(packed);
-    let models = decls
+    let mut models: Vec<Model> = decls
         .iter()
         .enumerate()
         .map(|(at, decl)| {
@@ -246,6 +362,8 @@ pub(super) fn load_models(
             match parsed {
                 Ok(mut model) => {
                     attach_motion(decl, &mut model, &field, motions, errors);
+                    model.look = decl.look;
+                    attach_building(decl, &mut model, &field, errors);
                     if imported.is_none() && !skip_media && !model.images.is_empty() {
                         errors.push_warning(
                             "game.json",
@@ -265,7 +383,31 @@ pub(super) fn load_models(
             }
         })
         .collect();
+    for (model, decl) in models.iter_mut().zip(decls) {
+        model.building.cutaway = decl
+            .cutaway
+            .as_ref()
+            .and_then(|name| decls.iter().position(|other| &other.name == name));
+    }
     ModelTable::new(models)
+}
+
+/// «Трёхмерная сцена» → «Здания»: твёрдая модель получает сетку столбов; срез без узлов `inside` включиться не
+/// сможет.
+fn attach_building(decl: &ModelDecl, model: &mut Model, field: &str, errors: &mut ErrorSink) {
+    if decl.solid == Some(true) {
+        model.building.solid = Some(Arc::new(SolidGrid::build(&model.parts, model.size)));
+    }
+    if decl.cutaway.is_some() && model.building.inside.is_empty() {
+        errors.push_warning(
+            "game.json",
+            &join(field, "cutaway"),
+            format!(
+                "у модели {} есть cutaway, а узлов inside в её файле нет: срез не включится никогда",
+                decl.name
+            ),
+        );
+    }
 }
 
 /// Ключи скелета из описания `decl` и движения `motions.json` модели ложатся на её скелет, потом по именам из движений

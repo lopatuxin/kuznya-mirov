@@ -6,6 +6,7 @@ use std::collections::HashSet;
 
 use serde_json::Value as Json;
 
+use crate::core::model::Look;
 use crate::core::skeleton::{BoneTurn, Clip, Retouch, Skeleton, Turns};
 
 use super::models::ModelDecl;
@@ -594,6 +595,9 @@ pub fn rebuild_skeleton(
         .map(|name| ModelDecl {
             name: name.clone(),
             path: String::new(),
+            look: Look::Lit,
+            solid: None,
+            cutaway: None,
             idle: None,
             walk: None,
             feet: None,
