@@ -1,0 +1,23 @@
+{
+  "name": "Яма",
+  "scene": {
+    "width": 45,
+    "height": 28,
+    "view_height": 28,
+    "background": "#6f9a3e",
+    "camera": { "pitch": 45, "projection": "orthographic" },
+    "light": { "sun_from": 60, "sun_height": 50 }
+  },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "fonts": {},
+    "models": {
+      "ground": { "path": "models/ground.glb", "look": "picture" }
+    }
+  }
+}
