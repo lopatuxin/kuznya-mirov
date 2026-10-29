@@ -599,6 +599,7 @@ pub fn rebuild_skeleton(
             look: Look::Lit,
             shadow: None,
             solid: None,
+            walkable: None,
             cutaway: None,
             idle: None,
             walk: None,

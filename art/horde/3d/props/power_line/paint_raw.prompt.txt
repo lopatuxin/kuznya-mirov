@@ -1,0 +1,18 @@
+Built-in image generation tool. No code-based painting or image patching.
+
+Selected paint-over prompt:
+Make a real paint-over of THIS INPUT IMAGE, preserving the exact image composition and silhouette. Do not use any previous generated image as geometry. The attached 1024x1024 blockout is the sole geometry source.
+
+RECOLOR THE EXISTING SHAPES IN PLACE. Keep both poles exactly as thin as they are, exactly at the same positions. Keep every crossarm, insulator, and wire edge exactly where it is. Keep the two curved wire paths, and the left hanging wire, without changing their thickness or endpoint. Keep the same orthographic 30-degree-down game camera and square framing. The left shaft occupies x140 to159, y235 to610. The right shaft occupies its original narrow slanted strip ending near x873,y795. Do not enlarge or move the objects. Paint every part of the silhouette, put nothing outside it.
+
+Render the original wood shapes as weathered grey-brown creosoted wood with narrow cracks and subtle hand-painted grain. Original crossarms have small rusty metal brackets and white-green glass insulators. Wires are thin dark lines; the hanging torn wire has a very slight curled tip within its existing outline. Clean restrained ink-like outlines INSIDE the original edge. Soft cel-like shading, daylight from the upper left, polished hand-painted Soviet rural game prop art. No photorealism, no 3D render, no pixel art.
+
+Replace the transparent background with a SINGLE PERFECTLY FLAT SOLID COLOR: #c9b98a, RGB 201 185 138. This is a paint-bucket fill of all transparent space, with absolutely zero texture, zero gradient and zero variation. Flat color, flat color, flat color. No ground, no shadows, no grass, no sky, no additional objects. Only change surface materials inside the original silhouette and fill transparent space with the specified solid color. One finished PNG picture.
+
+Final background-edit prompt:
+Precise background replacement edit of the attached image. Keep the two painted utility poles and every wire completely unchanged: exact same positions, thin silhouettes, colors, cracks, shading, tiny brackets, crossarms and glass insulators. Do not repaint, enlarge, move, sharpen or thicken any subject pixel.
+
+Change ONLY the background: remove all mottling, texture, lighting, shading, grain, cloudy patches and variation. Replace it with a completely uniform SOLID FLAT sRGB color #c9b98a, exactly RGB (201, 185, 138). Every background pixel must have the identical RGB value, like a flat digital paint bucket fill. This includes the gaps between wires and the space inside the hanging wire curve. This is a clean solid-color asset sheet, with zero lighting or texture on the background.
+
+Absolutely no gradient, vignette, paper, canvas texture, ground, shadow, halo, scenery or sky. Preserve the 1:1 canvas and the existing subject artwork without any changes. Output one PNG.
+

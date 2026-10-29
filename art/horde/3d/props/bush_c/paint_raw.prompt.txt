@@ -1,0 +1,10 @@
+Built-in image generation tool; edit input: guide.png.
+Selected generated output: exec-18bf45cf-61c0-4a1a-901c-b5c9c18ad815.png
+
+EDIT the provided blockout image directly. It is a strict silhouette stencil.
+
+Paint a dense small-leaf olive-green wild shrub ON TOP OF THE TWO EXISTING LUMPS. Keep every outer silhouette point, the original flat contour segments, camera, position, scale and empty margins exactly unchanged. Preserve the broad large lobe on the left and smaller lobe on the lower right. DO NOT draw a different round bush or change its outline. Fill the whole original opaque area up to the original boundary with leaves. All leaves and twigs must stay INSIDE that boundary. Remove the mesh lines and polygon face shading; retain the outside contour exactly.
+
+Foliage: clusters of small leaves, dry olive green, sunlit yellow-green on upper-left surfaces, rich deep green below, a few dry brown twigs within the foliage. Hand-painted isometric game prop, clean dark ink outlines, soft cel-like shading, bright upper-left daylight.
+
+Replace EVERY transparent/background pixel with the SAME opaque solid color #c9b98a, RGB 201 185 138. The background is a flat digital color swatch, perfectly uniform from corner to corner. ZERO texture, ZERO gradient, ZERO vignette, ZERO shadow, ZERO ground. Shading is confined to the foliage. No grass, ground debris, other objects or text. Output one square PNG with the original composition.

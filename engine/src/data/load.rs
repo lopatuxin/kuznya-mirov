@@ -3649,6 +3649,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         for decl in models.as_deref().unwrap_or_default() {
             let keys = [
                 ("solid", decl.solid.is_some()),
+                ("walkable", decl.walkable.is_some()),
                 ("cutaway", decl.cutaway.is_some()),
             ];
             for (key, _) in keys.into_iter().filter(|&(_, present)| present) {

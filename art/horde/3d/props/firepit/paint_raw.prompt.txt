@@ -1,0 +1,32 @@
+Initial paint-over prompt:
+Use case: style-transfer / precise paint-over.
+Create ONE finished PNG game prop painting by painting directly over IMAGE 1. This is an edit of IMAGE 1, not a new arrangement.
+
+INPUT ROLES:
+IMAGE 1 (firepit/guide.png): exact geometry, camera, framing, placement, size, occlusion, every outer edge and complete silhouette. This is the edit target. Preserve its square composition.
+IMAGE 2 (concept-03-tower.png): game concept reference; the little river-stone campfire near the tower supplies stone material and art direction only. Do NOT copy its fire or surroundings.
+IMAGE 3 (vaz2106/paint_raw.png): approved painting and the authoritative rendering style. Match its clean thin dark ink-like contours, selective hand-painted material marks, soft cel-like light and shade, restrained detail scale and sunny illustrative game-art finish.
+
+PRIMARY REQUEST:
+A survivor camp fire pit that is NOT burning now. Paint the original eleven ring stones as grey-white river stones with rounded-looking surfaces, darker grey shaded sides and some black soot on inward-facing sides. Paint the original flat interior disk as cool grey ash containing black charcoal, fully covering that exact disk. Paint the original THREE crossed logs in their exact blockout positions and exact outlines as half-burnt wood, recognizable brown bark, charred black ends and charcoal cracks. Only a FEW small DIM orange embers embedded in cracks; predominantly cold ash and black charcoal. No flames, no smoke, no sparks.
+
+ABSOLUTE GEOMETRY LOCK:
+Use the first image as a fixed tracing template. Keep the exact orthographic camera at 30 degrees down. Keep original object placement, scale, orientation and framing. Each of the eleven stones must stay at its original position with its original projected outline and size; keep all gaps exactly. Keep every log edge and log overlap at the original edge. Keep the ash disk boundary exactly. Paint to the very edge of the entire original opaque silhouette, leaving no blockout areas exposed, and do not extend any painted object or mark even slightly beyond that silhouette. The rounded river-stone feeling must come from surface painting INSIDE the fixed outlines, never by reshaping those outlines. Do not recenter, zoom, rotate, regularize the ring, recompose the logs or add geometry.
+
+BACKGROUND:
+Replace every transparent/black background pixel outside the original silhouette, including all gaps between the stones, with a SINGLE EXACTLY FLAT solid sand color #c9b98a (RGB 201,185,138). This background is a color field, not ground. Absolutely no gradient, texture, vignette, ground surface, debris, cast shadow, ambient shadow or any other mark outside the fixed silhouette. Opaque background, not transparency.
+
+LIGHT AND FINISH:
+Bright daylight from upper left; pale warm highlights, soft cel-like shading, fine clean ink outlines and confident hand-painted game illustration matching IMAGE 3. Surface texture is painted, selective and readable. No photographic realism, no 3D-render finish, no pixel art. No text, no labels, no watermark. Deliver only the single painted firepit image with the exact composition of IMAGE 1.
+
+Final blockout-anchored paint-over prompt:
+Paint over this exact image IN PLACE as a finished hand-painted game prop. One square picture. The supplied blockout is the fixed painting canvas: retain the exact orthographic camera, exact placement and scale, and exact projected outlines of every stone, log, and the disk. Nothing may be moved, resized or reshaped. Preserve every angular silhouette vertex; make the stones feel rounded through interior shading only. All silhouette pixels must be painted, with no paint beyond the existing silhouette. The original ring occupies x=67..946, y=258..766 on its 1024x1024 canvas; keep these bounds and all individual contours.
+
+Paint the eleven stones grey-white like weathered river stone: clean dark ink contours, warm pale upper-left highlights, soft cooler-grey cel shadows, restrained painterly flecks and inner soot. Paint the flat disk as grey ash with scattered black charcoal entirely INSIDE its original edge. Keep the three original crossed logs exactly where they are with their exact rectangular outlines and occlusions. Paint them brown half-burned wood with grain, charred black ends, cracked charcoal, and just a few tiny DIM orange embers in the cracks.
+
+The background is NOT part of the illustration: all empty and transparent areas must become the SAME solid opaque sand color #c9b98a, RGB(201,185,138), perfectly flat and uniform throughout, including every gap. No texture, no gradient, no lighting or shading in the background, no vignette. No cast shadow or any marks outside the original silhouette.
+
+Style: clean fine ink-like outlines, selective hand-painted material detail, soft cel-like shading, bright daylight from upper left, polished stylized survivor-game asset illustration. No photographic texture, no 3D-render finish, no pixel art. Not burning now: no flames, no smoke, no sparks, no bright glow. No extra objects, no ground, no text. Keep original camera, composition, outlines and margins exactly.
+
+Final background correction prompt:
+Change ONLY the sand-colored background of this image into one perfectly flat solid color #c9b98a (RGB 201,185,138). Remove all background texture and gradients. Every pixel outside the firepit must have that single identical color, including gaps between stones. Preserve the entire firepit painting, all individual object outlines, position, size, camera and square composition exactly as they are. No other changes. One PNG.

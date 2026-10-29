@@ -33,6 +33,8 @@ pub struct ModelDecl {
     pub shadow: Option<bool>,
     /// `solid`: есть ли ключ и его значение.
     pub solid: Option<bool>,
+    /// `walkable`: есть ли ключ и его значение; ключ бывает только у твёрдой модели.
+    pub walkable: Option<bool>,
     /// `cutaway`: имя модели среза.
     pub cutaway: Option<String>,
     pub idle: Option<String>,
@@ -97,8 +99,8 @@ fn parse_model_decl(
 ) -> Option<ModelDecl> {
     let obj = expect_object(value, file, path, errors)?;
     let known = [
-        "path", "look", "shadow", "solid", "cutaway", "idle", "walk", "climb", "feet", "spine",
-        "hands",
+        "path", "look", "shadow", "solid", "walkable", "cutaway", "idle", "walk", "climb", "feet",
+        "spine", "hands",
     ];
     reject_unknown_keys(obj, &known, file, path, errors);
     if !obj.keys().all(|key| known.contains(&key.as_str())) {
@@ -128,6 +130,22 @@ fn parse_model_decl(
         obj.get("solid"),
         file,
         &join(path, "solid"),
+        errors,
+    );
+    // Испорченный solid уже дал свою ошибку: walkable рядом с ним не проверяется.
+    if obj.contains_key("walkable") && solid.is_some_and(|solid| solid != Some(true)) {
+        errors.push(
+            file,
+            &join(path, "walkable"),
+            "walkable есть только у твёрдой модели (solid: true): по нетвёрдой и так не ходят",
+        );
+        return None;
+    }
+    let walkable = parse_flag(
+        "walkable",
+        obj.get("walkable"),
+        file,
+        &join(path, "walkable"),
         errors,
     );
     if obj.contains_key("shadow") && look == Some(Look::Lit) {
@@ -178,6 +196,7 @@ fn parse_model_decl(
         look: look?,
         shadow: shadow?,
         solid: solid?,
+        walkable: walkable?,
         cutaway: cutaway?,
         idle: idle?,
         walk: walk?,
@@ -430,6 +449,7 @@ pub(super) fn load_models(
 fn attach_building(decl: &ModelDecl, model: &mut Model, field: &str, errors: &mut ErrorSink) {
     if decl.solid == Some(true) {
         model.building.solid = Some(Arc::new(SolidGrid::build(&model.parts, model.size)));
+        model.building.obstacle_only = decl.walkable == Some(false);
     }
     if decl.cutaway.is_some() && model.building.inside.is_empty() {
         errors.push_warning(

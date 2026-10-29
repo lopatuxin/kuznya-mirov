@@ -245,6 +245,9 @@ pub struct Building {
     pub shift: [f32; 3],
     /// Сетка столбов твёрдой модели (`solid: true`); `None` у остальных.
     pub solid: Option<Arc<SolidGrid>>,
+    /// Твёрдая модель с `walkable: false`: по её верхам не ходят, и ступенька на неё не поднимает — вся она препятствие
+    /// от земли.
+    pub obstacle_only: bool,
     /// Номер модели среза в таблице (`cutaway`).
     pub cutaway: Option<usize>,
     /// Коробки внутренности; их узлы не рисуются и не твёрдые.

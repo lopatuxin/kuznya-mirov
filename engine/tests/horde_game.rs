@@ -26,6 +26,16 @@ const LADDER_FOOT: [f64; 2] = [13.81, 19.25];
 const LADDER_TOP: [f64; 2] = [11.90, 17.34];
 /// Подход, подъём на 4,5 клетки со скоростью 1,2 и сход наверху с запасом.
 const CLIMB_SECONDS: f64 = 6.0;
+/// Середина «шестёрки» в сцене и самое правое место ног героя, бегущего к ней слева по y = 10: его квадрат 0,6
+/// задевает косой борт углом (`art/horde/3d/props/vaz2106/build_vaz2106.py`: кузов 4,17 × 1,61, повёрнут на 40°).
+const CAR_AT: [f64; 2] = [31.0, 10.0];
+const CAR_NEAR_X: f64 = 29.15;
+/// Проход в заборе лагеря: между пролётами на x = 19, по y от 14 до 17,5 (`art/horde/3d/props/fence/build_fence.py`).
+const GATE: [f64; 2] = [19.0, 15.75];
+/// Середина развалин дома и середина пролома в его стене, глядящей на лагерь; наружу из пролома — вниз-влево
+/// (`art/horde/3d/props/ruin/build_ruin.py`: дом повёрнут на 45°, пролом в стене -X от -0,9 до 1,1 вдоль неё).
+const RUIN_AT: [f64; 2] = [47.0, 11.0];
+const BREACH: [f64; 2] = [45.18, 12.68];
 const STEPS_PER_SECOND: usize = 60;
 const WINDOW: [f32; 2] = [1024.0, 768.0];
 
@@ -187,7 +197,8 @@ fn the_horde_loads_without_errors_or_warnings() {
     load();
 }
 
-/// Земля и вышка стоят на земле, заплатка земли — чуть выше плит, чтобы не спорить с ними глубиной.
+/// Земля, вышка и предметы стоят на земле, заплатка земли и пол развалин — чуть выше плит, чтобы не спорить с ними
+/// глубиной.
 #[test]
 fn the_painted_ground_soil_and_tower_stand_where_the_data_puts_them() {
     let game = load();
@@ -198,6 +209,7 @@ fn the_painted_ground_soil_and_tower_stand_where_the_data_puts_them() {
         let expected = match model {
             "hero" => continue,
             "soil" => 0.01,
+            "ruin_floor" => 0.02,
             _ => 0.0,
         };
         assert!(
@@ -212,9 +224,10 @@ fn the_painted_ground_soil_and_tower_stand_where_the_data_puts_them() {
 fn arrow_keys_run_the_hero_right_and_down() {
     let mut game = load();
     let start = feet(&game);
-    hold(&mut game, &["ArrowRight"], 1.0, |_| {});
+    // Недолго: правее, у прохода к пустоши, бег вниз останавливает забор лагеря.
+    hold(&mut game, &["ArrowRight"], 0.6, |_| {});
     let right = feet(&game);
-    assert!(right[0] > start[0] + 3.0, "вправо: {start:?} → {right:?}");
+    assert!(right[0] > start[0] + 2.0, "вправо: {start:?} → {right:?}");
     hold(&mut game, &["ArrowDown"], 0.5, |_| {});
     let down = feet(&game);
     assert!(down[1] > right[1] + 1.5, "вниз: {right:?} → {down:?}");
@@ -411,4 +424,116 @@ fn with_the_hero_on_the_deck_the_window_does_not_open_past_the_far_edge() {
         .ground_hit([f64::from(WINDOW[0]) / 2.0, 0.0])
         .expect("верх окна на земле");
     assert!(top[1] > -1e-6, "верх окна за краем: {top:?}");
+}
+
+/// «Фаза 02»: ржавая машина твёрдая — герой, бегущий в неё, останавливается у кузова.
+#[test]
+fn the_hero_stops_at_the_rusty_car() {
+    let mut game = load();
+    put_hero(&mut game, [CAR_AT[0] - 5.0, CAR_AT[1]], 0.0);
+    hold(&mut game, &["ArrowRight"], 2.0, |game| {
+        let at = feet(game);
+        assert!(at[0] < CAR_NEAR_X, "вбежал в машину: {at:?}");
+    });
+    let stop = feet(&game);
+    assert!(stop[0] > CAR_NEAR_X - 0.6, "не добежал до машины: {stop:?}");
+}
+
+/// «Фаза 02»: на машину не забегают — ни с бампера на капот, ни на крышку багажника: она препятствие от земли.
+#[test]
+fn the_hero_does_not_climb_onto_the_rusty_car() {
+    for (start, codes) in [
+        (
+            [CAR_AT[0] + 4.0, CAR_AT[1] + 3.4],
+            ["ArrowLeft", "ArrowUp"].as_slice(),
+        ),
+        (
+            [CAR_AT[0] - 4.0, CAR_AT[1] - 3.4],
+            ["ArrowRight", "ArrowDown"].as_slice(),
+        ),
+    ] {
+        let mut game = load();
+        put_hero(&mut game, start, 0.0);
+        hold(&mut game, codes, 3.0, |game| {
+            assert_eq!(
+                z_of_hero(game),
+                0.0,
+                "{codes:?}: забежал на машину в {:?}",
+                feet(game)
+            );
+        });
+        let stop = feet(&game);
+        assert!(
+            (stop[0] - CAR_AT[0]).hypot(stop[1] - CAR_AT[1]) > 1.5,
+            "{codes:?}: прошёл в машину до {stop:?}"
+        );
+    }
+}
+
+/// «Фаза 02»: из лагеря в пустошь — только через проход в заборе справа; мимо прохода забор не пускает.
+#[test]
+fn the_camp_fence_lets_the_hero_out_only_through_the_gate() {
+    let mut game = load();
+    put_hero(&mut game, [GATE[0] - 3.0, GATE[1]], 0.0);
+    hold(&mut game, &["ArrowRight"], 2.0, |_| {});
+    let out = feet(&game);
+    assert!(out[0] > GATE[0] + 2.0, "не вышел в проход: {out:?}");
+
+    for y in [9.0, 22.0] {
+        let mut game = load();
+        put_hero(&mut game, [14.0, y], 0.0);
+        hold(&mut game, &["ArrowRight"], 3.0, |game| {
+            let at = feet(game);
+            assert!(at[0] < GATE[0], "прошёл сквозь забор на y = {y}: {at:?}");
+        });
+    }
+}
+
+/// «Фаза 02»: в развалины дома входят через пролом, и стены, заслоняющие комнату, срезаются.
+#[test]
+fn the_hero_enters_the_ruin_through_the_breach_and_it_is_cut_away() {
+    let mut game = load();
+    let ruin = named(&game, "ruin");
+    put_hero(&mut game, [BREACH[0] - 1.6, BREACH[1] + 1.6], 0.0);
+    assert_eq!(
+        dissolve_share(&game.world, ruin),
+        0.0,
+        "снаружи дом виден целиком"
+    );
+    hold(&mut game, &["ArrowRight", "ArrowUp"], 1.2, |_| {});
+    let at = feet(&game);
+    assert!(
+        (at[0] - RUIN_AT[0]).hypot(at[1] - RUIN_AT[1]) < 2.0,
+        "не вошёл в дом: {at:?}"
+    );
+    run_for(&mut game, 0.5);
+    assert!(dissolve_share(&game.world, ruin) > 0.99, "дом не срезан");
+}
+
+/// «Фаза 02»: ящик, куст, ствол дерева и столб твёрдые — герой, бегущий в них, останавливается, не дойдя до середины.
+/// Точки — середины предметов в сцене, откуда герой бежит и в какую сторону (`games/horde/scene.json`).
+#[test]
+fn the_hero_stops_at_a_crate_a_bush_a_tree_trunk_and_a_pole() {
+    for (what, middle, start, code) in [
+        ("ящик", [4.2, 20.2], [7.5, 20.2], "ArrowLeft"),
+        ("куст", [23.0, 21.0], [20.0, 21.0], "ArrowRight"),
+        ("ствол дерева", [2.5, 33.0], [6.0, 33.0], "ArrowLeft"),
+        ("столб", [33.2, 28.2], [36.5, 28.2], "ArrowLeft"),
+    ] {
+        let mut game = load();
+        put_hero(&mut game, start, 0.0);
+        let side = (start[0] - middle[0]).signum();
+        hold(&mut game, &[code], 2.0, |game| {
+            let at = feet(game);
+            assert!(
+                (at[0] - middle[0]) * side > 0.3,
+                "{what}: вбежал в середину, ноги в {at:?}"
+            );
+        });
+        let stop = feet(&game);
+        assert!(
+            (stop[0] - middle[0]).abs() < 2.0,
+            "{what}: не добежал, ноги в {stop:?}"
+        );
+    }
 }

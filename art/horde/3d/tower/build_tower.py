@@ -6,22 +6,25 @@
 (стены будки вдоль осей), потом повёрнута на 45° вокруг вертикали: к камере игры смотрят стена с дверью
 (справа) и стена с окном (слева), как на прежней картине.
 
-Цвет частей — плоские материалы по роду (дерево, жесть, камень, ткань): снимок с ними — подмалёвок для
-раскраски нейросетью (render_guides). Раскрашенные картины ложатся обратно на тот же объём проекцией с той же
-камеры, а прозрачность берут из силуэта самого снимка (export_painted): рисунок и объём совпадают по построению.
-
-Камера игры ортографическая, наклон 30°: точка вышки видна на снимке по её проекциям на ось «вправо» и ось
-«вверх» камеры; кадр GUIDE_SIZE клеток со стороной GUIDE_PX точек, его середина на высоте GUIDE_UP по оси «вверх».
+Снимок, проекция картины и выгрузка — общие для нарисованных моделей Орды, art/horde/3d/painted_lib.py; кадр
+GUIDE_SIZE клеток со стороной GUIDE_PX точек, его середина на высоте GUIDE_UP по оси «вверх» камеры.
 """
-import os
-
-import numpy
-
+import importlib
 import math
+import os
+import sys
 
 import bmesh
 import bpy
+import numpy
 from mathutils import Matrix, Vector
+
+sys.path.insert(0, r"C:\projects\kuznya-mirov\art\horde\3d")
+import painted_lib  # noqa: E402
+
+importlib.reload(painted_lib)
+from painted_lib import PITCH, ROOT, Frame, Part, beam, box, box_faces, export, fresh_collection, frustum, \
+    make_object, merge_cut  # noqa: E402
 
 TURN = math.radians(45)
 
@@ -38,15 +41,10 @@ LADDER_WIDTH, LADDER_RUN = 0.8, 1.7  # ширина и вынос низа ле�
 STUB = 0.3  # высота обрубков передних стен в разрезе
 STOVE = (1.1, 1.0)  # печка и её труба сквозь крышу
 
-PITCH = math.radians(30)
 GUIDE_SIZE, GUIDE_UP, GUIDE_PX = 12.0, 3.25, 1024
 CUT_MARGIN = 4  # запас вокруг отличий разреза, в точках картины
-RIGHT = Vector((1.0, 0.0, 0.0))
-UP = Vector((0.0, math.sin(PITCH), math.cos(PITCH)))
-FORWARD = Vector((0.0, math.cos(PITCH), -math.sin(PITCH)))
-ROOT = r"C:\projects\kuznya-mirov"
 PAINT = os.path.join(ROOT, "art", "horde", "3d", "tower", "paint")
-MODELS = os.path.join(ROOT, "games", "horde", "models")
+FRAME = Frame(GUIDE_SIZE, GUIDE_UP, GUIDE_PX, PAINT)
 # Где вышка стоит в Орде (середина в клетках сцены) и плиты нарисованной земли под ней: картина и левый
 # край плиты; картина плиты — 18 клеток вширь и 36 вглубь (art/horde/3d/painted/build_ground.py).
 TOWER_AT = (9.0, 16.0)
@@ -68,69 +66,6 @@ COLORS = {
     "cloth": (0.45, 0.48, 0.35),
     "glass": (0.12, 0.16, 0.20),
 }
-
-
-def material(kind):
-    name = "tower_" + kind
-    found = bpy.data.materials.get(name)
-    if found:
-        return found
-    made = bpy.data.materials.new(name)
-    made.diffuse_color = (*COLORS[kind], 1.0)
-    return made
-
-
-class Part:
-    """Набор граней одного рода в осях вышки."""
-
-    def __init__(self):
-        self.faces = {}
-
-    def add(self, kind, faces):
-        self.faces.setdefault(kind, []).extend(faces)
-
-
-def box_faces(low, high):
-    (x0, y0, z0), (x1, y1, z1) = low, high
-    v = [(x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
-         (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)]
-    return [[v[0], v[3], v[2], v[1]], [v[4], v[5], v[6], v[7]], [v[0], v[1], v[5], v[4]],
-            [v[1], v[2], v[6], v[5]], [v[2], v[3], v[7], v[6]], [v[3], v[0], v[4], v[7]]]
-
-
-def box(part, kind, center, size):
-    c, s = Vector(center), Vector(size) / 2
-    part.add(kind, box_faces(tuple(c - s), tuple(c + s)))
-
-
-def beam(part, kind, a, b, thick):
-    """Брус квадратного сечения от точки a до точки b."""
-    a, b = Vector(a), Vector(b)
-    axis = (b - a).normalized()
-    helper = Vector((0, 0, 1)) if abs(axis.z) < 0.9 else Vector((1, 0, 0))
-    side = axis.cross(helper).normalized() * thick / 2
-    up = side.cross(axis).normalized() * thick / 2
-    ring = [-side - up, -side + up, side + up, side - up]  # обход, при котором грани смотрят наружу
-    low = [tuple(a + r) for r in ring]
-    high = [tuple(b + r) for r in ring]
-    faces = [list(reversed(low)), high]
-    for i in range(4):
-        j = (i + 1) % 4
-        faces.append([low[i], low[j], high[j], high[i]])
-    part.add(kind, faces)
-
-
-def frustum(part, kind, center, low_half, high_half, height):
-    x, y, z = center
-    low = [(x - low_half, y - low_half, z), (x + low_half, y - low_half, z),
-           (x + low_half, y + low_half, z), (x - low_half, y + low_half, z)]
-    high = [(x - high_half, y - high_half, z + height), (x + high_half, y - high_half, z + height),
-            (x + high_half, y + high_half, z + height), (x - high_half, y + high_half, z + height)]
-    faces = [list(reversed(low)), high]
-    for i in range(4):
-        j = (i + 1) % 4
-        faces.append([low[i], low[j], high[j], high[i]])
-    part.add(kind, faces)
 
 
 def substructure(part):
@@ -319,25 +254,6 @@ def build_part(cut):
     return part
 
 
-def make_object(name, part, collection):
-    mesh = bpy.data.meshes.new(name)
-    bm = bmesh.new()
-    turn = Matrix.Rotation(TURN, 3, "Z")
-    kinds = list(part.faces)
-    for index, kind in enumerate(kinds):
-        for points in part.faces[kind]:
-            face = bm.faces.new([bm.verts.new(turn @ Vector(p)) for p in points])
-            face.material_index = index
-    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
-    bm.to_mesh(mesh)
-    bm.free()
-    for kind in kinds:
-        mesh.materials.append(material(kind))
-    obj = bpy.data.objects.new(name, mesh)
-    collection.objects.link(obj)
-    return obj
-
-
 def inside_box(collection):
     """Коробка внутренности будки: узел `inside` для движка, не рисуется. Коробка лежит по осям будки, а поворот
     вышки — поворот самого узла: движок берёт коробку в осях узла, иначе её углы вышли бы на балкон."""
@@ -392,63 +308,20 @@ def grab_markers(collection):
 
 
 def build():
-    scene = bpy.context.scene
-    for name in ("tower", "tower_cut"):
-        old = bpy.data.collections.get(name)
-        if old:
-            for obj in list(old.objects):
-                bpy.data.objects.remove(obj, do_unlink=True)
-            bpy.data.collections.remove(old)
-    whole = bpy.data.collections.new("tower")
-    cut = bpy.data.collections.new("tower_cut")
-    scene.collection.children.link(whole)
-    scene.collection.children.link(cut)
-    make_object("tower", build_part(False), whole)
+    whole = fresh_collection("tower")
+    cut = fresh_collection("tower_cut")
+    make_object("tower", build_part(False), whole, COLORS, TURN, "tower")
     inside_box(whole)
     rung_markers(whole)
     grab_markers(whole)
-    make_object("tower_cut", build_part(True), cut)
+    make_object("tower_cut", build_part(True), cut, COLORS, TURN, "tower")
     return {"tower": len(bpy.data.objects["tower"].data.polygons),
             "tower_cut": len(bpy.data.objects["tower_cut"].data.polygons)}
 
 
-def guide_camera():
-    """Камера игры над вышкой: кадр GUIDE_SIZE клеток, середина кадра на высоте GUIDE_UP."""
-    data = bpy.data.cameras.get("guide_cam") or bpy.data.cameras.new("guide_cam")
-    data.type, data.sensor_fit, data.ortho_scale = "ORTHO", "VERTICAL", GUIDE_SIZE
-    cam = bpy.data.objects.get("guide_cam") or bpy.data.objects.new("guide_cam", data)
-    if cam.name not in bpy.context.scene.collection.objects:
-        bpy.context.scene.collection.objects.link(cam)
-    cam.location = UP * GUIDE_UP - FORWARD * 60
-    cam.rotation_euler = (math.pi / 2 - PITCH, 0.0, 0.0)
-    return cam
-
-
 def render_guides():
-    """Подмалёвки снаружи и в разрезе на прозрачном фоне: guide_outside.png, guide_cut.png в PAINT."""
-    scene = bpy.context.scene
-    scene.camera = guide_camera()
-    scene.render.engine = "BLENDER_WORKBENCH"
-    scene.render.resolution_x = scene.render.resolution_y = GUIDE_PX
-    scene.render.film_transparent = True
-    shading = scene.display.shading
-    shading.light, shading.color_type = "STUDIO", "MATERIAL"
-    shading.show_cavity = shading.show_object_outline = True
-    shown = {obj: obj.hide_render for obj in scene.objects}
-    for obj in scene.objects:
-        obj.hide_render = obj.name not in ("tower", "tower_cut")
-    for name, other in (("outside", "tower_cut"), ("cut", "tower")):
-        bpy.data.objects[other].hide_render = True
-        scene.render.filepath = os.path.join(PAINT, f"mask_{name}.png")
-        bpy.ops.render.render(write_still=True)
-        bpy.data.objects[other].hide_render = False
-    for obj, hidden in shown.items():
-        obj.hide_render = hidden
-
-
-def guide_uv(point):
-    """Точка картины, куда видна точка вышки: доли кадра по ширине и снизу вверх."""
-    return (point.dot(RIGHT) / GUIDE_SIZE + 0.5, (point.dot(UP) - GUIDE_UP) / GUIDE_SIZE + 0.5)
+    """Снимки объёма снаружи и в разрезе на прозрачном фоне: mask_outside.png, mask_cut.png в PAINT."""
+    FRAME.render([("mask_outside.png", {"tower"}), ("mask_cut.png", {"tower_cut"})])
 
 
 def frame_ground():
@@ -474,17 +347,17 @@ def ground_under():
         row = numpy.clip(((1 - numpy.abs(scene_y) / GROUND_PICTURE[1]) * height).astype(int), 0, height - 1)
         out[here] = pixels[row[here], col[here]]
     out[:, :, 3] = 1.0
-    save_pixels(out, "ground_under.png")
-    tower = load_pixels("paint_outside_before_soil.png")
-    mask = load_pixels("mask_outside.png")[:, :, 3] > 0.5
+    FRAME.save(out, "ground_under.png")
+    tower = FRAME.load("paint_outside_before_soil.png")
+    mask = FRAME.load("mask_outside.png")[:, :, 3] > 0.5
     out[mask] = tower[mask]
-    save_pixels(out, "tower_on_ground.png")
+    FRAME.save(out, "tower_on_ground.png")
 
 
 def soil_image():
     """Земля под вышкой: раскраска снаружи вместе с дорисованной присыпкой у тумб, тенью и тропой, видимая
     целиком у опор и у низа лестницы и растворяющаяся в земле карты дальше от них."""
-    pixels = load_pixels("paint_outside.png")
+    pixels = FRAME.load("paint_outside.png")
     scene_x, scene_y = frame_ground()
     turn = -TURN
     dx, dy = scene_x - TOWER_AT[0], -(scene_y - TOWER_AT[1])
@@ -515,7 +388,7 @@ def export_soil():
     bm.free()
     layer = mesh.uv_layers.new(name="UVMap")
     for loop in mesh.loops:
-        layer.data[loop.index].uv = guide_uv(mesh.vertices[loop.vertex_index].co)
+        layer.data[loop.index].uv = FRAME.uv(mesh.vertices[loop.vertex_index].co)
     made = bpy.data.materials.new("tower_soil")
     made.use_nodes = True
     nodes, links = made.node_tree.nodes, made.node_tree.links
@@ -530,41 +403,8 @@ def export_soil():
     mesh.materials.append(made)
     obj = bpy.data.objects.new("tower_soil", mesh)
     bpy.context.scene.collection.objects.link(obj)
-    for other in bpy.context.scene.objects:
-        other.select_set(other is obj)
-    bpy.context.view_layer.objects.active = obj
-    bpy.ops.export_scene.gltf(filepath=os.path.join(MODELS, "soil.glb"), use_selection=True, export_format="GLB",
-                              export_yup=True, export_apply=True, export_animations=False, use_active_scene=True)
+    export(obj, [], "soil.glb")
     bpy.data.objects.remove(obj, do_unlink=True)
-
-
-def save_pixels(pixels, file):
-    image = bpy.data.images.new(file, GUIDE_PX, GUIDE_PX, alpha=True)
-    image.pixels = pixels.ravel()
-    image.filepath_raw = os.path.join(PAINT, file)
-    image.file_format = "PNG"
-    image.save()
-    bpy.data.images.remove(image)
-
-
-def load_pixels(file):
-    image = bpy.data.images.load(os.path.join(PAINT, file))
-    assert tuple(image.size) == (GUIDE_PX, GUIDE_PX), f"{file}: не {GUIDE_PX} точек"
-    pixels = numpy.array(image.pixels[:], dtype=numpy.float32).reshape(GUIDE_PX, GUIDE_PX, 4)
-    bpy.data.images.remove(image)
-    return pixels
-
-
-def grow(mask, steps):
-    """Маска, раздутая на `steps` точек во все четыре стороны."""
-    for _ in range(steps):
-        wider = mask.copy()
-        wider[1:, :] |= mask[:-1, :]
-        wider[:-1, :] |= mask[1:, :]
-        wider[:, 1:] |= mask[:, :-1]
-        wider[:, :-1] |= mask[:, 1:]
-        mask = wider
-    return mask
 
 
 def behind_front_walls():
@@ -575,74 +415,21 @@ def behind_front_walls():
     turn = Matrix.Rotation(TURN, 3, "Z")
     walls = [[(-half, -half, low), (half, -half, low), (half, -half, high), (-half, -half, high)],
              [(-half, -half, low), (-half, half, low), (-half, half, high), (-half, -half, high)]]
-    rows, cols = numpy.mgrid[0:GUIDE_PX, 0:GUIDE_PX]
-    points = numpy.stack([cols + 0.5, rows + 0.5], axis=-1)
-    inside = numpy.zeros((GUIDE_PX, GUIDE_PX), dtype=bool)
-    for wall in walls:
-        corners = [numpy.array(guide_uv(turn @ Vector(p))) * GUIDE_PX for p in wall]
-        sides = []
-        for i in range(4):
-            a, b = corners[i], corners[(i + 1) % 4]
-            edge, to_point = b - a, points - a
-            sides.append(edge[0] * to_point[..., 1] - edge[1] * to_point[..., 0])
-        sides = numpy.stack(sides)
-        inside |= (sides >= 0).all(axis=0) | (sides <= 0).all(axis=0)
-    return inside
+    return FRAME.quads_mask([[turn @ Vector(p) for p in wall] for wall in walls])
 
 
 def picture_image(name):
-    """Картина для игры: цвет — раскраска paint_<name>.png, прозрачность — силуэт объёма mask_<name>.png,
-    раздутый на точку, чтобы край объёма не брал фон раскраски.
+    """Картина для игры из раскраски paint_<name>.png и силуэта mask_<name>.png.
 
     Разрез берёт из своей раскраски только то, чем он отличается от вышки снаружи (комната и срезанные стены
     по снимкам объёма, с запасом CUT_MARGIN точек), остальное — из раскраски снаружи: при смене вида опоры,
     настил и перила не меняют рисунок."""
-    rgba = load_pixels(f"paint_{name}.png")
-    mask = load_pixels(f"mask_{name}.png")
+    rgba = FRAME.load(f"paint_{name}.png")
+    mask = FRAME.load(f"mask_{name}.png")
     if name == "cut":
-        outside = load_pixels("paint_outside.png")
-        changed = numpy.abs(mask - load_pixels("mask_outside.png")).max(axis=2) > 0.02
-        own = grow(changed | behind_front_walls(), CUT_MARGIN)
-        rgba[~own] = outside[~own]
-    rgba[:, :, 3] = grow(mask[:, :, 3] > 0.5, 1)
-    image = bpy.data.images.new("picture_" + name, GUIDE_PX, GUIDE_PX, alpha=True)
-    image.pixels = rgba.ravel()
-    image.pack()
-    return image
-
-
-def picture_material(name, image):
-    made = bpy.data.materials.new(name)
-    made.use_nodes = True
-    nodes, links = made.node_tree.nodes, made.node_tree.links
-    bsdf = next(n for n in nodes if n.bl_idname == "ShaderNodeBsdfPrincipled")
-    texture = nodes.new("ShaderNodeTexImage")
-    texture.image = image
-    texture.extension = "EXTEND"
-    clip = nodes.new("ShaderNodeMath")
-    clip.operation = "ROUND"
-    links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
-    links.new(texture.outputs["Alpha"], clip.inputs[0])
-    links.new(clip.outputs[0], bsdf.inputs["Alpha"])
-    bsdf.inputs["Roughness"].default_value = 1.0
-    made.surface_render_method = "DITHERED"
-    return made
-
-
-def projected_copy(source, name, picture):
-    """Копия объёма с UV проекцией с камеры игры и картиной вместо плоских цветов."""
-    mesh = source.data.copy()
-    mesh.name = name
-    mesh.materials.clear()
-    mesh.materials.append(picture_material(name, picture))
-    for poly in mesh.polygons:
-        poly.material_index = 0
-    layer = mesh.uv_layers.new(name="UVMap")
-    for loop in mesh.loops:
-        layer.data[loop.index].uv = guide_uv(source.matrix_world @ mesh.vertices[loop.vertex_index].co)
-    obj = bpy.data.objects.new(name, mesh)
-    bpy.context.scene.collection.objects.link(obj)
-    return obj
+        rgba = merge_cut(FRAME.load("paint_outside.png"), rgba, FRAME.load("mask_outside.png"), mask,
+                         behind_front_walls(), CUT_MARGIN)
+    return FRAME.picture(name, rgba, mask)
 
 
 def export_painted():
@@ -652,14 +439,9 @@ def export_painted():
     rungs = [f"rung_{index:02d}" for index in range(1, LADDER_STEPS)]
     extra_tower = ["inside_hut", *rungs, "grab_left", "grab_right"]
     for name, picture, extra in (("tower", "outside", extra_tower), ("tower_cut", "cut", [])):
-        obj = projected_copy(bpy.data.objects[name], name + "_game", picture_image(picture))
+        obj = FRAME.projected_copy(bpy.data.objects[name], name + "_game", picture_image(picture))
         made.append(obj)
-        for other in bpy.context.scene.objects:
-            other.select_set(other is obj or other.name in extra)
-        bpy.context.view_layer.objects.active = obj
-        bpy.ops.export_scene.gltf(filepath=os.path.join(MODELS, name + ".glb"), use_selection=True,
-                                  export_format="GLB", export_yup=True, export_apply=True,
-                                  export_animations=False, export_materials="EXPORT", use_active_scene=True)
+        export(obj, extra, name + ".glb")
     for obj in made:
         bpy.data.objects.remove(obj, do_unlink=True)
 
