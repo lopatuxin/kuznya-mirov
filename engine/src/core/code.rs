@@ -621,10 +621,11 @@ fn write_property(
             properties.name(prop)
         ));
     }
-    if prop == property::ON_GROUND {
-        return Err(
-            "признак \"on_ground\" пишет только движок: коду он только для чтения".to_string(),
-        );
+    if matches!(prop, property::ON_GROUND | property::CLIMBING) {
+        return Err(format!(
+            "признак \"{}\" пишет только движок: коду он только для чтения",
+            properties.name(prop)
+        ));
     }
     let value = match value {
         AnyValue::Nil => {
@@ -955,6 +956,9 @@ fn check_shape_rules(
         }
         property::DRIVE_SPEED | property::ROAD_SPEED if matches!(value, AnyValue::Number(n) if n.is_nan() || *n < 0.0) => {
             Err(format!("свойство \"{name}\" не может быть меньше нуля"))
+        }
+        property::CLIMB_SPEED if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
+            Err("свойство \"climb_speed\" должно быть больше нуля".to_string())
         }
         property::HEIGHT if matches!(value, AnyValue::Number(n) if n.is_nan() || *n <= 0.0) => {
             Err("свойство \"height\" должно быть больше нуля".to_string())

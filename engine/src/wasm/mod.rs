@@ -454,6 +454,11 @@ fn js_step_report(report: &StepReport) -> JsValue {
                 set(&item, "kind", &JsValue::from_str("run_jump"));
                 set(&item, "objects", &js_id_array(objects));
             }
+            RuleFired::Climb { rule, objects } => {
+                set(&item, "rule", &JsValue::from_str(rule));
+                set(&item, "kind", &JsValue::from_str("climb"));
+                set(&item, "objects", &js_id_array(objects));
+            }
             RuleFired::Drive { rule, objects } => {
                 set(&item, "rule", &JsValue::from_str(rule));
                 set(&item, "kind", &JsValue::from_str("drive"));

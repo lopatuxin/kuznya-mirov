@@ -23,7 +23,7 @@ use super::{
 };
 
 /// Одна модель `files.models`: имя, путь файла `.glb` от папки игры, как она освещена и, у модели со скелетом,
-/// движения стойки и ходьбы, кости ступней, кость начала верха тела и две кисти.
+/// движения стойки, ходьбы и лазания, кости ступней, кость начала верха тела и две кисти.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelDecl {
     pub name: String,
@@ -35,6 +35,7 @@ pub struct ModelDecl {
     pub cutaway: Option<String>,
     pub idle: Option<String>,
     pub walk: Option<String>,
+    pub climb: Option<String>,
     pub feet: Option<[String; 2]>,
     pub spine: Option<String>,
     pub hands: Option<[String; 2]>,
@@ -94,7 +95,7 @@ fn parse_model_decl(
 ) -> Option<ModelDecl> {
     let obj = expect_object(value, file, path, errors)?;
     let known = [
-        "path", "look", "solid", "cutaway", "idle", "walk", "feet", "spine", "hands",
+        "path", "look", "solid", "cutaway", "idle", "walk", "climb", "feet", "spine", "hands",
     ];
     reject_unknown_keys(obj, &known, file, path, errors);
     if !obj.keys().all(|key| known.contains(&key.as_str())) {
@@ -106,7 +107,11 @@ fn parse_model_decl(
             Some(value) => expect_string(value, file, &join(path, key), errors).map(Some),
         }
     };
-    let (idle, walk) = (motion("idle", errors), motion("walk", errors));
+    let (idle, walk, climb) = (
+        motion("idle", errors),
+        motion("walk", errors),
+        motion("climb", errors),
+    );
     let feet = match obj.get("feet") {
         None => Some(None),
         Some(value) => {
@@ -151,6 +156,7 @@ fn parse_model_decl(
         cutaway: cutaway?,
         idle: idle?,
         walk: walk?,
+        climb: climb?,
         feet: feet?,
         spine: spine?,
         hands: hands?,
@@ -411,7 +417,7 @@ fn attach_building(decl: &ModelDecl, model: &mut Model, field: &str, errors: &mu
 }
 
 /// Ключи скелета из описания `decl` и движения `motions.json` модели ложатся на её скелет, потом по именам из движений
-/// файла и `motions.json` встают стойка и ходьба; чего в файле нет — ошибка.
+/// файла и `motions.json` встают стойка, ходьба и лазание; чего в файле нет — ошибка.
 fn attach_motion(
     decl: &ModelDecl,
     model: &mut Model,
@@ -424,6 +430,7 @@ fn attach_motion(
         for (key, named) in [
             ("idle", decl.idle.is_some()),
             ("walk", decl.walk.is_some()),
+            ("climb", decl.climb.is_some()),
             ("feet", decl.feet.is_some()),
             ("spine", decl.spine.is_some()),
             ("hands", decl.hands.is_some()),
@@ -463,6 +470,7 @@ fn attach_motion(
     motions::attach(skeleton, decl, motions, errors);
     skeleton.idle = named_clip(skeleton, "idle", &decl.idle, field, errors);
     skeleton.walk = named_clip(skeleton, "walk", &decl.walk, field, errors);
+    skeleton.climb = named_clip(skeleton, "climb", &decl.climb, field, errors);
 }
 
 fn bone_named(

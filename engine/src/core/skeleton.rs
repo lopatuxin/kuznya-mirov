@@ -3,6 +3,7 @@
 //! (+x вправо, +y к игроку, +z вверх), середина основания в начале. Ни видеокарты, ни браузера: позы
 //! считает процессор, сгибает сетку видеокарта → `render::gpu_models`.
 
+use super::climb::{Grip, Point};
 use super::math3::{IDENTITY, Mat4, mul};
 use super::surface;
 
@@ -295,6 +296,8 @@ pub struct Skeleton {
     pub clips: Vec<Clip>,
     pub idle: Option<usize>,
     pub walk: Option<usize>,
+    /// Движение тела на лестнице.
+    pub climb: Option<usize>,
     pub legs: Option<[Leg; 2]>,
     /// Кость, от которой начинается верх тела.
     pub spine: Option<usize>,
@@ -387,6 +390,17 @@ impl Stance {
         [
             self.place[0] + self.cos * x - self.sin * y,
             self.place[1] + self.sin * x + self.cos * y,
+        ]
+    }
+
+    /// Точка сцены в осях модели: обратное к `world` и высоте над основанием.
+    fn local(&self, point: Point) -> V3 {
+        let scale = self.scale.max(f64::EPSILON);
+        let (dx, dy) = (point[0] - self.place[0], point[1] - self.place[1]);
+        [
+            ((self.cos * dx + self.sin * dy) / scale) as f32,
+            ((self.cos * dy - self.sin * dx) / scale) as f32,
+            ((point[2] - self.base) / scale) as f32,
         ]
     }
 }
@@ -760,9 +774,95 @@ impl Skeleton {
         }
     }
 
+    /// Ставит кисти и ступни на перекладины лестницы: тело наклоняется вдоль лестницы вокруг середины основания, кисть —
+    /// в свою точку перекладины со сдвигом на ширину плеч, ступня — на ширину таза; руки гнутся в локтях наружу и вниз,
+    /// ноги в коленях — к лестнице. `grip.weight` — на сколько тело наклоняется, а кисти и ступни тянутся от позы к
+    /// перекладинам.
+    pub fn grip_ladder(&self, stance: &Stance, grip: &Grip, scratch: &mut PoseScratch) {
+        let weight = grip.weight as f32;
+        let scale = stance.scale.max(f64::EPSILON);
+        let hands = self.hands.map(|hands| {
+            let shoulders = hands.map(|hand| {
+                self.arm_of(hand)
+                    .map(|arm| point_of(&scratch.globals[arm[0]]))
+            });
+            let above =
+                shoulders.map(|shoulder| shoulder.map_or(0.0, |at| scale * f64::from(at[2])));
+            let beside = shoulders.map(|shoulder| {
+                let across = shoulder.map_or(0.0, |at| scale * f64::from(at[0]));
+                [stance.cos * across, stance.sin * across]
+            });
+            (hands, grip.hands(above, beside))
+        });
+        let back = grip.ladder.back();
+        let feet = self.legs.map(|legs| {
+            let goals = grip.feet().into_iter().zip(legs).map(|(goal, leg)| {
+                let lift = (scale * f64::from(point_of(&scratch.globals[leg.foot])[2])).max(0.0)
+                    + RUNG_HALF;
+                [
+                    goal[0] + back[0] * BALL_OF_FOOT,
+                    goal[1] + back[1] * BALL_OF_FOOT,
+                    goal[2] + lift,
+                ]
+            });
+            let goals: Vec<Point> = goals.collect();
+            (legs, [goals[0], goals[1]])
+        });
+        let along = grip.ladder.upward();
+        let base = [stance.place[0], stance.place[1], stance.base];
+        let upward = unit(stance.local(std::array::from_fn(|axis| base[axis] + along[axis])));
+        let tilted = unit(add(
+            scaled([0.0, 0.0, 1.0], 1.0 - weight),
+            scaled(upward, weight),
+        ));
+        let turn = turn_between([0.0, 0.0, 1.0], tilted);
+        for root in (0..self.bones.len()).filter(|&at| self.bones[at].parent.is_none()) {
+            self.turn_subtree(root, [0.0; 3], turn, scratch);
+        }
+        if let Some((hands, goals)) = hands.filter(|_| grip.hands_weight > 0.0) {
+            for (hand, goal) in hands.into_iter().zip(goals) {
+                let Some(arm) = self.arm_of(hand) else {
+                    continue;
+                };
+                let shoulder = point_of(&scratch.globals[arm[0]]);
+                let side = if shoulder[0] < 0.0 { -1.0 } else { 1.0 };
+                let held = grip.hands_weight as f32;
+                let target = held_at(stance, goal, 0.0, &scratch.globals[hand], held);
+                let bend = bent_toward(arm, [side, -0.5, -1.0], held, scratch);
+                self.bend_chain(arm, bend, target, scratch);
+            }
+        }
+        if let Some((legs, goals)) = feet.filter(|_| weight > 0.0) {
+            for (leg, goal) in legs.into_iter().zip(goals) {
+                let width = point_of(&scratch.globals[leg.thigh])[0];
+                let target = held_at(stance, goal, width, &scratch.globals[leg.foot], weight);
+                let chain = [leg.thigh, leg.shin, leg.foot];
+                let bend = bent_toward(chain, [0.0, 1.0, 0.0], weight, scratch);
+                self.bend_chain(chain, bend, target, scratch);
+            }
+        }
+    }
+
+    /// Плечо, локоть и кисть руки с кистью `hand`.
+    fn arm_of(&self, hand: usize) -> Option<[usize; 3]> {
+        let elbow = self.bones[hand].parent?;
+        let shoulder = self.bones[elbow].parent?;
+        Some([shoulder, elbow, hand])
+    }
+
     fn bend_leg(&self, leg: &Leg, target: V3, scratch: &mut PoseScratch) {
-        let [hip, knee, ankle] =
-            [leg.thigh, leg.shin, leg.foot].map(|b| point_of(&scratch.globals[b]));
+        self.bend_chain(
+            [leg.thigh, leg.shin, leg.foot],
+            [0.0, 1.0, 0.0],
+            target,
+            scratch,
+        );
+    }
+
+    /// Гнёт цепочку из трёх костей — начало верхнего звена, начало нижнего и конец — так, чтобы её конец лёг в `target`;
+    /// сустав в середине уходит в сторону `bend`.
+    fn bend_chain(&self, chain: [usize; 3], bend: V3, target: V3, scratch: &mut PoseScratch) {
+        let [hip, knee, ankle] = chain.map(|b| point_of(&scratch.globals[b]));
         let (upper, lower) = (length(sub(knee, hip)), length(sub(ankle, knee)));
         let to_target = sub(target, hip);
         let reach = length(to_target);
@@ -773,8 +873,7 @@ impl Skeleton {
         let axis = unit(to_target);
         let along = (upper * upper - lower * lower + reach * reach) / (2.0 * reach);
         let rise = (upper * upper - along * along).max(0.0).sqrt();
-        let forward = [0.0, 1.0, 0.0];
-        let pole = sub(forward, scaled(axis, dot(forward, axis)));
+        let pole = sub(bend, scaled(axis, dot(bend, axis)));
         let pole = if length(pole) < 1e-4 {
             sub(knee, scaled(axis, dot(sub(knee, hip), axis)))
         } else {
@@ -783,16 +882,16 @@ impl Skeleton {
         let pole = unit(pole);
         let new_knee = add(add(hip, scaled(axis, along)), scaled(pole, rise));
         self.turn_subtree(
-            leg.thigh,
+            chain[0],
             hip,
             turn_between(sub(knee, hip), sub(new_knee, hip)),
             scratch,
         );
-        let knee = point_of(&scratch.globals[leg.shin]);
-        let ankle = point_of(&scratch.globals[leg.foot]);
+        let knee = point_of(&scratch.globals[chain[1]]);
+        let ankle = point_of(&scratch.globals[chain[2]]);
         let aimed = add(hip, scaled(axis, reach));
         self.turn_subtree(
-            leg.shin,
+            chain[1],
             knee,
             turn_between(sub(ankle, knee), sub(aimed, knee)),
             scratch,
@@ -814,6 +913,34 @@ impl Skeleton {
 
 fn point_of(matrix: &Mat4) -> V3 {
     [matrix[3][0], matrix[3][1], matrix[3][2]]
+}
+
+/// Куда гнётся сустав в середине цепочки `chain`, пока хват `weight` слабее полного: от того, куда он согнут в позе
+/// (при хвате 0 сгиб повторяет позу), к сгибу `preferred` на перекладинах.
+fn bent_toward(chain: [usize; 3], preferred: V3, weight: f32, scratch: &PoseScratch) -> V3 {
+    let (start, middle) = (
+        point_of(&scratch.globals[chain[0]]),
+        point_of(&scratch.globals[chain[1]]),
+    );
+    add(
+        scaled(unit(sub(middle, start)), 1.0 - weight),
+        scaled(unit(preferred), weight),
+    )
+}
+
+/// Половина толщины перекладины: на столько над её серединой встаёт подошва.
+const RUNG_HALF: f64 = 0.035;
+
+/// На столько щиколотка стоит за серединой перекладины к лезущему: на перекладине — подушечка стопы, а не пятка.
+const BALL_OF_FOOT: f64 = 0.06;
+
+/// Куда ставится конец цепочки, что сейчас в `current`, когда она тянется к точке `goal` сцены на перекладине: в осях модели,
+/// со сдвигом `across` вбок от середины перекладины, на долю `weight` пути.
+fn held_at(stance: &Stance, goal: Point, across: f32, current: &Mat4, weight: f32) -> V3 {
+    let mut held = stance.local(goal);
+    held[0] += across;
+    let from = point_of(current);
+    std::array::from_fn(|axis| from[axis] + (held[axis] - from[axis]) * weight)
 }
 
 fn add(a: V3, b: V3) -> V3 {
@@ -1168,6 +1295,7 @@ mod tests {
             clips: Vec::new(),
             idle: None,
             walk: None,
+            climb: None,
             legs: None,
             spine: None,
             hands: None,

@@ -1,6 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use super::building;
+use super::climb;
 use super::code::{CodeError, Runner as CodeRunner};
 use super::footprint::Footprint;
 use super::grid::{Rect, SpatialGrid, largest_dimension};
@@ -401,6 +402,9 @@ fn apply_move_rule(
         ) else {
             continue;
         };
+        if world.flag(id, property::CLIMBING) {
+            continue;
+        }
         let new_pos = if let Some(spec) = world.grid(id, property::GRID) {
             if !grid_hop_ready[id as usize] {
                 continue;
@@ -842,7 +846,7 @@ fn apply_walk_rule(
     let walkers: Vec<u32> = world
         .ids()
         .filter(|&id| selector_matches(for_, world, id))
-        .filter(|&id| world.has(id, property::WALK_TO))
+        .filter(|&id| world.has(id, property::WALK_TO) && !world.flag(id, property::CLIMBING))
         .collect();
     let keep: HashSet<u32> = walkers.iter().copied().collect();
     pathfind::prune(walk_paths, &keep);
@@ -1112,10 +1116,42 @@ fn apply_run_jump_rule(
     }
 }
 
+/// «Правила игры» → «Лазание»: одно правило `climb` — по просьбе объекты `for_` берутся за лестницы `ladders`, а кто лезет,
+/// делает шаг по ней. Отмечает `moved` и докладывает `RuleFired::Climb`, как `apply_run_jump_rule`.
+fn apply_climb_rule(
+    world: &mut World,
+    (for_, ladders): (&Selector, &Selector),
+    moved: &mut [bool],
+    report: &mut Option<StepReportBuilder>,
+    rule_index: usize,
+) {
+    let mut moved_objects: Vec<u32> = Vec::new();
+    climb::apply(
+        world,
+        for_,
+        ladders,
+        moved,
+        report.is_some().then_some(&mut moved_objects),
+    );
+    if let Some(r) = report.as_mut()
+        && !moved_objects.is_empty()
+    {
+        r.fired.push(RuleFired::Climb {
+            rule: format!("rules[{rule_index}]"),
+            objects: moved_objects,
+        });
+    }
+}
+
 /// «Трёхмерная сцена» → «Объект в объёме»: объект с моделью, который сдвинулся на `shift`, сразу смотрит по
 /// сдвигу — в `facing` ложится такой угол, чтобы вместе с `rotation` вид смотрел по ходу. Стоящий объект
 /// сохраняет `facing`; фигуры сами не поворачиваются.
-fn face_along(world: &mut World, id: u32, shift: Vec2) {
+pub(super) fn face_along(world: &mut World, id: u32, shift: Vec2) {
+    turn_toward(world, id, shift, 0.0, 1.0);
+}
+
+/// Поворачивает модель от `facing` `from` градусов к направлению `shift` кратчайшей стороной на долю `along`.
+pub(super) fn turn_toward(world: &mut World, id: u32, shift: Vec2, from: f64, along: f64) {
     if shift == [0.0, 0.0] || !world.three_d() || !world.has(id, property::MODEL) {
         return;
     }
@@ -1123,7 +1159,8 @@ fn face_along(world: &mut World, id: u32, shift: Vec2) {
         .rotation(id, property::ROTATION)
         .map_or(0.0, Rotation::angle);
     let heading = heading_degrees(shift[0], shift[1]) - turned;
-    if let Some(facing) = Rotation::from_degrees(heading.rem_euclid(360.0)) {
+    let turn = (heading - from + 540.0).rem_euclid(360.0) - 180.0;
+    if let Some(facing) = Rotation::from_degrees((from + turn * along).rem_euclid(360.0)) {
         world.set_rotation(id, property::FACING, facing);
     }
 }
@@ -1226,7 +1263,7 @@ fn apply_drive_rule(
     }
 }
 
-/// Stage 4: "move", "check", "walk", "run_jump" and "drive" rules, in file order — «Исполнение игры»: перемешаны, а не
+/// Stage 4: "move", "check", "walk", "climb", "run_jump" and "drive" rules, in file order — «Исполнение игры»: перемешаны, а не
 /// «сначала все move, потом все check», так что `after_move_of` внутри `check` видит движения,
 /// сделанные более ранними правилами того же шага. `deleted` starts out seeded with stage 3's
 /// `expired` and grows with every object a `check` rule's code deletes, so a later `check`'s own
@@ -1275,6 +1312,9 @@ pub fn apply_stage4(
             }
             Rule::Walk { for_, avoid } => {
                 apply_walk_rule(world, for_, avoid, scene, moved, report, index, walk_paths)
+            }
+            Rule::Climb { for_, ladders } => {
+                apply_climb_rule(world, (for_, ladders), moved, report, index)
             }
             Rule::RunJump {
                 for_,

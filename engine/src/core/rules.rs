@@ -235,6 +235,12 @@ pub enum Rule {
         solid: Option<Selector>,
         one_way: Option<Selector>,
     },
+    /// «Лазание»: по просьбе `climb` ведёт объект `for` вверх или вниз по лестнице из `ladders` — объекта, у чьей модели
+    /// есть перекладины.
+    Climb {
+        for_: Selector,
+        ladders: Selector,
+    },
     /// «Езда по дорогам», требование 9: ведёт машину к `drive_to` по сети дорог своей стороной.
     Drive {
         for_: Selector,

@@ -1,7 +1,7 @@
 {
   "objects": [
     { "name": "hero", "model": "hero", "position": [11.2, 22.2], "size": [0.6, 0.6], "height": 1.73, "velocity": [0, 0],
-      "camera_follows": true, "hero": true,
+      "climb_speed": 1.2, "camera_follows": true, "hero": true,
       "keys": {
         "ArrowLeft":   { "press": [["go_left", true]], "release": [["go_left", false]] },
         "KeyA":        { "press": [["go_left", true]], "release": [["go_left", false]] },

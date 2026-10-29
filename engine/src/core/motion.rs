@@ -16,11 +16,12 @@ const FULL: f32 = 0.9999;
 /// Секунды движений на шаг партии.
 const STEP_SECONDS: f32 = runner::STEP_SECONDS as f32;
 
-/// Какое движение объект хочет играть: стойку, ходьбу или названное в `animation`.
+/// Какое движение объект хочет играть: стойку, ходьбу, лазание или названное в `animation`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Want {
     Idle,
     Walk,
+    Climb,
     Named(usize),
 }
 
@@ -83,6 +84,7 @@ impl MotionState {
         let (clip, looped) = match want {
             Want::Idle => (skeleton.idle, true),
             Want::Walk => (skeleton.walk.or(skeleton.idle), true),
+            Want::Climb => (skeleton.climb.or(skeleton.idle), true),
             Want::Named(clip) => (Some(clip), false),
         };
         Playing { clip, time, looped }
@@ -175,8 +177,8 @@ impl MotionState {
     }
 }
 
-/// Один шаг партии для всех объектов со скелетом: движение, названное в `animation`; без него — ходьба, пока
-/// объект сдвинулся за шаг, и стойка, пока стоит. Название, которого нет в модели, движением не считается.
+/// Один шаг партии для всех объектов со скелетом: движение, названное в `animation`; без него — лазание, пока объект
+/// лезет по лестнице, ходьба, пока он сдвинулся за шаг, и стойка, пока стоит. Название, которого нет в модели, движением не считается.
 pub fn advance(world: &mut World) {
     for id in 0..world.slot_count() as u32 {
         if !world.is_alive(id) {
@@ -190,6 +192,7 @@ pub fn advance(world: &mut World) {
         let mut state = world.motion(id);
         let want = match named {
             Some(clip) => Want::Named(clip),
+            None if world.flag(id, property::CLIMBING) => Want::Climb,
             None if state.moved_to(position) => Want::Walk,
             None => Want::Idle,
         };
@@ -233,6 +236,7 @@ mod tests {
             clips: vec![clip("Idle"), clip("Jog"), clip("Roll")],
             idle: Some(0),
             walk: Some(1),
+            climb: None,
             legs: None,
             spine: None,
             hands: None,

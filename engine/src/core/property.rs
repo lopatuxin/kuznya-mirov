@@ -94,6 +94,11 @@ pub const BEND: PropertyId = 59;
 pub const FACING: PropertyId = 60;
 /// «Трёхмерная сцена» → «Модели и движения»: имя движения модели, которое играет объект.
 pub const ANIMATION: PropertyId = 61;
+/// «Правила игры» → «Лазание»: просьба полезть по лестнице, признак «лезет» (его пишет только движок) и скорость
+/// подъёма в клетках в секунду по высоте.
+pub const CLIMB: PropertyId = 62;
+pub const CLIMBING: PropertyId = 63;
+pub const CLIMB_SPEED: PropertyId = 64;
 
 /// Наибольшая скорость времени.
 pub const MAX_TIME_SCALE: f64 = 16.0;
@@ -185,6 +190,9 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("bend", PropKind::Number),
     ("facing", PropKind::Rotation),
     ("animation", PropKind::Text),
+    ("climb", PropKind::Flag),
+    ("climbing", PropKind::Flag),
+    ("climb_speed", PropKind::Number),
 ];
 
 #[derive(Debug, Clone)]
@@ -433,6 +441,14 @@ mod tests {
         assert_eq!(table.kind(FACING), PropKind::Rotation);
         assert_eq!(table.resolve("animation"), Some(ANIMATION));
         assert_eq!(table.kind(ANIMATION), PropKind::Text);
+        for (name, id, kind) in [
+            ("climb", CLIMB, PropKind::Flag),
+            ("climbing", CLIMBING, PropKind::Flag),
+            ("climb_speed", CLIMB_SPEED, PropKind::Number),
+        ] {
+            assert_eq!(table.resolve(name), Some(id), "{name}");
+            assert_eq!(table.kind(id), kind, "{name}");
+        }
         assert_eq!(table.resolve("particles"), None);
     }
 

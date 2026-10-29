@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use super::climb::ClimbState;
 use super::keys::{KeyEdit, KeyTable};
 use super::model::{Model, ModelTable};
 use super::motion::MotionState;
@@ -183,6 +184,8 @@ pub struct World {
     /// «Бег и прыжок»: память нажатия, запас после края и признак подъёма каждого объекта — в мире, а не
     /// в свойствах: повтор записи даёт ту же партию шаг в шаг.
     jump: Vec<JumpState>,
+    /// «Правила игры» → «Лазание»: по какой лестнице и на каком этапе лезет каждый объект — в мире, а не в свойствах.
+    climb: Vec<ClimbState>,
     /// «Трёхмерная сцена» → «Модели и движения»: какое движение играет у каждого объекта со скелетом.
     motion: Vec<MotionState>,
     /// «Трёхмерная сцена» → «Здания»: сколько шагов растворения прошёл срез каждого здания — от 0 (виден основной вид) до
@@ -234,6 +237,7 @@ impl World {
             base_z: Vec::new(),
             walk_to_z: Vec::new(),
             jump: Vec::new(),
+            climb: Vec::new(),
             motion: Vec::new(),
             cutaway: Vec::new(),
             camera_follow_writes: 0,
@@ -515,6 +519,16 @@ impl World {
         }
     }
 
+    pub fn climb_state(&self, id: u32) -> ClimbState {
+        self.climb.get(id as usize).copied().unwrap_or_default()
+    }
+
+    pub fn set_climb_state(&mut self, id: u32, state: ClimbState) {
+        if let Some(slot) = self.climb.get_mut(id as usize) {
+            *slot = state;
+        }
+    }
+
     pub fn set_jump_state(&mut self, id: u32, state: JumpState) {
         if let Some(slot) = self.jump.get_mut(id as usize) {
             *slot = state;
@@ -544,6 +558,7 @@ impl World {
             self.tilt[id as usize] = 0.0;
             self.walk_to_z[id as usize] = None;
             self.jump[id as usize] = JumpState::default();
+            self.climb[id as usize] = ClimbState::default();
             self.motion[id as usize] = MotionState::default();
             return id;
         }
@@ -556,6 +571,7 @@ impl World {
         self.tilt.push(0.0);
         self.walk_to_z.push(None);
         self.jump.push(JumpState::default());
+        self.climb.push(ClimbState::default());
         self.motion.push(MotionState::default());
         self.cutaway.push(0);
         for column in &mut self.columns {
@@ -606,6 +622,7 @@ impl World {
         self.tilt[idx] = 0.0;
         self.walk_to_z[idx] = None;
         self.jump[idx] = JumpState::default();
+        self.climb[idx] = ClimbState::default();
         self.motion[idx] = MotionState::default();
         self.cutaway[idx] = 0;
         self.free_list.push(id);

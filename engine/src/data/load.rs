@@ -375,6 +375,9 @@ pub(crate) fn parse_scalar_value(
             {
                 return None;
             }
+            if prop == property::CLIMB_SPEED && !validate_climb_speed(n, file, path, errors) {
+                return None;
+            }
             if prop == property::BEND && !validate_bend(n, properties, file, path, errors) {
                 return None;
             }
@@ -1347,21 +1350,38 @@ fn validate_drive_number(
     false
 }
 
-/// «Бег и прыжок» → «Проверка перед запуском»: `on_ground` пишет только движок — ни файл, ни клавиша,
-/// ни правило, ни шаблон его не ставят и не снимают.
+/// «Лазание» → «Проверка перед запуском»: `climb_speed` больше нуля.
+fn validate_climb_speed(n: f64, file: &str, path: &str, errors: &mut ErrorSink) -> bool {
+    if n > 0.0 {
+        return true;
+    }
+    errors.push(
+        file,
+        path,
+        format!("свойство \"climb_speed\" должно быть больше нуля, получено {n}"),
+    );
+    false
+}
+
+/// «Бег и прыжок», «Лазание» → «Проверка перед запуском»: `on_ground` и `climbing` пишет только движок — ни файл,
+/// ни клавиша, ни правило, ни шаблон их не ставят и не снимают.
 fn engine_alone_writes_ok(
     prop: PropertyId,
     file: &str,
     path: &str,
     errors: &mut ErrorSink,
 ) -> bool {
-    if prop != property::ON_GROUND {
-        return true;
-    }
+    let name = match prop {
+        property::ON_GROUND => "on_ground",
+        property::CLIMBING => "climbing",
+        _ => return true,
+    };
     errors.push(
         file,
         path,
-        "признак \"on_ground\" пишет только движок: его нельзя задать ни в файле, ни клавишей, ни правилом",
+        format!(
+            "признак \"{name}\" пишет только движок: его нельзя задать ни в файле, ни клавишей, ни правилом"
+        ),
     );
     false
 }
@@ -4872,6 +4892,13 @@ fn parse_set_value(
         {
             return None;
         }
+        if prop == property::CLIMB_SPEED
+            && !number_constants(&expr)
+                .iter()
+                .all(|&n| validate_climb_speed(n, file, path, errors))
+        {
+            return None;
+        }
         return Some(SetValue::Number(expr));
     }
     parse_scalar_value(value, prop, properties, images, file, path, errors).map(SetValue::Const)
@@ -5615,11 +5642,14 @@ fn parse_pick_one(
 /// missing or unrecognized, rather than let it hide behind the `kind` error until a later pass.
 const ALL_RULE_KEYS: &[&str] = &[
     "kind", "for", "a", "b", "effects", "do", "when", "where", "template", "pick_one", "avoid",
-    "solid", "one_way", "side",
+    "solid", "one_way", "side", "ladders",
 ];
 
 const DRIVE_IN_FLAT_SCENE: &str =
     "drive есть только в трёхмерной сцене: у scene в game.json нет camera";
+
+const CLIMB_IN_FLAT_SCENE: &str =
+    "climb есть только в трёхмерной сцене: у scene в game.json нет camera";
 
 /// «Езда по дорогам», требование 9: `side` необязателен — `right`, `left` или `middle`, по умолчанию
 /// `right`. `None` — значение не годится, ошибка уже записана.
@@ -5769,6 +5799,25 @@ fn parse_rule(
             let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
             let side = parse_drive_side(obj, file, &path, errors)?;
             Some((Rule::Drive { for_, side }, std::collections::HashSet::new()))
+        }
+        // «Лазание»: `for` и `ladders` — отборы, оба обязательны.
+        Some("climb") => {
+            reject_unknown_keys(obj, &["kind", "for", "ladders"], file, &path, errors);
+            if !properties.three_d() {
+                errors.push(file, &path, CLIMB_IN_FLAT_SCENE);
+                return None;
+            }
+            let for_json = require_field(obj, "for", file, &path, errors)?;
+            let for_obj = expect_object(for_json, file, &join(&path, "for"), errors)?;
+            let for_ = resolve_selector(for_obj, properties, file, &join(&path, "for"), errors);
+            let ladders_json = require_field(obj, "ladders", file, &path, errors)?;
+            let ladders_path = join(&path, "ladders");
+            let ladders_obj = expect_object(ladders_json, file, &ladders_path, errors)?;
+            let ladders = resolve_selector(ladders_obj, properties, file, &ladders_path, errors);
+            Some((
+                Rule::Climb { for_, ladders },
+                std::collections::HashSet::new(),
+            ))
         }
         Some("collide") => {
             reject_unknown_keys(
@@ -6372,6 +6421,22 @@ fn widen_shapes_by_rule_actions(shapes: &mut [PossibleShape], rules: &RuleSet) {
             }
         }
 
+        // «Лазание»: просьбу `climb` и признак `climbing` ставит и снимает сам движок — отбор по ним подходит
+        // лезущим, хотя ни одно правило файла признака не ставит и не снимает.
+        for rule in &rules.rules {
+            let Rule::Climb { for_, .. } = rule else {
+                continue;
+            };
+            for ps in shapes.iter_mut() {
+                if matches_shape(for_, &ps.shape) {
+                    for prop in [property::CLIMB, property::CLIMBING] {
+                        changed |= ps.shape.maybe.insert(prop);
+                        changed |= ps.shape.removable.insert(prop);
+                    }
+                }
+            }
+        }
+
         for rule in &rules.rules {
             let do_ = match rule {
                 Rule::Check { do_, .. }
@@ -6381,6 +6446,7 @@ fn widen_shapes_by_rule_actions(shapes: &mut [PossibleShape], rules: &RuleSet) {
                 Rule::Move { .. }
                 | Rule::Walk { .. }
                 | Rule::RunJump { .. }
+                | Rule::Climb { .. }
                 | Rule::Drive { .. } => continue,
             };
             let mut given = Vec::new();
@@ -6642,6 +6708,56 @@ fn validate_drive_apart_from_other_movers(
     }
 }
 
+/// «Лазание» → «Проверка перед запуском»: модель объекта из `scene.json` под `climb` — со ступнями `feet` и кистями
+/// `hands`: на перекладины ставят именно их.
+fn validate_climbers_have_limbs(
+    scene: &[ParsedObject],
+    rules: &RuleSet,
+    rule_meta: &[RuleMeta],
+    models: &[ModelDecl],
+    scene_file: &str,
+    errors: &mut ErrorSink,
+) {
+    let labeled = rules.rules.iter().zip(rule_meta);
+    for obj in scene {
+        let Some(Value::Text(name)) = find_value(&obj.values, property::MODEL) else {
+            continue;
+        };
+        let Some(model) = models.iter().find(|decl| &decl.name == name) else {
+            continue;
+        };
+        let missing: Vec<&str> = [
+            ("feet", model.feet.is_none()),
+            ("hands", model.hands.is_none()),
+        ]
+        .into_iter()
+        .filter_map(|(key, absent)| absent.then_some(key))
+        .collect();
+        if missing.is_empty() {
+            continue;
+        }
+        let selects = |selector: &Selector| {
+            selector.has.iter().all(|prop| obj.shape.contains(prop))
+                && !selector.without.iter().any(|prop| obj.shape.contains(prop))
+        };
+        let Some(climb) = labeled.clone().find_map(|(rule, meta)| match rule {
+            Rule::Climb { for_, .. } if selects(for_) => Some(meta.file_index),
+            _ => None,
+        }) else {
+            continue;
+        };
+        errors.push(
+            scene_file,
+            &obj.path,
+            format!(
+                "объект{} под climb (rules[{climb}]), а у его модели \"{name}\" в game.json нет {}: кисти и ступни на перекладины ставят по ним",
+                name_suffix(obj),
+                missing.join(" и ")
+            ),
+        );
+    }
+}
+
 /// «Камера игрока», требование 24: клавиша камеры, названная в `keys` объекта сцены или экрана,
 /// достаётся привязке — камера её не берёт. Предупреждение, не ошибка.
 fn warn_taken_camera_keys(
@@ -6839,19 +6955,27 @@ fn validate_run_actions(
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } | Rule::Spawn { do_, .. } => {
                 check_common_actions_run(do_, &join(&label, "do"), &check, errors);
             }
-            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } | Rule::Drive { .. } => {}
+            Rule::Move { .. }
+            | Rule::Walk { .. }
+            | Rule::RunJump { .. }
+            | Rule::Climb { .. }
+            | Rule::Drive { .. } => {}
         }
     }
 }
 
-/// `do_` from any rule kind that has one — `Move`/`Walk`/`RunJump`/`Drive` have none.
+/// `do_` from any rule kind that has one — `Move`/`Walk`/`RunJump`/`Climb`/`Drive` have none.
 fn common_actions(rule: &Rule) -> &[CommonAction] {
     match rule {
         Rule::Collide { do_, .. }
         | Rule::Check { do_, .. }
         | Rule::Delete { do_, .. }
         | Rule::Spawn { do_, .. } => do_,
-        Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } | Rule::Drive { .. } => &[],
+        Rule::Move { .. }
+        | Rule::Walk { .. }
+        | Rule::RunJump { .. }
+        | Rule::Climb { .. }
+        | Rule::Drive { .. } => &[],
     }
 }
 
@@ -7113,6 +7237,22 @@ fn validate_property_sufficiency(
                     );
                 }
             }
+            // «Лазание»: объекту под `climb` не хватает `position`, `size` или `climb_speed`; `ladders` ничего не
+            // требуют: объект без перекладин в модели просто не лестница.
+            Rule::Climb { for_, .. } => {
+                for prop in [property::POSITION, property::SIZE, property::CLIMB_SPEED] {
+                    require(
+                        &candidates,
+                        file,
+                        for_,
+                        prop,
+                        properties,
+                        &label,
+                        &mut seen,
+                        errors,
+                    );
+                }
+            }
             // «Бег и прыжок», требование 21: объекту под `run_jump` не хватает `position`, `size`,
             // `run_speed` или `jump_height` — `solid` и `one_way` ничего не требуют: объект без
             // `position` и `size` просто не твёрдое.
@@ -7359,6 +7499,10 @@ fn collect_used_properties(
     for rule in &rules.rules {
         match rule {
             Rule::Move { for_ } | Rule::Drive { for_, .. } => mark_selector_used(&mut used, for_),
+            Rule::Climb { for_, ladders } => {
+                mark_selector_used(&mut used, for_);
+                mark_selector_used(&mut used, ladders);
+            }
             Rule::Walk { for_, avoid } => {
                 mark_selector_used(&mut used, for_);
                 if let Some(avoid) = avoid {
@@ -7664,6 +7808,10 @@ fn validate_selectors_not_empty(
         let label = format!("rules[{}]", meta.file_index);
         match rule {
             Rule::Move { for_ } | Rule::Drive { for_, .. } => check(for_, &label, "for"),
+            Rule::Climb { for_, ladders } => {
+                check(for_, &label, "for");
+                check(ladders, &label, "ladders");
+            }
             Rule::Collide { a, b, do_, .. } => {
                 check(a, &label, "a");
                 check(b, &label, "b");
@@ -12499,7 +12647,11 @@ fn collect_used_images(
                 mark_do(&mut used, do_);
             }
             Rule::Check { do_, .. } | Rule::Delete { do_, .. } => mark_do(&mut used, do_),
-            Rule::Move { .. } | Rule::Walk { .. } | Rule::RunJump { .. } | Rule::Drive { .. } => {}
+            Rule::Move { .. }
+            | Rule::Walk { .. }
+            | Rule::RunJump { .. }
+            | Rule::Climb { .. }
+            | Rule::Drive { .. } => {}
         }
     }
     for screen in screens {
@@ -13607,6 +13759,14 @@ pub fn load_rest_with_motions(
         &scene_objects,
         &rules,
         &rule_meta,
+        &config.files.scene,
+        &mut errors,
+    );
+    validate_climbers_have_limbs(
+        &scene_objects,
+        &rules,
+        &rule_meta,
+        &config.files.models,
         &config.files.scene,
         &mut errors,
     );

@@ -12,11 +12,11 @@ export type PropertyFieldKind =
 const ROTATION_OPTIONS = [0, 90, 180, 270] as const;
 const SHAPE_OPTIONS = ["box", "cylinder", "capsule", "sphere"] as const;
 const FOLLOW_MOUSE_OPTIONS = ["x", "y", "xy"] as const;
-const CHECKBOX_PROPERTY_NAMES: readonly string[] = ["collides", "deck", "camera_follows", "flip_x", "repeat_x", "hold_left", "hold_right", "hold_jump", "road"];
+const CHECKBOX_PROPERTY_NAMES: readonly string[] = ["collides", "deck", "camera_follows", "flip_x", "repeat_x", "hold_left", "hold_right", "hold_jump", "road", "climb"];
 
 /**
  * Вид поля для значения свойства — «Редактор», требование 11: галочка — `collides`, `deck` («Рельеф», требование 46), `camera_follows`,
- * `flip_x` (Фаза 14, требование 20), `repeat_x` (Фаза 28, требование 22), `hold_left`, `hold_right` и `hold_jump` (Фаза 37, требование 25), `road` (Фаза 38, требование 34) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
+ * `flip_x` (Фаза 14, требование 20), `repeat_x` (Фаза 28, требование 22), `hold_left`, `hold_right` и `hold_jump` (Фаза 37, требование 25), `road` (Фаза 38, требование 34), `climb` (Фаза 63) и объявленные свойства автора вида `flag`; выпадающий список — `image` (картинки `files.images`),
  * `rotation` (0/90/180/270 в плоской сцене; в трёхмерной — любое число, текстовое поле, «Фаза 15», требование 29),
  * `shape` (`box`/`cylinder`/`capsule`/`sphere`), `follow_mouse` (`x`/`y`/`xy`); `color` — палитра; объявленное свойство
  * автора вида `text` — строковое поле без разбора JSON («Таблицы данных», требование 40); остальное —

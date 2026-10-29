@@ -5,6 +5,8 @@
 
     { "kind": "move", "for": { "has": ["position", "velocity"] } },
 
+    { "kind": "climb", "for": { "has": ["hero"] }, "ladders": { "has": ["tower"] } },
+
     { "kind": "check", "for": { "has": ["hero"] },
       "do": [["run", "keep_in_scene"]] }
   ]
