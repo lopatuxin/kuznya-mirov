@@ -1,3 +1,7 @@
 {
-  "rules": []
+  "rules": [
+    { "kind": "check", "for": { "has": ["spawner"] }, "do": [["run", "spawn_zombies"]] },
+    { "kind": "check", "for": { "has": ["zombie"] }, "do": [["run", "step_zombie"]] },
+    { "kind": "delete", "for": { "has": ["zombie"] }, "when": "outside_scene" }
+  ]
 }

@@ -15,7 +15,12 @@
     "scene": "scene.json",
     "rules": "rules.json",
     "screens": "screens.json",
+    "code": "code.lua",
     "fonts": {},
+    "images": {
+      "zombie_climb": { "path": "images/zombie_climb.png", "smooth": true, "frames": 130, "columns": 13, "frame_by": "zombie_frame" },
+      "zombie_walk": { "path": "images/zombie_walk.png", "smooth": true, "frames": 36, "columns": 6, "frame_by": "zombie_frame" }
+    },
     "models": {
       "ground": { "path": "models/ground.glb", "look": "picture" }
     }
