@@ -205,6 +205,8 @@ pub struct Model {
     /// Веса вершин каждой части по порядку частей; пусто у модели без скелета.
     pub skin: Vec<Vec<SkinVertex>>,
     pub look: Look,
+    /// Картина `picture` с ключом `shadow: true`: отбрасывает тень своим объёмом на всё, кроме таких же картин.
+    pub picture_shadow: bool,
     pub building: Building,
 }
 
@@ -268,13 +270,14 @@ impl Model {
             skeleton: None,
             skin: Vec::new(),
             look: Look::Lit,
+            picture_shadow: false,
             building: Default::default(),
         }
     }
 
-    /// Бросает ли модель тень: модель `picture` — нет, её тени нарисованы на картине.
+    /// Бросает ли модель тень: модель `picture` — только с `shadow: true`, иначе её тени нарисованы на картине.
     pub fn casts_shadow(&self) -> bool {
-        self.look == Look::Lit
+        self.look == Look::Lit || self.picture_shadow
     }
 
     /// Есть ли у модели часть `BLEND`: её рисуют отдельно от сплошных частей, по порядку от дальнего к ближнему.

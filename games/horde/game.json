@@ -20,8 +20,9 @@
     "models": {
       "ground_01": { "path": "models/ground_01.glb", "look": "picture" },
       "ground_02": { "path": "models/ground_02.glb", "look": "picture" },
-      "tower": { "path": "models/tower.glb", "look": "picture", "solid": true, "cutaway": "tower_cut" },
-      "tower_cut": { "path": "models/tower_cut.glb", "look": "picture" },
+      "ground_03": { "path": "models/ground_03.glb", "look": "picture" },
+      "tower": { "path": "models/tower.glb", "look": "picture", "shadow": true, "solid": true, "cutaway": "tower_cut" },
+      "tower_cut": { "path": "models/tower_cut.glb", "look": "picture", "shadow": true },
       "soil": { "path": "models/soil.glb", "look": "picture" },
       "hero": {
         "path": "models/hero.glb",

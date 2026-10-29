@@ -597,6 +597,7 @@ pub fn rebuild_skeleton(
             name: name.clone(),
             path: String::new(),
             look: Look::Lit,
+            shadow: None,
             solid: None,
             cutaway: None,
             idle: None,

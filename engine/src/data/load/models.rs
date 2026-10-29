@@ -29,6 +29,8 @@ pub struct ModelDecl {
     pub name: String,
     pub path: String,
     pub look: Look,
+    /// `shadow`: есть ли ключ и его значение; ключ бывает только у картины.
+    pub shadow: Option<bool>,
     /// `solid`: есть ли ключ и его значение.
     pub solid: Option<bool>,
     /// `cutaway`: имя модели среза.
@@ -95,7 +97,8 @@ fn parse_model_decl(
 ) -> Option<ModelDecl> {
     let obj = expect_object(value, file, path, errors)?;
     let known = [
-        "path", "look", "solid", "cutaway", "idle", "walk", "climb", "feet", "spine", "hands",
+        "path", "look", "shadow", "solid", "cutaway", "idle", "walk", "climb", "feet", "spine",
+        "hands",
     ];
     reject_unknown_keys(obj, &known, file, path, errors);
     if !obj.keys().all(|key| known.contains(&key.as_str())) {
@@ -120,7 +123,28 @@ fn parse_model_decl(
     };
     let spine = motion("spine", errors);
     let look = parse_look(obj.get("look"), file, &join(path, "look"), errors);
-    let solid = parse_solid(obj.get("solid"), file, &join(path, "solid"), errors);
+    let solid = parse_flag(
+        "solid",
+        obj.get("solid"),
+        file,
+        &join(path, "solid"),
+        errors,
+    );
+    if obj.contains_key("shadow") && look == Some(Look::Lit) {
+        errors.push(
+            file,
+            &join(path, "shadow"),
+            "shadow есть только у картины (look \"picture\"): живая модель отбрасывает тень всегда",
+        );
+        return None;
+    }
+    let shadow = parse_flag(
+        "shadow",
+        obj.get("shadow"),
+        file,
+        &join(path, "shadow"),
+        errors,
+    );
     let cutaway = match obj.get("cutaway") {
         None => Some(None),
         Some(value) => expect_string(value, file, &join(path, "cutaway"), errors).map(Some),
@@ -152,6 +176,7 @@ fn parse_model_decl(
         name: name.to_string(),
         path: model_path,
         look: look?,
+        shadow: shadow?,
         solid: solid?,
         cutaway: cutaway?,
         idle: idle?,
@@ -187,8 +212,9 @@ fn parse_look(
     }
 }
 
-/// «Трёхмерная сцена» → «Здания»: `solid` — `true` или `false`.
-fn parse_solid(
+/// Ключ-флаг описания модели `key` — `true` или `false`: «Здания» → `solid`, «Рисованный свет и картины» → `shadow`.
+fn parse_flag(
+    key: &str,
     value: Option<&Json>,
     file: &str,
     path: &str,
@@ -203,7 +229,7 @@ fn parse_solid(
             file,
             path,
             format!(
-                "solid должен быть true или false, получено {}",
+                "{key} должен быть true или false, получено {}",
                 kind_name(value)
             ),
         );
@@ -369,6 +395,7 @@ pub(super) fn load_models(
                 Ok(mut model) => {
                     attach_motion(decl, &mut model, &field, motions, errors);
                     model.look = decl.look;
+                    model.picture_shadow = decl.shadow == Some(true);
                     attach_building(decl, &mut model, &field, errors);
                     if imported.is_none() && !skip_media && !model.images.is_empty() {
                         errors.push_warning(

@@ -1099,7 +1099,7 @@ fn to_webgl2_glsl(
     for &(group, binding) in bindings {
         let kind = match (group, binding) {
             (0, 0 | 5) | (1, 0) => 0,
-            (0, 1 | 3 | 6..=8) | (1, 1 | 3 | 5 | 7) => 1,
+            (0, 1 | 3 | 6..=8 | 10 | 11) | (1, 1 | 3 | 5 | 7) => 1,
             _ => 2,
         };
         binding_map.insert(naga::ResourceBinding { group, binding }, slots[kind]);
@@ -1138,7 +1138,7 @@ fn to_webgl2_glsl(
 #[test]
 fn the_alpha_shaders_validate_and_translate_to_glsl_es_300() {
     let (module, info) = parse_and_validate(include_str!("../shaders/scene3d.wgsl"));
-    let shared = [(0, 0), (0, 3), (0, 4)];
+    let shared = [(0, 0), (0, 3), (0, 4), (0, 10), (0, 11)];
     let material: Vec<(u32, u32)> = (0..9).map(|binding| (1, binding)).collect();
     let all: Vec<(u32, u32)> = shared.iter().chain(&material).copied().collect();
     let base_map = [(1, 0), (1, 1), (1, 2)];
@@ -1195,6 +1195,49 @@ fn the_alpha_shaders_validate_and_translate_to_glsl_es_300() {
     assert!(
         !opaque.contains("discard"),
         "у сплошных частей отбрасывания нет"
+    );
+}
+
+/// «Нарисованные предметы»: картина ловит тень на себя. Глубина картин пишет только точки картины под тенью и сверяет
+/// их с картой теней сравнением; точка модели сравнивается и с картой теней, и с глубиной картин — в WebGL2 обе
+/// текстуры читаются только сравнением; так же и тени картин с `shadow: true`.
+#[test]
+fn the_picture_depth_shaders_compare_against_the_shadow_map_and_translate_to_glsl_es_300() {
+    let (module, info) = parse_and_validate(include_str!("../shaders/scene3d.wgsl"));
+    let shadow = [(0, 3), (0, 4)];
+    let masked: Vec<(u32, u32)> = shadow
+        .iter()
+        .copied()
+        .chain([(1, 0), (1, 1), (1, 2)])
+        .collect();
+    for (entry, bindings) in [
+        ("fs_picture_shadow", &shadow[..]),
+        ("fs_picture_shadow_mask", &masked[..]),
+    ] {
+        let glsl = to_webgl2_glsl(&module, &info, naga::ShaderStage::Fragment, entry, bindings);
+        assert!(
+            glsl.contains("sampler2DShadow"),
+            "{entry}: карта теней — выборка сравнением"
+        );
+        assert!(
+            glsl.contains("discard"),
+            "{entry}: точки картины не под тенью отбрасываются"
+        );
+    }
+    let shared = [(0, 0), (0, 3), (0, 4), (0, 10), (0, 11)];
+    let material: Vec<(u32, u32)> = (0..9).map(|binding| (1, binding)).collect();
+    let all: Vec<(u32, u32)> = shared.iter().chain(&material).copied().collect();
+    let model = to_webgl2_glsl(
+        &module,
+        &info,
+        naga::ShaderStage::Fragment,
+        "fs_model",
+        &all,
+    );
+    assert_eq!(
+        model.matches("uniform highp sampler2DShadow").count(),
+        3,
+        "карта теней, глубина картин и тени картин"
     );
 }
 

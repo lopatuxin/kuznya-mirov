@@ -1699,7 +1699,7 @@ fn to_webgl2_glsl(
     for &binding in bindings {
         let kind = match binding {
             0 | 5 => 0,
-            1 | 3 | 6..=8 => 1,
+            1 | 3 | 6..=8 | 10 | 11 => 1,
             _ => 2,
         };
         binding_map.insert(naga::ResourceBinding { group: 0, binding }, slots[kind]);
@@ -1738,7 +1738,7 @@ fn to_webgl2_glsl(
 #[test]
 fn the_three_dimensional_shaders_validate_and_translate_to_glsl_es_300() {
     let (module, info) = parse_and_validate(include_str!("../shaders/scene3d.wgsl"));
-    let all = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    let all = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
     for (stage, entry, bindings) in [
         (naga::ShaderStage::Vertex, "vs_shadow", &[0][..]),
         (naga::ShaderStage::Vertex, "vs_shadow_terrain", &[0][..]),

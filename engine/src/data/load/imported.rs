@@ -133,6 +133,7 @@ mod tests {
             name: name.to_string(),
             path: path.to_string(),
             look: Look::Lit,
+            shadow: None,
             solid: None,
             cutaway: None,
             idle: None,
