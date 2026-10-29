@@ -1,5 +1,6 @@
 pub mod building;
 pub mod camera;
+pub mod climb;
 pub mod clouds;
 pub mod code;
 pub mod fire;

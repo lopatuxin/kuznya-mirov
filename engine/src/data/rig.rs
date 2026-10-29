@@ -86,6 +86,7 @@ pub fn read_skeleton(
         clips,
         idle: None,
         walk: None,
+        climb: None,
         legs: None,
         spine: None,
         hands: None,

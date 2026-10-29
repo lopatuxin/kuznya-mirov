@@ -39,6 +39,11 @@ pub enum RuleFired {
         rule: String,
         objects: Vec<u32>,
     },
+    /// «Лазание»: как `Walk` — объекты, которых правило `climb` сдвинуло по лестнице этим шагом.
+    Climb {
+        rule: String,
+        objects: Vec<u32>,
+    },
     /// «Езда по дорогам», требование 23: как `Walk` — машины, которых правило `drive` сдвинуло.
     Drive {
         rule: String,
@@ -56,6 +61,7 @@ impl RuleFired {
             | RuleFired::Spawn { rule, .. }
             | RuleFired::Walk { rule, .. }
             | RuleFired::RunJump { rule, .. }
+            | RuleFired::Climb { rule, .. }
             | RuleFired::Drive { rule, .. } => rule,
         }
     }

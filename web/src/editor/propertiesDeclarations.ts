@@ -38,6 +38,8 @@ export const ENGINE_PROPERTY_NAMES: readonly string[] = [
   "camera_follows",
   "walk_to",
   "walk_speed",
+  "climb",
+  "climb_speed",
   "on_click",
   "parallax",
   "repeat_x",

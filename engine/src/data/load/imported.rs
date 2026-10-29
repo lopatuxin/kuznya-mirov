@@ -137,6 +137,7 @@ mod tests {
             cutaway: None,
             idle: None,
             walk: None,
+            climb: None,
             feet: None,
             spine: None,
             hands: None,

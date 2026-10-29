@@ -11,6 +11,7 @@ use block_compression::{BC7Settings, CompressionVariant};
 
 use crate::core::building;
 use crate::core::camera::Camera3d;
+use crate::core::climb;
 use crate::core::game::Game;
 use crate::core::math3::Mat4;
 use crate::core::model::{Image, Model, ModelImage, ModelTable, PackedFormat, PackedImage};
@@ -335,7 +336,8 @@ struct Posing {
 
 impl Posing {
     /// Дописывает в `out` матрицы суставов объекта `id`: поза его движения, а у модели со ступнями — ещё и ступни на
-    /// земле, настилах и ступеньках под ними.
+    /// земле, настилах и ступеньках под ними; у лезущего по лестнице кисти и ступни — на перекладинах, а пол под ступнями
+    /// не ищется: на краю настила он то наверху, то на земле, и таз прыгал бы.
     fn pose(
         &mut self,
         game: &Game,
@@ -346,7 +348,8 @@ impl Posing {
     ) {
         let world = &game.world;
         skeleton.pose(&world.motion(id).blend(skeleton), &mut self.scratch);
-        if skeleton.legs.is_some() {
+        let grip = climb::grip(world, id);
+        if skeleton.legs.is_some() && grip.is_none() {
             let scene = [f64::from(game.scene.width), f64::from(game.scene.height)];
             let inside = |point: [f64; 2]| {
                 (0.0..=scene[0]).contains(&point[0]) && (0.0..=scene[1]).contains(&point[1])
@@ -356,6 +359,9 @@ impl Posing {
                 |point| inside(point).then(|| surface::ground_at(world, id, point, stance.base)),
                 &mut self.scratch,
             );
+        }
+        if let Some(grip) = &grip {
+            skeleton.grip_ladder(stance, grip, &mut self.scratch);
         }
         skeleton.skin_matrices(&self.scratch, &mut self.matrices);
         out.extend(self.matrices.iter().flatten().flatten());

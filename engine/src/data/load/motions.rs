@@ -75,7 +75,7 @@ pub(super) fn parse_motions(
             errors.push(
                 file,
                 "",
-                "пустое имя: у движения должно быть имя, которым его назовёт idle, walk или animation",
+                "пустое имя: у движения должно быть имя, которым его назовёт idle, walk, climb или animation",
             );
             continue;
         }
@@ -561,6 +561,7 @@ fn warn_end_gaps(
         let repeats = decl.looped.unwrap_or_else(|| {
             model.idle.as_deref() == Some(decl.name.as_str())
                 || model.walk.as_deref() == Some(decl.name.as_str())
+                || model.climb.as_deref() == Some(decl.name.as_str())
         });
         if !repeats {
             continue;
@@ -600,6 +601,7 @@ pub fn rebuild_skeleton(
             cutaway: None,
             idle: None,
             walk: None,
+            climb: None,
             feet: None,
             spine: None,
             hands: None,
@@ -610,7 +612,7 @@ pub fn rebuild_skeleton(
     let mut rebuilt = skeleton.clone();
     rebuilt.clips.retain(|clip| clip.retouch.is_none());
     let kept = rebuilt.clips.len();
-    for slot in [&mut rebuilt.idle, &mut rebuilt.walk] {
+    for slot in [&mut rebuilt.idle, &mut rebuilt.walk, &mut rebuilt.climb] {
         *slot = slot.filter(|&clip| clip < kept);
     }
     if let Some(target) = declared.iter().find(|decl| decl.name == model) {
@@ -645,6 +647,7 @@ pub(super) fn warn_unused_motions(
         let by_model = models.iter().any(|model| {
             model.idle.as_deref() == Some(decl.name.as_str())
                 || model.walk.as_deref() == Some(decl.name.as_str())
+                || model.climb.as_deref() == Some(decl.name.as_str())
         });
         if by_model
             || named.contains(&decl.name)
@@ -658,7 +661,7 @@ pub(super) fn warn_unused_motions(
             &set.file,
             &decl.name,
             format!(
-                "движение \"{}\" нигде не названо ни в idle и walk модели, ни в animation объектов, ни в rules.json, ни в тексте кода",
+                "движение \"{}\" нигде не названо ни в idle, walk и climb модели, ни в animation объектов, ни в rules.json, ни в тексте кода",
                 decl.name
             ),
         );

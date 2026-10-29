@@ -178,21 +178,29 @@ def railing(part):
             beam(part, "wood", (ax, ay, z + height), (bx, by, z + height), 0.09)
 
 
-def ladder(part):
-    """Лестница от земли к проходу в перилах на стороне -Y."""
+LADDER_STEPS = 12  # промежутков между низом, перекладинами и верхом лестницы
+
+
+def ladder_line():
+    """Середина низа и верха лестницы в осях вышки."""
     x0 = 0.6 + 0.1 + LADDER_WIDTH / 2
     edge = -DECK / 2
-    top = (x0, edge - 0.05, DECK_TOP)
-    foot = (x0, edge - LADDER_RUN, 0.06)  # тетивы толщиной 0,1 не уходят под землю
+    return (x0, edge - LADDER_RUN, 0.06), (x0, edge - 0.05, DECK_TOP)  # тетивы толщиной 0,1 не уходят под землю
+
+
+def rung_middles():
+    foot, top = ladder_line()
+    return [tuple(f + (t - f) * k / LADDER_STEPS for f, t in zip(foot, top)) for k in range(1, LADDER_STEPS)]
+
+
+def ladder(part):
+    """Лестница от земли к проходу в перилах на стороне -Y."""
+    foot, top = ladder_line()
     for side in (-1, 1):
         dx = side * LADDER_WIDTH / 2
         beam(part, "wood", (foot[0] + dx, foot[1], foot[2]), (top[0] + dx, top[1], top[2] + 0.2), 0.1)
-    rungs = 12
-    for k in range(1, rungs):
-        t = k / rungs
-        y = foot[1] + (top[1] - foot[1]) * t
-        z = foot[2] + (top[2] - foot[2]) * t
-        beam(part, "wood", (x0 - LADDER_WIDTH / 2, y, z), (x0 + LADDER_WIDTH / 2, y, z), 0.07)
+    for x, y, z in rung_middles():
+        beam(part, "wood", (x - LADDER_WIDTH / 2, y, z), (x + LADDER_WIDTH / 2, y, z), 0.07)
 
 
 def wall_with_hole(part, axis, offset, along, hole, height, low_cut=None):
@@ -335,6 +343,41 @@ def inside_box(collection):
     return obj
 
 
+def rung_markers(collection):
+    """Перекладины для движка: пустые узлы `rung` в серединах перекладин, по ним герой лезет руками и ногами."""
+    turn = Matrix.Rotation(TURN, 3, "Z")
+    names = []
+    for index, middle in enumerate(rung_middles(), start=1):
+        obj = bpy.data.objects.new(f"rung_{index:02d}", None)
+        obj.location = turn @ Vector(middle)
+        obj.empty_display_size = 0.1
+        collection.objects.link(obj)
+        names.append(obj.name)
+    return names
+
+
+def grab_points():
+    """Поручни у верха лестницы: верх столбов перил по бокам прохода, на запястье ближе к лестнице и к лезущему."""
+    half = DECK / 2 - 0.08
+    wrist = RAIL_POST / 2 + 0.01
+    z = DECK_TOP + RAIL_HEIGHT - 0.06
+    gap = (0.6, 0.6 + LADDER_WIDTH + 0.2)
+    return [(gap[0] + wrist, -half - wrist, z), (gap[1] - wrist, -half - wrist, z)]
+
+
+def grab_markers(collection):
+    """Поручни для движка: пустые узлы `grab` на столбах у прохода, за них герой берётся, когда перекладины кончились."""
+    turn = Matrix.Rotation(TURN, 3, "Z")
+    names = []
+    for name, point in zip(("grab_left", "grab_right"), grab_points()):
+        obj = bpy.data.objects.new(name, None)
+        obj.location = turn @ Vector(point)
+        obj.empty_display_size = 0.1
+        collection.objects.link(obj)
+        names.append(obj.name)
+    return names
+
+
 def build():
     scene = bpy.context.scene
     for name in ("tower", "tower_cut"):
@@ -349,6 +392,8 @@ def build():
     scene.collection.children.link(cut)
     make_object("tower", build_part(False), whole)
     inside_box(whole)
+    rung_markers(whole)
+    grab_markers(whole)
     make_object("tower_cut", build_part(True), cut)
     return {"tower": len(bpy.data.objects["tower"].data.polygons),
             "tower_cut": len(bpy.data.objects["tower_cut"].data.polygons)}
@@ -588,9 +633,12 @@ def projected_copy(source, name, picture):
 
 
 def export_painted():
-    """Модели игры: tower.glb (с узлом inside_hut) и tower_cut.glb с картинами из раскрасок и силуэтов."""
+    """Модели игры: tower.glb (с узлом inside_hut, перекладинами rung и поручнями grab) и tower_cut.glb с картинами из раскрасок и
+    силуэтов."""
     made = []
-    for name, picture, extra in (("tower", "outside", ["inside_hut"]), ("tower_cut", "cut", [])):
+    rungs = [f"rung_{index:02d}" for index in range(1, LADDER_STEPS)]
+    extra_tower = ["inside_hut", *rungs, "grab_left", "grab_right"]
+    for name, picture, extra in (("tower", "outside", extra_tower), ("tower_cut", "cut", [])):
         obj = projected_copy(bpy.data.objects[name], name + "_game", picture_image(picture))
         made.append(obj)
         for other in bpy.context.scene.objects:

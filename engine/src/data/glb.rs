@@ -29,6 +29,16 @@ type Mat4 = [[f32; 4]; 4];
 /// Узлы файла с именем, начинающимся так, — коробки внутренности здания.
 const INSIDE_PREFIX: &str = "inside";
 
+/// Узлы файла с именем, начинающимся так, — середины перекладин лестницы; их сетки рисуются и твёрдые, как любые.
+const RUNG_PREFIX: &str = "rung";
+
+/// Узлы файла с именем, начинающимся так, — поручни у верха лестницы, за которые берутся кисти, когда перекладины
+/// кончились.
+const GRAB_PREFIX: &str = "grab";
+
+/// Наклон лестницы — отход верха от низа по горизонтали на единицу высоты, — меньше которого лестница считается отвесной.
+const MIN_LEAN: f32 = 1e-3;
+
 /// `mimeType` картинки, которую служба сжатия положила рядом с облегчённой моделью.
 const KTX2_MIME_TYPE: &str = "image/ktx2";
 
@@ -176,6 +186,8 @@ pub fn parse_model_images(
         image_of: HashMap::new(),
         parts: Vec::new(),
         insides: Vec::new(),
+        rungs: Vec::new(),
+        grabs: Vec::new(),
         load_image: image,
     };
     for node in scene.nodes() {
@@ -271,6 +283,10 @@ struct Builder<'a, F> {
     parts: Vec<(usize, Vec<FileVertex>, Vec<[u32; 3]>)>,
     /// Узлы `inside`: низ и верх коробки в осях самого узла и матрица узла в оси файла.
     insides: Vec<(Vec3, Vec3, Mat4)>,
+    /// Середины перекладин в осях файла.
+    rungs: Vec<Vec3>,
+    /// Поручни у верха лестницы в осях файла.
+    grabs: Vec<Vec3>,
     load_image: F,
 }
 
@@ -289,6 +305,18 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
         {
             self.add_inside(node, &matrix);
             return Ok(());
+        }
+        if node
+            .name()
+            .is_some_and(|name| name.starts_with(RUNG_PREFIX))
+        {
+            self.rungs.push(transform_point(&matrix, [0.0; 3]));
+        }
+        if node
+            .name()
+            .is_some_and(|name| name.starts_with(GRAB_PREFIX))
+        {
+            self.grabs.push(transform_point(&matrix, [0.0; 3]));
         }
         let holder = self.joint_of.get(&node.index()).copied().or(holder);
         if let Some(mesh) = node.mesh() {
@@ -580,6 +608,17 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
                 })
             })
             .collect();
+        let rungs = rungs_of(&self.rungs, shift)?;
+        if rungs.is_empty() && !self.grabs.is_empty() {
+            return Err(format!(
+                "узлы с именем на {GRAB_PREFIX} — поручни у верха лестницы, а перекладин rung у модели нет"
+            ));
+        }
+        let grabs = self
+            .grabs
+            .iter()
+            .map(|&point| in_model_axes(point, shift))
+            .collect();
         Ok(Model {
             name: name.to_string(),
             parts,
@@ -593,6 +632,8 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
             building: Building {
                 inside,
                 shift,
+                rungs,
+                grabs,
                 ..Building::default()
             },
         })
@@ -601,6 +642,43 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
 
 fn swap_yz(v: Vec3) -> Vec3 {
     [v[0], v[2], v[1]]
+}
+
+/// Точка осей файла в осях модели: оси сцены, начало сдвинуто на `shift`.
+fn in_model_axes(point: Vec3, shift: Vec3) -> Vec3 {
+    let point = swap_yz(point);
+    std::array::from_fn(|axis| point[axis] - shift[axis])
+}
+
+/// «Трёхмерная сцена» → «Здания»: перекладины лестницы в осях модели (оси сцены, начало сдвинуто на `shift`), по высоте
+/// снизу вверх. Узлов либо нет, либо не меньше двух, и лестница наклонна: верх лежит не над низом.
+fn rungs_of(points: &[Vec3], shift: Vec3) -> Result<Vec<Vec3>, String> {
+    if points.len() == 1 {
+        return Err(format!(
+            "один узел с именем на {RUNG_PREFIX}: у лестницы перекладин не меньше двух"
+        ));
+    }
+    let mut rungs: Vec<Vec3> = points
+        .iter()
+        .map(|&point| in_model_axes(point, shift))
+        .collect();
+    rungs.sort_by(|a, b| a[2].total_cmp(&b[2]));
+    let (Some(low), Some(high)) = (rungs.first(), rungs.last()) else {
+        return Ok(rungs);
+    };
+    let rise = high[2] - low[2];
+    if rise <= 0.0 {
+        return Err(format!(
+            "узлы с именем на {RUNG_PREFIX} лежат на одной высоте: лестница идёт снизу вверх"
+        ));
+    }
+    if (high[0] - low[0]).hypot(high[1] - low[1]) < rise * MIN_LEAN {
+        return Err(
+            "у лестницы нет наклона: верх лежит над низом, а лезть можно только с той стороны, от которой лестница отклоняется"
+                .to_string(),
+        );
+    }
+    Ok(rungs)
 }
 
 /// Матрица из точки осей модели (оси сцены, начало сдвинуто на `shift`) в ту же точку осей узла (оси сцены) для узла с
@@ -1836,5 +1914,97 @@ mod tests {
         };
         let error = parse(&rigged_file(&cubic)).expect_err("для двух ключей нужно шесть значений");
         assert!(error.contains("не сходятся"), "{error}");
+    }
+
+    /// Файл из ящика `[0,0,0]`–`[2,4,2]` (оси файла) и узлов `nodes`: середина основания ящика — в сдвиге `[1, 1, 0]` осей сцены.
+    fn with_nodes(nodes: &str) -> Result<Model, String> {
+        parse(&glb_file(
+            &[cube([0.0; 3], [2.0, 4.0, 2.0], None)],
+            nodes,
+            "",
+            "",
+        ))
+    }
+
+    #[test]
+    fn nodes_named_rung_are_the_rungs_of_the_model_ordered_from_the_bottom_up_in_scene_axes() {
+        // Узлы лежат не по порядку, один — внутри сдвинутого родителя; ось файла y (вверх) — высота сцены, z — её y.
+        let model = with_nodes(
+            r#"[{"mesh":0,"children":[1,2,4]},
+                {"name":"rung_c","translation":[1,3,1]},
+                {"name":"holder","translation":[0,1,0],"children":[3]},
+                {"name":"rung_a","translation":[1,0.5,1.5]},
+                {"name":"rung_b","translation":[1,1,0.5]}]"#,
+        )
+        .expect("модель читается");
+        let rungs = &model.building.rungs;
+        assert_eq!(rungs.len(), 3, "{rungs:?}");
+        let expected = [[0.0, -0.5, 1.0], [0.0, 0.5, 1.5], [0.0, 0.0, 3.0]];
+        for (rung, wanted) in rungs.iter().zip(expected) {
+            assert!(
+                (0..3).all(|axis| (f64::from(rung[axis]) - wanted[axis]).abs() < 1e-5),
+                "{rungs:?} ≠ {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn nodes_named_grab_are_the_grabs_at_the_top_of_the_ladder_and_need_rungs() {
+        let model = with_nodes(
+            r#"[{"mesh":0,"children":[1,2,3]},
+                {"name":"rung_1","translation":[1,0,1]},
+                {"name":"rung_2","translation":[1,1,0.5]},
+                {"name":"grab_left","translation":[0.5,1.5,0.4]}]"#,
+        )
+        .expect("модель читается");
+        let grabs = &model.building.grabs;
+        assert_eq!(grabs.len(), 1, "{grabs:?}");
+        let wanted = [-0.5, -0.6, 1.5];
+        assert!(
+            (0..3).all(|axis| (f64::from(grabs[0][axis]) - wanted[axis]).abs() < 1e-5),
+            "{grabs:?} ≠ {wanted:?}"
+        );
+        let lone =
+            with_nodes(r#"[{"mesh":0,"children":[1]},{"name":"grab","translation":[1,1,1]}]"#)
+                .expect_err("поручни без перекладин — ошибка");
+        assert!(lone.contains("grab") && lone.contains("rung"), "{lone}");
+    }
+
+    #[test]
+    fn a_model_without_rung_nodes_has_no_rungs_and_a_rung_mesh_is_drawn_like_any_part() {
+        let bare = with_nodes(r#"[{"mesh":0}]"#).expect("модель читается");
+        assert!(bare.building.rungs.is_empty());
+        let drawn = with_nodes(
+            r#"[{"mesh":0,"children":[1,2]},
+                {"name":"rung_1","mesh":0},
+                {"name":"rung_2","mesh":0,"translation":[0,1,1]}]"#,
+        )
+        .expect("модель читается");
+        assert_eq!(drawn.building.rungs.len(), 2);
+        let vertices =
+            |model: &Model| -> usize { model.parts.iter().map(|part| part.vertices.len()).sum() };
+        assert_eq!(
+            vertices(&drawn),
+            3 * vertices(&bare),
+            "сетки узлов rung рисуются"
+        );
+    }
+
+    #[test]
+    fn one_rung_rungs_on_one_height_and_a_ladder_without_lean_are_errors() {
+        let one =
+            with_nodes(r#"[{"mesh":0,"children":[1]},{"name":"rung","translation":[1,1,1]}]"#)
+                .expect_err("один узел rung — ошибка");
+        assert!(one.contains("один узел") && one.contains("rung"), "{one}");
+        let flat = with_nodes(
+            r#"[{"mesh":0,"children":[1,2]},{"name":"rung_1","translation":[1,1,0]},{"name":"rung_2","translation":[0,1,2]}]"#,
+        )
+        .expect_err("перекладины на одной высоте — ошибка");
+        assert!(flat.contains("на одной высоте"), "{flat}");
+        let upright = with_nodes(
+            r#"[{"mesh":0,"children":[1,2]},{"name":"rung_1","translation":[1,1,1]},{"name":"rung_2","translation":[1,2,1]}]"#,
+        )
+        .expect_err("лестница без наклона — ошибка");
+        assert!(upright.contains("нет наклона"), "{upright}");
     }
 }

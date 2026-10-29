@@ -27,6 +27,7 @@
         "path": "models/hero.glb",
         "idle": "Стойка",
         "walk": "бег_героя",
+        "climb": "лазание_героя",
         "feet": ["mixamorig:LeftFoot", "mixamorig:RightFoot"],
         "spine": "mixamorig:Spine",
         "hands": ["mixamorig:LeftHand", "mixamorig:RightHand"]

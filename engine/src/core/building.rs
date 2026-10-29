@@ -32,7 +32,7 @@ const APPROACH_BISECTIONS: u32 = 8;
 
 /// Перевод между осями сцены и осями модели объекта: середина места, поворот вида (`rotation` с `facing`, как
 /// рисует модель), увеличение и основание.
-struct Frame {
+pub(super) struct Frame {
     center: Vec2,
     sin: f64,
     cos: f64,
@@ -41,7 +41,7 @@ struct Frame {
 }
 
 impl Frame {
-    fn of(world: &World, id: u32) -> Option<Frame> {
+    pub(super) fn of(world: &World, id: u32) -> Option<Frame> {
         let model = world.model_of(id)?;
         let position = world.vec2(id, property::POSITION)?;
         let size = world.vec2(id, property::SIZE)?;
@@ -53,6 +53,16 @@ impl Frame {
             scale: model.scale(world.number_like(id, property::HEIGHT)),
             base: world.base_z(id),
         })
+    }
+
+    /// Точка осей модели в осях сцены.
+    pub(super) fn scene_point(&self, local: [f64; 3]) -> [f64; 3] {
+        let (x, y) = (local[0] * self.scale, local[1] * self.scale);
+        [
+            self.center[0] + self.cos * x - self.sin * y,
+            self.center[1] + self.sin * x + self.cos * y,
+            self.base + local[2] * self.scale,
+        ]
     }
 
     fn local_point(&self, point: Vec2) -> [f64; 2] {

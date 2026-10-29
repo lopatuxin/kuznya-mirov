@@ -19,8 +19,11 @@ const HUT_HALF: f64 = 1.6;
 const DECK_TOP: f64 = 4.5;
 /// Передний край нар у задней стены комнаты.
 const BUNK_FRONT: f64 = 0.675;
-/// Где встать у низа лестницы, чтобы подняться, — те же числа, что в `code.lua` Орды.
+/// Места у низа и у верха лестницы вышки: где герой стоит перед подъёмом и после схода (сняты со скрипта объёма).
 const LADDER_FOOT: [f64; 2] = [13.81, 19.25];
+const LADDER_TOP: [f64; 2] = [11.90, 17.34];
+/// Подход, подъём на 4,5 клетки со скоростью 1,2 и сход наверху с запасом.
+const CLIMB_SECONDS: f64 = 6.0;
 const STEPS_PER_SECOND: usize = 60;
 const WINDOW: [f32; 2] = [1024.0, 768.0];
 
@@ -238,26 +241,77 @@ fn the_hero_does_not_run_between_the_legs_of_the_tower() {
     }
 }
 
-#[test]
-fn e_at_the_ladder_foot_lifts_the_hero_onto_the_deck_and_back_down() {
-    let mut game = load();
-    put_hero(&mut game, LADDER_FOOT, 0.0);
-    tap(&mut game, "KeyE");
+fn run_for(game: &mut Game, seconds: f64) {
+    for _ in 0..(seconds * STEPS_PER_SECOND as f64) as usize {
+        game.step(StepInput::empty());
+    }
+}
+
+fn climbing(game: &Game) -> bool {
+    game.world.flag(hero(game), property::CLIMBING)
+}
+
+fn assert_stands_at(game: &Game, place: [f64; 2], z: f64) {
+    let at = feet(game);
     assert!(
-        (z_of_hero(&game) - DECK_TOP).abs() < 1e-6,
-        "наверху на {}",
-        z_of_hero(&game)
+        (at[0] - place[0]).hypot(at[1] - place[1]) < 0.3,
+        "герой на {at:?}, а не у {place:?}"
     );
-    tap(&mut game, "KeyE");
-    assert!(z_of_hero(&game).abs() < 1e-6, "не спустился на землю");
+    assert!(
+        (z_of_hero(game) - z).abs() < 1e-6,
+        "на высоте {}",
+        z_of_hero(game)
+    );
+    assert!(!climbing(game), "герой всё ещё лезет");
 }
 
 #[test]
-fn held_e_lifts_the_hero_once() {
+fn e_at_the_ladder_foot_climbs_the_hero_onto_the_deck_and_back_down() {
     let mut game = load();
     put_hero(&mut game, LADDER_FOOT, 0.0);
-    hold(&mut game, &["KeyE"], 1.0, |_| {});
-    assert!((z_of_hero(&game) - DECK_TOP).abs() < 1e-6);
+    tap(&mut game, "KeyE");
+    run_for(&mut game, 1.5);
+    assert!(climbing(&game), "герой не полез");
+    let midway = z_of_hero(&game);
+    assert!(
+        midway > 0.5 && midway < DECK_TOP - 0.5,
+        "через 1,5 с на высоте {midway}"
+    );
+    run_for(&mut game, CLIMB_SECONDS);
+    assert_stands_at(&game, LADDER_TOP, DECK_TOP);
+
+    tap(&mut game, "KeyE");
+    run_for(&mut game, CLIMB_SECONDS);
+    assert_stands_at(&game, LADDER_FOOT, 0.0);
+}
+
+#[test]
+fn held_e_climbs_the_hero_once() {
+    let mut game = load();
+    put_hero(&mut game, LADDER_FOOT, 0.0);
+    hold(&mut game, &["KeyE"], 2.0 * CLIMB_SECONDS, |_| {});
+    assert_stands_at(&game, LADDER_TOP, DECK_TOP);
+}
+
+#[test]
+fn e_away_from_the_ladder_does_nothing() {
+    let mut game = load();
+    let before = feet(&game);
+    tap(&mut game, "KeyE");
+    run_for(&mut game, 1.0);
+    assert!(!climbing(&game));
+    assert!(!game.world.flag(hero(&game), property::CLIMB));
+    assert_eq!(feet(&game), before);
+    assert!(z_of_hero(&game).abs() < 1e-6);
+}
+
+#[test]
+fn run_keys_do_not_pull_the_climbing_hero_off_the_ladder() {
+    let mut game = load();
+    put_hero(&mut game, LADDER_FOOT, 0.0);
+    hold(&mut game, &["KeyE", "KeyD"], 2.0, |_| {});
+    run_for(&mut game, CLIMB_SECONDS);
+    assert_stands_at(&game, LADDER_TOP, DECK_TOP);
 }
 
 /// На балконе герой обходит будку кругом: не входит в её стены, не сходит с настила, и пока он снаружи,
