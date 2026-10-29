@@ -1,6 +1,7 @@
 // «Трёхмерная сцена», «Свет и материалы»: рельеф с покрытиями и мокрым берегом, вода, фигуры, плитки и
-// плоские объекты на земле и карта теней от солнца. Проходы: тени (`vs_shadow` — фигуры,
-// `vs_shadow_terrain` — рельеф; только глубина от солнца), затем рельеф (`vs_terrain`, `fs_terrain`),
+// плоские объекты на земле и карта теней от солнца. Проходы: тени фигур и моделей (`vs_shadow` и точки входа
+// моделей ниже; только глубина от солнца), глубина картин от солнца (`fs_picture_shadow`, только модели
+// `picture`), тени картин с `shadow: true` в свою карту, тени рельефа (`vs_shadow_terrain`) в карту теней, затем рельеф (`vs_terrain`, `fs_terrain`),
 // фигуры (`vs_shape`, `fs_shape`), модели (`vs_model`; части с прозрачностью `OPAQUE` — `fs_model`, `MASK` —
 // `fs_model_mask`, `BLEND` и куски дорог — `fs_model_blend`; в тенях — `vs_shadow_model` и для `MASK`
 // `vs_shadow_model_mask` с `fs_shadow_model_mask`), перекрёстки дорог (изогнутые копии частей моделей:
@@ -146,6 +147,12 @@ var material_data: texture_2d_array<f32>;
 var cover_masks: texture_2d_array<f32>;
 @group(0) @binding(9)
 var material_sampler: sampler;
+// Глубина от солнца ближайших картин (`picture`), лежащих под тенью фигур и освещённых моделей (не рельефа).
+@group(0) @binding(10)
+var picture_depth: texture_depth_2d;
+// Глубина от солнца картин с `shadow: true`.
+@group(0) @binding(11)
+var picture_casters: texture_depth_2d;
 
 // --- Цвет и кривая яркости ------------------------------------------------------------------
 
@@ -191,7 +198,16 @@ fn to_camera(world: vec3<f32>) -> vec3<f32> {
 
 // Видит ли точку солнце: 1 — да, 0 — тень. Сравнение всегда выполняется, а вне карты его результат
 // отбрасывает `select`: выборка не терпит ветвления.
+// Картина между тенью и точкой ловит тень на себя (`picture_depth` — ближайшая к солнцу картина под тенью): тень
+// героя на настиле вышки не проходит сквозь настил на землю. Картина ближе к солнцу, чем тень, ничего не меняет —
+// тень героя под балконом ложится как прежде.
 fn shadow_lit(world: vec3<f32>, normal: vec3<f32>) -> f32 {
+    return shadow_seen(world, normal, 1.0);
+}
+
+// То же, а `pictures` — ложатся ли на точку тени картин с `shadow: true` (1) или нет (0): на такую картину не
+// ложатся, её тени уже нарисованы.
+fn shadow_seen(world: vec3<f32>, normal: vec3<f32>, pictures: f32) -> f32 {
     let facing = clamp(dot(normal, globals.sun.xyz), 0.15, 1.0);
     let tan_angle = sqrt(1.0 - facing * facing) / facing;
     let bias_cells = 0.04 + 0.025 * tan_angle;
@@ -199,9 +215,13 @@ fn shadow_lit(world: vec3<f32>, normal: vec3<f32>) -> f32 {
     let clip = globals.light_view_proj * vec4<f32>(moved, 1.0);
     let ndc = clip.xyz / clip.w;
     let uv = vec2<f32>(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5);
-    let lit = textureSampleCompare(shadow_map, shadow_sampler, uv, ndc.z - bias_cells * globals.shade.y);
+    let depth = ndc.z - bias_cells * globals.shade.y;
+    let lit = textureSampleCompare(shadow_map, shadow_sampler, uv, depth);
+    let caught = 1.0 - textureSampleCompare(picture_depth, shadow_sampler, uv, depth);
+    let painted = textureSampleCompare(picture_casters, shadow_sampler, uv, depth);
+    let seen = min(1.0 - (1.0 - lit) * (1.0 - caught), mix(1.0, painted, pictures));
     let inside = uv.x >= 0.0 && uv.x <= 1.0 && uv.y >= 0.0 && uv.y <= 1.0 && ndc.z <= 1.0;
-    return select(1.0, lit, inside);
+    return select(1.0, seen, inside);
 }
 
 // Блик солнца на поверхности с шероховатостью `roughness` и отражением `f0` при взгляде по нормали:
@@ -918,7 +938,7 @@ struct ModelMaterial {
     // x — металл, y — шероховатость, z — `scale` мелкого рельефа, w — `strength` затенения.
     factors: vec4<f32>,
     // x — `alphaMode`: 0 — `OPAQUE`, 1 — `MASK`, 2 — `BLEND`; y — `alphaCutoff`; z — единица у модели с `look`
-    // `picture`.
+    // `picture`; w — единица у картины с `shadow: true`.
     alpha: vec4<f32>,
 };
 
@@ -1074,12 +1094,15 @@ struct ShadowMaskOutput {
     @builtin(position) clip_position: vec4<f32>,
     @location(0) uv: vec2<f32>,
     @location(1) vertex_alpha: f32,
+    // Точка в осях солнца: доли карты теней и глубина.
+    @location(2) light: vec3<f32>,
 };
 
 // Тень части `MASK`: той же формы, но точки с прозрачностью меньше порога в неё не попадают.
 fn shadow_mask_point(vertex: ModelVertex, instance: ModelInstance) -> ShadowMaskOutput {
     var out: ShadowMaskOutput;
     out.clip_position = globals.light_view_proj * vec4<f32>(model_world(vertex, instance), 1.0);
+    out.light = out.clip_position.xyz / out.clip_position.w;
     if (instance.fade < 0.0) {
         out.clip_position = vec4<f32>(0.0, 0.0, 2.0, 1.0);
     }
@@ -1107,6 +1130,31 @@ fn vs_shadow_model_mask_skinned(
 fn fs_shadow_model_mask(in: ShadowMaskOutput) {
     let base_sample = textureSample(model_base_texture, model_base_sampler, in.uv);
     if (model_material.base.a * in.vertex_alpha * base_sample.a < model_material.alpha.y) {
+        discard;
+    }
+}
+
+// Лежит ли точка картины дальше от солнца, чем тень над ней: только такие точки идут в глубину картин, и в ней
+// остаётся ближайшая картина под тенью — та, что тень ловит.
+fn below_caster(light: vec3<f32>) -> bool {
+    let uv = vec2<f32>(light.x * 0.5 + 0.5, 0.5 - light.y * 0.5);
+    return textureSampleCompare(shadow_map, shadow_sampler, uv, light.z) < 0.5;
+}
+
+// Глубина картин: сплошная часть картины. Вершины — `vs_shadow_model_mask`.
+@fragment
+fn fs_picture_shadow(in: ShadowMaskOutput) {
+    if (!below_caster(in.light)) {
+        discard;
+    }
+}
+
+// Глубина картин: часть `MASK`, с вырезом как у её тени.
+@fragment
+fn fs_picture_shadow_mask(in: ShadowMaskOutput) {
+    let base_sample = textureSample(model_base_texture, model_base_sampler, in.uv);
+    let below = below_caster(in.light);
+    if (model_material.base.a * in.vertex_alpha * base_sample.a < model_material.alpha.y || !below) {
         discard;
     }
 }
@@ -1237,7 +1285,7 @@ fn model_point(in: ModelOutput) -> vec4<f32> {
     let tilt = vec3<f32>(raw_tilt * model_material.factors.z, sqrt(max(0.0, 1.0 - dot(raw_tilt, raw_tilt))));
     let normal = normalize(tangent * tilt.x + bitangent * tilt.y + n * tilt.z);
 
-    let visible = shadow_lit(in.world, normal);
+    let visible = shadow_seen(in.world, normal, 1.0 - model_material.alpha.w);
     let alpha = model_material.base.a * in.color.a * base_sample.a;
     if (model_material.alpha.z > 0.5) {
         return vec4<f32>(picture_color(albedo, visible), alpha);

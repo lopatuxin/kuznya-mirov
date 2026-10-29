@@ -105,8 +105,33 @@ struct PartGpu {
 struct ModelGpu {
     parts: Vec<PartGpu>,
     bones: Option<BonesGpu>,
-    /// Бросает ли модель тень: модель `picture` — нет, её тени нарисованы на картине.
+    /// Бросает ли модель тень: модель `picture` — только с `shadow: true`, иначе её тени нарисованы на картине.
     casts_shadow: bool,
+    /// Картина `picture`: в карту теней живых моделей не идёт.
+    picture: bool,
+}
+
+/// Какие модели рисует проход: все или те, что идут в одну из карт глубины от солнца.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Shadowing {
+    All,
+    /// Тени живых моделей.
+    Lit,
+    /// Тени картин с `shadow: true`.
+    PictureCasters,
+    /// Глубина всех картин, что ловят тени.
+    Pictures,
+}
+
+impl ModelGpu {
+    fn goes_to(&self, which: Shadowing) -> bool {
+        match which {
+            Shadowing::All => true,
+            Shadowing::Lit => !self.picture,
+            Shadowing::PictureCasters => self.picture && self.casts_shadow,
+            Shadowing::Pictures => self.picture,
+        }
+    }
 }
 
 /// Матрицы суставов объектов модели со скелетом: строка текстуры данных — один объект, четыре точки на сустав.
@@ -492,6 +517,7 @@ impl<'a> ModelBuilder<'a> {
                 .as_ref()
                 .map(|skeleton| BonesGpu::new(skeleton.joints.len())),
             casts_shadow: model.casts_shadow(),
+            picture: model.look == Look::Picture,
         }
     }
 
@@ -561,7 +587,7 @@ impl<'a> ModelBuilder<'a> {
                     },
                     material.alpha_cutoff,
                     if look == Look::Picture { 1.0 } else { 0.0 },
-                    0.0,
+                    if model.picture_shadow { 1.0 } else { 0.0 },
                 ]),
                 usage: wgpu::BufferUsages::UNIFORM,
             });
@@ -750,14 +776,14 @@ impl ModelsGpu {
 
     /// Рисует части моделей, годные `wanted`, из группы `group`: каждую одной командой на все объекты
     /// модели; `materials` — привязывать ли материалы частей (в проходе теней сплошных их нет);
-    /// `casters_only` — только модели, что бросают тень.
+    /// `which` — какие модели рисовать.
     fn draw_group(
         &self,
         pass: &mut wgpu::RenderPass<'_>,
         group: Group,
         wanted: impl Fn(AlphaMode) -> bool,
         materials: bool,
-        casters_only: bool,
+        which: Shadowing,
     ) {
         let spans = match group {
             Group::Objects => &self.objects,
@@ -765,7 +791,7 @@ impl ModelsGpu {
             Group::Pieces => &self.pieces,
         };
         for (model, &(first, count)) in self.models.iter().zip(spans) {
-            if count == 0 || model.bones.is_some() || (casters_only && !model.casts_shadow) {
+            if count == 0 || model.bones.is_some() || !model.goes_to(which) {
                 continue;
             }
             for part in model.parts.iter().filter(|part| wanted(part.alpha)) {
@@ -786,48 +812,85 @@ impl ModelsGpu {
     /// Рисует части объектов с прозрачностью `alpha` (`OPAQUE` или `MASK`); `materials` — привязывать ли
     /// материалы частей.
     pub fn draw(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode, materials: bool) {
-        self.draw_group(pass, Group::Objects, |mode| mode == alpha, materials, false);
+        self.draw_group(
+            pass,
+            Group::Objects,
+            |mode| mode == alpha,
+            materials,
+            Shadowing::All,
+        );
     }
 
     /// «Здания», срез: части объектов с растворением, прозрачности `alpha` (`OPAQUE` или `MASK`).
     pub fn draw_dissolving(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
-        self.draw_group(pass, Group::Dissolving, |mode| mode == alpha, true, false);
-    }
-
-    /// То же для прохода теней: модели, что теней не бросают, не рисуются.
-    pub fn draw_casters(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode, materials: bool) {
-        self.draw_group(pass, Group::Objects, |mode| mode == alpha, materials, true);
         self.draw_group(
             pass,
             Group::Dissolving,
             |mode| mode == alpha,
-            materials,
             true,
+            Shadowing::All,
         );
+    }
+
+    /// То же для прохода теней живых моделей: картины не рисуются.
+    pub fn draw_casters(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode, materials: bool) {
+        self.draw_shadowing(pass, alpha, materials, Shadowing::Lit);
+    }
+
+    /// То же для теней картин: только картины с `shadow: true`.
+    pub fn draw_picture_casters(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        alpha: AlphaMode,
+        materials: bool,
+    ) {
+        self.draw_shadowing(pass, alpha, materials, Shadowing::PictureCasters);
+    }
+
+    /// То же для глубины картин, что ловят тени: все модели `picture`.
+    pub fn draw_pictures(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        alpha: AlphaMode,
+        materials: bool,
+    ) {
+        self.draw_shadowing(pass, alpha, materials, Shadowing::Pictures);
+    }
+
+    fn draw_shadowing(
+        &self,
+        pass: &mut wgpu::RenderPass<'_>,
+        alpha: AlphaMode,
+        materials: bool,
+        which: Shadowing,
+    ) {
+        for group in [Group::Objects, Group::Dissolving] {
+            self.draw_group(pass, group, |mode| mode == alpha, materials, which);
+        }
     }
 
     /// Рисует части моделей со скелетом с прозрачностью `alpha` (`OPAQUE` или `MASK`): каждую одной командой на все
     /// объекты модели, с матрицами суставов из текстуры данных и с материалами частей.
     pub fn draw_skinned(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
-        self.draw_skinned_of(pass, alpha, false);
+        self.draw_skinned_of(pass, alpha, Shadowing::All);
     }
 
-    /// То же для прохода теней: модели, что теней не бросают, не рисуются.
+    /// То же для прохода теней живых моделей: картины не рисуются.
     pub fn draw_skinned_casters(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
-        self.draw_skinned_of(pass, alpha, true);
+        self.draw_skinned_of(pass, alpha, Shadowing::Lit);
     }
 
-    fn draw_skinned_of(
-        &self,
-        pass: &mut wgpu::RenderPass<'_>,
-        alpha: AlphaMode,
-        casters_only: bool,
-    ) {
+    /// То же для теней картин: только картины с `shadow: true`.
+    pub fn draw_skinned_picture_casters(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode) {
+        self.draw_skinned_of(pass, alpha, Shadowing::PictureCasters);
+    }
+
+    fn draw_skinned_of(&self, pass: &mut wgpu::RenderPass<'_>, alpha: AlphaMode, which: Shadowing) {
         for (model, &(first, count)) in self.models.iter().zip(&self.objects) {
             let Some(bones) = &model.bones else {
                 continue;
             };
-            if casters_only && !model.casts_shadow {
+            if !model.goes_to(which) {
                 continue;
             }
             let Some((_, group)) = &bones.texture else {
@@ -922,7 +985,7 @@ impl ModelsGpu {
 
     /// Рисует куски дорог: части любой прозрачности, с материалами.
     pub fn draw_road_pieces(&self, pass: &mut wgpu::RenderPass<'_>) {
-        self.draw_group(pass, Group::Pieces, |_| true, true, false);
+        self.draw_group(pass, Group::Pieces, |_| true, true, Shadowing::All);
     }
 
     /// Рисует изогнутые копии частей перекрёстков с материалами этих частей.

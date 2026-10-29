@@ -629,6 +629,7 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
             skeleton,
             skin,
             look: Look::Lit,
+            picture_shadow: false,
             building: Building {
                 inside,
                 shift,

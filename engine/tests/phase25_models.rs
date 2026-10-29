@@ -758,7 +758,7 @@ fn to_webgl2_glsl(
     for &(group, binding) in bindings {
         let kind = match (group, binding) {
             (0, 0 | 5) | (1, 0) => 0,
-            (0, 1 | 3 | 6..=8) | (1, 1 | 3 | 5 | 7) => 1,
+            (0, 1 | 3 | 6..=8 | 10 | 11) | (1, 1 | 3 | 5 | 7) => 1,
             _ => 2,
         };
         binding_map.insert(naga::ResourceBinding { group, binding }, slots[kind]);
@@ -797,7 +797,7 @@ fn to_webgl2_glsl(
 #[test]
 fn the_model_shaders_validate_and_translate_to_glsl_es_300() {
     let (module, info) = parse_and_validate(include_str!("../shaders/scene3d.wgsl"));
-    let shared = [(0, 0), (0, 3), (0, 4)];
+    let shared = [(0, 0), (0, 3), (0, 4), (0, 10), (0, 11)];
     let material: Vec<(u32, u32)> = (0..9).map(|binding| (1, binding)).collect();
     let all: Vec<(u32, u32)> = shared.iter().chain(&material).copied().collect();
     for (stage, entry, bindings) in [
@@ -830,7 +830,7 @@ fn the_model_shaders_validate_and_translate_to_glsl_es_300() {
 fn the_cut_out_shaders_lift_alpha_by_the_picture_level_and_translate_to_glsl_es_300() {
     let (module, info) = parse_and_validate(include_str!("../shaders/scene3d.wgsl"));
     let material: Vec<(u32, u32)> = (0..9).map(|binding| (1, binding)).collect();
-    let shared = [(0, 0), (0, 3), (0, 4)];
+    let shared = [(0, 0), (0, 3), (0, 4), (0, 10), (0, 11)];
     let all: Vec<(u32, u32)> = shared.iter().chain(&material).copied().collect();
     for (entry, bindings) in [("fs_model_mask", &all), ("fs_model_blend", &all)] {
         let glsl = to_webgl2_glsl(&module, &info, naga::ShaderStage::Fragment, entry, bindings);

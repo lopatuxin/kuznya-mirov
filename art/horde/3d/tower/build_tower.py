@@ -48,11 +48,10 @@ ROOT = r"C:\projects\kuznya-mirov"
 PAINT = os.path.join(ROOT, "art", "horde", "3d", "tower", "paint")
 MODELS = os.path.join(ROOT, "games", "horde", "models")
 # Где вышка стоит в Орде (середина в клетках сцены) и плиты нарисованной земли под ней: картина и левый
-# край плиты; картина плиты — 32 клетки вширь и 36 вглубь (art/horde/3d/painted/build_ground.py).
+# край плиты; картина плиты — 18 клеток вширь и 36 вглубь (art/horde/3d/painted/build_ground.py).
 TOWER_AT = (9.0, 16.0)
-GROUND_PLATES = [(os.path.join(ROOT, "art", "horde", "painted", "ground_01.png"), 0.0),
-                 (os.path.join(ROOT, "art", "horde", "painted", "ground_02.png"), 21.2823)]
-GROUND_PICTURE = (32.0, 36.0)
+GROUND_PLATES = [(os.path.join(ROOT, "art", "horde", "painted", f"ground_0{k + 1}.png"), 18.0 * k) for k in range(3)]
+GROUND_PICTURE = (18.0, 36.0)
 # Заплатка земли под вышкой — плоскость на земле, полуширина по X и полуглубина по Y в клетках; дорисованная
 # земля видна целиком ближе SOIL_FADE[0] клетки от опор и низа лестницы и растворяется к SOIL_FADE[1].
 SOIL_HALF = (6.0, 5.5)
@@ -289,10 +288,24 @@ def furniture(part):
     box(part, "wood_dark", (-half + 0.45, -half + 0.45, z + 0.8), (0.45, 0.45, 0.4))
 
 
+CRATES = [  # середина поперёк полосы, середина вдоль, сторона, высота, низ над настилом
+    (2.195, -0.5, 0.95, 0.85, 0.0),
+    (3.02, -0.45, 0.6, 0.6, 0.0),
+    (2.15, -0.55, 0.55, 0.45, 0.85),
+]
+
+
 def deck_props(part):
-    """Бочка в дальнем углу балкона: обход будки кругом остаётся шире героя."""
+    """Бочка в дальнем углу балкона и ящики поперёк обеих дальних полос, у задних стен будки: за ними будка
+    спрятала бы героя от камеры целиком, поэтому туда он не проходит. Ящики на полосе +Y — те же, что на +X,
+    с переставленными осями; щели между ящиками, стеной и перилами уже героя."""
     half = DECK / 2
     box(part, "metal", (half - 0.4, half - 0.4, DECK_TOP + 0.45), (0.55, 0.55, 0.9))
+    for across, along, side, height, low in CRATES:
+        kind = "wood" if side > 0.7 else "wood_dark"
+        z = DECK_TOP + low + height / 2
+        box(part, kind, (across, along, z), (side, side, height))
+        box(part, kind, (along, across, z), (side, side, height))
 
 
 def build_part(cut):

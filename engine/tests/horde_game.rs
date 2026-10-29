@@ -19,6 +19,8 @@ const HUT_HALF: f64 = 1.6;
 const DECK_TOP: f64 = 4.5;
 /// Передний край нар у задней стены комнаты.
 const BUNK_FRONT: f64 = 0.675;
+/// Ближний к камере край ящиков поперёк дальних полос балкона.
+const CRATES_NEAR: f64 = -0.975;
 /// Места у низа и у верха лестницы вышки: где герой стоит перед подъёмом и после схода (сняты со скрипта объёма).
 const LADDER_FOOT: [f64; 2] = [13.81, 19.25];
 const LADDER_TOP: [f64; 2] = [11.90, 17.34];
@@ -314,41 +316,46 @@ fn run_keys_do_not_pull_the_climbing_hero_off_the_ladder() {
     assert_stands_at(&game, LADDER_TOP, DECK_TOP);
 }
 
-/// На балконе герой обходит будку кругом: не входит в её стены, не сходит с настила, и пока он снаружи,
-/// будка видна целиком — срез не включается и у её углов.
+/// На балконе герой бегает у будки, но за её задние стены не заходит: поперёк обеих дальних полос балкона стоят
+/// ящики, иначе будка спрятала бы его от камеры целиком. Пока он снаружи, будка видна целиком — срез не включается.
 #[test]
-fn on_the_deck_the_hero_runs_round_the_hut_and_it_stays_whole() {
-    let mut game = load();
-    let tower = named(&game, "tower");
-    put_hero(&mut game, scene([-2.4, -2.4]), DECK_TOP);
-    // Вдоль осей будки: +y — влево-вверх, +x — вправо-вверх, -y — вправо-вниз, -x — влево-вниз.
-    for codes in [
-        ["ArrowLeft", "ArrowUp"],
-        ["ArrowRight", "ArrowUp"],
-        ["ArrowRight", "ArrowDown"],
-        ["ArrowLeft", "ArrowDown"],
+fn on_the_deck_crates_stop_the_hero_before_the_hut_hides_him() {
+    // Вдоль осей будки: +y — влево-вверх, +x — вправо-вверх. Полоса +y лежит за левой задней стеной, +x — за правой.
+    for (start, runs, blocked) in [
+        (
+            [-2.4, -2.4],
+            &[["ArrowLeft", "ArrowUp"], ["ArrowRight", "ArrowUp"]][..],
+            0,
+        ),
+        ([2.4, -2.4], &[["ArrowLeft", "ArrowUp"]][..], 1),
     ] {
-        hold(&mut game, &codes, 1.2, |game| {
-            let at = local(feet(game));
-            assert!(
-                (z_of_hero(game) - DECK_TOP).abs() < 1e-6,
-                "сошёл с настила в {at:?} на {}",
-                z_of_hero(game)
-            );
-            let in_hut = at[0].abs() < HUT_HALF && at[1].abs() < HUT_HALF;
-            assert!(!in_hut, "в стене будки в {at:?}");
-            assert_eq!(
-                dissolve_share(&game.world, tower),
-                0.0,
-                "срез включился снаружи в {at:?}"
-            );
-        });
+        let mut game = load();
+        let tower = named(&game, "tower");
+        put_hero(&mut game, scene(start), DECK_TOP);
+        for codes in runs {
+            hold(&mut game, codes, 1.5, |game| {
+                let at = local(feet(game));
+                assert!(
+                    (z_of_hero(game) - DECK_TOP).abs() < 1e-6,
+                    "сошёл с настила в {at:?} на {}",
+                    z_of_hero(game)
+                );
+                let in_hut = at[0].abs() < HUT_HALF && at[1].abs() < HUT_HALF;
+                assert!(!in_hut, "в стене будки в {at:?}");
+                assert!(at[blocked] < CRATES_NEAR, "прошёл за ящики в {at:?}");
+                assert_eq!(
+                    dissolve_share(&game.world, tower),
+                    0.0,
+                    "срез включился снаружи в {at:?}"
+                );
+            });
+        }
+        let stop = local(feet(&game));
+        assert!(
+            stop[blocked] > CRATES_NEAR - 0.6,
+            "не дошёл до ящиков: {stop:?}"
+        );
     }
-    let back = local(feet(&game));
-    assert!(
-        back[0] < -1.9 && back[1] < -1.9,
-        "не обошёл будку кругом: {back:?}"
-    );
 }
 
 /// В комнате герой упирается в нары и не проходит сквозь них.
@@ -393,7 +400,7 @@ fn through_the_door_the_hero_enters_the_room_and_the_hut_is_cut_away() {
 #[test]
 fn with_the_hero_on_the_deck_the_window_does_not_open_past_the_far_edge() {
     let mut game = load();
-    put_hero(&mut game, scene([0.0, 2.6]), DECK_TOP);
+    put_hero(&mut game, scene([-1.4, 2.6]), DECK_TOP);
     game.step(StepInput::empty());
     let camera = game.camera_3d(WINDOW).expect("камера трёхмерная");
     assert!(

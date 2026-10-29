@@ -14,8 +14,9 @@
         "KeyE":        { "press": [["climb", true]], "release": [["climb", false]] }
       } },
 
-    { "model": "ground_01", "position": [0, 0, 0], "size": [21.2823, 36] },
-    { "model": "ground_02", "position": [21.2823, 0, 0], "size": [32, 36] },
+    { "model": "ground_01", "position": [0, 0, 0], "size": [18, 36] },
+    { "model": "ground_02", "position": [18, 0, 0], "size": [18, 36] },
+    { "model": "ground_03", "position": [36, 0, 0], "size": [18, 36] },
 
     { "model": "soil", "position": [8, 15, 0.01], "size": [2, 2] },
     { "name": "tower", "model": "tower", "position": [8, 15, 0], "size": [2, 2], "tower": true }

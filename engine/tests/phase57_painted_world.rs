@@ -295,6 +295,57 @@ fn a_picture_model_casts_no_shadow_and_does_not_widen_the_shadow_map_but_is_stil
     );
 }
 
+/// Слово хозяина 2026-10-29: нарисованная вышка отбрасывает тень. Картина с `shadow: true` бросает тень своим объёмом
+/// и поднимает карту теней, как освещённая модель.
+#[test]
+fn a_picture_with_shadow_true_casts_a_shadow_and_widens_the_shadow_map() {
+    let game = with_models(&house_and_birch(r#","look":"picture","shadow":true"#), BOTH)
+        .expect("картина с тенью");
+    let house = model_of(&game, "house");
+    assert_eq!(house.look, Look::Picture);
+    assert!(house.picture_shadow);
+    assert!(house.casts_shadow());
+    assert!(model_draws(&game).top > 6.9, "дом поднимает карту теней");
+
+    let game = with_models(
+        &house_and_birch(r#","look":"picture","shadow":false"#),
+        BOTH,
+    )
+    .expect("картина без тени");
+    assert!(!model_of(&game, "house").casts_shadow());
+}
+
+#[test]
+fn shadow_on_a_lit_model_or_not_a_flag_is_an_error_with_its_own_place() {
+    for extra in [r#","shadow":true"#, r#","look":"lit","shadow":false"#] {
+        expect_error(
+            with_models(&house_and_birch(extra), BOTH),
+            "house → shadow",
+            "только у картины",
+        );
+    }
+    for value in ["1", "\"да\"", "null"] {
+        let models = house_and_birch(&format!(r#","look":"picture","shadow":{value}"#));
+        expect_error(
+            with_models(&models, BOTH),
+            "house → shadow",
+            "shadow должен быть true или false",
+        );
+    }
+    let Err(errors) = with_models(&house_and_birch(r#","shadow":1"#), BOTH) else {
+        panic!("игра должна была не загрузиться");
+    };
+    let at_shadow: Vec<&String> = errors
+        .iter()
+        .filter(|e| e.contains("house → shadow"))
+        .collect();
+    assert_eq!(
+        at_shadow.len(),
+        1,
+        "одна ошибка на ключ у живой модели: {errors:#?}"
+    );
+}
+
 // -------------------------------------------------------------------------------------------
 // Ортографическая камера игры
 // -------------------------------------------------------------------------------------------

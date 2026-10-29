@@ -104,6 +104,7 @@ pub(super) fn strips(name: &str, arms: &[(f64, f64, f64)]) -> Model {
         skeleton: None,
         skin: Vec::new(),
         look: Look::Lit,
+        picture_shadow: false,
         building: Default::default(),
     }
 }
@@ -253,6 +254,7 @@ pub(super) fn ribbon(name: &str, width: f64, length: f64, across: usize, along: 
         skeleton: None,
         skin: Vec::new(),
         look: Look::Lit,
+        picture_shadow: false,
         building: Default::default(),
     }
 }

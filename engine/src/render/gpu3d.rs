@@ -91,12 +91,19 @@ struct MeshBuffers {
 
 pub struct Scene3d {
     shadow_view: wgpu::TextureView,
+    /// Глубина от солнца одних картин (`picture`): тени их не бросают, но ловят тени, падающие сквозь них.
+    picture_shadow_view: wgpu::TextureView,
+    /// Глубина от солнца картин с `shadow: true`: их тени ложатся на всё, кроме таких же картин.
+    picture_caster_view: wgpu::TextureView,
     depth_view: wgpu::TextureView,
     depth_size: [u32; 2],
     globals_buffer: wgpu::Buffer,
     shadow_bind_group: wgpu::BindGroup,
+    picture_shadow_bind_group: wgpu::BindGroup,
     main_bind_group: wgpu::BindGroup,
     shadow_pipeline: wgpu::RenderPipeline,
+    picture_shadow_pipeline: wgpu::RenderPipeline,
+    picture_mask_shadow_pipeline: wgpu::RenderPipeline,
     terrain_shadow_pipeline: wgpu::RenderPipeline,
     terrain_pipeline: wgpu::RenderPipeline,
     water_pipeline: wgpu::RenderPipeline,
@@ -412,6 +419,34 @@ fn depth_texture_view(
         .create_view(&wgpu::TextureViewDescriptor::default())
 }
 
+/// Проход одной глубины от солнца в `view`: `clear` — очищенной до дальней, иначе поверх записанной.
+fn depth_pass<'e>(
+    encoder: &'e mut wgpu::CommandEncoder,
+    view: &wgpu::TextureView,
+    label: &str,
+    clear: bool,
+) -> wgpu::RenderPass<'e> {
+    encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some(label),
+        color_attachments: &[],
+        depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+            view,
+            depth_ops: Some(wgpu::Operations {
+                load: if clear {
+                    wgpu::LoadOp::Clear(1.0)
+                } else {
+                    wgpu::LoadOp::Load
+                },
+                store: wgpu::StoreOp::Store,
+            }),
+            stencil_ops: None,
+        }),
+        timestamp_writes: None,
+        occlusion_query_set: None,
+        multiview_mask: None,
+    })
+}
+
 fn make_mesh_buffers(device: &wgpu::Device, shape: Shape) -> MeshBuffers {
     let mesh = shapes::unit_mesh(shape);
     let floats: Vec<f32> = mesh
@@ -587,6 +622,10 @@ impl Scene3d {
         });
 
         let shadow_view = depth_texture_view(device, [SHADOW_MAP_SIZE; 2], "shadow_map", true);
+        let picture_shadow_view =
+            depth_texture_view(device, [SHADOW_MAP_SIZE; 2], "picture_shadow_map", true);
+        let picture_caster_view =
+            depth_texture_view(device, [SHADOW_MAP_SIZE; 2], "picture_caster_map", true);
         let depth_view = depth_texture_view(device, surface_size, "scene_depth", false);
         let shadow_sampler = device.create_sampler(&wgpu::SamplerDescriptor {
             label: Some("shadow_sampler"),
@@ -622,6 +661,34 @@ impl Scene3d {
             label: Some("shadow_layout"),
             entries: &[globals_entry(wgpu::ShaderStages::VERTEX)],
         });
+        let shadow_map_entry = || {
+            layout_entry(
+                3,
+                wgpu::ShaderStages::FRAGMENT,
+                wgpu::BindingType::Texture {
+                    sample_type: wgpu::TextureSampleType::Depth,
+                    view_dimension: wgpu::TextureViewDimension::D2,
+                    multisampled: false,
+                },
+            )
+        };
+        let shadow_sampler_entry = || {
+            layout_entry(
+                4,
+                wgpu::ShaderStages::FRAGMENT,
+                wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
+            )
+        };
+        // Глубина картин сверяет каждую точку картины с картой теней: та в этом проходе уже текстура.
+        let picture_shadow_layout =
+            device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+                label: Some("picture_shadow_layout"),
+                entries: &[
+                    globals_entry(wgpu::ShaderStages::VERTEX),
+                    shadow_map_entry(),
+                    shadow_sampler_entry(),
+                ],
+            });
         let main_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: Some("scene3d_layout"),
             entries: &[
@@ -640,20 +707,8 @@ impl Scene3d {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 ),
-                layout_entry(
-                    3,
-                    wgpu::ShaderStages::FRAGMENT,
-                    wgpu::BindingType::Texture {
-                        sample_type: wgpu::TextureSampleType::Depth,
-                        view_dimension: wgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                ),
-                layout_entry(
-                    4,
-                    wgpu::ShaderStages::FRAGMENT,
-                    wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Comparison),
-                ),
+                shadow_map_entry(),
+                shadow_sampler_entry(),
                 layout_entry(
                     5,
                     wgpu::ShaderStages::FRAGMENT,
@@ -671,6 +726,24 @@ impl Scene3d {
                     wgpu::ShaderStages::FRAGMENT,
                     wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
                 ),
+                layout_entry(
+                    10,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
+                layout_entry(
+                    11,
+                    wgpu::ShaderStages::FRAGMENT,
+                    wgpu::BindingType::Texture {
+                        sample_type: wgpu::TextureSampleType::Depth,
+                        view_dimension: wgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                ),
             ],
         });
 
@@ -681,6 +754,24 @@ impl Scene3d {
                 binding: 0,
                 resource: globals_buffer.as_entire_binding(),
             }],
+        });
+        let picture_shadow_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("picture_shadow_bind_group"),
+            layout: &picture_shadow_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: globals_buffer.as_entire_binding(),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 3,
+                    resource: wgpu::BindingResource::TextureView(&shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 4,
+                    resource: wgpu::BindingResource::Sampler(&shadow_sampler),
+                },
+            ],
         });
         let main_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("scene3d_bind_group"),
@@ -725,6 +816,14 @@ impl Scene3d {
                 wgpu::BindGroupEntry {
                     binding: 9,
                     resource: wgpu::BindingResource::Sampler(&materials.sampler),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 10,
+                    resource: wgpu::BindingResource::TextureView(&picture_shadow_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 11,
+                    resource: wgpu::BindingResource::TextureView(&picture_caster_view),
                 },
             ],
         });
@@ -808,6 +907,18 @@ impl Scene3d {
                 bind_group_layouts: &[Some(&shadow_layout), Some(models.material_layout())],
                 immediate_size: 0,
             });
+        let picture_shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("picture_shadow_pipeline_layout"),
+                bind_group_layouts: &[Some(&picture_shadow_layout)],
+                immediate_size: 0,
+            });
+        let picture_mask_shadow_pipeline_layout =
+            device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+                label: Some("picture_mask_shadow_pipeline_layout"),
+                bind_group_layouts: &[Some(&picture_shadow_layout), Some(models.material_layout())],
+                immediate_size: 0,
+            });
         let terrain_buffers = [wgpu::VertexBufferLayout {
             array_stride: TERRAIN_STRIDE,
             step_mode: wgpu::VertexStepMode::Vertex,
@@ -888,6 +999,39 @@ impl Scene3d {
                 multiview_mask: None,
                 cache: None,
             });
+        let picture_shadow = |label: &str, layout: &wgpu::PipelineLayout, fragment: &str| {
+            device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+                label: Some(label),
+                layout: Some(layout),
+                vertex: wgpu::VertexState {
+                    module: &shader,
+                    entry_point: Some("vs_shadow_model_mask"),
+                    buffers: &model_buffers,
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                },
+                fragment: Some(wgpu::FragmentState {
+                    module: &shader,
+                    entry_point: Some(fragment),
+                    targets: &[],
+                    compilation_options: wgpu::PipelineCompilationOptions::default(),
+                }),
+                primitive: wgpu::PrimitiveState::default(),
+                depth_stencil: Some(depth_state(true, wgpu::CompareFunction::Less)),
+                multisample: wgpu::MultisampleState::default(),
+                multiview_mask: None,
+                cache: None,
+            })
+        };
+        let picture_shadow_pipeline = picture_shadow(
+            "picture_shadow_pipeline",
+            &picture_shadow_pipeline_layout,
+            "fs_picture_shadow",
+        );
+        let picture_mask_shadow_pipeline = picture_shadow(
+            "picture_mask_shadow_pipeline",
+            &picture_mask_shadow_pipeline_layout,
+            "fs_picture_shadow_mask",
+        );
         let skinned_shadow = |label: &str, vertex_entry: &str, fragment: Option<&str>| {
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some(label),
@@ -1158,12 +1302,17 @@ impl Scene3d {
         let ground_capacity = 8192;
         Scene3d {
             shadow_view,
+            picture_shadow_view,
+            picture_caster_view,
             depth_view,
             depth_size: surface_size,
             globals_buffer,
             shadow_bind_group,
+            picture_shadow_bind_group,
             main_bind_group,
             shadow_pipeline,
+            picture_shadow_pipeline,
+            picture_mask_shadow_pipeline,
             terrain_shadow_pipeline,
             terrain_pipeline,
             water_pipeline,
@@ -1314,7 +1463,7 @@ impl Scene3d {
         }
     }
 
-    /// Проход теней (фигуры, модели и рельеф) и основной проход: рельеф, фигуры, сплошные части
+    /// Проход теней фигур и моделей, глубина картин, тени картин, тени рельефа и основной проход: рельеф, фигуры, сплошные части
     /// моделей, куски дорог с перекрёстками, затем плитки и плоские объекты — они лежат на поверхностях, которые уже
     /// записали глубину, — затем вода и в конце части `BLEND` от дальней к ближней. Цвет очищается фоном сцены;
     /// следующий за ними проход интерфейса берёт цвет как есть.
@@ -1326,21 +1475,7 @@ impl Scene3d {
         models: &ModelsGpu,
     ) {
         {
-            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("shadow"),
-                color_attachments: &[],
-                depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
-                    view: &self.shadow_view,
-                    depth_ops: Some(wgpu::Operations {
-                        load: wgpu::LoadOp::Clear(1.0),
-                        store: wgpu::StoreOp::Store,
-                    }),
-                    stencil_ops: None,
-                }),
-                timestamp_writes: None,
-                occlusion_query_set: None,
-                multiview_mask: None,
-            });
+            let mut pass = depth_pass(encoder, &self.shadow_view, "shadow", true);
             pass.set_pipeline(&self.shadow_pipeline);
             pass.set_bind_group(0, &self.shadow_bind_group, &[]);
             self.draw_shapes(&mut pass);
@@ -1352,11 +1487,35 @@ impl Scene3d {
             models.draw_skinned_casters(&mut pass, AlphaMode::Opaque);
             pass.set_pipeline(&self.skinned_mask_shadow_pipeline);
             models.draw_skinned_casters(&mut pass, AlphaMode::Mask);
-            if let Some(terrain) = &self.terrain {
-                pass.set_pipeline(&self.terrain_shadow_pipeline);
-                pass.set_vertex_buffer(0, terrain.buffer.slice(..));
-                pass.draw(0..terrain.land, 0..1);
-            }
+        }
+        // Глубина картин сверяется с тенями фигур и моделей до рельефа: картина в тени холма тень холма не ловит,
+        // иначе земля за ней светлела бы посреди тени.
+        {
+            let mut pass = depth_pass(encoder, &self.picture_shadow_view, "picture_shadow", true);
+            pass.set_bind_group(0, &self.picture_shadow_bind_group, &[]);
+            pass.set_pipeline(&self.picture_shadow_pipeline);
+            models.draw_pictures(&mut pass, AlphaMode::Opaque, false);
+            pass.set_pipeline(&self.picture_mask_shadow_pipeline);
+            models.draw_pictures(&mut pass, AlphaMode::Mask, true);
+        }
+        {
+            let mut pass = depth_pass(encoder, &self.picture_caster_view, "picture_caster", true);
+            pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+            pass.set_pipeline(&self.model_shadow_pipeline);
+            models.draw_picture_casters(&mut pass, AlphaMode::Opaque, false);
+            pass.set_pipeline(&self.model_mask_shadow_pipeline);
+            models.draw_picture_casters(&mut pass, AlphaMode::Mask, true);
+            pass.set_pipeline(&self.skinned_shadow_pipeline);
+            models.draw_skinned_picture_casters(&mut pass, AlphaMode::Opaque);
+            pass.set_pipeline(&self.skinned_mask_shadow_pipeline);
+            models.draw_skinned_picture_casters(&mut pass, AlphaMode::Mask);
+        }
+        if let Some(terrain) = &self.terrain {
+            let mut pass = depth_pass(encoder, &self.shadow_view, "terrain_shadow", false);
+            pass.set_bind_group(0, &self.shadow_bind_group, &[]);
+            pass.set_pipeline(&self.terrain_shadow_pipeline);
+            pass.set_vertex_buffer(0, terrain.buffer.slice(..));
+            pass.draw(0..terrain.land, 0..1);
         }
 
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
