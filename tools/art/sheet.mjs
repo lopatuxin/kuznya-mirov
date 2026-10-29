@@ -12,6 +12,10 @@
 // сверху цвет, снизу маска прозрачности; петля без скачка находится сама или задаётся --range.
 // `--reverse` пишет рядом `<выход>-reverse.mp4` — те же кадры задом наперёд: движок играет его, когда
 // курсор уходит с панели с видео. Оба файла сжимаются с ключевым кадром не реже раза в полсекунды.
+// Персонаж, которого нейросеть рисует в самой сцене игры (зомби лезет из дыры по её стенкам), режется
+// в лист с `--plate <картинка>`: фон — эта картинка без персонажа, и прозрачно всё, что с ней совпадает.
+// То, что в сцене закрывает персонажа (ближний край дыры), уходит вместе с фоном, и в игре на той же
+// картинке оно само оказывается перед ним.
 // Зависимости ставятся один раз: `npm install` в `tools/art/`.
 
 import { copyFileSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -24,7 +28,7 @@ import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 
 const VIDEO_EXTENSIONS = new Set([".mp4", ".webm", ".mov"]);
-const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png|.mp4> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--keep-color] [--fade-ends P] [--repeat-x P] [--reverse]";
+const USAGE = "node tools/art/sheet.mjs <вход.mp4|.png> <выход.png|.mp4> [--frames N] [--height H] [--columns C] [--range A-B] [--key green|magenta] [--keep-color] [--plate <фон.png>] [--fade-ends P] [--repeat-x P] [--reverse]";
 const MARGIN = 4;
 // С `--reverse` ключевой кадр в видео не реже чем через столько секунд: переход на середину ролика тогда быстрый.
 export const REVERSE_KEYFRAME_SECONDS = 0.5;
@@ -52,6 +56,22 @@ const GREEN_CLEAR = 0.7;
 const EDGE_REACH = 4;
 // Точка, видная хотя бы наполовину: полупрозрачная точка, у которой таких нет в `EDGE_REACH`, — тень на фоне.
 const HALF_ALPHA = 128;
+// С `--plate` — сумма отличий трёх каналов кадра от фона, сглаженная квадратом со стороной `2 × PLATE_BLUR + 1`:
+// до первого порога точка — фон, от второго — сплошной персонаж. Рябь сжатия на земле в видео syntx даёт до ~15,
+// зомби на земле — от ~60.
+const PLATE_BLUR = 2;
+const PLATE_CLEAR = 25;
+const PLATE_SOLID = 55;
+// Видимое пятно меньше стольких точек — рябь сжатия на камешках, а не персонаж; прозрачная дырка меньше этого
+// внутри персонажа — тёмные волосы на тёмном дне ямы, которые совпали с фоном.
+const PLATE_MIN_SPOT = 200;
+const PLATE_MAX_HOLE = 400;
+// Видимое пятно дальше стольких точек от прямоугольника самого большого — веточка или камешек, которые
+// видеомодель чуть сдвинула вдали от персонажа; ближе — его часть, которую отрезал край ямы (кисть, ступня).
+const PLATE_REACH = 40;
+// Щели в контуре персонажа уже стольких точек с каждой стороны заливаются: прядь тёмных волос над тёмным дном
+// ямы совпадает с фоном и выедает в контуре узкий залив, который не замкнут и дыркой не считается.
+const PLATE_CLOSE = 3;
 
 function positiveInt(name, text) {
   if (text === undefined) return undefined;
@@ -307,8 +327,151 @@ export async function removeBackground(file, key) {
   return { rgba, width: info.width, height: info.height };
 }
 
-async function keyFrame(frame, key, keepColor) {
+/**
+ * Сдвиг цвета кадра против фона по каждому каналу — медиана разностей по всем точкам: видеомодель
+ * чуть перекрашивает сцену целиком, а персонаж занимает малую её часть. Если персонаж займёт больше
+ * половины кадра, медианой станет он, и маска вывернется: такой крупный план с `--plate` не режется.
+ */
+function plateBias(rgb, plate) {
+  return [0, 1, 2].map((channel) => {
+    const histogram = new Array(511).fill(0);
+    for (let i = channel; i < rgb.length; i += 3) histogram[rgb[i] - plate[i] + 255]++;
+    return histogramMedian(histogram) - 255;
+  });
+}
+
+/** Пятна точек `mask`, связанных по сторонам: точки каждого пятна и касается ли оно края кадра. */
+function spots(mask, width, height) {
+  const seen = new Uint8Array(mask.length);
+  const found = [];
+  for (let first = 0; first < mask.length; first++) {
+    if (!mask[first] || seen[first]) continue;
+    const points = [first];
+    let border = false;
+    seen[first] = 1;
+    for (let k = 0; k < points.length; k++) {
+      const p = points[k];
+      const x = p % width;
+      const y = (p - x) / width;
+      if (x === 0 || y === 0 || x === width - 1 || y === height - 1) border = true;
+      for (const next of [x > 0 ? p - 1 : -1, x < width - 1 ? p + 1 : -1, y > 0 ? p - width : -1, y < height - 1 ? p + width : -1]) {
+        if (next < 0 || !mask[next] || seen[next]) continue;
+        seen[next] = 1;
+        points.push(next);
+      }
+    }
+    found.push({ points, border });
+  }
+  return found;
+}
+
+/** Прямоугольник точек пятна, расширенный на `margin` во все стороны. */
+function spotBox(points, width, margin) {
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
+  for (const p of points) {
+    const x = p % width;
+    const y = (p - x) / width;
+    left = Math.min(left, x);
+    right = Math.max(right, x);
+    top = Math.min(top, y);
+    bottom = Math.max(bottom, y);
+  }
+  return { left: left - margin, top: top - margin, right: right + margin, bottom: bottom + margin };
+}
+
+/** Наибольшее (`grow`) или наименьшее значение `mask` в квадрате со стороной `2 × radius + 1` вокруг каждой точки. */
+function spread(mask, width, height, radius, grow) {
+  const pick = grow ? Math.max : Math.min;
+  const rows = new Uint8Array(mask.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let value = mask[y * width + x];
+      for (let dx = Math.max(0, x - radius); dx <= Math.min(width - 1, x + radius); dx++) value = pick(value, mask[y * width + dx]);
+      rows[y * width + x] = value;
+    }
+  }
+  const out = new Uint8Array(mask.length);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let value = rows[y * width + x];
+      for (let dy = Math.max(0, y - radius); dy <= Math.min(height - 1, y + radius); dy++) value = pick(value, rows[dy * width + x]);
+      out[y * width + x] = value;
+    }
+  }
+  return out;
+}
+
+/**
+ * Точки RGB кадра — в RGBA без фона `plate` (RGB того же размера). Прозрачность — по сумме отличий от
+ * фона после сдвига цвета, по прямой между `PLATE_CLEAR` и `PLATE_SOLID`; берётся меньшее из отличия
+ * точки и сглаженного: сглаженное гасит рябь сжатия, а своё не даёт каймы из фона по краю персонажа.
+ * Мелкие видимые пятна и пятна вдали от самого большого (персонажа) снимаются, узкие щели в контуре и
+ * мелкие дырки внутри персонажа заливаются.
+ * Из цвета вычитается тот же сдвиг: персонаж и его полупрозрачный край ложатся на картинку фона в игре
+ * её же тоном, а не тоном перекрашенного видео.
+ */
+export function keyPlate(rgb, plate, width, height) {
+  const bias = plateBias(rgb, plate);
+  const difference = new Float32Array(width * height);
+  for (let p = 0, i = 0; p < difference.length; p++, i += 3) {
+    difference[p] = Math.abs(rgb[i] - plate[i] - bias[0]) + Math.abs(rgb[i + 1] - plate[i + 1] - bias[1]) + Math.abs(rgb[i + 2] - plate[i + 2] - bias[2]);
+  }
+  const rgba = Buffer.alloc(width * height * 4);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let sum = 0;
+      let count = 0;
+      for (let dy = Math.max(0, y - PLATE_BLUR); dy <= Math.min(height - 1, y + PLATE_BLUR); dy++) {
+        for (let dx = Math.max(0, x - PLATE_BLUR); dx <= Math.min(width - 1, x + PLATE_BLUR); dx++) {
+          sum += difference[dy * width + dx];
+          count++;
+        }
+      }
+      const p = y * width + x;
+      const level = Math.min(difference[p], sum / count);
+      for (let channel = 0; channel < 3; channel++) rgba[p * 4 + channel] = Math.min(255, Math.max(0, rgb[p * 3 + channel] - bias[channel]));
+      rgba[p * 4 + 3] = Math.round(255 * Math.min(1, Math.max(0, (level - PLATE_CLEAR) / (PLATE_SOLID - PLATE_CLEAR))));
+    }
+  }
+  const visible = (p) => rgba[p * 4 + 3] >= VISIBLE_ALPHA;
+  const shown = Uint8Array.from({ length: width * height }, (_, p) => (visible(p) ? 1 : 0));
+  const found = spots(shown, width, height);
+  const largest = found.reduce((best, spot) => (spot.points.length > (best?.points.length ?? 0) ? spot : best), undefined);
+  const reach = largest && spotBox(largest.points, width, PLATE_REACH);
+  for (const spot of found) {
+    const box = spotBox(spot.points, width, 0);
+    const near = box.right >= reach.left && box.left <= reach.right && box.bottom >= reach.top && box.top <= reach.bottom;
+    if (spot.points.length >= PLATE_MIN_SPOT && near) continue;
+    for (const p of spot.points) {
+      rgba[p * 4 + 3] = 0;
+      shown[p] = 0;
+    }
+  }
+  const closed = spread(spread(shown, width, height, PLATE_CLOSE, true), width, height, PLATE_CLOSE, false);
+  for (let p = 0; p < closed.length; p++) if (closed[p] && !shown[p]) rgba[p * 4 + 3] = 255;
+  const hidden = Uint8Array.from({ length: width * height }, (_, p) => (visible(p) ? 0 : 1));
+  for (const hole of spots(hidden, width, height)) {
+    if (!hole.border && hole.points.length < PLATE_MAX_HOLE) for (const p of hole.points) rgba[p * 4 + 3] = 255;
+  }
+  return rgba;
+}
+
+async function readPlate(file) {
+  const { data, info } = await sharp(file).removeAlpha().toColourspace("srgb").raw().toBuffer({ resolveWithObject: true });
+  return { rgb: data, width: info.width, height: info.height };
+}
+
+async function keyFrame(frame, key, keepColor, plate) {
   const { data, info } = await sharp(frame.color).removeAlpha().raw().toBuffer({ resolveWithObject: true });
+  if (plate) {
+    if (plate.width !== info.width || plate.height !== info.height) {
+      throw new Error(`фон ${plate.width}×${plate.height}, а кадр видео ${info.width}×${info.height}: размеры должны совпадать`);
+    }
+    return { rgba: keyPlate(data, plate.rgb, info.width, info.height), width: info.width, height: info.height };
+  }
   const luma = await sharp(frame.luma).extractChannel(0).raw().toBuffer();
   const rgba = keyVideoFrame(data, luma, key, keepColor);
   if (key === "green") colorEdgesFromFigure(rgba, info.width, info.height);
@@ -489,7 +652,8 @@ async function makeSheet(input, output, options) {
       span = findCycle(thumbs);
     }
     const count = Math.min(options.frames ?? span.length, span.length);
-    const images = await Promise.all(pickFrames(span, count).map((i) => keyFrame(files[i], options.key, options.keepColor)));
+    const plate = options.plate ? await readPlate(options.plate) : undefined;
+    const images = await Promise.all(pickFrames(span, count).map((i) => keyFrame(files[i], options.key, options.keepColor, plate)));
     const box = visibleBox(images);
     const frames = await Promise.all(images.map((image) => cutOut(image, box, options.height)));
     const { width: frameWidth, height: frameHeight } = frames[0].info;
@@ -502,6 +666,7 @@ async function makeSheet(input, output, options) {
     console.log(`кадры видео ${span.start + 1}-${span.start + span.length} из ${files.length}, взято ${count}`);
     if (span.length % count !== 0) console.log(`внимание: ${count} не делит ${span.length}, кадры взяты через неравные промежутки`);
     console.log(`кадр ${frameWidth}×${frameHeight}, в строке ${columns}, строк ${rows}, лист ${frameWidth * columns}×${frameHeight * rows}`);
+    if (options.plate) console.log(`кадр листа — кусок фона от (${box.left}, ${box.top}) размером ${box.width}×${box.height}: на это место картинки фона он и кладётся`);
     console.log(`"frames": ${count}, "columns": ${columns}, "frame_time": ${(span.length / count / fps).toFixed(4)}`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
@@ -755,6 +920,7 @@ async function main() {
       range: { type: "string" },
       key: { type: "string", default: "green" },
       "keep-color": { type: "boolean", default: false },
+      plate: { type: "string" },
       reverse: { type: "boolean", default: false },
       "fade-ends": { type: "string" },
       "repeat-x": { type: "string" },
@@ -767,7 +933,10 @@ async function main() {
   if (values["keep-color"] && values.key !== "magenta") throw new Error("--keep-color — только с --key magenta");
   const toVideo = extname(output).toLowerCase() === ".mp4";
   if (values.reverse && !toVideo) throw new Error("--reverse — только с выходом .mp4");
-  if (!VIDEO_EXTENSIONS.has(extname(input).toLowerCase())) {
+  const isVideo = VIDEO_EXTENSIONS.has(extname(input).toLowerCase());
+  if (values.plate !== undefined && (!isVideo || toVideo)) throw new Error("--plate — только для листа кадров из видео");
+  if (values.plate !== undefined && values.key !== "green") throw new Error("--plate не бывает вместе с --key magenta: фон снимается сравнением с картинкой");
+  if (!isVideo) {
     if (toVideo) throw new Error("видео игры делается только из видео");
     if ([values.frames, values.columns, values.range].some((value) => value !== undefined) || values["keep-color"]) throw new Error("--frames, --columns, --range и --keep-color — только для видео");
     if (values["fade-ends"] !== undefined && values["repeat-x"] !== undefined) throw new Error("--fade-ends и --repeat-x не бывают вместе: гашёные концы повтор не сведёт");
@@ -790,6 +959,7 @@ async function main() {
     frames: positiveInt("frames", values.frames),
     columns: positiveInt("columns", values.columns) ?? 8,
     range,
+    plate: values.plate,
   });
 }
 

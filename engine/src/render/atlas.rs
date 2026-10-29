@@ -469,8 +469,9 @@ fn find_room(sheets: &mut Vec<Sheet>, width: u32, height: u32) -> Option<(usize,
 /// declaration order, so a set of images always lays out the same way), each into the free
 /// rectangle of the first sheet that has one where it fits tightest, with a one-pixel gap after it;
 /// the white pixel and the built-in particle pictures keep their places on sheet 0. `Err` names
-/// what didn't fit: a single image wider or taller than one sheet on its own, or the declared set
-/// needing more than `MAX_SHEETS` sheets (требование 21).
+/// what didn't fit: a single piece — a whole image, or one cut-down frame — wider or taller than one
+/// sheet on its own, or the declared set needing more than `MAX_SHEETS` sheets (требование 21). A
+/// frame sheet may itself be larger than a sheet: only its frames are laid out.
 pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
     for img in images {
         let expected = img.width as usize * img.height as usize * 4;
@@ -482,12 +483,6 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
                 img.pixels.len()
             ));
         }
-        if img.width > ATLAS_SIZE || img.height > ATLAS_SIZE {
-            return Err(format!(
-                "картинка {}×{} шире или выше полотна {ATLAS_SIZE}×{ATLAS_SIZE}",
-                img.width, img.height
-            ));
-        }
     }
 
     let mut pieces: Vec<Piece> = images
@@ -495,6 +490,22 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
         .enumerate()
         .flat_map(|(index, image)| pieces_of(index, image))
         .collect();
+    if let Some(piece) = pieces
+        .iter()
+        .find(|piece| piece.width > ATLAS_SIZE || piece.height > ATLAS_SIZE)
+    {
+        let image = &images[piece.image];
+        return Err(match piece.frame {
+            None => format!(
+                "картинка {}×{} шире или выше полотна {ATLAS_SIZE}×{ATLAS_SIZE}",
+                image.width, image.height
+            ),
+            Some(frame) => format!(
+                "кадр {frame} картинки {}×{} — {}×{} точек, шире или выше полотна {ATLAS_SIZE}×{ATLAS_SIZE}",
+                image.width, image.height, piece.width, piece.height
+            ),
+        });
+    }
     pieces.sort_by_key(|piece| {
         (
             Reverse(piece.width.max(piece.height)),
@@ -3850,6 +3861,23 @@ mod tests {
         from: [119.0 / 336.0, 79.0 / 288.0],
         to: [221.0 / 336.0, 286.0 / 288.0],
     };
+
+    #[test]
+    fn a_frame_sheet_wider_than_a_sheet_packs_when_each_frame_fits() {
+        // Лист вылезания зомби Ямы: 13 кадров 329 × 194 в ряд — 4277 точек в ширину.
+        let images = [painted_strip([329, 194], 13, &[Some([10, 10, 300, 180]); 13])];
+        let atlas = pack(&images).unwrap();
+        let frames = frames_of(&atlas, 0);
+        assert_eq!(frames.len(), 13);
+        assert!(frames.iter().all(|piece| (piece.rect.w, piece.rect.h) == (292, 172)));
+    }
+
+    #[test]
+    fn a_frame_wider_than_a_sheet_is_refused_by_its_own_size() {
+        let images = [painted_strip([2100, 10], 1, &[Some([0, 0, 2060, 5])])];
+        let err = pack(&images).expect_err("кадр 2061 точка не ложится на лист 2048");
+        assert!(err.contains("кадр 0 картинки 2100×10 — 2061×6"), "{err}");
+    }
 
     #[test]
     fn a_frame_is_cut_down_to_its_opaque_points_and_one_point_around_them() {
