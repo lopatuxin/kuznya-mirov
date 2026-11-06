@@ -1,0 +1,39 @@
+{
+  "method": "GLB interpolation at 120 playback samples/s; weighted skin vertices and native engine Skeleton::pose",
+  "baseClipSeconds": 4.9,
+  "speed": 0.8,
+  "playbackSeconds": 6.125,
+  "testSlope": {
+    "begin": 0.26,
+    "rim": 0.96,
+    "rise": 0.44,
+    "degrees": 32.15229514128234
+  },
+  "samples": 736,
+  "nativeSkeletonMaxDifference": 9.397187844173647E-07,
+  "plantedWristMaxError": {
+    "Left": 0.00010374578067720374,
+    "Right": 4.038026902541337E-05
+  },
+  "skinMinimumClearance": {
+    "LeftHand": 0.0003932267427444458,
+    "LeftFoot": 0.00296783447265625,
+    "RightHand": 0.0023382902145385742,
+    "RightFoot": 0.00042873620986938477
+  },
+  "preserved": [
+    "mesh",
+    "rig",
+    "materials",
+    "textures",
+    "walk clip",
+    "original binary buffer"
+  ],
+  "limits": [
+    "Hand/foot skin subsets: summed relevant weights > .85; not a full body collision test.",
+    "Fixed authored slope; runtime terrain adaptation and gameplay integration not tested.",
+    "Stand flat-floor slip warning at entry remains; crawl contacts checked separately against slope."
+  ],
+  "modelSha256": "443f4f4d6c0f637dfe89afc9c88610e3d3464ce3487c75f841a18b542c46559d",
+  "standInspection": "Просмотрены воспроизведение при speed=0.8, замедленный участок при speed=0.4, боковые и фронтальная позы. Итоговый speed=0.8. После полной перезагрузки стенд показывает 294 кадра, 6.13 секунды; одна метка ступни 2 в доле около 0.14. Пол стенда ровный."
+}

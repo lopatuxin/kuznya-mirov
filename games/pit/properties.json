@@ -4,6 +4,6 @@
     "spawn_wait": "timer",
     "zombie": "flag",
     "zombie_age": "number",
-    "zombie_frame": "number"
+    "zombie_stage": "number"
   }
 }

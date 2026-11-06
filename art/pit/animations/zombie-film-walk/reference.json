@@ -1,0 +1,76 @@
+{
+  "motion": "ходьба_зомби_кино",
+  "game": "pit",
+  "model": "zombie",
+  "source": {
+    "film": "Тепло наших тел (Warm Bodies, 2013)",
+    "clip": "Exclusive: Warm Bodies - The First 4 Minutes",
+    "publisher": "Fandango",
+    "url": "https://www.youtube.com/watch?v=iI1AkFh3QgU&t=24s",
+    "approvedFromSeconds": 24,
+    "approvedToSeconds": 27,
+    "subject": "Зомби в тёмной куртке и джинсах слева, перед колонной, движется к камере и влево.",
+    "approval": "«давай попробуем» после предложения отрывка 0:24–0:27 и этого персонажа",
+    "scope": "Пробный цикл ходьбы на стенде «Ямы»."
+  },
+  "observations": {
+    "method": "Ручная разметка восьми поз в браузере. Время — позиция плеера в секундах от начала ролика, с округлением до миллисекунд. PTS оригинального кадра недоступен.",
+    "coordinates": "Пиксели видимой области видео 1337 × 752, отсчёт от верхнего левого угла. Координаты ниже локальны для кадрирования x=0, y=222, ширина 335, высота 530. X вправо, Y вниз, без отражения. R и L — стороны актёра.",
+    "uncertaintyPixels": {"headCenter": 8, "visibleAnkle": 12},
+    "landmarkOrder": ["headCenter", "rightAnkle", "leftAnkle"],
+    "samples": [
+      {"sourceSeconds": 24.200, "pixels": [[213, 95], [215, 445], null], "note": "Правая стопа под весом, левая сзади у светлой ткани."},
+      {"sourceSeconds": 24.923, "pixels": [[192, 94], [207, 452], [252, 456]], "note": "Левая проходит к правой, подошву видно плохо."},
+      {"sourceSeconds": 25.284, "pixels": [[183, 95], null, [220, 459]], "note": "Левая выходит вперёд. Ботинки сблизились."},
+      {"sourceSeconds": 25.645, "pixels": [[183, 101], null, [209, 479]], "note": "Левая стопа уже впереди под весом. Правая за ней."},
+      {"sourceSeconds": 25.826, "pixels": [[184, 100], null, [202, 486]], "note": "Левая опорная. Кисти ниже таза."},
+      {"sourceSeconds": 26.187, "pixels": [[181, 99], null, [195, 489]], "note": "Правая голень перекрыта левой."},
+      {"sourceSeconds": 26.548, "pixels": [[178, 99], [163, 498], [190, 503]], "note": "Правый ботинок снова виден сбоку от левого."},
+      {"sourceSeconds": 26.909, "pixels": [[168, 102], [144, 498], [188, 503]], "note": "Правая выходит вперёд к следующей опоре. Низ подошвы у края кадра."}
+    ],
+    "events": [
+      {"event": "Правая опора", "sourceSeconds": 24.200, "certainty": "Опора уже началась к первому читаемому кадру."},
+      {"event": "Постановка левой", "sourceSecondsRange": [25.284, 25.645], "certainty": "Оценка между позой переноса и первым читаемым кадром опоры."},
+      {"event": "Следующая правая опора", "sourceSecondsRange": [26.548, 26.909], "certainty": "Оценка по выходу правой ноги вперёд, пятка частично у края кадра."}
+    ],
+    "limits": "Камера движется. По этому ракурсу глубина, точные моменты отрыва стоп и абсолютная длина шага неопределимы. Пиксельные точки помогают читать фазы, но не дают пространственную траекторию суставов."
+  },
+  "fit": {
+    "method": "Цикл по событиям с подгонкой траекторий лодыжек под длины костей. Стопа перекатывается с пятки на носок. Повороты груди, головы, предплечий и кистей сдвинуты относительно шага и отличаются слева и справа. Движок получает поправки к локальным поворотам поверх клипа «Основа_шага».",
+    "cycleSeconds": 2.71,
+    "phaseOrigin": "Левая постановка, чтобы боковое движение таза базового клипа совпадало с опорой.",
+    "rightContactPhase": 0.48,
+    "leftContactPhase": 0,
+    "rightStanceFraction": 0.63,
+    "leftStanceFraction": 0.68,
+    "travelPerCycleModelUnits": 0.27,
+    "rightSwingArcModelUnits": 0.040,
+    "leftSwingArcModelUnits": 0.045,
+    "estimated": "Длина и высота шага, продолжительность опоры, углы переката, боковой перенос и углы суставов подогнаны на модели. Высоту таза задаёт базовый клип."
+  },
+  "initialEngineComparison": {
+    "method": "241 поза на цикл. Отклонение лодыжки в опоре посчитано после компенсации скорости движения вперёд. Углы измерены между бедром и голенью. Высота подошвы проверяется по модели на стенде, замер суставов сам по себе её не определяет.",
+    "cycleSecondsBeforeAfter": [2.087, 2.710],
+    "maximumKneeFlexionDegreesBeforeAfter": {"right": [66.2, 58.1], "left": [68.5, 60.5]},
+    "meanStanceKneeFlexionDegreesBeforeAfter": {"right": [36.6, 36.5], "left": [36.5, 35.8]},
+    "peakAnkleLiftModelUnitsBeforeAfter": {"right": [0.0503, 0.0343], "left": [0.0553, 0.0376]},
+    "fittedStanceAnkleDriftMaxModelUnits": 0.000027,
+    "fittedLoopJointGapModelUnits": 0,
+    "fittedLoopVelocityChangeMaxModelUnitsPerSecond": 0.01194,
+    "standSlipIntervals": 0,
+    "stand": "Первая проба. Положения стоп просмотрены сбоку и спереди по фазам."
+  },
+  "revisionComparison": {
+    "method": "241 поза движка на цикл. Сравнение первой пробы с правкой после замечания о механической походке. Наклон стопы измерен по линии от лодыжки до конца пальцев, разворот плеч по линии между плечевыми суставами.",
+    "peakForwardAnkleSpeedModelUnitsPerSecondBeforeAfter": [0.943, 0.625],
+    "footPitchRangeDegreesBeforeAfter": {"right": [0, 17.0], "left": [0, 21.0]},
+    "shoulderRotationRangeDegreesBeforeAfter": [1.2, 5.7],
+    "lateralTrunkTiltRangeDegreesBeforeAfter": [2.0, 2.5],
+    "meanStanceKneeFlexionDegreesBeforeAfter": {"right": [36.3, 38.3], "left": [35.6, 38.0]},
+    "flatStanceAnkleDriftMaxModelUnits": 0.000025,
+    "loopJointGapModelUnits": 0,
+    "loopVelocityChangeMaxModelUnitsPerSecond": 0.01170,
+    "standSlipIntervals": 0,
+    "stand": "Проверены повтор и позы сбоку и спереди. Сохраняется низкая посадка таза базового клипа и заметный сгиб опорного колена."
+  }
+}

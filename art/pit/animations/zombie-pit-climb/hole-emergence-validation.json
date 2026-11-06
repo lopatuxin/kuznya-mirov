@@ -1,0 +1,25 @@
+{
+  "model": "C:\\projects\\kuznya-mirov\\games\\pit\\models\\zombie.glb",
+  "sha256": "ebfb4f1830a145c9ff54ec928abd3b82ff51ab1ca3c2a2fe1235488de1c75cd1",
+  "sourceClip": "Основа_подъёма",
+  "clip": "Основа_вылезания_из_ямы",
+  "keys": 295,
+  "baseClipSeconds": 4.900000095367432,
+  "emergenceDepthModelUnits": 0.95,
+  "emergenceEndPhase": 0.2,
+  "forwardTravelModelUnits": 0.665500020980835,
+  "slopeRiseRemovedModelUnits": 0.44,
+  "firstRoot": [
+    0.0019523153314366937,
+    -0.4567702531814575,
+    0.013665199279785156
+  ],
+  "lastRoot": [
+    0.0019523153314366937,
+    0.4932297444343567,
+    0.6791652202606202
+  ],
+  "finalStandingHeightMatchesWalk": true,
+  "sourceClipPreserved": true,
+  "animationCount": 4
+}

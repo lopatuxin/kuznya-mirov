@@ -1,0 +1,86 @@
+{
+  "source": "https://www.youtube.com/watch?v=-GXKhMtx21Q",
+  "method": "YouTube paused frame stepping; currentTime from rendered video element; screenshots cropped at x16 y68 width1337 height752",
+  "frames": [
+    {
+      "file": "0.jpg",
+      "paused": true,
+      "time": 0
+    },
+    {
+      "file": "1.jpg",
+      "paused": true,
+      "time": 0.199999
+    },
+    {
+      "file": "2.jpg",
+      "paused": true,
+      "time": 0.399999
+    },
+    {
+      "file": "3.jpg",
+      "paused": true,
+      "time": 0.599999
+    },
+    {
+      "file": "4.jpg",
+      "paused": true,
+      "time": 0.799998
+    },
+    {
+      "file": "5.jpg",
+      "paused": true,
+      "time": 0.999998
+    },
+    {
+      "file": "6.jpg",
+      "paused": true,
+      "time": 1.199998
+    },
+    {
+      "file": "7.jpg",
+      "paused": true,
+      "time": 1.399998
+    },
+    {
+      "file": "8.jpg",
+      "paused": true,
+      "time": 1.599998
+    },
+    {
+      "file": "9.jpg",
+      "paused": true,
+      "time": 1.799998
+    },
+    {
+      "file": "10.jpg",
+      "paused": true,
+      "time": 1.999998
+    },
+    {
+      "file": "11.jpg",
+      "paused": true,
+      "time": 2.199997
+    },
+    {
+      "file": "12.jpg",
+      "paused": true,
+      "time": 2.399996
+    },
+    {
+      "file": "13.jpg",
+      "paused": true,
+      "time": 2.599995
+    },
+    {
+      "file": "14.jpg",
+      "paused": true,
+      "time": 2.799994
+    },
+    {
+      "file": "15.jpg",
+      "paused": true,
+      "time": 2.999993
+    }
+  ]
+}

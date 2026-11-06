@@ -17,13 +17,17 @@
     "screens": "screens.json",
     "code": "code.lua",
     "fonts": {},
-    "images": {
-      "zombie_climb": { "path": "images/zombie_climb.png", "smooth": true, "frames": 130, "columns": 13, "frame_by": "zombie_frame" },
-      "zombie_walk": { "path": "images/zombie_walk.png", "smooth": true, "frames": 36, "columns": 6, "frame_by": "zombie_frame" },
-      "zombie_slope": { "path": "images/zombie_slope.png", "smooth": true, "frames": 105, "columns": 8, "frame_by": "zombie_frame" }
-    },
     "models": {
-      "ground": { "path": "models/ground.glb", "look": "picture" }
-    }
+      "ground": { "path": "models/ground.glb", "look": "picture" },
+      "zombie": {
+        "path": "models/zombie.glb",
+        "idle": "ходьба_зомби_кино",
+        "walk": "ходьба_зомби_кино",
+        "feet": ["mixamorig:LeftFoot", "mixamorig:RightFoot"],
+        "spine": "mixamorig:Spine",
+        "hands": ["mixamorig:LeftHand", "mixamorig:RightHand"]
+      }
+    },
+    "motions": "motions.json"
   }
 }
