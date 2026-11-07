@@ -94,7 +94,19 @@ impl MotionState {
         self.last.is_some_and(|last| last != position)
     }
 
+    /// На первом шаге объекта его движение встаёт сразу целиком и с начала, без перехода из стойки: зомби,
+    /// рождённый вылезающим из норы, не мелькает стоящим на земле.
     fn advance(&mut self, want: Want, position: Vec2) {
+        if self.last.is_none() {
+            *self = MotionState::default();
+            self.layers[0] = Running {
+                want,
+                time: 0.0,
+                weight: 1.0,
+            };
+            self.last = Some(position);
+            return;
+        }
         for running in &mut self.layers[..self.len] {
             running.time += STEP_SECONDS;
         }
@@ -267,6 +279,19 @@ mod tests {
         assert_eq!(current.playing.time, 0.0);
         assert!(current.playing.looped && blend.layers().len() == 1);
         assert_eq!(current.weight, 1.0);
+    }
+
+    #[test]
+    fn a_named_motion_of_the_first_step_plays_at_once_from_its_start_without_a_fade_from_idle() {
+        let skeleton = skeleton();
+        let mut state = MotionState::default();
+        state.advance(Want::Named(2), [0.0, 0.0]);
+        let blend = state.blend(&skeleton);
+        assert_eq!(clips(&blend), [Some(2)]);
+        assert_eq!(blend.current().weight, 1.0);
+        assert_eq!(blend.current().playing.time, 0.0);
+        state.advance(Want::Named(2), [0.0, 0.0]);
+        assert_eq!(state.blend(&skeleton).current().playing.time, STEP_SECONDS);
     }
 
     #[test]
