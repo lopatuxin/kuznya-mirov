@@ -1,8 +1,11 @@
 local DT = 1 / 60
 local PX, PY = 44.543 / 2117, 28 / 941
 local LEFT = 0.2285
-local SPAWN_EVERY = 3.5
-local START_X, FLOOR_Y = 1184.4, 385.3
+local SPAWN_EVERY = 10
+local FLOOR_Y = 385.3
+-- Нора посреди дна: середина на картине и радиус в клетках — как у земли с норой (art/pit/build_ground_hole.mjs).
+local HOLE_X, HOLE_Y, HOLE_RADIUS = 1068, 490, 1.45
+local EMERGE_RIM, EMERGE_TRAVEL, EMERGE_TIME, EMERGE_SETTLE = 0.24, 0.7, 8.5, 1
 local SLOPE_START_X, SLOPE_END_X = 1447, 1615
 local TOP_Y = 274.4
 local WALK_SPEED = 144.5 * PX / (3 * 2.71)
@@ -16,7 +19,11 @@ local HEIGHT = (-B + math.sqrt(B * B + 4 * A * (RUN * RUN + RISE * RISE))) / (2 
 local SIN = RUN / (HEIGHT * RAMP_RUN)
 local COS = (HEIGHT * RAMP_RISE - RISE) / (HEIGHT * RAMP_RUN)
 local ROTATION = -math.deg(math.atan(SIN, COS))
-local START = LEFT + (START_X + ORIGIN_X) * PX
+-- Зомби вылезает из норы посреди дна: кромка, за которую он хватается в движении «подъём_зомби_из_ямы»,
+-- приходится на правый край норы, после движения таз стоит на EMERGE_TRAVEL роста впереди.
+local HOLE = LEFT + HOLE_X * PX + HOLE_RADIUS - EMERGE_RIM * HEIGHT * SIN
+local HOLE_ROW = HOLE_Y * PY
+local START = HOLE + EMERGE_TRAVEL * HEIGHT * SIN
 local BASE_X = LEFT + (SLOPE_START_X + ORIGIN_X) * PX - 0.26 * HEIGHT * SIN
 local BASE_Y = (FLOOR_Y + ORIGIN_Y) * PY - 0.26 * HEIGHT * COS
 local EXIT_X, EXIT_Y, EXIT_Z = ROOT_TRAVEL * HEIGHT * SIN, ROOT_TRAVEL * HEIGHT * COS, RAMP_RISE * HEIGHT
@@ -36,21 +43,32 @@ function spawn_zombies(spawner)
   create({
     zombie = true,
     model = "zombie",
-    position = { START - 0.3, BASE_Y - 0.3, 0 },
+    position = { HOLE - 0.3, HOLE_ROW - 0.3, 0 },
     size = { 0.6, 0.6 },
     height = HEIGHT,
     rotation = ROTATION,
+    animation = "подъём_зомби_из_ямы",
     zombie_age = 0,
-    zombie_stage = 0,
+    zombie_stage = 3,
   })
 end
 
 function step_zombie(zombie)
   local age = zombie.zombie_age + DT
   zombie.zombie_age = age
+  if zombie.zombie_stage == 3 then
+    if age + 0.000001 < EMERGE_TIME then return end
+    zombie.zombie_stage = 0
+    zombie.zombie_age = 0
+    zombie.animation = ""
+    place(zombie, HOLE + (START - HOLE) * math.min(1, DT / FADE_TIME), HOLE_ROW, 0)
+    return
+  end
   if zombie.zombie_stage == 0 then
-    local x = START + age * WALK_SPEED
-    place(zombie, math.min(x, BASE_X), BASE_Y, 0)
+    local fade = math.min(1, (age + DT) / FADE_TIME)
+    local x = HOLE + (START - HOLE) * fade + age * WALK_SPEED
+    local settle = math.min(1, age / EMERGE_SETTLE)
+    place(zombie, math.min(x, BASE_X), HOLE_ROW + (BASE_Y - HOLE_ROW) * settle * settle * (3 - 2 * settle), 0)
     if x >= BASE_X then
       zombie.zombie_stage = 1
       zombie.zombie_age = 0

@@ -5914,8 +5914,8 @@
   "подъём_зомби_из_ямы": {
     "model": "zombie",
     "clip": "Основа_вылезания_из_ямы",
-    "speed": 0.8,
+    "speed": 1,
     "loop": false,
-    "reference": "https://www.youtube.com/watch?v=-GXKhMtx21Q"
+    "reference": "https://www.youtube.com/watch?v=J5Rpsd5F1_Q&t=45s"
   }
 }
