@@ -1,0 +1,41 @@
+{
+  "blend": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\akm-v1.blend",
+  "coordinate_hash": "e5f17197fd5e7817dc20b7fc2ca12537fb2cc8f7e18fd846dcc0936d36481f76",
+  "vertices": 13538,
+  "triangles": 27100,
+  "uv_layers": [
+    "UVMap"
+  ],
+  "color_attributes": [],
+  "glb": {
+    "materials": 1,
+    "images": [
+      {
+        "bufferView": 4,
+        "mimeType": "image/png",
+        "name": "akm-stable-basecolor"
+      }
+    ],
+    "attributes": [
+      [
+        "POSITION",
+        "NORMAL",
+        "TEXCOORD_0"
+      ]
+    ],
+    "triangles": 27100,
+    "nodes": [
+      "HordeAKMv1_export",
+      "support"
+    ]
+  },
+  "reference_sha256": "16f78b34e9d68df13ffb1d56fdb95b4ed6039527c58dbeaf1346123844efe202",
+  "before_packed_images": [
+    {
+      "name": "akm-basecolor.png.005",
+      "hash": "24e146c385a9fa3266aeb4d1c02d1369af24eef18c4fe4765c203b7ca521082c"
+    }
+  ],
+  "basecolor_sha256": "24e146c385a9fa3266aeb4d1c02d1369af24eef18c4fe4765c203b7ca521082c",
+  "basecolor_identical_to_before_packed": true
+}

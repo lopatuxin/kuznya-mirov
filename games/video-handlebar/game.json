@@ -1,0 +1,17 @@
+{
+  "name": "Руль на раме",
+  "scene": { "width": 32, "height": 18, "background": "#24272e" },
+  "max_objects": 16,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {},
+    "images": {
+      "smithy": { "path": "images/smithy_handlebar.png", "smooth": true }
+    }
+  }
+}

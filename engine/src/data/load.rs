@@ -526,6 +526,14 @@ pub(crate) fn parse_scalar_value(
             let name = expect_string(value, file, path, errors)?;
             resolve_model(&name, properties, file, path, errors).map(Value::Text)
         }
+        PropKind::Text if prop == property::HOLD => {
+            if !properties.three_d() {
+                errors.push(file, path, HOLD_IN_FLAT_SCENE);
+                return None;
+            }
+            let name = expect_string(value, file, path, errors)?;
+            resolve_model(&name, properties, file, path, errors).map(Value::Text)
+        }
         PropKind::Text if prop == property::ANIMATION => {
             if !properties.three_d() {
                 errors.push(file, path, ANIMATION_IN_FLAT_SCENE);
@@ -986,6 +994,9 @@ const FACING_IN_FLAT_SCENE: &str =
 const ANIMATION_IN_FLAT_SCENE: &str =
     "свойство \"animation\" есть только в трёхмерной сцене: у scene в game.json нет camera";
 
+const HOLD_IN_FLAT_SCENE: &str =
+    "свойство \"hold\" есть только в трёхмерной сцене: у scene в game.json нет camera";
+
 /// Движение по имени: `animation` называет движение из файла какой-нибудь модели игры; пустое имя возвращает
 /// объект к `idle` и `walk`.
 fn resolve_animation(
@@ -1057,7 +1068,36 @@ fn validate_animation_of_model(
     }
 }
 
-/// `animation`, которое клавиши и `on_click` объекта пишут константой, названо в файле модели объекта, если она
+fn validate_hold_of_model(
+    hold: Option<&Value>,
+    model: Option<&Value>,
+    properties: &PropertyTable,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) {
+    let Some(Value::Text(hold)) = hold else {
+        return;
+    };
+    let hands = match model {
+        Some(Value::Text(name)) => properties
+            .models()
+            .index_of(name)
+            .and_then(|at| properties.models().get(at))
+            .and_then(|model| model.skeleton.as_ref())
+            .is_some_and(|skeleton| skeleton.hands.is_some()),
+        _ => false,
+    };
+    if !hands {
+        errors.push(
+            file,
+            path,
+            format!("hold \"{hold}\" есть только у объекта с моделью, у которой объявлены hands"),
+        );
+    }
+}
+
+/// Движение и предмет, которые клавиши и `on_click` объекта пишут константой, подходят его модели, если она
 /// задана в данных константой.
 fn validate_edited_animations(
     keys: Option<&KeyTable>,
@@ -1069,9 +1109,25 @@ fn validate_edited_animations(
     errors: &mut ErrorSink,
 ) {
     let mut check = |edits: &[KeyEdit], at: String| {
-        for edit in edits.iter().filter(|e| e.property == property::ANIMATION) {
+        for edit in edits
+            .iter()
+            .filter(|e| matches!(e.property, property::ANIMATION | property::HOLD))
+        {
             if let EditValue::Const(value) = &edit.value {
-                validate_animation_of_model(Some(value), model, properties, file, &at, errors);
+                match edit.property {
+                    property::ANIMATION => validate_animation_of_model(
+                        Some(value),
+                        model,
+                        properties,
+                        file,
+                        &at,
+                        errors,
+                    ),
+                    property::HOLD => {
+                        validate_hold_of_model(Some(value), model, properties, file, &at, errors)
+                    }
+                    _ => unreachable!("отобраны только animation и hold"),
+                }
             }
         }
     };
@@ -1101,8 +1157,8 @@ fn layered_const<'a>(
     }
 }
 
-/// `animation` создаваемого правилом объекта названо в файле модели того же объекта. Поля идут template → вариант
-/// → клетка; сочетание проверяется у каждого уровня, что называет `model` или `animation`.
+/// `animation` и `hold` создаваемого правилом объекта подходят его модели. Поля идут template → вариант
+/// → клетка; сочетание проверяется у каждого уровня, что называет `model`, `animation` или `hold`.
 fn validate_spawned_animations(
     template: &[(PropertyId, TemplateValue)],
     variants: &[SpawnVariant],
@@ -1112,9 +1168,18 @@ fn validate_spawned_animations(
     errors: &mut ErrorSink,
 ) {
     let mut check = |layers: &[&[(PropertyId, TemplateValue)]], at: String| {
+        let model = layered_const(layers, property::MODEL);
         validate_animation_of_model(
             layered_const(layers, property::ANIMATION),
-            layered_const(layers, property::MODEL),
+            model,
+            properties,
+            file,
+            &at,
+            errors,
+        );
+        validate_hold_of_model(
+            layered_const(layers, property::HOLD),
+            model,
             properties,
             file,
             &at,
@@ -1123,9 +1188,12 @@ fn validate_spawned_animations(
     };
     check(&[template], join(path, "template"));
     let names = |fields: &[(PropertyId, TemplateValue)]| {
-        fields
-            .iter()
-            .any(|(prop, _)| matches!(*prop, property::MODEL | property::ANIMATION))
+        fields.iter().any(|(prop, _)| {
+            matches!(
+                *prop,
+                property::MODEL | property::ANIMATION | property::HOLD
+            )
+        })
     };
     for (i, variant) in variants.iter().enumerate() {
         let variant_path = join(&join(path, "pick_one"), &format!("[{i}]"));
@@ -2013,6 +2081,14 @@ fn parse_scene_object(
     validate_model_fill(&shape, true, file, &path, errors);
     validate_animation_of_model(
         find_value(&values, property::ANIMATION),
+        find_value(&values, property::MODEL),
+        properties,
+        file,
+        &path,
+        errors,
+    );
+    validate_hold_of_model(
+        find_value(&values, property::HOLD),
         find_value(&values, property::MODEL),
         properties,
         file,
@@ -3649,6 +3725,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         for decl in models.as_deref().unwrap_or_default() {
             let keys = [
                 ("solid", decl.solid.is_some()),
+                ("walkable", decl.walkable.is_some()),
                 ("cutaway", decl.cutaway.is_some()),
             ];
             for (key, _) in keys.into_iter().filter(|&(_, present)| present) {
@@ -13871,6 +13948,7 @@ pub fn load_rest_with_motions(
             .map_or(&[][..], |terrain| terrain.imprints());
         warn_unused_stamps(&config.files.stamps, imprints, &mut errors);
         let mut named_models = named_in_scene(&scene_objects, property::MODEL);
+        named_models.extend(named_in_scene(&scene_objects, property::HOLD));
         named_models.extend(
             config
                 .road_kinds

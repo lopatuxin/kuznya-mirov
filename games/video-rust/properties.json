@@ -1,0 +1,11 @@
+{
+  "properties": {
+    "clock": "timer",
+    "part": "text",
+    "caption": "text",
+    "code_line": "number",
+    "code": "text",
+    "tone": "number",
+    "shade": "number"
+  }
+}

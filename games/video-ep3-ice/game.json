@@ -1,0 +1,34 @@
+{
+  "name": "Квадрат на льду",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#140d08"
+  },
+  "max_objects": 32,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Kurale-Regular.ttf"
+    },
+    "images": {
+      "shade": {
+        "path": "images/shade.png",
+        "smooth": true
+      },
+      "forest": {
+        "path": "images/forest.png",
+        "smooth": true
+      },
+      "panel": {
+        "path": "images/panel.png",
+        "smooth": true
+      }
+    }
+  }
+}

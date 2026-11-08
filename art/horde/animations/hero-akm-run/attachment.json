@@ -1,0 +1,38 @@
+{
+  "source": "art/horde/3d/hero/rifle/akm_v1/akm-v1.glb",
+  "target": "games/horde/models/akm.glb",
+  "hero_height_m": 1.73,
+  "weapon_length_m": 0.75,
+  "scale_from_approved_export": 0.970837,
+  "change": "Uniform weapon scale preserved. Follow-up correction on 2026-11-07: mount rotated to the anatomical right palm and offset from wrist; support moved to the left wrist below the fore-end. Geometry, UVs and embedded image binary unchanged. 2026-11-08: whole rifle scaled to 0.85 about the grip (node matrix and support), 0.88 m -> 0.75 m, to suit the hero whose arms are about 15% shorter than a man of his height (owner: «уменьши автомат… подходящим под героя»); before: art/horde/animations/hero-akm-run-low/akm-before-shrink.glb.",
+  "mount_correction": {
+    "rotation": [
+      [
+        0,
+        0,
+        -1
+      ],
+      [
+        0,
+        -1,
+        0
+      ],
+      [
+        -1,
+        0,
+        0
+      ]
+    ],
+    "translation": [
+      0.00425,
+      -0.0102,
+      0.03145
+    ],
+    "support": [
+      -0.01105,
+      -0.1547,
+      0.0017
+    ]
+  },
+  "validation": "low-carry-fix-validation.json"
+}

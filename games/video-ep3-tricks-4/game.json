@@ -1,0 +1,22 @@
+{
+  "name": "Хитрости прыжка: четвёртая",
+  "scene": { "width": 32, "height": 18, "background": "#140d08" },
+  "max_objects": 32,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Kurale-Regular.ttf" },
+    "images": {
+      "forest": { "path": "images/forest.png", "smooth": true },
+      "panel": { "path": "images/panel.png", "smooth": true },
+      "tab": { "path": "images/tab.png", "smooth": true },
+      "rhomb_dim": { "path": "images/rhomb_dim.png", "smooth": true },
+      "rhomb_lit": { "path": "images/rhomb_lit.png", "smooth": true },
+      "rhomb_done": { "path": "images/rhomb_done.png", "smooth": true }
+    }
+  }
+}

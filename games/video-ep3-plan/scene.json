@@ -1,0 +1,22 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "picture", "position": [0, 0], "size": [32, 18], "image": "level", "layer": 1 },
+
+    { "part": "panel", "position": [16.4833, 0.3833], "size": [15.3833, 9.4333], "image": "panel", "layer": 5 },
+    { "part": "tab", "position": [20.175, -0.0833], "size": [8, 2.2667], "image": "tab", "layer": 6 },
+
+    { "part": "badge1", "position": [17.9, 1.8], "size": [2, 2], "image": "rhomb_dim", "layer": 7 },
+    { "part": "num1", "num": "1", "lit": 0, "position": [17.9, 1.8], "size": [2, 2] },
+    { "part": "word1", "word": "Прыжок", "lit": 0, "position": [20.2, 1.9], "size": [10.6, 1.8] },
+
+    { "part": "badge2", "position": [17.9, 4.2], "size": [2, 2], "image": "rhomb_dim", "layer": 7 },
+    { "part": "num2", "num": "2", "lit": 0, "position": [17.9, 4.2], "size": [2, 2] },
+    { "part": "word2", "word": "Герой и уровень", "lit": 0, "position": [20.2, 4.3], "size": [10.6, 1.8] },
+
+    { "part": "badge3", "position": [17.9, 6.6], "size": [2, 2], "image": "rhomb_dim", "layer": 7 },
+    { "part": "num3", "num": "3", "lit": 0, "position": [17.9, 6.6], "size": [2, 2] },
+    { "part": "word3", "word": "Бой", "lit": 0, "position": [20.2, 6.7], "size": [10.6, 1.8] }
+  ]
+}

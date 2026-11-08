@@ -1,0 +1,13 @@
+{
+  "properties": {
+    "clock": "timer",
+    "uid": "number",
+    "part": "text",
+    "row": "number",
+    "idx": "number",
+    "folder_name": "text",
+    "file_name": "text",
+    "title": "text",
+    "tone": "number"
+  }
+}

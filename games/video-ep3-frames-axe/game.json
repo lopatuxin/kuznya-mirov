@@ -1,0 +1,194 @@
+{
+  "name": "Новый хват топора",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#140d08"
+  },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Kurale-Regular.ttf"
+    },
+    "images": {
+      "o00": {
+        "path": "images/o00.png",
+        "smooth": true
+      },
+      "o01": {
+        "path": "images/o01.png",
+        "smooth": true
+      },
+      "o02": {
+        "path": "images/o02.png",
+        "smooth": true
+      },
+      "o03": {
+        "path": "images/o03.png",
+        "smooth": true
+      },
+      "o04": {
+        "path": "images/o04.png",
+        "smooth": true
+      },
+      "o05": {
+        "path": "images/o05.png",
+        "smooth": true
+      },
+      "o06": {
+        "path": "images/o06.png",
+        "smooth": true
+      },
+      "o07": {
+        "path": "images/o07.png",
+        "smooth": true
+      },
+      "o08": {
+        "path": "images/o08.png",
+        "smooth": true
+      },
+      "o09": {
+        "path": "images/o09.png",
+        "smooth": true
+      },
+      "o10": {
+        "path": "images/o10.png",
+        "smooth": true
+      },
+      "o11": {
+        "path": "images/o11.png",
+        "smooth": true
+      },
+      "o12": {
+        "path": "images/o12.png",
+        "smooth": true
+      },
+      "o13": {
+        "path": "images/o13.png",
+        "smooth": true
+      },
+      "o14": {
+        "path": "images/o14.png",
+        "smooth": true
+      },
+      "n00": {
+        "path": "images/n00.png",
+        "smooth": true
+      },
+      "n01": {
+        "path": "images/n01.png",
+        "smooth": true
+      },
+      "n02": {
+        "path": "images/n02.png",
+        "smooth": true
+      },
+      "n03": {
+        "path": "images/n03.png",
+        "smooth": true
+      },
+      "n04": {
+        "path": "images/n04.png",
+        "smooth": true
+      },
+      "n05": {
+        "path": "images/n05.png",
+        "smooth": true
+      },
+      "n06": {
+        "path": "images/n06.png",
+        "smooth": true
+      },
+      "n07": {
+        "path": "images/n07.png",
+        "smooth": true
+      },
+      "n08": {
+        "path": "images/n08.png",
+        "smooth": true
+      },
+      "n09": {
+        "path": "images/n09.png",
+        "smooth": true
+      },
+      "n10": {
+        "path": "images/n10.png",
+        "smooth": true
+      },
+      "n11": {
+        "path": "images/n11.png",
+        "smooth": true
+      },
+      "n12": {
+        "path": "images/n12.png",
+        "smooth": true
+      },
+      "n13": {
+        "path": "images/n13.png",
+        "smooth": true
+      },
+      "n14": {
+        "path": "images/n14.png",
+        "smooth": true
+      },
+      "backdrop": {
+        "path": "images/backdrop.png",
+        "smooth": true
+      },
+      "card_910x265": {
+        "path": "images/card_910x265.png",
+        "smooth": true
+      },
+      "card_692x265": {
+        "path": "images/card_692x265.png",
+        "smooth": true
+      },
+      "card_1782x265": {
+        "path": "images/card_1782x265.png",
+        "smooth": true
+      },
+      "rim_old_910x265": {
+        "path": "images/rim_old_910x265.png",
+        "smooth": true
+      },
+      "rim_cur_910x265": {
+        "path": "images/rim_cur_910x265.png",
+        "smooth": true
+      },
+      "rim_done_910x265": {
+        "path": "images/rim_done_910x265.png",
+        "smooth": true
+      },
+      "rim_old_1782x265": {
+        "path": "images/rim_old_1782x265.png",
+        "smooth": true
+      },
+      "rim_cur_1782x265": {
+        "path": "images/rim_cur_1782x265.png",
+        "smooth": true
+      },
+      "rim_done_1782x265": {
+        "path": "images/rim_done_1782x265.png",
+        "smooth": true
+      },
+      "rim_old_692x265": {
+        "path": "images/rim_old_692x265.png",
+        "smooth": true
+      },
+      "rim_cur_692x265": {
+        "path": "images/rim_cur_692x265.png",
+        "smooth": true
+      },
+      "rim_done_692x265": {
+        "path": "images/rim_done_692x265.png",
+        "smooth": true
+      }
+    }
+  }
+}

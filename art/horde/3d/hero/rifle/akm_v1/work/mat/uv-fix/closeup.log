@@ -1,0 +1,9 @@
+00:02.297  blend            | Read blend: "C:\projects\kuznya-mirov\art\horde\3d\hero\rifle\akm_v1\work\before-uv-fix.blend"
+<string>:15: DeprecationWarning: 'Material.use_nodes' is expected to be removed in Blender 6.0
+00:04.859  render           | Saved: 'C:\projects\kuznya-mirov\art\horde\3d\hero\rifle\akm_v1\work\mat\uv-fix\roof-closeup.png'
+00:05.000  render           | Saved: 'C:\projects\kuznya-mirov\art\horde\3d\hero\rifle\akm_v1\work\mat\uv-fix\magazine-closeup.png'
+00:05.140  render           | Saved: 'C:\projects\kuznya-mirov\art\horde\3d\hero\rifle\akm_v1\work\mat\uv-fix\magazine-heel-closeup.png'
+{"atlas": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\work\\mat\\uv-fix\\akm-stable-basecolor.png", "size": [4096, 4096], "geometry_hash": "e5f17197fd5e7817dc20b7fc2ca12537fb2cc8f7e18fd846dcc0936d36481f76", "uv_layers": ["UVMap"], "projection": "stable side and cap charts baked into atlas", "geometry_hash_after": "e5f17197fd5e7817dc20b7fc2ca12537fb2cc8f7e18fd846dcc0936d36481f76", "uv_min": 0.0, "uv_max": 1.0, "uv_loops": 81300, "uv_fill": 0.23458092735639138, "average_texels_per_m": 4280.4420589268875, "rgba8_with_mips_mib": 85.33333333333333, "color_attributes": []}
+Blender 5.2.1 LTS (hash 9e2066aef7ef built 2026-08-25 02:38:20)
+
+Blender quit

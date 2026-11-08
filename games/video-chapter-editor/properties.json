@@ -1,0 +1,10 @@
+{
+  "properties": {
+    "clock": "timer",
+    "part": "text",
+    "num": "text",
+    "word": "text",
+    "lit": "number",
+    "item": "number"
+  }
+}

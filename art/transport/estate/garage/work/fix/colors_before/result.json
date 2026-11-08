@@ -1,0 +1,186 @@
+{
+ "garage_path": {
+  "srgb": [
+   116,
+   108,
+   90
+  ],
+  "px": 11198
+ },
+ "garage_roof": {
+  "srgb": [
+   62,
+   43,
+   39
+  ],
+  "px": 5706
+ },
+ "garage_shed_roof": {
+  "srgb": [
+   60,
+   54,
+   50
+  ],
+  "px": 1536
+ },
+ "garage_wall": {
+  "srgb": [
+   66,
+   47,
+   38
+  ],
+  "px": 1321
+ },
+ "garage_gate": {
+  "srgb": [
+   45,
+   54,
+   38
+  ],
+  "px": 490
+ },
+ "garage_post": {
+  "srgb": [
+   49,
+   43,
+   40
+  ],
+  "px": 437
+ },
+ "garage_fence_3": {
+  "srgb": [
+   50,
+   49,
+   46
+  ],
+  "px": 293
+ },
+ "garage_fence_0": {
+  "srgb": [
+   56,
+   54,
+   51
+  ],
+  "px": 263
+ },
+ "garage_fence_1": {
+  "srgb": [
+   51,
+   50,
+   47
+  ],
+  "px": 239
+ },
+ "garage_fence_2": {
+  "srgb": [
+   59,
+   58,
+   54
+  ],
+  "px": 231
+ },
+ "garage_shed_wall": {
+  "srgb": [
+   43,
+   37,
+   32
+  ],
+  "px": 213
+ },
+ "garage_brick": {
+  "srgb": [
+   59,
+   45,
+   38
+  ],
+  "px": 207
+ },
+ "garage_floor": {
+  "srgb": [
+   50,
+   48,
+   46
+  ],
+  "px": 185
+ },
+ "garage_log": {
+  "srgb": [
+   67,
+   61,
+   56
+  ],
+  "px": 125
+ },
+ "garage_drum": {
+  "srgb": [
+   47,
+   55,
+   43
+  ],
+  "px": 108
+ },
+ "garage_concrete": {
+  "srgb": [
+   113,
+   103,
+   87
+  ],
+  "px": 96
+ },
+ "garage_red": {
+  "srgb": [
+   125,
+   42,
+   39
+  ],
+  "px": 64
+ },
+ "garage_planks": {
+  "srgb": [
+   55,
+   47,
+   40
+  ],
+  "px": 63
+ },
+ "garage_rust": {
+  "srgb": [
+   66,
+   45,
+   38
+  ],
+  "px": 52
+ },
+ "garage_drum_grey": {
+  "srgb": [
+   37,
+   44,
+   38
+  ],
+  "px": 47
+ },
+ "garage_voussoir_dark": {
+  "srgb": [
+   92,
+   62,
+   53
+  ],
+  "px": 28
+ },
+ "garage_glass": {
+  "srgb": [
+   54,
+   54,
+   51
+  ],
+  "px": 27
+ },
+ "garage_voussoir": {
+  "srgb": [
+   99,
+   64,
+   54
+  ],
+  "px": 24
+ }
+}

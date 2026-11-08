@@ -1,0 +1,21 @@
+{
+ "shots": [
+  "k_downpipe_side",
+  "k_downpipe_top_side",
+  "k_eave_gap_front",
+  "k_eave_gap_side",
+  "k_canopy_side",
+  "k_canopy_front_low",
+  "k_hip_section",
+  "k_seams_eave",
+  "k_win_up_oblique",
+  "k_canopy_section",
+  "k_canopy_under",
+  "k_hip_cap_low",
+  "v_front",
+  "v_back",
+  "v_left",
+  "v_top",
+  "v_3q"
+ ]
+}

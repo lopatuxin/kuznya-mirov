@@ -1,0 +1,92 @@
+{
+  "gates": {
+    "views": {
+      "right": {
+        "iou": 0.9833,
+        "outside_m": {
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.001,
+          "bottom": 0.0
+        },
+        "regions": {
+          "envelope": {
+            "model_only_pct": 0.96,
+            "ref_only_pct": 0.7,
+            "iou": 0.9834
+          }
+        },
+        "diff": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\review\\diff_right.png"
+      }
+    },
+    "fail": [],
+    "size": [
+      0.036,
+      0.88,
+      0.2709
+    ],
+    "mesh": {
+      "tris_total": 27100,
+      "floating": [],
+      "coplanar": [],
+      "below": []
+    },
+    "warn": [],
+    "passed": true,
+    "names": [
+      "HordeAKMv1_envelope"
+    ]
+  },
+  "texture": {
+    "atlas": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\akm-stable-basecolor.png",
+    "size": [
+      4096,
+      4096
+    ],
+    "geometry_hash": "e5f17197fd5e7817dc20b7fc2ca12537fb2cc8f7e18fd846dcc0936d36481f76",
+    "uv_layers": [
+      "UVMap"
+    ],
+    "projection": "stable side and cap charts baked into atlas"
+  },
+  "glb": {
+    "file": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\akm-v1.glb",
+    "tris": 27100,
+    "primitives": 1,
+    "size_gltf": [
+      0.0174,
+      0.1309,
+      0.4251
+    ],
+    "size_blender": [
+      0.0174,
+      0.4251,
+      0.1309
+    ],
+    "lowest_gltf_y": -0.0636,
+    "materials": [
+      {
+        "name": "HordeAKMv1_stable_artwork",
+        "base_color_factor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "maps": [
+          "baseColorTexture"
+        ]
+      }
+    ],
+    "images": 1,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "color_0_types": [],
+    "extensions": [
+      "KHR_materials_specular"
+    ]
+  }
+}

@@ -1,0 +1,141 @@
+{
+ "part": "house",
+ "fail": [],
+ "warn": [
+  "no region boxes in PARTS: the part has no silhouette gate",
+  "EK_kontora: 187764 open edges (fine only for cards and sheets)",
+  "EK_kontora: 194 zero-area faces",
+  "EK_kontora_sign: 346 open edges (fine only for cards and sheets)",
+  "3300 coplanar overlap candidates (z-fighting)",
+  "coplanar check stopped early on a very large flat group: not every plane was checked"
+ ],
+ "views": {},
+ "mesh": {
+  "tris_total": 139508,
+  "coplanar": [
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -7.32,
+     26.772,
+     0.5
+    ],
+    "overlap_m2": 0.0024
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -6.654,
+     26.755,
+     0.5
+    ],
+    "overlap_m2": 0.0024
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -1.36,
+     0.488,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -1.276,
+     0.477,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -1.11,
+     0.488,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -1.026,
+     0.477,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -0.86,
+     0.488,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -0.776,
+     0.477,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -0.61,
+     0.488,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   },
+   {
+    "objects": [
+     "EK_kontora",
+     "EK_kontora"
+    ],
+    "at": [
+     -0.526,
+     0.477,
+     0.6
+    ],
+    "overlap_m2": 0.0087
+   }
+  ],
+  "below": []
+ },
+ "floating": [],
+ "passed": true
+}

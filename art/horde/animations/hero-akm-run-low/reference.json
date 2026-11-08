@@ -1,0 +1,25 @@
+{
+  "status": "approved",
+  "source_url": "https://animmade.com/animation/1404",
+  "preview_url": "https://sketchfab.com/models/c38f0da9b1de4c0ca7a1521be566e485/embed?autostart=1",
+  "title": "Бег с винтовкой (Running with a rifle), Animmade",
+  "segment_seconds": [
+    0,
+    2
+  ],
+  "subject": "single mocap mannequin",
+  "requested_action": "looped ordinary run with the AKM lowered, held with both hands",
+  "observed": "Hands carried low at hip and belly height; weapon itself is not displayed.",
+  "approval": "Owner approved this source, the whole 2 s segment and the mannequin in chat on 2026-11-07 and allowed the download.",
+  "replaces": "бег_героя built from the stock Бег clip with the idle upper body (owner: «ужасная анимация бега с автоматом», 2026-11-07)",
+  "source_download": {
+    "page": "https://animmade.com/animation/1404",
+    "file": "reference-60fps.fbx",
+    "fps": 60
+  },
+  "cycle_seconds": [
+    1.1708333333333334,
+    1.8375
+  ],
+  "result": "Installed as бег_героя in games/horde/motions.json; see validation.json"
+}

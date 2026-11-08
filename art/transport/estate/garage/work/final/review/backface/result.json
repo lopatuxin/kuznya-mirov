@@ -1,0 +1,26 @@
+{
+ "top": {
+  "hits": 11678,
+  "backfaces": {}
+ },
+ "game": {
+  "hits": 13896,
+  "backfaces": {}
+ },
+ "front": {
+  "hits": 3819,
+  "backfaces": {}
+ },
+ "back": {
+  "hits": 3819,
+  "backfaces": {}
+ },
+ "left": {
+  "hits": 2754,
+  "backfaces": {}
+ },
+ "right": {
+  "hits": 2754,
+  "backfaces": {}
+ }
+}

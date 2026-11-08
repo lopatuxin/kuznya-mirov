@@ -1,0 +1,20 @@
+{
+  "properties": {
+    "controlled": "flag",
+    "food": "flag",
+    "score": "number",
+    "segment": "number",
+    "ball": "flag",
+    "solid": "flag",
+    "brick": "flag",
+    "strong": "flag",
+    "hits": "number",
+    "paddle": "flag",
+    "broken": "number",
+    "cube": "number",
+    "clock": "timer",
+    "caption": "text",
+    "slot": "number",
+    "tone": "number"
+  }
+}

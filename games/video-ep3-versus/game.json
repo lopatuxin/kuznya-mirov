@@ -1,0 +1,34 @@
+{
+  "name": "Dark Souls и у нас",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#140d08"
+  },
+  "max_objects": 32,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Kurale-Regular.ttf"
+    },
+    "images": {
+      "forest": {
+        "path": "images/forest.png",
+        "smooth": true
+      },
+      "card": {
+        "path": "images/card.png",
+        "smooth": true
+      },
+      "card_glow": {
+        "path": "images/card_glow.png",
+        "smooth": true
+      }
+    }
+  }
+}

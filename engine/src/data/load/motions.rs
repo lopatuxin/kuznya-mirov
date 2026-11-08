@@ -599,6 +599,7 @@ pub fn rebuild_skeleton(
             look: Look::Lit,
             shadow: None,
             solid: None,
+            walkable: None,
             cutaway: None,
             idle: None,
             walk: None,
@@ -606,6 +607,8 @@ pub fn rebuild_skeleton(
             feet: None,
             spine: None,
             hands: None,
+            hand: None,
+            support: None,
         })
         .collect();
     let mut errors = ErrorSink::new();

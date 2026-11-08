@@ -106,6 +106,8 @@ pub(super) fn strips(name: &str, arms: &[(f64, f64, f64)]) -> Model {
         look: Look::Lit,
         picture_shadow: false,
         building: Default::default(),
+        held_hand: Default::default(),
+        support: None,
     }
 }
 
@@ -256,5 +258,7 @@ pub(super) fn ribbon(name: &str, width: f64, length: f64, across: usize, along: 
         look: Look::Lit,
         picture_shadow: false,
         building: Default::default(),
+        held_hand: Default::default(),
+        support: None,
     }
 }

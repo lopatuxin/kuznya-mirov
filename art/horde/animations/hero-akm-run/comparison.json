@@ -1,0 +1,21 @@
+{
+  "before": {
+    "motion_source": "Stock Jog plus leg tweaks and a constant right-arm correction",
+    "data": "motions-before.json",
+    "game_speed_mps": 4.5,
+    "cycle_seconds": 0.7466666
+  },
+  "after": {
+    "motion_source": "Owner-approved Animmade rifle run, 43/60..99/60 s",
+    "bones_with_measured_rotation_fit": 22,
+    "cyclic_keys_per_bone": 64,
+    "game_speed_mps": 2.2,
+    "cycle_seconds": 0.5185185,
+    "matched_idle_grip": true
+  },
+  "comparison": {
+    "source_to_target": "Anatomical joint directions and stance/swing ordering retained; step reach shortened to target limb lengths; tempo intentionally increased by 1.8.",
+    "pelvis": "Native base clip translation retained with bounce 0.4; source root trajectory not reproduced.",
+    "contact": "Shoe-floor clearance fitted to source ankle/toe markers and checked against engine-skinned shoe geometry; exact horizontal foot locking not established."
+  }
+}

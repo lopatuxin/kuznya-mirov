@@ -1,0 +1,28 @@
+{
+  "objects": [
+    {"name":"director","clock":1000},
+    {"part":"edge","slot":1,"position":[2.6,4.35],"size":[13.8,21.3],"color":"#4a4f5a","layer":1},
+    {"part":"card","slot":1,"position":[2.75,4.5],"size":[13.5,21],"color":"#2f343d","layer":2},
+    {"part":"dark","slot":1,"position":[3.431,14.919],"size":[12.138,9.681],"image":"wolf_dark","layer":3},
+    {"part":"figure","slot":1,"position":[3.431,14.919],"size":[12.138,9.681],"image":"wolf","layer":4},
+    {"part":"mark","slot":1,"mark":"?","position":[7.97,16.49],"size":[5,5]},
+    {"part":"num","slot":1,"num":"1","tone":0,"position":[2.75,26],"size":[13.5,3]},
+    {"part":"edge","slot":2,"position":[17.6,4.35],"size":[13.8,21.3],"color":"#4a4f5a","layer":1},
+    {"part":"card","slot":2,"position":[17.75,4.5],"size":[13.5,21],"color":"#2f343d","layer":2},
+    {"part":"dark","slot":2,"position":[20.206,8.556],"size":[8.589,16.044],"image":"leshy_dark","layer":3},
+    {"part":"figure","slot":2,"position":[20.206,8.556],"size":[8.589,16.044],"image":"leshy","layer":4},
+    {"part":"mark","slot":2,"mark":"?","position":[22,12.79],"size":[5,5]},
+    {"part":"num","slot":2,"num":"2","tone":0,"position":[17.75,26],"size":[13.5,3]},
+    {"part":"edge","slot":3,"position":[32.6,4.35],"size":[13.8,21.3],"color":"#4a4f5a","layer":1},
+    {"part":"card","slot":3,"position":[32.75,4.5],"size":[13.5,21],"color":"#2f343d","layer":2},
+    {"part":"dark","slot":3,"position":[33.809,11.286],"size":[11.382,13.314],"image":"robber_dark","layer":3},
+    {"part":"figure","slot":3,"position":[33.809,11.286],"size":[11.382,13.314],"image":"robber","layer":4},
+    {"part":"mark","slot":3,"mark":"?","position":[38.37,14.38],"size":[5,5]},
+    {"part":"num","slot":3,"num":"3","tone":0,"position":[32.75,26],"size":[13.5,3]},
+    {"part":"edge","slot":4,"position":[47.6,4.35],"size":[13.8,21.3],"color":"#4a4f5a","layer":1},
+    {"part":"card","slot":4,"position":[47.75,4.5],"size":[13.5,21],"color":"#2f343d","layer":2},
+    {"part":"big","slot":4,"big":"?","position":[47.75,4.5],"size":[13.5,21]},
+    {"part":"num","slot":4,"num":"4","tone":0,"position":[47.75,26],"size":[13.5,3]},
+    {"part":"caption","caption":"пишите в комментариях","position":[10,30.2],"size":[44,3.4]}
+  ]
+}

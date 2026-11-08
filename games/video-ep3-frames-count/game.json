@@ -1,0 +1,378 @@
+{
+  "name": "Сколько кадров у Ильи",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#140d08"
+  },
+  "max_objects": 130,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Kurale-Regular.ttf"
+    },
+    "images": {
+      "f00": {
+        "path": "images/f00.png",
+        "smooth": true
+      },
+      "f01": {
+        "path": "images/f01.png",
+        "smooth": true
+      },
+      "f02": {
+        "path": "images/f02.png",
+        "smooth": true
+      },
+      "f03": {
+        "path": "images/f03.png",
+        "smooth": true
+      },
+      "f04": {
+        "path": "images/f04.png",
+        "smooth": true
+      },
+      "f05": {
+        "path": "images/f05.png",
+        "smooth": true
+      },
+      "f06": {
+        "path": "images/f06.png",
+        "smooth": true
+      },
+      "f07": {
+        "path": "images/f07.png",
+        "smooth": true
+      },
+      "f08": {
+        "path": "images/f08.png",
+        "smooth": true
+      },
+      "f09": {
+        "path": "images/f09.png",
+        "smooth": true
+      },
+      "f10": {
+        "path": "images/f10.png",
+        "smooth": true
+      },
+      "f11": {
+        "path": "images/f11.png",
+        "smooth": true
+      },
+      "f12": {
+        "path": "images/f12.png",
+        "smooth": true
+      },
+      "f13": {
+        "path": "images/f13.png",
+        "smooth": true
+      },
+      "f14": {
+        "path": "images/f14.png",
+        "smooth": true
+      },
+      "f15": {
+        "path": "images/f15.png",
+        "smooth": true
+      },
+      "f16": {
+        "path": "images/f16.png",
+        "smooth": true
+      },
+      "f17": {
+        "path": "images/f17.png",
+        "smooth": true
+      },
+      "f18": {
+        "path": "images/f18.png",
+        "smooth": true
+      },
+      "f19": {
+        "path": "images/f19.png",
+        "smooth": true
+      },
+      "f20": {
+        "path": "images/f20.png",
+        "smooth": true
+      },
+      "f21": {
+        "path": "images/f21.png",
+        "smooth": true
+      },
+      "f22": {
+        "path": "images/f22.png",
+        "smooth": true
+      },
+      "f23": {
+        "path": "images/f23.png",
+        "smooth": true
+      },
+      "f24": {
+        "path": "images/f24.png",
+        "smooth": true
+      },
+      "f25": {
+        "path": "images/f25.png",
+        "smooth": true
+      },
+      "f26": {
+        "path": "images/f26.png",
+        "smooth": true
+      },
+      "f27": {
+        "path": "images/f27.png",
+        "smooth": true
+      },
+      "f28": {
+        "path": "images/f28.png",
+        "smooth": true
+      },
+      "f29": {
+        "path": "images/f29.png",
+        "smooth": true
+      },
+      "f30": {
+        "path": "images/f30.png",
+        "smooth": true
+      },
+      "f31": {
+        "path": "images/f31.png",
+        "smooth": true
+      },
+      "f32": {
+        "path": "images/f32.png",
+        "smooth": true
+      },
+      "f33": {
+        "path": "images/f33.png",
+        "smooth": true
+      },
+      "f34": {
+        "path": "images/f34.png",
+        "smooth": true
+      },
+      "f35": {
+        "path": "images/f35.png",
+        "smooth": true
+      },
+      "f36": {
+        "path": "images/f36.png",
+        "smooth": true
+      },
+      "d00": {
+        "path": "images/d00.png",
+        "smooth": true
+      },
+      "d01": {
+        "path": "images/d01.png",
+        "smooth": true
+      },
+      "d02": {
+        "path": "images/d02.png",
+        "smooth": true
+      },
+      "d03": {
+        "path": "images/d03.png",
+        "smooth": true
+      },
+      "d04": {
+        "path": "images/d04.png",
+        "smooth": true
+      },
+      "d05": {
+        "path": "images/d05.png",
+        "smooth": true
+      },
+      "d06": {
+        "path": "images/d06.png",
+        "smooth": true
+      },
+      "d07": {
+        "path": "images/d07.png",
+        "smooth": true
+      },
+      "d08": {
+        "path": "images/d08.png",
+        "smooth": true
+      },
+      "d09": {
+        "path": "images/d09.png",
+        "smooth": true
+      },
+      "d10": {
+        "path": "images/d10.png",
+        "smooth": true
+      },
+      "d11": {
+        "path": "images/d11.png",
+        "smooth": true
+      },
+      "d12": {
+        "path": "images/d12.png",
+        "smooth": true
+      },
+      "d13": {
+        "path": "images/d13.png",
+        "smooth": true
+      },
+      "d14": {
+        "path": "images/d14.png",
+        "smooth": true
+      },
+      "d15": {
+        "path": "images/d15.png",
+        "smooth": true
+      },
+      "d16": {
+        "path": "images/d16.png",
+        "smooth": true
+      },
+      "d17": {
+        "path": "images/d17.png",
+        "smooth": true
+      },
+      "d18": {
+        "path": "images/d18.png",
+        "smooth": true
+      },
+      "d19": {
+        "path": "images/d19.png",
+        "smooth": true
+      },
+      "d20": {
+        "path": "images/d20.png",
+        "smooth": true
+      },
+      "d21": {
+        "path": "images/d21.png",
+        "smooth": true
+      },
+      "d22": {
+        "path": "images/d22.png",
+        "smooth": true
+      },
+      "d23": {
+        "path": "images/d23.png",
+        "smooth": true
+      },
+      "d24": {
+        "path": "images/d24.png",
+        "smooth": true
+      },
+      "d25": {
+        "path": "images/d25.png",
+        "smooth": true
+      },
+      "d26": {
+        "path": "images/d26.png",
+        "smooth": true
+      },
+      "d27": {
+        "path": "images/d27.png",
+        "smooth": true
+      },
+      "d28": {
+        "path": "images/d28.png",
+        "smooth": true
+      },
+      "d29": {
+        "path": "images/d29.png",
+        "smooth": true
+      },
+      "d30": {
+        "path": "images/d30.png",
+        "smooth": true
+      },
+      "d31": {
+        "path": "images/d31.png",
+        "smooth": true
+      },
+      "d32": {
+        "path": "images/d32.png",
+        "smooth": true
+      },
+      "d33": {
+        "path": "images/d33.png",
+        "smooth": true
+      },
+      "d34": {
+        "path": "images/d34.png",
+        "smooth": true
+      },
+      "d35": {
+        "path": "images/d35.png",
+        "smooth": true
+      },
+      "d36": {
+        "path": "images/d36.png",
+        "smooth": true
+      },
+      "backdrop": {
+        "path": "images/backdrop.png",
+        "smooth": true
+      },
+      "rhomb_lit": {
+        "path": "images/rhomb_lit.png",
+        "smooth": true
+      },
+      "rhomb_done": {
+        "path": "images/rhomb_done.png",
+        "smooth": true
+      },
+      "card_286x488": {
+        "path": "images/card_286x488.png",
+        "smooth": true
+      },
+      "card_526x488": {
+        "path": "images/card_526x488.png",
+        "smooth": true
+      },
+      "card_1534x488": {
+        "path": "images/card_1534x488.png",
+        "smooth": true
+      },
+      "rim_wait_286x488": {
+        "path": "images/rim_wait_286x488.png",
+        "smooth": true
+      },
+      "rim_cur_286x488": {
+        "path": "images/rim_cur_286x488.png",
+        "smooth": true
+      },
+      "rim_done_286x488": {
+        "path": "images/rim_done_286x488.png",
+        "smooth": true
+      },
+      "rim_wait_526x488": {
+        "path": "images/rim_wait_526x488.png",
+        "smooth": true
+      },
+      "rim_cur_526x488": {
+        "path": "images/rim_cur_526x488.png",
+        "smooth": true
+      },
+      "rim_done_526x488": {
+        "path": "images/rim_done_526x488.png",
+        "smooth": true
+      },
+      "rim_wait_1534x488": {
+        "path": "images/rim_wait_1534x488.png",
+        "smooth": true
+      },
+      "rim_cur_1534x488": {
+        "path": "images/rim_cur_1534x488.png",
+        "smooth": true
+      },
+      "rim_done_1534x488": {
+        "path": "images/rim_done_1534x488.png",
+        "smooth": true
+      }
+    }
+  }
+}

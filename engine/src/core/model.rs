@@ -189,6 +189,13 @@ pub enum Look {
     Picture,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum HeldHand {
+    Left,
+    #[default]
+    Right,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct Model {
     pub name: String,
@@ -208,6 +215,9 @@ pub struct Model {
     /// Картина `picture` с ключом `shadow: true`: отбрасывает тень своим объёмом на всё, кроме таких же картин.
     pub picture_shadow: bool,
     pub building: Building,
+    pub held_hand: HeldHand,
+    /// Точка `support` в осях модели: к ней тянется вторая кисть держащего.
+    pub support: Option<[f32; 3]>,
 }
 
 /// Допуск на нижнюю границу коробки `inside`: стоящий на полу — в коробке, что начинается с пола.
@@ -245,6 +255,9 @@ pub struct Building {
     pub shift: [f32; 3],
     /// Сетка столбов твёрдой модели (`solid: true`); `None` у остальных.
     pub solid: Option<Arc<SolidGrid>>,
+    /// Твёрдая модель с `walkable: false`: по её верхам не ходят, и ступенька на неё не поднимает — вся она препятствие
+    /// от земли.
+    pub obstacle_only: bool,
     /// Номер модели среза в таблице (`cutaway`).
     pub cutaway: Option<usize>,
     /// Коробки внутренности; их узлы не рисуются и не твёрдые.
@@ -272,6 +285,8 @@ impl Model {
             look: Look::Lit,
             picture_shadow: false,
             building: Default::default(),
+            held_hand: HeldHand::Right,
+            support: None,
         }
     }
 

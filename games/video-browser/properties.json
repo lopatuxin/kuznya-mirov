@@ -1,0 +1,14 @@
+{
+  "properties": {
+    "controlled": "flag",
+    "food": "flag",
+    "score": "number",
+    "game": "flag",
+    "clock": "timer",
+    "part": "text",
+    "window": "text",
+    "label": "text",
+    "tone": "number",
+    "segment": "number"
+  }
+}

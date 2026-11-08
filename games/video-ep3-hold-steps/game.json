@@ -1,0 +1,57 @@
+{
+  "name": "Остановка в миг попадания",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#140d08"
+  },
+  "max_objects": 48,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Kurale-Regular.ttf"
+    },
+    "images": {
+      "hit": {
+        "path": "images/hit_strip.png",
+        "smooth": true,
+        "frames": 10,
+        "columns": 5,
+        "frame_by": "shot"
+      },
+      "head": {
+        "path": "images/arrow_head.png",
+        "smooth": true
+      },
+      "forest": {
+        "path": "images/forest.png",
+        "smooth": true
+      },
+      "panel": {
+        "path": "images/panel.png",
+        "smooth": true
+      },
+      "frame": {
+        "path": "images/frame.png",
+        "smooth": true
+      },
+      "frame_red": {
+        "path": "images/frame_red.png",
+        "smooth": true
+      },
+      "key_off": {
+        "path": "images/key_off.png",
+        "smooth": true
+      },
+      "key_on": {
+        "path": "images/key_on.png",
+        "smooth": true
+      }
+    }
+  }
+}

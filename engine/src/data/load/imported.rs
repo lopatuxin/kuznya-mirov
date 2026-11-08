@@ -12,7 +12,7 @@ use crate::data::ktx2::parse_ktx2;
 
 use super::ModelDecl;
 
-const INDEX_VERSION: u32 = 1;
+const INDEX_VERSION: u32 = 2;
 
 #[derive(Deserialize)]
 struct IndexFile {
@@ -135,6 +135,7 @@ mod tests {
             look: Look::Lit,
             shadow: None,
             solid: None,
+            walkable: None,
             cutaway: None,
             idle: None,
             walk: None,
@@ -142,10 +143,12 @@ mod tests {
             feet: None,
             spine: None,
             hands: None,
+            hand: None,
+            support: None,
         }
     }
 
-    const INDEX: &str = r#"{"version":1,"models":{
+    const INDEX: &str = r#"{"version":2,"models":{
         "models/a.glb":{"source":"x","model":"imported/models/a.glb","images":["imported/textures/1.ktx2",null,"imported/textures/2.ktx2"]},
         "models/b.glb":{"source":"y","model":"imported/models/b.glb","images":["imported/textures/2.ktx2"]}}}"#;
 
@@ -173,8 +176,8 @@ mod tests {
         for text in [
             None,
             Some("{ not json"),
-            Some(r#"{"version":2,"models":{}}"#),
-            Some(r#"{"version":1}"#),
+            Some(r#"{"version":3,"models":{}}"#),
+            Some(r#"{"version":2}"#),
         ] {
             let plan = ImportedPlan::new(&decls, text);
             assert_eq!(plan.model_path(0), None, "{text:?}");

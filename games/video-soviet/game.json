@@ -1,0 +1,68 @@
+{
+  "name": "Советский мультфильм на старой плёнке",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#24272e"
+  },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {},
+    "images": {
+      "soviet": {
+        "path": "images/soviet.png",
+        "smooth": true
+      },
+      "wash": {
+        "path": "images/wash.png",
+        "smooth": true
+      },
+      "vignette": {
+        "path": "images/vignette.png",
+        "smooth": true
+      },
+      "dark": {
+        "path": "images/dark.png",
+        "smooth": true
+      },
+      "scratch1": {
+        "path": "images/scratch1.png",
+        "smooth": true
+      },
+      "dust1": {
+        "path": "images/dust1.png",
+        "smooth": true
+      },
+      "scratch2": {
+        "path": "images/scratch2.png",
+        "smooth": true
+      },
+      "dust2": {
+        "path": "images/dust2.png",
+        "smooth": true
+      },
+      "scratch3": {
+        "path": "images/scratch3.png",
+        "smooth": true
+      },
+      "dust3": {
+        "path": "images/dust3.png",
+        "smooth": true
+      },
+      "scratch4": {
+        "path": "images/scratch4.png",
+        "smooth": true
+      },
+      "dust4": {
+        "path": "images/dust4.png",
+        "smooth": true
+      }
+    }
+  }
+}

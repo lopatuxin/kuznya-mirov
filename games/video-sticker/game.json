@@ -1,0 +1,19 @@
+{
+  "name": "Герой-наклейка",
+  "scene": { "width": 32, "height": 18, "background": "#24272e" },
+  "max_objects": 32,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {},
+    "images": {
+      "old_hero": { "path": "images/old_hero.png", "smooth": true },
+      "dash_a": { "path": "images/dash_a.png", "smooth": true },
+      "dash_b": { "path": "images/dash_b.png", "smooth": true }
+    }
+  }
+}

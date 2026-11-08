@@ -1,0 +1,174 @@
+{
+  "date": "2026-11-08",
+  "game": "horde",
+  "motion": "бег_героя",
+  "method": "fit_low.py in Blender 5.2: approved Animmade 1404 FBX sampled at 60 fps (source-measurements.json), steady cycle 70.25/60..110.25/60 s aligned to the pelvis bob of the model's base clip, joint directions retargeted to the hero, legs solved to the measured ankle paths, rifle butt set in the right shoulder pocket with the chest turned 20 degrees right, left palm kept on the fore-end as in the previous grip, finger grip re-expressed over Бег. Evaluated by a temporary native engine probe through Skeleton::pose and hold_item (128 samples per cycle) and a temporary probe of the rifle mesh against the skinned body (32 samples). Poses of Бег and Спринт come from the engine (base-clips.json, temporary native probe).",
+  "changes_from_reference": [
+    "Game speed back to 4.5 m/s (owner, 2026-11-08: «очень медленно бежит» at 2.2): cycle 0.54 s, stride 1.33 of the scaled reference; the stance plays faster and the flight slower so each foot stands on the ground 27% of the cycle instead of the reference 37.5% (a faster run has a longer flight; otherwise the body passes the planted foot farther than the leg reaches).",
+    "Upper body straightened by 10 degrees (reference leans 22-25 degrees at its faster speed).",
+    "Planted foot locked to the ground (owner: «бегает с пробуксовкой», 2026-11-08): while the reference foot is within 2.5 cm of the ground it moves back at exactly the game speed, plus the reference foot roll over the toe; the toe is held through toe-off by a second pass; foot heights come from the unclosed reference so the cycle seam no longer lifts a planted foot.",
+    "Base clip Спринт instead of Бег (owner: «ноги вплотную… на полусогнутых», 2026-11-08): its pelvis rides higher (0.88-0.93 m instead of 0.82-0.92 m with bounce 0.35); feet set 8.5 cm further apart (0.17-0.20 m instead of 0.10-0.12 m); the right leg repeats the left one half a cycle later, mirrored, because the reference runner hovers the right foot before landing and plants it far ahead; each plant is set 8 cm forward so the planted leg is not stretched straight before toe-off.",
+    "Lowered-rifle carry as the owner holds one (2026-11-08: «ствол смотрел бы вниз… рука у цевья наполовину согнута, локоть почти прижат к боку»): the rifle is scaled to 0.85 (0.75 m) for the hero's short arms; the left arm is placed first (upper arm by the side, forearm forward, bent about 64 degrees), the fore-end lies in that hand and the butt points at the front of the right shoulder, so the barrel runs down 26-35 degrees and 35-50 degrees across the body; the right elbow hangs down; the chest keeps 0.3 of the reference swing and is turned 10 degrees right. Engine: the second hand reaching the support no longer forces the elbow outward, it keeps the side the motion bent it to (Архитектура Кузни/Движения)."
+  ],
+  "before_after": {
+    "planted_foot_speed_back_mps": {
+      "before": 5.45,
+      "after_2026_11_07": "1.0-3.1, mean 2.0",
+      "after": "about 2.2"
+    },
+    "feet_apart_sideways_m": {
+      "before": [
+        0.223,
+        0.231
+      ],
+      "after": [
+        0.094,
+        0.117
+      ]
+    },
+    "right_hand_height_m": {
+      "before": [
+        1.04,
+        1.14
+      ],
+      "after": [
+        0.93,
+        1.05
+      ]
+    },
+    "barrel_pitch_degrees": {
+      "before": [
+        -22,
+        -22
+      ],
+      "after": [
+        -31.8,
+        -28
+      ]
+    },
+    "head_ahead_of_hips_m": {
+      "before": [
+        0.216,
+        0.234
+      ],
+      "after": [
+        0.147,
+        0.185
+      ]
+    },
+    "upper_body": {
+      "before": "frozen idle pose (upper: Стойка, lean 8)",
+      "after": "measured torso, shoulder and arm motion"
+    },
+    "max_support_error_m": {
+      "before": 0,
+      "after": 0
+    },
+    "cycle_seconds": {
+      "before": 0.747,
+      "after": 0.54
+    }
+  },
+  "max_joint_move_per_60hz_frame_m": {
+    "Hips": 0.014,
+    "Head": 0.023,
+    "LeftHand": 0.038,
+    "RightHand": 0.032,
+    "LeftFoot": 0.191,
+    "RightFoot": 0.189
+  },
+  "tests": {
+    "phase59_held_item": "6 passed",
+    "phase55_motions": "31 passed",
+    "horde_game": "17 passed, 1 failed: the_hero_enters_the_ruin_through_the_breach_and_it_is_cut_away («дом не срезан»), fails the same with the previous motions; arrow_keys_run_the_hero_right_and_down shortened back for 4.5 m/s (0.6 s right, 0.5 s down: longer runs stop at the camp fence)",
+    "engine_all": "all pass except the_hero_enters_the_ruin_through_the_breach_and_it_is_cut_away (pre-existing)"
+  },
+  "ui": "Running game and idle stance captured in the browser at 4.5 m/s with the 0.75 m rifle (right, left, down), sound muted.",
+  "limitations": [
+    "Pelvis height bob comes from the model base clip Спринт (bounce 0.35); the reference root path is not reproduced.",
+    "Residual slip at 4.5 m/s: median 0.2-0.3 m/s, short peaks up to 3 m/s at landing and toe-off.",
+    "Not checked on the editor Анимация stand screen.",
+    "In the idle stance the butt touches the right upper arm by up to 3.3 cm (idle motion not refitted)."
+  ],
+  "contact_slip_vs_ground_mps": {
+    "first_version": {
+      "median": 3.45,
+      "p90": 3.8
+    },
+    "now": {
+      "left": {
+        "median": 0.3,
+        "p90": 0.89,
+        "max": 2.47
+      },
+      "right": {
+        "median": 0.22,
+        "p90": 1.32,
+        "max": 2.96
+      },
+      "note": "at 4.5 m/s; planted foot moves back at 4.25 m/s on average (needs 4.5)"
+    },
+    "at_2_2_mps": {
+      "left": {
+        "median": 0.15,
+        "p90": 0.67,
+        "max": 1.02
+      },
+      "right": {
+        "median": 0.13,
+        "p90": 0.73,
+        "max": 2.22
+      }
+    }
+  },
+  "knee_bend_on_ground_degrees": {
+    "first_version": "not measured",
+    "2026-11-08_before": {
+      "left": "22-59",
+      "right": "46-77"
+    },
+    "now": {
+      "left": "37-50",
+      "right": "37-51"
+    },
+    "at_2_2_mps": {
+      "left": "27-48",
+      "right": "27-49"
+    }
+  },
+  "feet_apart_sideways_m": {
+    "before": [
+      0.096,
+      0.117
+    ],
+    "now": [
+      0.17,
+      0.203
+    ]
+  },
+  "hips_height_m": {
+    "before": [
+      0.819,
+      0.92
+    ],
+    "now": [
+      0.879,
+      0.929
+    ]
+  },
+  "rifle_inside_body_cm": {
+    "before": {
+      "right_upper_arm_and_forearm": 5,
+      "chest": 0
+    },
+    "now": {
+      "run": 0,
+      "note": "nothing inside the body in the run"
+    },
+    "idle_stance": {
+      "before_shrink": 1.4,
+      "after_shrink": 3.3,
+      "where": "right upper arm"
+    }
+  }
+}

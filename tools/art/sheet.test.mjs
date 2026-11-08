@@ -8,7 +8,7 @@ import { describe, it } from "node:test";
 import ffmpegPath from "ffmpeg-static";
 import sharp from "sharp";
 import {
-  bleedColor, colorEdgesFromFigure, fadeEnds, findCycle, findLoop, keyGreen, keyMagenta, keyVideoFrame, makeVideo,
+  bleedColor, colorEdgesFromFigure, fadeEnds, findCycle, findLoop, keyGreen, keyMagenta, keyPlate, keyVideoFrame, makeVideo,
   padToEven, parseRange, pickFrames, removeBackground, reversePath, stackColorAndMask, wrapEnds,
 } from "./sheet.mjs";
 
@@ -140,6 +140,72 @@ describe("removeBackground", () => {
     const edge = (3 * size + 6) * 4;
     assert.ok(rgba[edge + 3] > 0 && rgba[edge + 3] < 255, `прозрачность края ${rgba[edge + 3]}`);
     assert.deepEqual([...rgba.subarray(edge, edge + 3)], BROWN);
+  });
+});
+
+describe("keyPlate", () => {
+  const SIZE = 120;
+  // Фон — земля в мелкую клетку двух оттенков; кадр — тот же фон, на котором что-то нарисовано.
+  function ground() {
+    const rgb = Buffer.alloc(SIZE * SIZE * 3);
+    for (let p = 0; p < SIZE * SIZE; p++) rgb.set((p % SIZE + Math.floor(p / SIZE)) % 2 ? [150, 100, 50] : [140, 95, 45], p * 3);
+    return rgb;
+  }
+  function paint(rgb, left, top, side, color) {
+    for (let y = top; y < top + side; y++) for (let x = left; x < left + side; x++) rgb.set(color, (y * SIZE + x) * 3);
+  }
+  const alpha = (rgba, x, y) => rgba[(y * SIZE + x) * 4 + 3];
+
+  it("фон, перекрашенный видеомоделью целиком, прозрачен, а персонаж сплошной и без её сдвига цвета", () => {
+    const plate = ground();
+    const frame = Buffer.from(plate.map((value, i) => (i % 3 === 0 ? value - 40 : value)));
+    paint(frame, 20, 20, 20, [200, 30, 30]);
+    const rgba = keyPlate(frame, plate, SIZE, SIZE);
+    assert.equal(alpha(rgba, 5, 5), 0);
+    assert.equal(alpha(rgba, 30, 30), 255);
+    assert.equal(rgba[(30 * SIZE + 30) * 4], 240);
+  });
+
+  it("мелкое отличие от фона — рябь сжатия, а не персонаж", () => {
+    const plate = ground();
+    const frame = Buffer.from(plate);
+    paint(frame, 10, 10, 3, [255, 255, 255]);
+    assert.equal(alpha(keyPlate(frame, plate, SIZE, SIZE), 11, 11), 0);
+  });
+
+  it("пятно вдали от персонажа снимается, а отрезанная от него кисть рядом остаётся", () => {
+    const plate = ground();
+    const frame = Buffer.from(plate);
+    paint(frame, 70, 70, 25, [200, 30, 30]);
+    paint(frame, 50, 70, 15, [230, 200, 190]);
+    paint(frame, 0, 0, 15, [230, 200, 190]);
+    const rgba = keyPlate(frame, plate, SIZE, SIZE);
+    assert.equal(alpha(rgba, 56, 76), 255);
+    assert.equal(alpha(rgba, 5, 5), 0);
+  });
+
+  it("дырка внутри персонажа, совпавшая с фоном, заливается", () => {
+    const plate = ground();
+    const frame = Buffer.from(plate);
+    paint(frame, 15, 15, 30, [200, 30, 30]);
+    for (let y = 25; y < 35; y++) for (let x = 25; x < 35; x++) frame.set(plate.subarray((y * SIZE + x) * 3, (y * SIZE + x) * 3 + 3), (y * SIZE + x) * 3);
+    assert.equal(alpha(keyPlate(frame, plate, SIZE, SIZE), 30, 30), 255);
+  });
+
+  it("большая дырка внутри персонажа — настоящий фон, она остаётся прозрачной", () => {
+    const plate = ground();
+    const frame = Buffer.from(plate);
+    paint(frame, 10, 10, 40, [200, 30, 30]);
+    for (let y = 19; y < 41; y++) for (let x = 19; x < 41; x++) frame.set(plate.subarray((y * SIZE + x) * 3, (y * SIZE + x) * 3 + 3), (y * SIZE + x) * 3);
+    assert.equal(alpha(keyPlate(frame, plate, SIZE, SIZE), 30, 30), 0);
+  });
+
+  it("узкий залив в контуре, совпавший с фоном, заливается", () => {
+    const plate = ground();
+    const frame = Buffer.from(plate);
+    paint(frame, 15, 15, 30, [200, 30, 30]);
+    for (let y = 15; y < 30; y++) for (let x = 29; x < 32; x++) frame.set(plate.subarray((y * SIZE + x) * 3, (y * SIZE + x) * 3 + 3), (y * SIZE + x) * 3);
+    assert.equal(alpha(keyPlate(frame, plate, SIZE, SIZE), 30, 20), 255);
   });
 });
 

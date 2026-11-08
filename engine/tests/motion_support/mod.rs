@@ -381,3 +381,60 @@ pub fn point(skeleton: &Skeleton, scratch: &PoseScratch, name: &str) -> [f32; 3]
     let matrix = scratch.globals()[bone];
     [matrix[3][0], matrix[3][1], matrix[3][2]]
 }
+
+/// Плоский предмет с началом не в середине своей коробки и точкой `support` на цевье.
+pub fn prop_glb(with_support: bool) -> Vec<u8> {
+    let positions: Vec<u8> = [
+        -0.1, -0.1, 0.0, 0.1, -0.1, 0.0, 0.1, 0.1, 0.6, -0.1, 0.1, 0.6,
+    ]
+    .into_iter()
+    .flat_map(f32::to_le_bytes)
+    .collect();
+    let indices = vec![0, 0, 1, 0, 2, 0, 0, 0, 2, 0, 3, 0];
+    let mut bin = positions;
+    let position_length = bin.len();
+    bin.extend(indices);
+    while !bin.len().is_multiple_of(4) {
+        bin.push(0);
+    }
+    let nodes = if with_support {
+        json!([
+            {"name":"item","mesh":0},
+            {"name":"support","translation":[0.0,0.3,0.2]}
+        ])
+    } else {
+        json!([{"name":"item","mesh":0}])
+    };
+    let document = json!({
+        "asset":{"version":"2.0"},
+        "scene":0,
+        "scenes":[{"nodes":(0..if with_support {2} else {1}).collect::<Vec<_>>()}],
+        "nodes":nodes,
+        "meshes":[{"primitives":[{"attributes":{"POSITION":0},"indices":1}]}],
+        "buffers":[{"byteLength":bin.len()}],
+        "bufferViews":[
+            {"buffer":0,"byteOffset":0,"byteLength":position_length},
+            {"buffer":0,"byteOffset":position_length,"byteLength":12}
+        ],
+        "accessors":[
+            {"bufferView":0,"componentType":5126,"count":4,"type":"VEC3","min":[-0.1,-0.1,0.0],"max":[0.1,0.1,0.6]},
+            {"bufferView":1,"componentType":5123,"count":6,"type":"SCALAR"}
+        ]
+    });
+    let mut text = document.to_string().into_bytes();
+    while !text.len().is_multiple_of(4) {
+        text.push(b' ');
+    }
+    let total = 12 + 8 + text.len() + 8 + bin.len();
+    let mut file = Vec::new();
+    file.extend(b"glTF");
+    file.extend(2u32.to_le_bytes());
+    file.extend((total as u32).to_le_bytes());
+    file.extend((text.len() as u32).to_le_bytes());
+    file.extend(0x4E4F534Au32.to_le_bytes());
+    file.extend(text);
+    file.extend((bin.len() as u32).to_le_bytes());
+    file.extend(0x004E4942u32.to_le_bytes());
+    file.extend(bin);
+    file
+}

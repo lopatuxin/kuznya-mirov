@@ -1,0 +1,19 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "label", "for": { "has": ["num"] }, "anchor": "center",
+      "size": [13.5, 3], "text": "{num}", "font": "ui", "font_size": 2.4, "align": "center",
+      "color": { "table": ["#6b5a45", "#ffd36a", "#f3e6c4"], "by": "tone" } },
+    { "kind": "label", "for": { "has": ["nick"] }, "anchor": "center",
+      "size": [19, 1.8], "text": "{nick}", "font": "ui", "font_size": 1.4, "align": "left",
+      "color": "#c9a878" },
+    { "kind": "label", "for": { "has": ["line"] }, "anchor": "center",
+      "size": [19, 2.1], "text": "{line}", "font": "ui", "font_size": 1.6, "align": "left",
+      "color": "#f3e6c4" },
+    { "kind": "label", "for": { "has": ["likes"] }, "anchor": "center",
+      "size": [4, 1.6], "text": "{likes}", "font": "ui", "font_size": 1.3, "align": "left",
+      "color": "#c9a878" }
+  ]
+}

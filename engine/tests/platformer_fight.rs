@@ -52,7 +52,10 @@ impl Fight {
                 hero_at[0], hero_at[1]
             ),
         );
-        let scene = scene.replace(r#""hero_id": "ilya""#, &format!(r#""hero_id": "{hero_id}""#));
+        let scene = scene.replace(
+            r#""hero_id": "ilya""#,
+            &format!(r#""hero_id": "{hero_id}""#),
+        );
         let (mut game, config, _, _) = load_rest_with_stamps(
             &game_json,
             config,

@@ -1,0 +1,98 @@
+{
+ "fence": {
+  "boards_x": [
+   13.4875,
+   13.5125
+  ],
+  "rail_x": [
+   13.4385,
+   13.4885
+  ],
+  "post_x": [
+   13.3215,
+   13.4415
+  ],
+  "gap_board_rail": -0.001,
+  "gap_rail_post": -0.003
+ },
+ "fence_back": {
+  "gap_board_rail": -0.001
+ },
+ "fuel_shed_side_rays": {
+  "through": 0,
+  "total": 5754
+ },
+ "wheel": {
+  "min_z": 0.0005,
+  "max_y": 2.5799,
+  "x": [
+   9.463,
+   10.487
+  ],
+  "wall_batten_face_y": 2.58,
+  "corner_x": 10.6
+ },
+ "pulley": {
+  "sheave": {
+   "min": [
+    -0.025,
+    0.5,
+    7.005
+   ],
+   "max": [
+    0.025,
+    0.7,
+    7.205
+   ]
+  },
+  "beam_bottom": 7.3,
+  "strap": {
+   "min": [
+    -0.096,
+    0.565,
+    7.23
+   ],
+   "max": [
+    0.096,
+    0.635,
+    7.506
+   ]
+  }
+ },
+ "fireboard_axe_head": {
+  "gap_to_board": 0.0015,
+  "n": 72
+ },
+ "fireboard_shovel_blade": {
+  "gap_to_board": 0.0105,
+  "n": 705
+ },
+ "fireboard_buckets": {
+  "gap_to_board": 0.0,
+  "n": 1014
+ },
+ "fireboard_hooks": {
+  "gap_to_board": -0.0151,
+  "n": 2223
+ },
+ "sign": {
+  "letters_y": [
+   1.495,
+   1.4958
+  ],
+  "plate_y": [
+   1.4952,
+   1.5
+  ],
+  "letter_gap_to_plate": -0.0006
+ },
+ "ledge_under_gable_verts": 0,
+ "lying_drum_min_z": 0.0,
+ "rack_drums_min_z": 0.114,
+ "rack_chime_min_z_over_sleeper": 0.12,
+ "interior_back_wall_vc_at_1.4": {
+  "from_face_below": 0.397,
+  "from_face_above": 0.407
+ },
+ "front_eave_min_y": 1.0371
+}

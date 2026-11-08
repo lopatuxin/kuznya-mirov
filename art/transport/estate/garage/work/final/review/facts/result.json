@@ -1,0 +1,2266 @@
+{
+ "minz": [
+  -8.712,
+  0.866,
+  -0.0041
+ ],
+ "minz_mats": [
+  "garage_drum"
+ ],
+ "below_count": 16,
+ "below_pts": [
+  [
+   -8.712,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.712,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.712,
+   0.934,
+   -0.004
+  ],
+  [
+   -8.712,
+   0.934,
+   -0.004
+  ],
+  [
+   -8.688,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.688,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.688,
+   0.934,
+   -0.004
+  ],
+  [
+   -8.688,
+   0.934,
+   -0.004
+  ],
+  [
+   -8.412,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.412,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.412,
+   0.934,
+   -0.004
+  ],
+  [
+   -8.412,
+   0.934,
+   -0.004
+  ],
+  [
+   -8.388,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.388,
+   0.866,
+   -0.004
+  ],
+  [
+   -8.388,
+   0.934,
+   -0.004
+  ],
+  [
+   -8.388,
+   0.934,
+   -0.004
+  ]
+ ],
+ "materials": {
+  "garage_wall": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color",
+     1024,
+     1024
+    ],
+    [
+     "arm",
+     1024,
+     1024
+    ],
+    [
+     "normal",
+     1024,
+     1024
+    ],
+    [
+     "arm",
+     1024,
+     1024
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_brick": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color",
+     1024,
+     1024
+    ],
+    [
+     "arm",
+     1024,
+     1024
+    ],
+    [
+     "normal",
+     1024,
+     1024
+    ],
+    [
+     "arm",
+     1024,
+     1024
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_voussoir": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.8500000238418579,
+   "rough_linked": false
+  },
+  "garage_voussoir_dark": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.8500000238418579,
+   "rough_linked": false
+  },
+  "garage_mortar": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.949999988079071,
+   "rough_linked": false
+  },
+  "garage_roof": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.001",
+     512,
+     512
+    ],
+    [
+     "arm.001",
+     512,
+     512
+    ],
+    [
+     "normal.001",
+     512,
+     512
+    ],
+    [
+     "arm.001",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_gate": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.002",
+     512,
+     512
+    ],
+    [
+     "arm.002",
+     512,
+     512
+    ],
+    [
+     "normal.002",
+     512,
+     512
+    ],
+    [
+     "arm.002",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_planks": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.003",
+     512,
+     512
+    ],
+    [
+     "arm.003",
+     512,
+     512
+    ],
+    [
+     "normal.003",
+     512,
+     512
+    ],
+    [
+     "arm.003",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_shed_wall": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.003",
+     512,
+     512
+    ],
+    [
+     "arm.003",
+     512,
+     512
+    ],
+    [
+     "normal.003",
+     512,
+     512
+    ],
+    [
+     "arm.003",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_shed_roof": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.003",
+     512,
+     512
+    ],
+    [
+     "arm.003",
+     512,
+     512
+    ],
+    [
+     "normal.003",
+     512,
+     512
+    ],
+    [
+     "arm.003",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_fence_0": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ],
+    [
+     "normal.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_fence_1": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ],
+    [
+     "normal.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_fence_2": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ],
+    [
+     "normal.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_fence_3": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ],
+    [
+     "normal.004",
+     1024,
+     1024
+    ],
+    [
+     "arm.004",
+     1024,
+     1024
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_post": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.005",
+     1024,
+     1024
+    ],
+    [
+     "arm.005",
+     1024,
+     1024
+    ],
+    [
+     "normal.005",
+     1024,
+     1024
+    ],
+    [
+     "arm.005",
+     1024,
+     1024
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_log": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.006",
+     512,
+     512
+    ],
+    [
+     "arm.006",
+     512,
+     512
+    ],
+    [
+     "normal.006",
+     512,
+     512
+    ],
+    [
+     "arm.006",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_red": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.007",
+     512,
+     512
+    ],
+    [
+     "arm.007",
+     512,
+     512
+    ],
+    [
+     "normal.007",
+     512,
+     512
+    ],
+    [
+     "arm.007",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_drum": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.008",
+     512,
+     512
+    ],
+    [
+     "arm.008",
+     512,
+     512
+    ],
+    [
+     "normal.008",
+     512,
+     512
+    ],
+    [
+     "arm.008",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_drum_grey": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.008",
+     512,
+     512
+    ],
+    [
+     "arm.008",
+     512,
+     512
+    ],
+    [
+     "normal.008",
+     512,
+     512
+    ],
+    [
+     "arm.008",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_rust": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.001",
+     512,
+     512
+    ],
+    [
+     "arm.001",
+     512,
+     512
+    ],
+    [
+     "normal.001",
+     512,
+     512
+    ],
+    [
+     "arm.001",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_concrete": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.009",
+     512,
+     512
+    ],
+    [
+     "arm.009",
+     512,
+     512
+    ],
+    [
+     "normal.009",
+     512,
+     512
+    ],
+    [
+     "arm.009",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_floor": {
+   "blend": "DITHERED",
+   "imgs": [
+    [
+     "color.010",
+     512,
+     512
+    ],
+    [
+     "arm.010",
+     512,
+     512
+    ],
+    [
+     "normal.010",
+     512,
+     512
+    ],
+    [
+     "arm.010",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_path": {
+   "blend": "BLENDED",
+   "imgs": [
+    [
+     "color.010",
+     512,
+     512
+    ],
+    [
+     "arm.010",
+     512,
+     512
+    ],
+    [
+     "normal.010",
+     512,
+     512
+    ],
+    [
+     "arm.010",
+     512,
+     512
+    ]
+   ],
+   "alpha_linked": true,
+   "alpha": 1.0,
+   "metal_linked": true,
+   "metal": 0.0,
+   "rough": 0.5,
+   "rough_linked": true
+  },
+  "garage_soot": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.949999988079071,
+   "rough_linked": false
+  },
+  "garage_iron": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.5,
+   "rough": 0.550000011920929,
+   "rough_linked": false
+  },
+  "garage_rubber": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.8500000238418579,
+   "rough_linked": false
+  },
+  "garage_rope": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.949999988079071,
+   "rough_linked": false
+  },
+  "garage_pit": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.8999999761581421,
+   "rough_linked": false
+  },
+  "garage_sand": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.949999988079071,
+   "rough_linked": false
+  },
+  "garage_frame": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.699999988079071,
+   "rough_linked": false
+  },
+  "garage_frame_dark": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.8500000238418579,
+   "rough_linked": false
+  },
+  "garage_glass": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.30000001192092896,
+   "rough": 0.15000000596046448,
+   "rough_linked": false
+  },
+  "garage_fuel_glass": {
+   "blend": "BLENDED",
+   "imgs": [],
+   "alpha_linked": true,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.03999999910593033,
+   "rough_linked": false
+  },
+  "garage_fuel": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.11999999731779099,
+   "rough_linked": false
+  },
+  "garage_globe": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.25,
+   "rough_linked": false
+  },
+  "garage_enamel": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.25,
+   "rough_linked": false
+  },
+  "garage_enamel_white": {
+   "blend": "DITHERED",
+   "imgs": [],
+   "alpha_linked": false,
+   "alpha": 1.0,
+   "metal_linked": false,
+   "metal": 0.0,
+   "rough": 0.30000001192092896,
+   "rough_linked": false
+  }
+ },
+ "color_attr": [
+  "Color",
+  "CORNER",
+  "BYTE_COLOR"
+ ],
+ "vc": {
+  "garage_wall": {
+   "min": [
+    0.198,
+    0.198,
+    0.198,
+    1.0
+   ],
+   "mean": [
+    0.548,
+    0.548,
+    0.548,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 2178
+  },
+  "garage_brick": {
+   "min": [
+    0.223,
+    0.223,
+    0.223,
+    1.0
+   ],
+   "mean": [
+    0.588,
+    0.588,
+    0.588,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 1752
+  },
+  "garage_voussoir": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.66,
+    0.66,
+    0.66,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 1944
+  },
+  "garage_voussoir_dark": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.664,
+    0.664,
+    0.664,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 2232
+  },
+  "garage_mortar": {
+   "min": [
+    0.552,
+    0.552,
+    0.552,
+    1.0
+   ],
+   "mean": [
+    0.706,
+    0.706,
+    0.706,
+    1.0
+   ],
+   "max": [
+    0.956,
+    0.956,
+    0.956,
+    1.0
+   ],
+   "n": 2040
+  },
+  "garage_roof": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.668,
+    0.668,
+    0.668,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 7512
+  },
+  "garage_gate": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.658,
+    0.658,
+    0.658,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 3792
+  },
+  "garage_planks": {
+   "min": [
+    0.209,
+    0.209,
+    0.209,
+    1.0
+   ],
+   "mean": [
+    0.494,
+    0.494,
+    0.494,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 1344
+  },
+  "garage_shed_wall": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.56,
+    0.56,
+    0.56,
+    1.0
+   ],
+   "max": [
+    0.93,
+    0.93,
+    0.93,
+    1.0
+   ],
+   "n": 612
+  },
+  "garage_shed_roof": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.824,
+    0.824,
+    0.824,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 456
+  },
+  "garage_fence_0": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.697,
+    0.697,
+    0.697,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 4020
+  },
+  "garage_fence_1": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.695,
+    0.695,
+    0.695,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 3696
+  },
+  "garage_fence_2": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.695,
+    0.695,
+    0.695,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 3636
+  },
+  "garage_fence_3": {
+   "min": [
+    0.402,
+    0.402,
+    0.402,
+    1.0
+   ],
+   "mean": [
+    0.696,
+    0.696,
+    0.696,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 4464
+  },
+  "garage_post": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.637,
+    0.637,
+    0.637,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 2796
+  },
+  "garage_log": {
+   "min": [
+    0.198,
+    0.198,
+    0.198,
+    1.0
+   ],
+   "mean": [
+    0.546,
+    0.546,
+    0.546,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 3648
+  },
+  "garage_red": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.725,
+    0.725,
+    0.725,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 3576
+  },
+  "garage_drum": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.552,
+    0.552,
+    0.552,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 26424
+  },
+  "garage_drum_grey": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.541,
+    0.541,
+    0.541,
+    1.0
+   ],
+   "max": [
+    0.956,
+    0.956,
+    0.956,
+    1.0
+   ],
+   "n": 13272
+  },
+  "garage_rust": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.562,
+    0.562,
+    0.562,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 10056
+  },
+  "garage_concrete": {
+   "min": [
+    0.397,
+    0.397,
+    0.397,
+    1.0
+   ],
+   "mean": [
+    0.606,
+    0.606,
+    0.606,
+    1.0
+   ],
+   "max": [
+    0.982,
+    0.982,
+    0.982,
+    1.0
+   ],
+   "n": 96
+  },
+  "garage_floor": {
+   "min": [
+    0.198,
+    0.198,
+    0.198,
+    1.0
+   ],
+   "mean": [
+    0.288,
+    0.288,
+    0.288,
+    1.0
+   ],
+   "max": [
+    0.503,
+    0.503,
+    0.503,
+    1.0
+   ],
+   "n": 660
+  },
+  "garage_path": {
+   "min": [
+    0.223,
+    0.223,
+    0.223,
+    0.0
+   ],
+   "mean": [
+    0.956,
+    0.956,
+    0.956,
+    0.546
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    0.996
+   ],
+   "n": 17568
+  },
+  "garage_soot": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.57,
+    0.57,
+    0.57,
+    1.0
+   ],
+   "max": [
+    0.982,
+    0.982,
+    0.982,
+    1.0
+   ],
+   "n": 180
+  },
+  "garage_iron": {
+   "min": [
+    0.223,
+    0.223,
+    0.223,
+    1.0
+   ],
+   "mean": [
+    0.624,
+    0.624,
+    0.624,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 1764
+  },
+  "garage_rubber": {
+   "min": [
+    0.198,
+    0.198,
+    0.198,
+    1.0
+   ],
+   "mean": [
+    0.452,
+    0.452,
+    0.452,
+    1.0
+   ],
+   "max": [
+    0.982,
+    0.982,
+    0.982,
+    1.0
+   ],
+   "n": 444
+  },
+  "garage_rope": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.518,
+    0.518,
+    0.518,
+    1.0
+   ],
+   "max": [
+    0.552,
+    0.552,
+    0.552,
+    1.0
+   ],
+   "n": 36
+  },
+  "garage_pit": {
+   "min": [
+    0.198,
+    0.198,
+    0.198,
+    1.0
+   ],
+   "mean": [
+    0.253,
+    0.253,
+    0.253,
+    1.0
+   ],
+   "max": [
+    0.386,
+    0.386,
+    0.386,
+    1.0
+   ],
+   "n": 312
+  },
+  "garage_sand": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.539,
+    0.539,
+    0.539,
+    1.0
+   ],
+   "max": [
+    0.658,
+    0.658,
+    0.658,
+    1.0
+   ],
+   "n": 60
+  },
+  "garage_frame": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.632,
+    0.632,
+    0.632,
+    1.0
+   ],
+   "max": [
+    0.965,
+    0.965,
+    0.965,
+    1.0
+   ],
+   "n": 324
+  },
+  "garage_frame_dark": {
+   "min": [
+    0.497,
+    0.497,
+    0.497,
+    1.0
+   ],
+   "mean": [
+    0.66,
+    0.66,
+    0.66,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 96
+  },
+  "garage_glass": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.618,
+    0.618,
+    0.618,
+    1.0
+   ],
+   "max": [
+    0.982,
+    0.982,
+    0.982,
+    1.0
+   ],
+   "n": 96
+  },
+  "garage_fuel_glass": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.503,
+    0.503,
+    0.503,
+    1.0
+   ],
+   "max": [
+    0.617,
+    0.617,
+    0.617,
+    1.0
+   ],
+   "n": 444
+  },
+  "garage_fuel": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.63,
+    0.63,
+    0.63,
+    1.0
+   ],
+   "max": [
+    0.863,
+    0.863,
+    0.863,
+    1.0
+   ],
+   "n": 444
+  },
+  "garage_globe": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.881,
+    0.881,
+    0.881,
+    1.0
+   ],
+   "max": [
+    1.0,
+    1.0,
+    1.0,
+    1.0
+   ],
+   "n": 1272
+  },
+  "garage_enamel": {
+   "min": [
+    0.509,
+    0.509,
+    0.509,
+    1.0
+   ],
+   "mean": [
+    0.648,
+    0.648,
+    0.648,
+    1.0
+   ],
+   "max": [
+    0.896,
+    0.896,
+    0.896,
+    1.0
+   ],
+   "n": 60
+  },
+  "garage_enamel_white": {
+   "min": [
+    0.451,
+    0.451,
+    0.451,
+    1.0
+   ],
+   "mean": [
+    0.591,
+    0.591,
+    0.591,
+    1.0
+   ],
+   "max": [
+    0.982,
+    0.982,
+    0.982,
+    1.0
+   ],
+   "n": 252
+  }
+ },
+ "glb_materials": [
+  {
+   "name": "garage_textmat",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.8879231214523315,
+     0.8631572127342224,
+     0.7912979125976562,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.5
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_wall",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.7454041838645935,
+     0.5520114302635193,
+     0.4793201684951782,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_brick",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.4793201684951782,
+     0.35153260827064514,
+     0.3049873113632202,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_voussoir",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.2541520893573761,
+     0.061246052384376526,
+     0.03433980792760849,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.8500000238418579
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_voussoir_dark",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.18116424977779388,
+     0.040915198624134064,
+     0.024157632142305374,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.8500000238418579
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_mortar",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.4507857859134674,
+     0.4019777774810791,
+     0.3324515223503113,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.949999988079071
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_roof",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.4793201684951782,
+     0.3915724754333496,
+     0.3915724754333496,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_gate",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.14702726900577545,
+     0.25015828013420105,
+     0.14702726900577545,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_planks",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {},
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_shed_wall",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.577580451965332,
+     0.5394794940948486,
+     0.4910208582878113,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_shed_roof",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.43415364623069763,
+     0.4125426113605499,
+     0.38132601976394653,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_fence_0",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.4793201684951782,
+     0.43415364623069763,
+     0.37123769521713257,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_fence_1",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.3967552185058594,
+     0.35640013217926025,
+     0.30054378509521484,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_fence_2",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.5457244515419006,
+     0.4969329833984375,
+     0.42869049310684204,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_fence_3",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.35640013217926025,
+     0.32314321398735046,
+     0.2746773064136505,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_post",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.2581828534603119,
+     0.2158605009317398,
+     0.19120168685913086,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_log",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {},
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_red",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {},
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_drum",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {},
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_drum_grey",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.3967552185058594,
+     0.4564110338687897,
+     0.5088813304901123,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_rust",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {},
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_concrete",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {},
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_floor",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.32314321398735046,
+     0.2961382567882538,
+     0.2622506618499756,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_path",
+   "alphaMode": "BLEND",
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.7912979125976562,
+     0.715693473815918,
+     0.6104955673217773,
+     1
+    ]
+   },
+   "has_mr_tex": true
+  },
+  {
+   "name": "garage_soot",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.0043914420530200005,
+     0.004024717025458813,
+     0.0036765073891729116,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.949999988079071
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_iron",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.02518685907125473,
+     0.026241222396492958,
+     0.028426039963960648,
+     1
+    ],
+    "metallicFactor": 0.5,
+    "roughnessFactor": 0.550000011920929
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_rubber",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.012286487966775894,
+     0.012286487966775894,
+     0.012983032502233982,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.8500000238418579
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_rope",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.2541520893573761,
+     0.1946178376674652,
+     0.10702310502529144,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.949999988079071
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_pit",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.004776953253895044,
+     0.004776953253895044,
+     0.005181516520678997,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.8999999761581421
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_sand",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.5520114302635193,
+     0.3915724754333496,
+     0.17144110798835754,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.949999988079071
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_frame",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.68668532371521,
+     0.6307571530342102,
+     0.520995557308197,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.699999988079071
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_frame_dark",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.06847816705703735,
+     0.04970656707882881,
+     0.03560131415724754,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.8500000238418579
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_glass",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.024157632142305374,
+     0.03433980792760849,
+     0.039546236395835876,
+     1
+    ],
+    "metallicFactor": 0.30000001192092896,
+    "roughnessFactor": 0.15000000596046448
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_fuel_glass",
+   "alphaMode": "BLEND",
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.672443151473999,
+     0.7605245113372803,
+     0.7454041838645935,
+     0.2800000011920929
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.03999999910593033
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_fuel",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.577580451965332,
+     0.23839756846427917,
+     0.027320891618728638,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.11999999731779099
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_globe",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.8796223998069763,
+     0.838798999786377,
+     0.7454041838645935,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.25
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_enamel",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.011612244881689548,
+     0.045186202973127365,
+     0.2622506618499756,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.25
+   },
+   "has_mr_tex": false
+  },
+  {
+   "name": "garage_enamel_white",
+   "alphaMode": null,
+   "doubleSided": true,
+   "pbr": {
+    "baseColorFactor": [
+     0.8879231214523315,
+     0.8631572127342224,
+     0.7912979125976562,
+     1
+    ],
+    "metallicFactor": 0,
+    "roughnessFactor": 0.30000001192092896
+   },
+   "has_mr_tex": false
+  }
+ ],
+ "glb_attrs": [
+  [
+   "POSITION",
+   "NORMAL",
+   "TEXCOORD_0"
+  ],
+  [
+   "POSITION",
+   "NORMAL",
+   "TEXCOORD_0",
+   "COLOR_0"
+  ],
+  [
+   "POSITION",
+   "NORMAL",
+   "TEXCOORD_0",
+   "COLOR_0"
+  ]
+ ],
+ "color0_types": [
+  "VEC4"
+ ],
+ "images": [
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color",
+  "normal",
+  "arm",
+  "color"
+ ],
+ "sign_bbox": [
+  [
+   -0.2569600045681,
+   1.4630000591278076,
+   2.178999900817871
+  ],
+  [
+   0.2655999958515167,
+   1.4630000591278076,
+   2.2909998893737793
+  ]
+ ]
+}

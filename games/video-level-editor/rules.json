@@ -1,0 +1,8 @@
+{
+  "rules": [
+    { "kind": "run_jump", "for": { "has": ["hero"] }, "solid": { "has": ["ground"] }, "one_way": { "has": ["ledge"] } },
+    { "kind": "check", "for": { "has": ["hero"] }, "do": [["run", "animate"]] },
+    { "kind": "collide", "a": { "has": ["hero"] }, "b": { "has": ["pit"] }, "effects": { "a": [["run", "respawn"]] } },
+    { "kind": "collide", "a": { "has": ["hero"] }, "b": { "has": ["finish"] }, "do": [["end_game", "win"]] }
+  ]
+}

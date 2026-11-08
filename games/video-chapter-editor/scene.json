@@ -1,0 +1,20 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "border", "position": [9.3, 3.8], "size": [13.4, 10.4], "color": "#c9ced6", "layer": 5 },
+    { "part": "card", "position": [9.5, 4], "size": [13, 10], "color": "#1d2026", "layer": 6 },
+
+    { "part": "badge1", "item": 1, "position": [10.5, 5], "size": [2, 2], "color": "#3a3f48", "layer": 7 },
+    { "part": "num1", "item": 1, "num": "1", "lit": 0, "position": [10.5, 5], "size": [2, 2] },
+    { "part": "word1", "item": 1, "word": "Стиль", "lit": 0, "position": [13.3, 4.9], "size": [8, 2.2] },
+
+    { "part": "badge2", "item": 2, "position": [10.5, 8], "size": [2, 2], "color": "#3a3f48", "layer": 7 },
+    { "part": "num2", "item": 2, "num": "2", "lit": 0, "position": [10.5, 8], "size": [2, 2] },
+    { "part": "word2", "item": 2, "word": "Каркас", "lit": 0, "position": [13.3, 7.9], "size": [8, 2.2] },
+
+    { "part": "badge3", "item": 3, "position": [10.5, 11], "size": [2, 2], "color": "#3a3f48", "layer": 7 },
+    { "part": "num3", "item": 3, "num": "3", "lit": 0, "position": [10.5, 11], "size": [2, 2] },
+    { "part": "word3", "item": 3, "word": "Редактор", "lit": 0, "position": [13.3, 10.9], "size": [8, 2.2] }
+  ]
+}

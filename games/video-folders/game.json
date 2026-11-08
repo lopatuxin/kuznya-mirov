@@ -1,0 +1,17 @@
+{
+  "name": "Папки игр и движок",
+  "scene": { "width": 64, "height": 36, "background": "#24272e" },
+  "max_objects": 512,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf", "mono": "fonts/JetBrainsMono-VF.ttf" },
+    "images": {
+      "arrowhead": { "path": "images/arrowhead.png", "smooth": true }
+    }
+  }
+}

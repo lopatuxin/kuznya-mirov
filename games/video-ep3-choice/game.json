@@ -1,0 +1,70 @@
+{
+  "name": "Выбор противника — третий ролик",
+  "scene": {
+    "width": 64,
+    "height": 36,
+    "background": "#140d08"
+  },
+  "max_objects": 40,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Kurale-Regular.ttf"
+    },
+    "images": {
+      "wolf": {
+        "path": "images/wolf.png",
+        "smooth": true
+      },
+      "leshy": {
+        "path": "images/leshy.png",
+        "smooth": true
+      },
+      "robber": {
+        "path": "images/robber.png",
+        "smooth": true
+      },
+      "wolf_grey": {
+        "path": "images/wolf_grey.png",
+        "smooth": true
+      },
+      "leshy_grey": {
+        "path": "images/leshy_grey.png",
+        "smooth": true
+      },
+      "avatar1": {
+        "path": "images/avatar1.png",
+        "smooth": true
+      },
+      "avatar2": {
+        "path": "images/avatar2.png",
+        "smooth": true
+      },
+      "like": {
+        "path": "images/like.png",
+        "smooth": true
+      },
+      "forest": {
+        "path": "images/forest.png",
+        "smooth": true
+      },
+      "card": {
+        "path": "images/card.png",
+        "smooth": true
+      },
+      "card_glow": {
+        "path": "images/card_glow.png",
+        "smooth": true
+      },
+      "comment": {
+        "path": "images/comment.png",
+        "smooth": true
+      }
+    }
+  }
+}

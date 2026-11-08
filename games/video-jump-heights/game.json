@@ -1,0 +1,227 @@
+{
+  "name": "Прыжок: heights",
+  "scene": {
+    "width": 150,
+    "height": 12,
+    "view_height": 8,
+    "background": "#7db1e3",
+    "cell_pixels": 96
+  },
+  "max_objects": 256,
+  "start_screen": "game",
+  "win_screen": "win",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "title": "fonts/Unbounded.ttf",
+      "ui": "fonts/Rubik.ttf"
+    },
+    "images": {
+      "sky": {
+        "path": "images/sky.png",
+        "smooth": true
+      },
+      "cloud_a": {
+        "path": "images/cloud_a.png",
+        "smooth": true
+      },
+      "cloud_b": {
+        "path": "images/cloud_b.png",
+        "smooth": true
+      },
+      "cloud_c": {
+        "path": "images/cloud_c.png",
+        "smooth": true
+      },
+      "mountains": {
+        "path": "images/mountains.png",
+        "smooth": true
+      },
+      "kremlin": {
+        "path": "images/kremlin.png",
+        "smooth": true
+      },
+      "forest_far": {
+        "path": "images/forest_far.png",
+        "smooth": true
+      },
+      "forest_near": {
+        "path": "images/forest_near.png",
+        "smooth": true
+      },
+      "pine": {
+        "path": "images/pine.png",
+        "smooth": true
+      },
+      "spruce": {
+        "path": "images/spruce.png",
+        "smooth": true
+      },
+      "birch": {
+        "path": "images/birch.png",
+        "smooth": true
+      },
+      "gorge_a": {
+        "path": "images/gorge_a.png",
+        "smooth": true
+      },
+      "gorge_b": {
+        "path": "images/gorge_b.png",
+        "smooth": true
+      },
+      "gorge_c": {
+        "path": "images/gorge_c.png",
+        "smooth": true
+      },
+      "hanging_log": {
+        "path": "images/hanging_log.png",
+        "smooth": true
+      },
+      "fallen_log": {
+        "path": "images/fallen_log.png",
+        "smooth": true
+      },
+      "boulder": {
+        "path": "images/boulder.png",
+        "smooth": true
+      },
+      "stone": {
+        "path": "images/stone.png",
+        "smooth": true
+      },
+      "mushrooms": {
+        "path": "images/mushrooms.png",
+        "smooth": true
+      },
+      "mushrooms_glow": {
+        "path": "images/mushrooms_glow.png",
+        "smooth": true,
+        "glow": true
+      },
+      "gate": {
+        "path": "images/gate.png",
+        "smooth": true
+      },
+      "foreground": {
+        "path": "images/foreground.png",
+        "smooth": true
+      },
+      "hero": {
+        "path": "images/hero.png",
+        "smooth": true,
+        "frames": 37,
+        "columns": 6,
+        "frame_by": "hero_frame",
+        "size": [
+          3.5,
+          3
+        ],
+        "anchor": "bottom"
+      },
+      "robber": {
+        "path": "images/robber.png",
+        "smooth": true,
+        "frames": 24,
+        "columns": 5,
+        "frame_by": "robber_frame",
+        "size": [
+          4,
+          3
+        ],
+        "anchor": "bottom"
+      },
+      "robber_flash": {
+        "path": "images/robber_flash.png",
+        "smooth": true,
+        "glow": true,
+        "frames": 24,
+        "columns": 5,
+        "frame_by": "robber_frame",
+        "size": [
+          4,
+          3
+        ],
+        "anchor": "bottom"
+      },
+      "robber_aura": {
+        "path": "images/robber_aura.png",
+        "smooth": true,
+        "glow": true,
+        "frames": 24,
+        "columns": 5,
+        "frame_by": "robber_frame",
+        "size": [
+          4,
+          3
+        ],
+        "anchor": "bottom"
+      },
+      "clash": {
+        "path": "images/clash.png",
+        "smooth": true,
+        "glow": true,
+        "frames": 4,
+        "frame_by": "fx_frame",
+        "size": [
+          1.5,
+          1.5
+        ]
+      },
+      "impact": {
+        "path": "images/impact.png",
+        "smooth": true,
+        "glow": true,
+        "frames": 3,
+        "frame_by": "fx_frame",
+        "size": [
+          1.4,
+          1.4
+        ]
+      },
+      "ledge_a1": {
+        "path": "images/ledge_a1.png",
+        "smooth": true
+      },
+      "ledge_a2": {
+        "path": "images/ledge_a2.png",
+        "smooth": true
+      },
+      "ledge_b": {
+        "path": "images/ledge_b.png",
+        "smooth": true
+      },
+      "ledge_c": {
+        "path": "images/ledge_c.png",
+        "smooth": true
+      },
+      "ledge_d1": {
+        "path": "images/ledge_d1.png",
+        "smooth": true
+      },
+      "ledge_d2": {
+        "path": "images/ledge_d2.png",
+        "smooth": true
+      },
+      "ledge_f": {
+        "path": "images/ledge_f.png",
+        "smooth": true
+      },
+      "ledge_g": {
+        "path": "images/ledge_g.png",
+        "smooth": true
+      },
+      "ledge_h1": {
+        "path": "images/ledge_h1.png",
+        "smooth": true
+      },
+      "ledge_h2": {
+        "path": "images/ledge_h2.png",
+        "smooth": true
+      }
+    }
+  }
+}

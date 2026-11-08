@@ -1,0 +1,10 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "label", "for": { "has": ["code"] }, "anchor": "center",
+      "size": [30.6, 1.0], "text": "{code}", "font": "mono", "font_size": 0.75, "align": "left",
+      "color": { "table": ["#c9ced6", "#80858e", "#4b4f57", "#ffd34d", "#fff4c2"], "by": "shade" } }
+  ]
+}

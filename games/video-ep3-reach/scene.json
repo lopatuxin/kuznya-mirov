@@ -1,0 +1,17 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "ground", "position": [2.5, 13.2], "size": [27, 0.08], "color": "#4a4f5a", "layer": 1 },
+    { "part": "dark", "position": [-3.4, -1.7], "size": [20, 15], "image": "robber_dark", "layer": 2 },
+    { "part": "figure", "position": [-3.4, -1.7], "size": [20, 15], "image": "robber", "opacity": 0, "layer": 3 },
+
+    { "part": "line", "position": [6.6, 10.12], "size": [11.5, 0.16], "color": "#e9ecf2", "layer": 4 },
+    { "part": "tick", "position": [6.52, 9.6], "size": [0.16, 1.2], "color": "#e9ecf2", "layer": 4 },
+    { "part": "end", "position": [18.02, 9.6], "size": [0.16, 1.2], "color": "#e9ecf2", "layer": 5 },
+    { "part": "air", "position": [16.03, 10.12], "size": [2.07, 0.16], "color": "#ff4d4d", "layer": 5 },
+
+    { "part": "plan", "plan": "по плану 2,3 клетки", "tone": 0, "position": [18.6, 9.3], "size": [13, 1.8] },
+    { "part": "now", "now": "сейчас 2,1", "tone": 0, "position": [17.6, 9.3], "size": [13, 1.8] }
+  ]
+}

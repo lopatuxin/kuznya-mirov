@@ -1,0 +1,128 @@
+{
+  "gates": {
+    "views": {
+      "right": {
+        "iou": 0.983,
+        "outside_m": {
+          "left": 0.0,
+          "right": 0.0,
+          "top": 0.001,
+          "bottom": 0.0
+        },
+        "regions": {
+          "envelope": {
+            "model_only_pct": 0.99,
+            "ref_only_pct": 0.7,
+            "iou": 0.9831
+          }
+        },
+        "diff": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\work\\final\\review\\diff_right.png"
+      }
+    },
+    "fail": [],
+    "size": [
+      0.05,
+      0.8799,
+      0.2709
+    ],
+    "mesh": {
+      "tris_total": 10996,
+      "floating": [],
+      "coplanar": [],
+      "below": []
+    },
+    "warn": [],
+    "passed": true
+  },
+  "raw_silhouette_iou": 0.9779209003636228,
+  "reference_opening_pixels": 3375,
+  "filled_reference_opening_pixels": 237,
+  "vertices": 5486,
+  "edges": 16494,
+  "faces": 10996,
+  "euler_characteristic": -12,
+  "uv_finite": true,
+  "uv_min": [
+    0.005976480897516012,
+    0.025243880227208138
+  ],
+  "uv_max": [
+    0.99358069896698,
+    0.9374584555625916
+  ],
+  "image_nodes": [
+    {
+      "name": "akm-basecolor.png.003",
+      "size": [
+        2172,
+        724
+      ],
+      "packed": true
+    }
+  ],
+  "glb": {
+    "file": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\akm-v1.glb",
+    "tris": 10996,
+    "primitives": 1,
+    "size_gltf": [
+      0.0242,
+      0.1309,
+      0.4251
+    ],
+    "size_blender": [
+      0.0242,
+      0.4251,
+      0.1309
+    ],
+    "lowest_gltf_y": -0.0636,
+    "materials": [
+      {
+        "name": "HordeAKMv1_artwork",
+        "base_color_factor": [
+          1,
+          1,
+          1,
+          1
+        ],
+        "maps": [
+          "baseColorTexture"
+        ]
+      }
+    ],
+    "images": 1,
+    "attributes": [
+      "NORMAL",
+      "POSITION",
+      "TEXCOORD_0"
+    ],
+    "color_0_types": [],
+    "extensions": [
+      "KHR_materials_specular"
+    ]
+  },
+  "glb_nodes": [
+    {
+      "name": "HordeAKMv1_export",
+      "translation": [
+        0,
+        -0.06356221437454224,
+        0
+      ]
+    },
+    {
+      "name": "support",
+      "translation": [
+        0,
+        0.03465229645371437,
+        0.1518760770559311
+      ]
+    }
+  ],
+  "embedded_images": [
+    {
+      "bufferView": 4,
+      "mimeType": "image/png",
+      "name": "akm-basecolor"
+    }
+  ]
+}

@@ -1,0 +1,7 @@
+﻿Built-in image generation tool. Selected paint-over used guide.png as its local edit input. No image pixels were changed by code.
+
+Edit this exact image in place. Make a precisely registered surface paint-over, not a newly composed illustration. KEEP THE EXISTING ROCK CONTOUR AND FACET GEOMETRY EXACTLY AS THEY ARE. Keep all canvas margins, dimensions, object position, width, height, all corner locations, and the orthographic camera unchanged. The only edit to the rock is its surface painting.
+
+Paint the existing grey rock pale weathered limestone: light warm grey-white stone, angular facets following these exact blockout faces, clean ink-like outlines, soft cel-like shading, hand-painted game art. Bright daylight from upper left; darker shaded planes on the right. Add fine cracks, small pits, restrained lichen spots and a little dry moss painted on the lower rock surface. Keep the form one solid boulder. No photorealism, no 3D render, no pixel art. Do not move or redraw any part of the perimeter. Nothing may protrude beyond the existing silhouette, and no grey blockout may remain uncovered.
+
+Replace the transparent region with a perfectly uniform solid-color graphic background: hexadecimal #c9b98a, RGB 201 185 138. It is ONE FLAT COLOR, like a paint-bucket fill. Absolutely zero gradient, zero texture, zero lighting or noise on the background. No shadow, no ground, no grass, no other objects. Preserve the input's square framing. Output one PNG.

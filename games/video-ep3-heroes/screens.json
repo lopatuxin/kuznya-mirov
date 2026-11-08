@@ -1,0 +1,13 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "label", "for": { "has": ["mark"] }, "anchor": "center",
+      "size": [5, 5], "text": "{mark}", "font": "ui", "font_size": 3.6, "align": "center",
+      "color": "#ffd36a" },
+    { "kind": "label", "for": { "has": ["title"] }, "anchor": "center",
+      "size": [20, 3], "text": "{title}", "font": "ui", "font_size": 2.0, "align": "center",
+      "color": "#f3e6c4" }
+  ]
+}

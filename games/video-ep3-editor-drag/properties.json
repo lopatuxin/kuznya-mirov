@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "hero": "flag",
+    "ground": "flag",
+    "ledge": "flag",
+    "pit": "flag",
+    "finish": "flag",
+    "hero_frame": "number",
+    "idle_time": "number",
+    "run_dist": "number"
+  }
+}

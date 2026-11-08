@@ -1,0 +1,31 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["controlled"] }, "when": ["score", ">=", 0],
+      "do": [["run", "snake_autopilot"]] },
+
+    { "kind": "check", "for": { "has": ["paddle"] }, "when": ["broken", ">=", 0],
+      "do": [["run", "paddle_autopilot"]] },
+
+    { "kind": "move", "for": { "has": ["position", "velocity"] } },
+
+    { "kind": "collide", "a": { "has": ["controlled"] }, "b": { "has": ["food"] },
+      "effects": { "a": [["add", "score", 1]], "b": [["run", "move_food"]] } },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["solid"], "without": ["paddle"] },
+      "effects": { "a": [["bounce"]] } },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["paddle"] },
+      "effects": { "a": [["run", "paddle_bounce"]] } },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick"], "without": ["strong"] },
+      "effects": { "a": [["bounce"]], "b": [["delete"]] },
+      "do": [["add", "broken", 10]] },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick", "strong"] },
+      "effects": { "a": [["bounce"]] },
+      "do": [["run", "strong_brick_hit"]] },
+
+    { "kind": "check", "for": { "has": ["clock"] }, "when": ["clock", ">", 0],
+      "do": [["run", "direct"]] }
+  ]
+}

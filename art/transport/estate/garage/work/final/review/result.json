@@ -1,0 +1,300 @@
+{
+ "gates": {
+  "views": {},
+  "fail": [
+   "no orthographic reference view was checked",
+   "7749 floating pieces",
+   "1 objects below the ground"
+  ],
+  "size": [
+   30.09,
+   33.7023,
+   9.6741
+  ],
+  "mesh": {
+   "tris_total": 41434,
+   "floating": [
+    {
+     "object": "EG_garage",
+     "center": [
+      -5.85,
+      1.5,
+      0.7
+     ],
+     "size": [
+      1.3,
+      0.0,
+      1.4
+     ],
+     "verts": 5
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      -5.85,
+      1.755,
+      0.0
+     ],
+     "size": [
+      1.3,
+      0.51,
+      0.0
+     ],
+     "verts": 6
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      -6.5,
+      1.755,
+      0.7
+     ],
+     "size": [
+      0.0,
+      0.51,
+      1.4
+     ],
+     "verts": 4
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      -5.2,
+      1.755,
+      2.7
+     ],
+     "size": [
+      0.0,
+      0.51,
+      5.4
+     ],
+     "verts": 7
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      -5.85,
+      2.01,
+      2.7
+     ],
+     "size": [
+      1.3,
+      0.0,
+      5.4
+     ],
+     "verts": 9
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      -5.85,
+      1.5,
+      3.4
+     ],
+     "size": [
+      1.3,
+      0.0,
+      4.0
+     ],
+     "verts": 5
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      -5.85,
+      1.755,
+      5.4
+     ],
+     "size": [
+      1.3,
+      0.51,
+      0.0
+     ],
+     "verts": 6
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      -6.5,
+      1.755,
+      3.4
+     ],
+     "size": [
+      0.0,
+      0.51,
+      4.0
+     ],
+     "verts": 4
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      0.0,
+      1.5,
+      2.7
+     ],
+     "size": [
+      2.4,
+      0.0,
+      5.4
+     ],
+     "verts": 9
+    },
+    {
+     "object": "EG_garage",
+     "center": [
+      0.0,
+      1.755,
+      0.0
+     ],
+     "size": [
+      2.4,
+      0.51,
+      0.0
+     ],
+     "verts": 6
+    }
+   ],
+   "coplanar": [
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      0.018,
+      0.607,
+      5.0
+     ],
+     "overlap_m2": 0.0001
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      0.018,
+      0.607,
+      5.0
+     ],
+     "overlap_m2": 0.0001
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      0.015,
+      0.593,
+      5.0
+     ],
+     "overlap_m2": 0.0001
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      0.015,
+      0.593,
+      5.0
+     ],
+     "overlap_m2": 0.0001
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      -0.009,
+      0.7,
+      5.0
+     ],
+     "overlap_m2": 0.0007
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      -0.009,
+      0.7,
+      5.0
+     ],
+     "overlap_m2": 0.0007
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      0.002,
+      0.65,
+      5.0
+     ],
+     "overlap_m2": 0.0007
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      0.002,
+      0.65,
+      5.0
+     ],
+     "overlap_m2": 0.0007
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      4.192,
+      8.3,
+      4.15
+     ],
+     "overlap_m2": 0.0806
+    },
+    {
+     "objects": [
+      "EG_garage",
+      "EG_garage"
+     ],
+     "at": [
+      4.192,
+      8.3,
+      4.15
+     ],
+     "overlap_m2": 0.0806
+    }
+   ],
+   "below": [
+    {
+     "object": "EG_garage",
+     "min_z": -0.0041
+    }
+   ]
+  },
+  "warn": [
+   "EG_garage: 62656 open edges (fine only for cards and sheets)",
+   "EG_garage: 98 zero-area faces",
+   "EG_garage_sign: 272 open edges (fine only for cards and sheets)",
+   "715 coplanar overlap candidates (z-fighting)"
+  ],
+  "passed": false
+ },
+ "compare": {},
+ "clay": "C:/projects/kuznya-mirov/art/transport/estate/garage/work/final/review\\clay_sheet.png",
+ "material": "C:/projects/kuznya-mirov/art/transport/estate/garage/work/final/review\\material_sheet.png",
+ "joints": {},
+ "game": "C:/projects/kuznya-mirov/art/transport/estate/garage/work/final/review\\game_enlarged.png"
+}

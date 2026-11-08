@@ -1,0 +1,119 @@
+{
+  "date": "2026-11-07",
+  "game": "horde",
+  "request": "Ordinary run with lowered rifle; correct support-hand and pistol-grip contact.",
+  "changes": {
+    "locomotion": "Existing ordinary Бег with previous leg corrections, speed 1.25; Стойка upper layer and 8 degree lean.",
+    "weapon": "Adjusted mount orientation and wrist offset; rebuilt support wrist landmark. Geometry, UVs and image payload unchanged.",
+    "hands": "Both palm orientations and all finger joints fitted in running and idle poses. Left-arm pole matches the existing hold_item evaluation."
+  },
+  "poses": [
+    {
+      "motion": "бег_героя",
+      "cycle_seconds": 0.7466666102409363,
+      "samples": 129,
+      "max_support_error_m": 7.661787272735445e-8,
+      "max_authored_wrist_error_before_ik_m": 0.001360652752392867,
+      "max_support_palm_rotation_error_degrees": 0.14294013087054674,
+      "barrel_pitch_degrees": [
+        -22.012789972390998,
+        -21.983289003282408
+      ]
+    },
+    {
+      "motion": "стойка_с_автоматом",
+      "cycle_seconds": 2.5,
+      "samples": 129,
+      "max_support_error_m": 8.142831510817303e-8,
+      "max_authored_wrist_error_before_ik_m": 0.0021136700948640725,
+      "max_support_palm_rotation_error_degrees": 0.15300481080330341,
+      "barrel_pitch_degrees": [
+        -22.010743730433255,
+        -21.993124433309912
+      ]
+    }
+  ],
+  "gameplay_transitions": {
+    "frames": 240,
+    "starts": [
+      30,
+      150
+    ],
+    "stops": [
+      105,
+      195
+    ],
+    "max_support_error_m": 7.271403895745937e-8,
+    "joint_displacements": {
+      "Hips": {
+        "max_displacement_per_60hz_frame_m": 0.020477796289419672,
+        "at_frame": 105
+      },
+      "Head": {
+        "max_displacement_per_60hz_frame_m": 0.029304932785586886,
+        "at_frame": 105
+      },
+      "LeftHand": {
+        "max_displacement_per_60hz_frame_m": 0.023358519401881463,
+        "at_frame": 105
+      },
+      "RightHand": {
+        "max_displacement_per_60hz_frame_m": 0.02451097026448864,
+        "at_frame": 105
+      }
+    }
+  },
+  "tests": {
+    "held_item": {
+      "passed": 6,
+      "failed": 0
+    },
+    "horde_game": {
+      "passed": 17,
+      "failed": 1
+    },
+    "unrelated_failure": {
+      "name": "the_hero_enters_the_ruin_through_the_breach_and_it_is_cut_away",
+      "message": "дом не срезан",
+      "reproduced_with_pre_fix_motions_and_weapon": true
+    }
+  },
+  "limitations": [
+    "Stand shows the authored unarmed skeleton; held-weapon contact checked in the actual Horde scene and native render pose path.",
+    "Exact absence of foot sliding or all mesh penetrations is not established."
+  ],
+  "ui": {
+    "stand_ordinary_run": true,
+    "scene_closeup_with_rifle": true,
+    "screenshot": "low-carry-fixed.png"
+  },
+  "ordinary_leg_keys_preserved": {
+    "mixamorig:LeftUpLeg": {
+      "count": 28,
+      "unchanged": true
+    },
+    "mixamorig:LeftLeg": {
+      "count": 28,
+      "unchanged": true
+    },
+    "mixamorig:RightUpLeg": {
+      "count": 28,
+      "unchanged": true
+    },
+    "mixamorig:RightLeg": {
+      "count": 28,
+      "unchanged": true
+    }
+  },
+  "checked_files_sha256": {
+    "games/horde/motions.json": "0e9d273ae9c661e75ef0e5c9803180af33b54ce0515c35bd80aaccb531a6194f",
+    "games/horde/models/akm.glb": "b8559931d248a9c356cb381205cb637c22dd64e4fbea8a79fc98f3418127b8ef"
+  },
+  "review": {
+    "independent": true,
+    "critical": 0,
+    "warning": 0,
+    "info": 0,
+    "leg_key_decimation_found_and_corrected": true
+  }
+}

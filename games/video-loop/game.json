@@ -1,0 +1,23 @@
+{
+  "name": "Круг каркаса",
+  "scene": { "width": 64, "height": 36, "background": "#0e1018" },
+  "random_seed": 20260908,
+  "max_objects": 256,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" },
+    "images": {
+      "paddle": { "path": "images/paddle.png" },
+      "ball": { "path": "images/ball.png", "frames": 4, "frame_time": 0.15 },
+      "brick_red": { "path": "images/brick_red.png", "frames": 3, "frame_by": "hits" },
+      "brick_amber": { "path": "images/brick_amber.png" },
+      "brick_yellow": { "path": "images/brick_yellow.png" },
+      "arrowhead": { "path": "images/arrowhead.png", "smooth": true }
+    }
+  }
+}

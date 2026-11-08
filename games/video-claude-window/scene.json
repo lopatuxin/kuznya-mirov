@@ -1,0 +1,21 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "name": "window", "position": [2.5, 1.5], "size": [27, 15], "color": "#1a1b20", "layer": 1 },
+    { "name": "titlebar", "title": "Claude Code", "position": [2.5, 1.5], "size": [27, 1], "color": "#2d2f36", "layer": 2 },
+    { "name": "box_border", "position": [3, 4.4], "size": [26, 3.2], "color": "#5c5f66", "layer": 2 },
+    { "name": "box_inside", "position": [3.08, 4.48], "size": [25.84, 3.04], "color": "#1a1b20", "layer": 3 },
+
+    { "row": 0, "tone": 2, "line": "", "position": [3.3, 2.8], "size": [25.5, 0.9] },
+    { "row": 1, "tone": 0, "line": "", "position": [3.3, 4.7], "size": [25.5, 0.9] },
+    { "row": 2, "tone": 0, "line": "", "position": [3.3, 5.6], "size": [25.5, 0.9] },
+    { "row": 3, "tone": 0, "line": "", "position": [3.3, 6.5], "size": [25.5, 0.9] },
+    { "row": 4, "tone": 0, "line": "", "position": [3.3, 8.4], "size": [25.5, 0.9] },
+    { "row": 5, "tone": 0, "line": "", "position": [3.3, 9.3], "size": [25.5, 0.9] },
+    { "row": 6, "tone": 0, "line": "", "position": [3.3, 10.2], "size": [25.5, 0.9] },
+    { "row": 7, "tone": 0, "line": "", "position": [3.3, 11.1], "size": [25.5, 0.9] },
+    { "row": 8, "tone": 0, "line": "", "position": [3.3, 12.0], "size": [25.5, 0.9] },
+    { "row": 9, "tone": 3, "line": "", "position": [3.3, 13.2], "size": [25.5, 0.9] }
+  ]
+}

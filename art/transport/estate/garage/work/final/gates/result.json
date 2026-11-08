@@ -1,0 +1,141 @@
+{
+ "part": "yard",
+ "fail": [],
+ "warn": [
+  "no region boxes in PARTS: the part has no silhouette gate",
+  "EG_garage: 120526 open edges (fine only for cards and sheets)",
+  "EG_garage: 716 zero-area faces",
+  "EG_garage_sign: 272 open edges (fine only for cards and sheets)",
+  "775 coplanar overlap candidates (z-fighting)",
+  "coplanar check stopped early on a very large flat group: not every plane was checked"
+ ],
+ "views": {},
+ "mesh": {
+  "tris_total": 79534,
+  "coplanar": [
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     7.293,
+     -11.74,
+     0.012
+    ],
+    "overlap_m2": 0.0941
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     5.736,
+     -6.604,
+     0.012
+    ],
+    "overlap_m2": 0.0898
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     5.797,
+     -6.686,
+     0.012
+    ],
+    "overlap_m2": 0.0811
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     -7.544,
+     -11.663,
+     0.012
+    ],
+    "overlap_m2": 0.0526
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     -5.833,
+     -6.633,
+     0.012
+    ],
+    "overlap_m2": 0.0923
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     -3.148,
+     2.085,
+     0.014
+    ],
+    "overlap_m2": 0.0014
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     -3.148,
+     2.085,
+     0.014
+    ],
+    "overlap_m2": 0.0014
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     -3.148,
+     2.085,
+     0.014
+    ],
+    "overlap_m2": 0.1072
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     2.464,
+     2.168,
+     0.013
+    ],
+    "overlap_m2": 0.0012
+   },
+   {
+    "objects": [
+     "EG_garage",
+     "EG_garage"
+    ],
+    "at": [
+     2.464,
+     2.168,
+     0.013
+    ],
+    "overlap_m2": 0.0012
+   }
+  ],
+  "below": []
+ },
+ "floating": [],
+ "passed": true
+}

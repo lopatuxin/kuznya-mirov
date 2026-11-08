@@ -1,0 +1,21 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "box1", "position": [5.5, 3.6], "size": [1.9, 1.9], "color": "#e9ecf2", "layer": 1 },
+    { "part": "hole1", "position": [5.77, 3.87], "size": [1.36, 1.36], "color": "#24272e", "layer": 2 },
+    { "part": "tick1", "position": [5.35, 2.95], "size": [2.3, 2.3], "image": "tick", "layer": 3 },
+    { "part": "text1", "position": [8.6, 3.45], "size": [15, 2.2] },
+
+    { "part": "box2", "position": [5.5, 7.6], "size": [1.9, 1.9], "color": "#e9ecf2", "layer": 1 },
+    { "part": "hole2", "position": [5.77, 7.87], "size": [1.36, 1.36], "color": "#24272e", "layer": 2 },
+    { "part": "tick2", "position": [5.35, 6.95], "size": [2.3, 2.3], "image": "tick", "layer": 3 },
+    { "part": "text2", "position": [8.6, 7.45], "size": [15, 2.2] },
+
+    { "part": "box3", "position": [5.5, 11.6], "size": [1.9, 1.9], "color": "#e9ecf2", "layer": 1 },
+    { "part": "hole3", "position": [5.77, 11.87], "size": [1.36, 1.36], "color": "#24272e", "layer": 2 },
+    { "part": "text3", "position": [8.6, 11.45], "size": [15, 2.2] },
+    { "part": "bush", "position": [21.5, 11.13], "size": [5.29, 2.47], "image": "bush", "layer": 3 },
+    { "part": "strike", "position": [5, 12.4], "size": [22.3, 0.3], "color": "#ff4d4d", "layer": 4 }
+  ]
+}

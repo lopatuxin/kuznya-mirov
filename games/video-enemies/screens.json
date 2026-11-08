@@ -1,0 +1,19 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "label", "for": { "has": ["mark"] }, "anchor": "center",
+      "size": [5, 5], "text": "{mark}", "font": "ui", "font_size": 3.6, "align": "center",
+      "color": "#ffd34d" },
+    { "kind": "label", "for": { "has": ["big"] }, "anchor": "center",
+      "size": [13.5, 21], "text": "{big}", "font": "ui", "font_size": 12, "align": "center",
+      "color": "#ffd34d" },
+    { "kind": "label", "for": { "has": ["num"] }, "anchor": "center",
+      "size": [13.5, 3], "text": "{num}", "font": "ui", "font_size": 2.4, "align": "center",
+      "color": { "table": ["#8a909a", "#ffd34d", "#e9ecf2"], "by": "tone" } },
+    { "kind": "label", "for": { "has": ["caption"] }, "anchor": "center",
+      "size": [44, 3.4], "text": "{caption}", "font": "ui", "font_size": 2.4, "align": "center",
+      "color": "#ffd34d" }
+  ]
+}

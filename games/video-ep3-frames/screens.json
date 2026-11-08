@@ -1,0 +1,11 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "label", "for": { "has": ["caption"] }, "anchor": "center",
+      "size": [8, 0.6], "text": "{caption}", "font": "ui", "font_size": 0.5, "align": "left",
+      "color": { "table": ["#ffd36a00", "#ffd36a33", "#ffd36a66", "#ffd36a99", "#ffd36acc", "#ffd36a", "#f3e6c4"],
+                 "by": "tone" } }
+  ]
+}

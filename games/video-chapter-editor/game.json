@@ -1,0 +1,14 @@
+{
+  "name": "Глава «Редактор»",
+  "scene": { "width": 32, "height": 18, "background": "#24272e" },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" }
+  }
+}

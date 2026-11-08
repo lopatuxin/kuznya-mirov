@@ -1,0 +1,38 @@
+{
+  "tests": {
+    "held_item": {
+      "command": "cargo test --test phase59_held_item",
+      "passed": 6,
+      "failed": 0
+    },
+    "horde_game": {
+      "command": "cargo test --test horde_game",
+      "passed": 17,
+      "failed": 1,
+      "preexisting_failure": "the_hero_enters_the_ruin_through_the_breach_and_it_is_cut_away: дом не срезан; reproduced with old rifle before animation changes"
+    },
+    "unrelated_baseline_failure": {
+      "test": "the_hero_enters_the_ruin_through_the_breach_and_it_is_cut_away",
+      "message": "дом не срезан",
+      "reproduced_with_previous_rifle": true
+    }
+  },
+  "attachment": "attachment-validation.json",
+  "animations_changed": true,
+  "run": "run-validation.json",
+  "transitions": "transition-validation.json",
+  "ui": {
+    "stand": true,
+    "game_with_akm": true,
+    "sound_muted": true,
+    "preview": "run-preview.gif",
+    "preview_note": "Actual running game renderer, step advances of 1/60 s; temporary close camera and run-as-idle solely for capture, restored afterwards."
+  },
+  "format": {
+    "rustfmt": "passed for engine/tests/horde_game.rs",
+    "whitespace": "git diff --check passed",
+    "python": "fitter executed successfully in Blender and reproduced both integrated motions exactly",
+    "intellij": "IDEA inspection tool unavailable in session"
+  },
+  "review": "Independent code review: no blockers; stale metadata corrected; exact absence of foot sliding is not claimed."
+}

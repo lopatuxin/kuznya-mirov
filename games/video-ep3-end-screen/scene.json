@@ -1,0 +1,8 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "part": "picture", "position": [0, 0], "size": [64, 36], "image": "fight", "layer": 1 },
+    { "part": "shade", "position": [0, 0], "size": [64, 36], "image": "shade", "layer": 2 },
+    { "part": "title", "position": [2, 1.2], "size": [60, 3.6], "image": "title", "layer": 3 }
+  ]
+}

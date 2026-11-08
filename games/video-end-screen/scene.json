@@ -1,0 +1,8 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "part": "picture", "position": [0, -0.007], "size": [64, 36.014], "image": "hero", "layer": 1 },
+    { "part": "shade", "position": [0, 0], "size": [64, 36], "image": "shade", "layer": 2 },
+    { "part": "title", "title": "Выбираю стиль игры и собираю движок", "position": [2, 1.2], "size": [60, 3.6] }
+  ]
+}

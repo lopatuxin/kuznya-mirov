@@ -1,0 +1,20 @@
+{
+  "name": "Змейка: из браузера в программу",
+  "scene": { "width": 64, "height": 36, "background": "#2e3440" },
+  "random_seed": 20260907,
+  "max_objects": 512,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" },
+    "images": {
+      "head": { "path": "images/head.png" },
+      "tail": { "path": "images/tail.png" },
+      "food": { "path": "images/food.png", "frames": 4, "frame_time": 0.15 }
+    }
+  }
+}

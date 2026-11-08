@@ -1,0 +1,29 @@
+{
+  "objects": [
+    {"name":"director","clock":1000},
+    {"part":"block","step":1,"position":[1.5,31],"size":[14.4,4],"color":"#2f343d","layer":1},
+    {"part":"edge","step":1,"position":[1.5,31],"size":[14.4,0.45],"color":"#4a4f5a","layer":2},
+    {"part":"text","step":1,"label":"показывать","tone":0,"position":[1.5,31.9],"size":[14.4,2]},
+    {"part":"frame","step":1,"position":[1.8,16.75],"size":[13.8,13.8],"color":"#4a4f5a","layer":1},
+    {"part":"screen","step":1,"position":[1.95,16.9],"size":[13.5,13.5],"color":"#16181d","layer":2},
+    {"part":"clip","step":1,"position":[1.95,16.9],"size":[13.5,13.5],"image":"step1","layer":3},
+    {"part":"block","step":2,"position":[16.9,26],"size":[14.4,9],"color":"#2f343d","layer":1},
+    {"part":"edge","step":2,"position":[16.9,26],"size":[14.4,0.45],"color":"#4a4f5a","layer":2},
+    {"part":"text","step":2,"label":"выбирать","tone":0,"position":[16.9,26.9],"size":[14.4,2]},
+    {"part":"frame","step":2,"position":[17.2,11.75],"size":[13.8,13.8],"color":"#4a4f5a","layer":1},
+    {"part":"screen","step":2,"position":[17.349999999999998,11.9],"size":[13.5,13.5],"color":"#16181d","layer":2},
+    {"part":"clip","step":2,"position":[17.349999999999998,11.9],"size":[13.5,13.5],"image":"step2","layer":3},
+    {"part":"block","step":3,"position":[32.3,21],"size":[14.4,14],"color":"#2f343d","layer":1},
+    {"part":"edge","step":3,"position":[32.3,21],"size":[14.4,0.45],"color":"#4a4f5a","layer":2},
+    {"part":"text","step":3,"label":"двигать и править","tone":0,"position":[32.3,21.9],"size":[14.4,2]},
+    {"part":"frame","step":3,"position":[32.599999999999994,6.75],"size":[13.8,13.8],"color":"#4a4f5a","layer":1},
+    {"part":"screen","step":3,"position":[32.75,6.9],"size":[13.5,13.5],"color":"#16181d","layer":2},
+    {"part":"clip","step":3,"position":[32.75,6.9],"size":[13.5,13.5],"image":"step3","layer":3},
+    {"part":"block","step":4,"position":[47.7,16],"size":[14.4,19],"color":"#2f343d","layer":1},
+    {"part":"edge","step":4,"position":[47.7,16],"size":[14.4,0.45],"color":"#4a4f5a","layer":2},
+    {"part":"text","step":4,"label":"запускать","tone":0,"position":[47.7,16.9],"size":[14.4,2]},
+    {"part":"frame","step":4,"position":[48,1.75],"size":[13.8,13.8],"color":"#4a4f5a","layer":1},
+    {"part":"screen","step":4,"position":[48.150000000000006,1.9000000000000004],"size":[13.5,13.5],"color":"#16181d","layer":2},
+    {"part":"clip","step":4,"position":[48.150000000000006,1.9000000000000004],"size":[13.5,13.5],"image":"step4","layer":3}
+  ]
+}

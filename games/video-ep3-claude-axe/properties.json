@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "clock": "timer",
+    "row": "number",
+    "line": "text",
+    "tone": "number"
+  }
+}

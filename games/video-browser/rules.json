@@ -1,0 +1,14 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["controlled"] }, "when": ["score", ">=", 0],
+      "do": [["run", "autopilot"]] },
+
+    { "kind": "move", "for": { "has": ["position", "velocity"] } },
+
+    { "kind": "check", "for": { "has": ["clock"] }, "when": ["clock", ">", 0],
+      "do": [["run", "direct"]] },
+
+    { "kind": "collide", "a": { "has": ["controlled"] }, "b": { "has": ["food"] },
+      "effects": { "a": [["add", "score", 1]], "b": [["run", "move_food"]] } }
+  ]
+}

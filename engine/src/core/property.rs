@@ -99,6 +99,8 @@ pub const ANIMATION: PropertyId = 61;
 pub const CLIMB: PropertyId = 62;
 pub const CLIMBING: PropertyId = 63;
 pub const CLIMB_SPEED: PropertyId = 64;
+/// «Движения» → «Предмет в руках»: имя модели предмета, который держит объект.
+pub const HOLD: PropertyId = 65;
 
 /// Наибольшая скорость времени.
 pub const MAX_TIME_SCALE: f64 = 16.0;
@@ -193,6 +195,7 @@ const BUILTINS: &[(&str, PropKind)] = &[
     ("climb", PropKind::Flag),
     ("climbing", PropKind::Flag),
     ("climb_speed", PropKind::Number),
+    ("hold", PropKind::Text),
 ];
 
 #[derive(Debug, Clone)]

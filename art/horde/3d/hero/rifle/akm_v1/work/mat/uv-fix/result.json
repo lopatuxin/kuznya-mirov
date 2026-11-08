@@ -1,0 +1,16 @@
+{
+  "geometry_hash": "e5f17197fd5e7817dc20b7fc2ca12537fb2cc8f7e18fd846dcc0936d36481f76",
+  "vertices": 13538,
+  "triangles": 27100,
+  "roles": {
+    "metal": 11976,
+    "forewood": 1417,
+    "upperwood": 704,
+    "magazine": 6040,
+    "grip": 2617,
+    "stock": 4346
+  },
+  "atlas": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\work\\mat\\uv-fix\\akm-stable-basecolor.png",
+  "uv": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\work\\mat\\uv-fix\\uv-map.json",
+  "blend": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\work\\mat\\uv-fix\\textured.blend"
+}

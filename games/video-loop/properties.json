@@ -1,0 +1,17 @@
+{
+  "properties": {
+    "ball": "flag",
+    "solid": "flag",
+    "brick": "flag",
+    "score": "number",
+    "strong": "flag",
+    "hits": "number",
+    "paddle": "flag",
+    "clock": "timer",
+    "part": "text",
+    "step": "number",
+    "num": "text",
+    "word": "text",
+    "lit": "number"
+  }
+}

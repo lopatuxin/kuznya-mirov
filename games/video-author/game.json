@@ -1,0 +1,24 @@
+{
+  "name": "Автор под горой листов",
+  "scene": { "width": 32, "height": 18, "background": "#24272e" },
+  "max_objects": 256,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {},
+    "images": {
+      "author_desk": { "path": "images/author_desk.png", "smooth": true },
+      "author_head": { "path": "images/author_head.png", "smooth": true },
+      "sheet_card": { "path": "images/sheet_card.png", "smooth": true },
+      "sheet_brush": { "path": "images/sheet_brush.png", "smooth": true },
+      "sheet_channel": { "path": "images/sheet_channel.png", "smooth": true },
+      "sheet_outline": { "path": "images/sheet_outline.png", "smooth": true },
+      "sheet_realism": { "path": "images/sheet_realism.png", "smooth": true },
+      "ring": { "path": "images/ring.png", "smooth": true }
+    }
+  }
+}

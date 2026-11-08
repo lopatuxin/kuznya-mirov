@@ -1,0 +1,28 @@
+{
+  "hero_height_m": 1.73,
+  "motion_edited": false,
+  "motions": [
+    {
+      "frames": 601,
+      "frames_support_error_over_1cm": 0,
+      "max_joint_displacement_per_frame_m": 0.0008519911207258701,
+      "max_support_error_m": 1.2738382793031633e-7,
+      "motion": "стойка_с_автоматом",
+      "seconds": 2.5
+    },
+    {
+      "frames": 181,
+      "frames_support_error_over_1cm": 0,
+      "max_joint_displacement_per_frame_m": 0.024813108146190643,
+      "max_support_error_m": 0.0000016094807051558746,
+      "motion": "бег_героя",
+      "seconds": 0.7466666102409363
+    }
+  ],
+  "weapon_dimensions_m": [
+    0.03600000083903801,
+    0.8800001030260628,
+    0.2709268675737331
+  ],
+  "stage": "before_animation_transfer"
+}

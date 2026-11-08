@@ -148,6 +148,7 @@ fn outside_the_file(index: usize) -> String {
 /// только если на неё ссылается материал.
 pub fn parse_model_images(
     name: &str,
+    support: Option<&str>,
     bytes: &[u8],
     image: impl FnMut(FileImage<'_>) -> Result<ModelImage, String>,
 ) -> Result<Model, String> {
@@ -188,6 +189,8 @@ pub fn parse_model_images(
         insides: Vec::new(),
         rungs: Vec::new(),
         grabs: Vec::new(),
+        support_name: support,
+        support: None,
         load_image: image,
     };
     for node in scene.nodes() {
@@ -287,6 +290,8 @@ struct Builder<'a, F> {
     rungs: Vec<Vec3>,
     /// Поручни у верха лестницы в осях файла.
     grabs: Vec<Vec3>,
+    support_name: Option<&'a str>,
+    support: Option<Vec3>,
     load_image: F,
 }
 
@@ -299,6 +304,12 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
         holder: Option<usize>,
     ) -> Result<(), String> {
         let matrix = multiply(parent, &node.transform().matrix());
+        if node
+            .name()
+            .is_some_and(|name| Some(name) == self.support_name)
+        {
+            self.support = Some(transform_point(&matrix, [0.0; 3]));
+        }
         if node
             .name()
             .is_some_and(|name| name.starts_with(INSIDE_PREFIX))
@@ -637,6 +648,8 @@ impl<F: FnMut(FileImage<'_>) -> Result<ModelImage, String>> Builder<'_, F> {
                 grabs,
                 ..Building::default()
             },
+            held_hand: Default::default(),
+            support: self.support.map(|point| in_model_axes(point, shift)),
         })
     }
 }
@@ -864,7 +877,7 @@ mod tests {
         bytes: &[u8],
         mut image: impl FnMut(usize) -> Result<Image, String>,
     ) -> Result<Model, String> {
-        parse_model_images(name, bytes, |source| match source {
+        parse_model_images(name, None, bytes, |source| match source {
             FileImage::Embedded(index) => image(index).map(ModelImage::Pixels),
             FileImage::Linked { .. } => Err("картинка лежит вне файла".to_string()),
         })

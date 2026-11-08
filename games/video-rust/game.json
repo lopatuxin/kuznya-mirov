@@ -1,0 +1,17 @@
+{
+  "name": "Rust и код движка",
+  "scene": { "width": 32, "height": 18, "background": "#24272e" },
+  "max_objects": 128,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "mono": "fonts/JetBrainsMono-VF.ttf", "ui": "fonts/Rubik.ttf" },
+    "images": {
+      "rust_logo": { "path": "images/rust_logo.png", "smooth": true }
+    }
+  }
+}

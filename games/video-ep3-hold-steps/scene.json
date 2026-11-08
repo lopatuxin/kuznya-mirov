@@ -1,0 +1,33 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "name": "forest", "position": [0, 0], "size": [32, 18], "image": "forest", "layer": 1 },
+    { "name": "leaves", "position": [-2, -4], "size": [36, 23], "leaf_fall": 0.03, "parallax": 3, "layer": 2 },
+    { "name": "panel", "position": [0.5333, 1.1333], "size": [30.9333, 15.7333], "image": "panel", "layer": 3 },
+    { "part": "title", "title": "пауза", "tone": 0, "position": [2, 2.9], "size": [28, 1.6] },
+    { "part": "bracket", "position": [2, 4.55], "size": [28, 0.08], "color": "#d9a24a", "layer": 6 },
+    { "part": "bracket_left", "position": [2, 4.55], "size": [0.08, 0.5], "color": "#d9a24a", "layer": 6 },
+    { "part": "bracket_right", "position": [29.92, 4.55], "size": [0.08, 0.5], "color": "#d9a24a", "layer": 6 },
+    { "part": "step", "slot": 1, "step": "шаг 1", "tone": 0, "position": [2, 5.1], "size": [6.4, 1.3] },
+    { "part": "edge", "slot": 1, "position": [1.9, 6.4], "size": [6.6, 6.088], "image": "frame", "layer": 7 },
+    { "part": "alarm", "slot": 1, "position": [1.5667, 6.0667], "size": [7.2667, 6.7547], "image": "frame_red", "opacity": 0, "layer": 8 },
+    { "part": "shot", "slot": 1, "shot": 0, "position": [2, 6.5], "size": [6.4, 5.888], "image": "hit", "layer": 6 },
+    { "part": "step", "slot": 2, "step": "шаг 2", "tone": 0, "position": [9.2, 5.1], "size": [6.4, 1.3] },
+    { "part": "edge", "slot": 2, "position": [9.1, 6.4], "size": [6.6, 6.088], "image": "frame", "layer": 7 },
+    { "part": "shot", "slot": 2, "shot": 0, "position": [9.2, 6.5], "size": [6.4, 5.888], "image": "hit", "layer": 6 },
+    { "part": "step", "slot": 3, "step": "шаг 3", "tone": 0, "position": [16.4, 5.1], "size": [6.4, 1.3] },
+    { "part": "edge", "slot": 3, "position": [16.3, 6.4], "size": [6.6, 6.088], "image": "frame", "layer": 7 },
+    { "part": "shot", "slot": 3, "shot": 0, "position": [16.4, 6.5], "size": [6.4, 5.888], "image": "hit", "layer": 6 },
+    { "part": "step", "slot": 4, "step": "шаг 4", "tone": 0, "position": [23.6, 5.1], "size": [6.4, 1.3] },
+    { "part": "edge", "slot": 4, "position": [23.5, 6.4], "size": [6.6, 6.088], "image": "frame", "layer": 7 },
+    { "part": "shot", "slot": 4, "shot": 0, "position": [23.6, 6.5], "size": [6.4, 5.888], "image": "hit", "layer": 6 },
+    { "part": "note", "note": "ещё шаг", "tone": 0, "position": [2.1, 13.35], "size": [4.2, 1.5] },
+    { "part": "shaft", "position": [6.7, 14.02], "size": [1.2, 0.16], "color": "#ff4d4d", "layer": 9 },
+    { "part": "head", "position": [7.75, 13.75], "size": [0.7, 0.7], "image": "head", "layer": 9 },
+    { "part": "key_on", "position": [13.0667, 12.7667], "size": [5.8667, 2.6667], "image": "key_on", "opacity": 0, "layer": 11 },
+    { "part": "key_off", "position": [13.0667, 12.7667], "size": [5.8667, 2.6667], "image": "key_off", "layer": 10 },
+    { "part": "key", "key": "прыжок", "tone": 0, "position": [13.4, 13.1], "size": [5.2, 2] },
+    { "part": "strike", "position": [12.9, 14], "size": [6.2, 0.2], "color": "#ff4d4d", "layer": 12 }
+  ]
+}

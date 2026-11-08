@@ -103,14 +103,20 @@ pub fn view_rotation(world: &World, id: u32) -> Rotation {
     Rotation::from_degrees(sum).unwrap_or_else(|| Rotation::from_quarters(0))
 }
 
-/// Твёрдый объект мира: его сетка, перевод осей и высота верха модели.
+/// Твёрдый объект мира: его сетка, перевод осей, высота верха модели и годятся ли её верхи как пол.
 struct Placed<'a> {
     grid: &'a SolidGrid,
     frame: Frame,
     top: f64,
+    floors: bool,
 }
 
 impl Placed<'_> {
+    /// Ступенька над основанием тела, ниже которой части модели не мешают: на модель без пола не поднимаются.
+    fn step(&self) -> f64 {
+        if self.floors { STEP } else { 0.0 }
+    }
+
     /// Задевает ли тело с местом `place` части здания между высотами `from` включительно и `to`.
     fn blocks(&self, place: &Footprint, from: f64, to: f64) -> bool {
         let (low, high) = (self.frame.local_height(from), self.frame.local_height(to));
@@ -123,6 +129,9 @@ impl Placed<'_> {
 
     /// Самый высокий пол под местом `place`, не выше `limit`.
     fn floor_under(&self, place: &Footprint, limit: Option<f64>) -> Option<f64> {
+        if !self.floors {
+            return None;
+        }
         let mut best = None;
         self.grid.any_under(&self.frame.local_rect(place), |spans| {
             best = self.best_floor(spans, best, limit);
@@ -134,6 +143,9 @@ impl Placed<'_> {
     /// Расстояние вдоль луча, идущего вниз, до первого пола модели в пределах `limit`: луч идёт по плану шагами в
     /// полстолбика, и на шаге ищется пол, чью высоту он пересёк над столбиком с этим полом.
     fn floor_hit(&self, origin: Vec3, direction: Vec3, limit: f64) -> Option<f64> {
+        if !self.floors {
+            return None;
+        }
         let from = ((self.top - origin[2]) / direction[2]).max(0.0);
         let to = ((self.frame.base - origin[2]) / direction[2]).min(limit);
         let horizontal = direction[0].hypot(direction[1]);
@@ -164,6 +176,9 @@ impl Placed<'_> {
 
     /// Самый высокий пол под точкой `point`, не выше `limit`.
     fn floor_at(&self, point: Vec2, limit: Option<f64>) -> Option<f64> {
+        if !self.floors {
+            return None;
+        }
         let spans = self.grid.spans_at(self.frame.local_point(point));
         self.best_floor(spans, None, limit)
     }
@@ -198,7 +213,12 @@ fn solids(world: &World, skip: Option<u32>) -> Vec<Placed<'_>> {
             let grid = model.building.solid.as_deref()?;
             let frame = Frame::of(world, id)?;
             let top = frame.base + model.size[2] * frame.scale;
-            Some(Placed { grid, frame, top })
+            Some(Placed {
+                grid,
+                frame,
+                top,
+                floors: !model.building.obstacle_only,
+            })
         })
         .collect()
 }
@@ -290,7 +310,7 @@ impl Body {
         let free_at = |base: f64| {
             !solids
                 .iter()
-                .any(|solid| solid.blocks(&place, base + STEP, base + self.height))
+                .any(|solid| solid.blocks(&place, base + solid.step(), base + self.height))
         };
         free_at(self.z) && (seat == self.z || free_at(seat))
     }

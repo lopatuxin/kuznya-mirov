@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "clock": "timer",
+    "hero": "flag",
+    "enemy": "flag",
+    "platform": "flag",
+    "caption_spot": "flag",
+    "mark_spot": "flag",
+    "caption": "text",
+    "mark": "text"
+  }
+}

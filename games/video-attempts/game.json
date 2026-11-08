@@ -1,0 +1,58 @@
+{
+  "name": "Попытки героя",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#24272e"
+  },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Rubik.ttf"
+    },
+    "images": {
+      "old_hero": {
+        "path": "images/old_hero.png",
+        "smooth": true
+      },
+      "armored": {
+        "path": "images/armored.png",
+        "smooth": true
+      },
+      "peasant": {
+        "path": "images/peasant.png",
+        "smooth": true
+      },
+      "ilya": {
+        "path": "images/ilya.png",
+        "smooth": true
+      },
+      "crop1": {
+        "path": "images/crop1.png",
+        "smooth": true
+      },
+      "crop2": {
+        "path": "images/crop2.png",
+        "smooth": true
+      },
+      "crop3": {
+        "path": "images/crop3.png",
+        "smooth": true
+      },
+      "dash_a": {
+        "path": "images/dash_a.png",
+        "smooth": true
+      },
+      "dim": {
+        "path": "images/dim.png",
+        "smooth": true
+      }
+    }
+  }
+}

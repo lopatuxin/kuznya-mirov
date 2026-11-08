@@ -1,0 +1,54 @@
+{
+  "name": "Герои игры",
+  "scene": {
+    "width": 64,
+    "height": 36,
+    "background": "#140d08"
+  },
+  "max_objects": 32,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Kurale-Regular.ttf"
+    },
+    "images": {
+      "ilya": {
+        "path": "images/ilya.png",
+        "smooth": true
+      },
+      "shadow_a": {
+        "path": "images/shadow_a.png",
+        "smooth": true
+      },
+      "shadow_a_lit": {
+        "path": "images/shadow_a_lit.png",
+        "smooth": true
+      },
+      "shadow_b": {
+        "path": "images/shadow_b.png",
+        "smooth": true
+      },
+      "shadow_b_lit": {
+        "path": "images/shadow_b_lit.png",
+        "smooth": true
+      },
+      "forest": {
+        "path": "images/forest.png",
+        "smooth": true
+      },
+      "card": {
+        "path": "images/card.png",
+        "smooth": true
+      },
+      "card_glow": {
+        "path": "images/card_glow.png",
+        "smooth": true
+      }
+    }
+  }
+}

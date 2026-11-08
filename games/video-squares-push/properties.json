@@ -1,0 +1,10 @@
+{
+  "properties": {
+    "clock": "timer",
+    "body": "flag",
+    "piece": "flag",
+    "owner": "text",
+    "ox": "number",
+    "oy": "number"
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "realism", "position": [0, 0], "size": [32, 18], "image": "realism", "layer": 1 },
+    { "part": "bridge_card", "position": [0, 0], "size": [32, 18], "image": "bridge_card", "layer": 1 },
+    { "part": "bridge_brush", "position": [0, 0], "size": [32, 18], "image": "bridge_brush", "layer": 1 },
+
+    { "part": "ring_head1", "position": [10, 5], "size": [4, 4], "image": "ring", "layer": 3 },
+    { "part": "ring_head2", "position": [10, 5], "size": [4, 4], "image": "ring", "layer": 3 },
+    { "part": "ring_mace", "position": [10, 5], "size": [4, 4], "image": "ring", "layer": 3 },
+
+    { "part": "plaque_dragon", "position": [10, 10], "size": [5, 1.6], "color": "#1d2026", "layer": 4 },
+    { "part": "plaque_castle", "position": [10, 12], "size": [5, 1.6], "color": "#1d2026", "layer": 4 }
+  ]
+}

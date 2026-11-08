@@ -1,0 +1,22 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "old_hero", "position": [0, 0], "size": [32, 18], "image": "old_hero", "layer": 1 },
+    { "part": "armored", "position": [0, 0], "size": [32, 18], "image": "armored", "layer": 1 },
+    { "part": "peasant", "position": [0, 0], "size": [32, 18], "image": "peasant", "layer": 1 },
+    { "part": "ilya", "position": [0, 0], "size": [32, 18], "image": "ilya", "layer": 1 },
+    { "part": "dim", "position": [0, 0], "size": [32, 18], "image": "dim", "layer": 2 },
+    { "part": "hole", "position": [7.9, 3.6], "size": [4.7, 4.4], "image": "dim", "layer": 2 },
+    { "part": "dash_a", "position": [7.9, 3.6], "size": [4.7, 4.4], "image": "dash_a", "layer": 3 },
+
+    { "part": "plaque", "gold": 0, "position": [1.2, 14.6], "size": [6, 1.6], "color": "#1d2026", "layer": 4 },
+
+    { "part": "crop1", "position": [1.0, 3.0], "size": [9.6, 8.04], "image": "crop1", "layer": 5 },
+    { "part": "crop2", "position": [11.2, 3.0], "size": [9.6, 8.04], "image": "crop2", "layer": 5 },
+    { "part": "crop3", "position": [21.4, 3.0], "size": [9.6, 8.04], "image": "crop3", "layer": 5 },
+    { "part": "cap1", "gold": 0, "position": [2.8, 11.6], "size": [6, 1.6], "color": "#1d2026", "layer": 6 },
+    { "part": "cap2", "gold": 0, "position": [13.0, 11.6], "size": [6, 1.6], "color": "#1d2026", "layer": 6 },
+    { "part": "cap3", "gold": 1, "position": [23.2, 11.6], "size": [6, 1.6], "color": "#1d2026", "layer": 6 }
+  ]
+}

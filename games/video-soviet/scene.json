@@ -1,0 +1,17 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "part": "picture", "position": [0, 0], "size": [32, 18], "image": "soviet", "layer": 1 },
+    { "part": "wash", "position": [0, 0], "size": [32, 18], "image": "wash", "layer": 2 },
+    { "part": "vignette", "position": [0, 0], "size": [32, 18], "image": "vignette", "layer": 3 },
+    { "part": "dark", "position": [0, 0], "size": [32, 18], "image": "dark", "layer": 4 },
+    { "part": "scratch1", "position": [0, 0], "size": [32, 18], "image": "scratch1", "layer": 5 },
+    { "part": "scratch2", "position": [0, 0], "size": [32, 18], "image": "scratch2", "layer": 5 },
+    { "part": "scratch3", "position": [0, 0], "size": [32, 18], "image": "scratch3", "layer": 5 },
+    { "part": "scratch4", "position": [0, 0], "size": [32, 18], "image": "scratch4", "layer": 5 },
+    { "part": "dust1", "position": [0, 0], "size": [32, 18], "image": "dust1", "layer": 6 },
+    { "part": "dust2", "position": [0, 0], "size": [32, 18], "image": "dust2", "layer": 6 },
+    { "part": "dust3", "position": [0, 0], "size": [32, 18], "image": "dust3", "layer": 6 },
+    { "part": "dust4", "position": [0, 0], "size": [32, 18], "image": "dust4", "layer": 6 }
+  ]
+}

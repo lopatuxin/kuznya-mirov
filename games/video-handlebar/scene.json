@@ -1,0 +1,6 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "part": "picture", "position": [-0.117, 0], "size": [32.235, 18], "image": "smithy", "layer": 1 }
+  ]
+}

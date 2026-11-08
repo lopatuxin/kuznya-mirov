@@ -1,0 +1,8 @@
+{
+  "properties": {
+    "clock": "timer",
+    "tile": "number",
+    "caption_of": "number",
+    "caption": "text"
+  }
+}

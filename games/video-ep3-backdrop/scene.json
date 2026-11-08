@@ -1,0 +1,7 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "forest", "position": [0, 0], "size": [32, 18], "image": "forest", "layer": 1 },
+    { "name": "leaves", "position": [-2, -4], "size": [36, 23], "leaf_fall": 0.03, "parallax": 3, "layer": 2 }
+  ]
+}

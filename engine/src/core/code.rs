@@ -706,7 +706,9 @@ fn write_property(
             Ok(())
         }
         (PropKind::Layer, _) => Err("ожидалось целое число".to_string()),
-        (PropKind::Text, AnyValue::Str(name)) if prop == property::MODEL => {
+        (PropKind::Text, AnyValue::Str(name))
+            if matches!(prop, property::MODEL | property::HOLD) =>
+        {
             let models = properties.models();
             if models.index_of(&name).is_none() {
                 let declared = models
@@ -880,9 +882,39 @@ fn check_model_animation(
     let Some(model) = models.index_of(model_name).and_then(|at| models.get(at)) else {
         return Ok(());
     };
-    match world.text(id, property::ANIMATION) {
-        Some(name) => animation_in_model(model, name),
+    if let Some(name) = world.text(id, property::ANIMATION) {
+        animation_in_model(model, name)?;
+    }
+    match world.text(id, property::HOLD) {
+        Some(hold) => model_can_hold(model, hold),
         None => Ok(()),
+    }
+}
+
+fn check_hold(world: &World, id: u32, value: &AnyValue) -> Result<(), String> {
+    let AnyValue::Str(hold) = value else {
+        return Ok(());
+    };
+    let Some(model) = world.model_of(id) else {
+        return Err(format!(
+            "hold \"{hold}\" есть только у объекта с моделью, у которой объявлены hands"
+        ));
+    };
+    model_can_hold(model, hold)
+}
+
+fn model_can_hold(model: &Model, hold: &str) -> Result<(), String> {
+    if model
+        .skeleton
+        .as_ref()
+        .is_some_and(|skeleton| skeleton.hands.is_some())
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "у модели \"{}\" нет hands: она не может держать \"{hold}\"",
+            model.name
+        ))
     }
 }
 
@@ -915,7 +947,11 @@ fn check_shape_rules(
         check_model_animation(world, properties, id, value)?;
     }
     match prop {
-        property::MODEL | property::HEIGHT | property::FACING | property::ANIMATION
+        property::MODEL
+        | property::HEIGHT
+        | property::FACING
+        | property::ANIMATION
+        | property::HOLD
             if !properties.three_d() =>
         {
             Err(format!(
@@ -923,6 +959,7 @@ fn check_shape_rules(
             ))
         }
         property::ANIMATION => check_animation(world, id, value),
+        property::HOLD => check_hold(world, id, value),
         property::SHAPE | property::DECK | property::ROAD if !properties.three_d() => {
             Err(format!("{name} есть только в трёхмерной сцене"))
         }

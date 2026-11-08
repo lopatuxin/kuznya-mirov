@@ -1,0 +1,17 @@
+{
+  "name": "Фон карточек — третий ролик",
+  "scene": { "width": 32, "height": 18, "background": "#140d08" },
+  "max_objects": 8,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Kurale-Regular.ttf" },
+    "images": {
+      "forest": { "path": "images/forest.png", "smooth": true }
+    }
+  }
+}

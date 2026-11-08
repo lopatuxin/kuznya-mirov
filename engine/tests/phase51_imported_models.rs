@@ -147,7 +147,7 @@ fn index_for(models: &[&str]) -> String {
             )
         })
         .collect();
-    format!(r#"{{"version":1,"models":{{{}}}}}"#, entries.join(","))
+    format!(r#"{{"version":2,"models":{{{}}}}}"#, entries.join(","))
 }
 
 /// Ответ страницы по исходной модели: файл и три разжатых картинки.

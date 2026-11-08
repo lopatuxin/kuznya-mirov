@@ -1,0 +1,22 @@
+{
+  "name": "С кем драться",
+  "scene": { "width": 64, "height": 36, "background": "#24272e" },
+  "max_objects": 32,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" },
+    "images": {
+      "wolf": { "path": "images/wolf.png", "smooth": true },
+      "leshy": { "path": "images/leshy.png", "smooth": true },
+      "robber": { "path": "images/robber.png", "smooth": true },
+      "wolf_dark": { "path": "images/wolf_dark.png", "smooth": true },
+      "leshy_dark": { "path": "images/leshy_dark.png", "smooth": true },
+      "robber_dark": { "path": "images/robber_dark.png", "smooth": true }
+    }
+  }
+}

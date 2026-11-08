@@ -1,0 +1,27 @@
+{
+  "name": "Арканоид",
+  "scene": { "width": 24, "height": 24, "background": "#0e1018" },
+  "random_seed": 20260908,
+  "max_objects": 4096,
+  "start_screen": "menu",
+  "win_screen": "win",
+  "loss_screen": "loss",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf" },
+    "sounds": { "bounce": "sounds/bounce.wav", "brick": "sounds/brick.wav",
+                "win": "sounds/win.wav", "lose": "sounds/lose.wav" },
+    "music": { "menu": "music/menu.mp3", "game": "music/game.mp3" },
+    "images": {
+      "paddle": { "path": "images/paddle.png" },
+      "ball": { "path": "images/ball.png", "frames": 4, "frame_time": 0.15 },
+      "brick_red": { "path": "images/brick_red.png", "frames": 3, "frame_by": "hits" },
+      "brick_amber": { "path": "images/brick_amber.png" },
+      "brick_yellow": { "path": "images/brick_yellow.png" }
+    }
+  }
+}

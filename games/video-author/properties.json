@@ -1,0 +1,10 @@
+{
+  "properties": {
+    "clock": "timer",
+    "part": "text",
+    "card": "number",
+    "role": "text",
+    "tx": "number",
+    "ty": "number"
+  }
+}

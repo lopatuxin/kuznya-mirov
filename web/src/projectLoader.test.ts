@@ -781,7 +781,7 @@ describe("loadProject", () => {
   });
 
   describe("сжатые модели — imported/", () => {
-    const INDEX_TEXT = JSON.stringify({ version: 1, models: { "models/house.glb": { model: "imported/models/house.glb", images: ["imported/textures/a.ktx2", null] } } });
+    const INDEX_TEXT = JSON.stringify({ version: 2, models: { "models/house.glb": { model: "imported/models/house.glb", images: ["imported/textures/a.ktx2", null] } } });
     const ENTRY_FILES = { properties: "properties.json", scene: "scene.json", rules: "rules.json", screens: "screens.json", fonts: [], tables: [], stamps: [] };
 
     function createEngine(models: unknown[], modelTextures: unknown[]): { engine: ProjectLoadEngine; readTexts: ReturnType<typeof vi.fn>; load: ReturnType<typeof vi.fn> } {

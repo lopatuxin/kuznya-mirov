@@ -1,0 +1,30 @@
+{
+  "motion": "ходьба_зомби_кино",
+  "path": "walk-sheet.png",
+  "frames": 65,
+  "columns": 8,
+  "rows": 9,
+  "frameSize": [
+    256,
+    256
+  ],
+  "durationSeconds": 2.71,
+  "frameSeconds": 0.041692305,
+  "originPixels": [
+    102.5,
+    217.06
+  ],
+  "loop": true,
+  "camera": {
+    "projection": "orthographic",
+    "pitchDegrees": 45,
+    "yawDegrees": 75
+  },
+  "light": {
+    "sun_from": 48,
+    "sun_height": 26,
+    "sun_color": "#fff5e8",
+    "sky_color": "#dbe8fa",
+    "shadow": 0.44
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["clock"] }, "when": ["clock", ">", 0],
+      "do": [["run", "direct"]] }
+  ]
+}

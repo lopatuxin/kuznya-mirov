@@ -1,0 +1,20 @@
+[
+ {"name": "d01_fence_gap_topdown", "cam": [13.42, 6.0, 1.75], "at": [13.42, 6.0001, 0.0], "lens": 50, "clip": 0.02},
+ {"name": "d02_fence_gap_end", "cam": [13.3, -8.6, 1.5], "at": [13.47, -7.6, 1.2], "lens": 50},
+ {"name": "d03_wheel_side", "cam": [12.6, 2.45, 0.45], "at": [10.15, 2.45, 0.35], "lens": 50},
+ {"name": "d04_wheel_bottom", "cam": [10.15, 1.2, 0.08], "at": [10.15, 2.4, 0.05], "lens": 50},
+ {"name": "d05_fuel_wallgap", "cam": [-12.2, 3.8, 2.2], "at": [-13.0, 4.3, 2.55], "lens": 35},
+ {"name": "d06_fireboard_side", "cam": [-6.3, 4.45, 1.4], "at": [-7.0, 4.55, 1.35], "lens": 50},
+ {"name": "d07_rack_side", "cam": [-8.1, 2.4, 0.25], "at": [-8.8, 3.1, 0.2], "lens": 50},
+ {"name": "d08_sign_side", "cam": [0.75, 1.30, 2.24], "at": [0.3, 1.47, 2.24], "lens": 50},
+ {"name": "d09_leaf_hinge_top", "cam": [-5.0, 1.0, 3.6], "at": [-5.2, 1.5, 2.6], "lens": 35},
+ {"name": "d10_brace_overlap", "cam": [-4.9, 0.6, 2.4], "at": [-5.55, 0.2, 2.3], "lens": 50},
+ {"name": "d11_dormer_valley", "cam": [-4.2, -0.5, 7.8], "at": [-2.2, 2.5, 6.3], "lens": 35},
+ {"name": "d12_workshop_window", "cam": [9.4, 1.6, 1.8], "at": [9.1, 2.6, 1.7], "lens": 35},
+ {"name": "d13_gable_corner", "cam": [-8.2, 0.2, 5.6], "at": [-6.5, 1.5, 5.35], "lens": 50},
+ {"name": "d14_roof_texture_close", "cam": [3.0, 3.0, 8.3], "at": [3.0, 4.0, 7.2], "lens": 35},
+ {"name": "d15_drum_end", "cam": [-10.4, 1.7, 0.6], "at": [-10.4, 3.1, 0.55], "lens": 50},
+ {"name": "d16_right_gable", "cam": [11.5, 4.0, 8.0], "at": [6.5, 6.75, 6.5], "lens": 35},
+ {"name": "d17_shed_wall_close", "cam": [8.0, 1.2, 1.4], "at": [8.0, 2.6, 1.4], "lens": 35},
+ {"name": "d18_bucket", "cam": [-7.75, 3.7, 1.75], "at": [-7.9, 4.45, 1.55], "lens": 50}
+]

@@ -1,0 +1,31 @@
+{
+  "filepath": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\akm-v1.blend",
+  "scene": "Horde_AKM_Reference_v1",
+  "objects": [
+    {
+      "name": "HordeAKMv1_envelope",
+      "type": "MESH"
+    },
+    {
+      "name": "HordeAKMv1_export",
+      "type": "MESH"
+    }
+  ],
+  "view": [
+    {
+      "rotation": [
+        0.9294310808181763,
+        0.2630022466182709,
+        -0.07047154009342194,
+        -0.2490406632423401
+      ],
+      "location": [
+        0.0,
+        -0.17274999618530273,
+        0.13545000553131104
+      ],
+      "distance": 1.2000000476837158,
+      "perspective": "ORTHO"
+    }
+  ]
+}

@@ -1,0 +1,18 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "name": "forest", "position": [0, 0], "size": [32, 18], "image": "forest", "layer": 1 },
+    { "name": "leaves", "position": [-2, -4], "size": [36, 23], "leaf_fall": 0.03, "parallax": 3, "layer": 2 },
+    { "name": "panel", "position": [1.8333, 2.2333], "size": [28.3333, 12.2333], "image": "panel", "layer": 3 },
+    { "name": "tab", "position": [11.8333, 1.7667], "size": [8.3333, 2.2667], "image": "tab", "layer": 4 },
+    { "name": "field", "position": [3, 4.4], "size": [26, 3.2], "image": "field", "layer": 4 },
+    { "row": 1, "tone": 0, "line": "", "position": [3.3, 4.7], "size": [25.5, 0.9] },
+    { "row": 2, "tone": 0, "line": "", "position": [3.3, 5.6], "size": [25.5, 0.9] },
+    { "row": 3, "tone": 0, "line": "", "position": [3.3, 6.5], "size": [25.5, 0.9] },
+    { "row": 4, "tone": 0, "line": "", "position": [3.3, 8.4], "size": [25.5, 0.9] },
+    { "row": 5, "tone": 0, "line": "", "position": [3.3, 9.3], "size": [25.5, 0.9] },
+    { "row": 6, "tone": 0, "line": "", "position": [3.3, 10.2], "size": [25.5, 0.9] },
+    { "row": 7, "tone": 0, "line": "", "position": [3.3, 11.1], "size": [25.5, 0.9] }
+  ]
+}

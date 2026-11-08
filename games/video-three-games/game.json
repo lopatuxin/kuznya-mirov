@@ -1,0 +1,33 @@
+{
+  "name": "Три игры каркаса",
+  "scene": { "width": 80, "height": 45, "background": "#24272e" },
+  "random_seed": 20260908,
+  "max_objects": 512,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" },
+    "images": {
+      "head": { "path": "images/head.png" },
+      "tail": { "path": "images/tail.png" },
+      "food": { "path": "images/food.png", "frames": 4, "frame_time": 0.15 },
+      "paddle": { "path": "images/paddle.png" },
+      "ball": { "path": "images/ball.png", "frames": 4, "frame_time": 0.15 },
+      "brick_red": { "path": "images/brick_red.png", "frames": 3, "frame_by": "hits" },
+      "brick_amber": { "path": "images/brick_amber.png" },
+      "brick_yellow": { "path": "images/brick_yellow.png" },
+      "cube_i": { "path": "images/cube_i.png" },
+      "cube_o": { "path": "images/cube_o.png" },
+      "cube_t": { "path": "images/cube_t.png" },
+      "cube_s": { "path": "images/cube_s.png" },
+      "cube_z": { "path": "images/cube_z.png" },
+      "cube_j": { "path": "images/cube_j.png" },
+      "cube_l": { "path": "images/cube_l.png" },
+      "wall": { "path": "images/wall.png" }
+    }
+  }
+}

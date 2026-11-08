@@ -1,7 +1,7 @@
 //! «Трёхмерная сцена» → «Модели и движения», «Отрисовка»: где в кадре стоит каждый объект с `model`. Ни
 //! видеокарты, ни браузера: `wasm::mod` переводит это в данные для `render::gpu_models`.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::rc::Rc;
 use std::sync::Arc;
@@ -37,6 +37,8 @@ pub struct ModelInstance {
     /// среза и у этой модели не рисуются; отрицательное — экземпляр модели среза, он рисует эту долю точек и тени
     /// не бросает.
     pub fade: f32,
+    /// Дополнительный поворот предмета вместе с кистью; у обычных объектов единичный кватернион.
+    pub attachment: [f32; 4],
 }
 
 /// Объект с частью `BLEND`: номер модели и номер объекта в её списке кадра.
@@ -125,6 +127,7 @@ pub fn road_draws(game: &Game) -> RoadDraws {
                 0.0,
             ],
             fade: 0.0,
+            attachment: [0.0, 0.0, 0.0, 1.0],
         });
     }
     RoadDraws {
@@ -255,29 +258,125 @@ pub fn model_draws(game: &Game) -> ModelDraws {
         if model.casts_shadow() {
             draws.top = draws.top.max(base + model.size[2] * scale);
         }
-        if let Some(skeleton) = &model.skeleton {
-            let stance = Stance {
-                place: middle,
-                cos,
-                sin,
-                scale,
-                base,
-            };
-            posing.pose(game, id, skeleton, &stance, &mut draws.bones[index]);
-        }
+        let stance = Stance {
+            place: middle,
+            cos,
+            sin,
+            scale,
+            base,
+        };
+        let held = world.text(id, property::HOLD).and_then(|name| {
+            let at = models.index_of(name)?;
+            let item = models.get(at)?;
+            (!item.parts.is_empty()).then_some((at, item))
+        });
+        let hand = model.skeleton.as_ref().and_then(|skeleton| {
+            posing.pose(
+                game,
+                id,
+                skeleton,
+                &stance,
+                held.map(|(_, item)| item),
+                &mut draws.bones[index],
+            )
+        });
         let cutaway = cutaway_of(world, models, id, model);
         let instance = ModelInstance {
             placement: [middle[0] as f32, middle[1] as f32, cos as f32, sin as f32],
             base: [base as f32, scale as f32, 1.0, world.tilt(id) as f32],
             fade: cutaway.map_or(0.0, |(_, _, share)| share),
+            attachment: [0.0, 0.0, 0.0, 1.0],
         };
         let reach = [middle[0], middle[1], base + model.size[2] * scale / 2.0];
         draws.add(index, model, instance, reach);
         if let Some((at, cut, share)) = cutaway {
             push_cutaway(&mut draws, (at, cut, share), model, instance, (sin, cos));
         }
+        if let (Some((at, item)), Some(hand)) = (held, hand) {
+            let instance = held_instance(item, &hand, &stance);
+            let base = f64::from(instance.base[0]);
+            let scale = f64::from(instance.base[1]);
+            if item.casts_shadow() {
+                draws.top = draws.top.max(base + item.size[2] * scale);
+            }
+            let reach = [
+                f64::from(instance.placement[0]),
+                f64::from(instance.placement[1]),
+                base + item.size[2] * scale / 2.0,
+            ];
+            draws.add(at, item, instance, reach);
+        }
     }
     draws
+}
+
+fn held_instance(item: &Model, hand: &Mat4, stance: &Stance) -> ModelInstance {
+    let shifted: [f32; 3] = std::array::from_fn(|row| {
+        (0..3)
+            .map(|k| hand[k][row] * item.building.shift[k])
+            .sum::<f32>()
+    });
+    let origin: [f32; 3] = std::array::from_fn(|axis| hand[3][axis] + shifted[axis]);
+    let place = stance.world(origin);
+    ModelInstance {
+        placement: [
+            place[0] as f32,
+            place[1] as f32,
+            stance.cos as f32,
+            stance.sin as f32,
+        ],
+        base: [
+            (stance.base + stance.scale * f64::from(origin[2])) as f32,
+            stance.scale as f32,
+            1.0,
+            0.0,
+        ],
+        fade: 0.0,
+        attachment: rotation_quaternion(hand),
+    }
+}
+
+fn rotation_quaternion(matrix: &Mat4) -> [f32; 4] {
+    let unit = |column: usize| {
+        let v = matrix[column];
+        let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-20);
+        [v[0] / length, v[1] / length, v[2] / length]
+    };
+    let (x, y, z) = (unit(0), unit(1), unit(2));
+    let trace = x[0] + y[1] + z[2];
+    if trace > 0.0 {
+        let s = (trace + 1.0).sqrt() * 2.0;
+        [
+            (y[2] - z[1]) / s,
+            (z[0] - x[2]) / s,
+            (x[1] - y[0]) / s,
+            0.25 * s,
+        ]
+    } else if x[0] > y[1] && x[0] > z[2] {
+        let s = (1.0 + x[0] - y[1] - z[2]).sqrt() * 2.0;
+        [
+            0.25 * s,
+            (y[0] + x[1]) / s,
+            (z[0] + x[2]) / s,
+            (y[2] - z[1]) / s,
+        ]
+    } else if y[1] > z[2] {
+        let s = (1.0 + y[1] - x[0] - z[2]).sqrt() * 2.0;
+        [
+            (y[0] + x[1]) / s,
+            0.25 * s,
+            (z[1] + y[2]) / s,
+            (z[0] - x[2]) / s,
+        ]
+    } else {
+        let s = (1.0 + z[2] - x[0] - y[1]).sqrt() * 2.0;
+        [
+            (z[0] + x[2]) / s,
+            (z[1] + y[2]) / s,
+            0.25 * s,
+            (x[1] - y[0]) / s,
+        ]
+    }
 }
 
 /// «Здания»: модель среза объекта `id` и доля точек, отданных ей, пока эта доля больше нуля. Срез со скелетом не
@@ -323,6 +422,7 @@ fn push_cutaway(
         ],
         base: [base as f32, instance.base[1], 1.0, 0.0],
         fade: -share,
+        attachment: [0.0, 0.0, 0.0, 1.0],
     };
     draws.add(at, cut, cutaway, reach);
 }
@@ -344,8 +444,9 @@ impl Posing {
         id: u32,
         skeleton: &Skeleton,
         stance: &Stance,
+        held: Option<&Model>,
         out: &mut Vec<f32>,
-    ) {
+    ) -> Option<Mat4> {
         let world = &game.world;
         skeleton.pose(&world.motion(id).blend(skeleton), &mut self.scratch);
         let grip = climb::grip(world, id);
@@ -363,8 +464,11 @@ impl Posing {
         if let Some(grip) = &grip {
             skeleton.grip_ladder(stance, grip, &mut self.scratch);
         }
+        let hand =
+            held.and_then(|item| skeleton.hold_item(item, grip.is_none(), &mut self.scratch));
         skeleton.skin_matrices(&self.scratch, &mut self.matrices);
         out.extend(self.matrices.iter().flatten().flatten());
+        hand
     }
 }
 
@@ -378,16 +482,25 @@ pub struct MipLevel {
 
 /// Ступени уменьшения картинки до одной точки, с первой, которая влезает в `max_side`. Цвет `srgb`
 /// усредняется в линейной яркости, остальные карты — как есть.
+///
+/// У картинки цвета с прозрачностью цвет прозрачных точек не виден, но выборка с краю и уменьшение смешивают его с
+/// краем рисунка: фон, на котором рисунок нарисован, ложится каймой по силуэту. Поэтому прозрачные точки берут
+/// цвет ближайшей непрозрачной, а уменьшение усредняет цвет с весом прозрачности. У остальных карт четвёртый канал
+/// не прозрачность, их это не касается.
 pub fn mip_chain(image: &Image, srgb: bool, max_side: u32) -> Vec<MipLevel> {
     let mut level = MipLevel {
         width: image.width,
         height: image.height,
         pixels: image.pixels.clone(),
     };
+    let cutout = srgb && level.pixels.chunks_exact(4).any(|pixel| pixel[3] < 255);
+    if cutout {
+        bleed_into_transparent(&mut level);
+    }
     let mut chain = Vec::new();
     loop {
         let last = level.width <= 1 && level.height <= 1;
-        let next = (!last).then(|| shrink(&level, srgb));
+        let next = (!last).then(|| shrink(&level, srgb, cutout));
         if level.width <= max_side && level.height <= max_side {
             chain.push(level);
         }
@@ -398,8 +511,34 @@ pub fn mip_chain(image: &Image, srgb: bool, max_side: u32) -> Vec<MipLevel> {
     }
 }
 
-/// Вдвое меньше по каждой стороне (не меньше точки): каждая новая точка — среднее до четырёх старых.
-fn shrink(level: &MipLevel, srgb: bool) -> MipLevel {
+/// Цвет каждой полностью прозрачной точки — цвет ближайшей по шагам точки с прозрачностью больше нуля; сама
+/// прозрачность не меняется. Картинка без единой видимой точки остаётся как есть.
+fn bleed_into_transparent(level: &mut MipLevel) {
+    let (width, height) = (level.width as usize, level.height as usize);
+    let pixels = &mut level.pixels;
+    let mut filled: Vec<bool> = pixels.chunks_exact(4).map(|pixel| pixel[3] > 0).collect();
+    let mut queue: VecDeque<usize> = (0..filled.len()).filter(|&i| filled[i]).collect();
+    while let Some(from) = queue.pop_front() {
+        let (x, y) = (from % width, from / width);
+        let neighbours = [
+            (x > 0).then(|| from - 1),
+            (x + 1 < width).then(|| from + 1),
+            (y > 0).then(|| from - width),
+            (y + 1 < height).then(|| from + width),
+        ];
+        for to in neighbours.into_iter().flatten() {
+            if !filled[to] {
+                filled[to] = true;
+                pixels.copy_within(from * 4..from * 4 + 3, to * 4);
+                queue.push_back(to);
+            }
+        }
+    }
+}
+
+/// Вдвое меньше по каждой стороне (не меньше точки): каждая новая точка — среднее до четырёх старых. С
+/// `cutout` цвет усредняется с весом прозрачности: прозрачные точки в цвет не входят.
+fn shrink(level: &MipLevel, srgb: bool, cutout: bool) -> MipLevel {
     let (width, height) = ((level.width / 2).max(1), (level.height / 2).max(1));
     let mut pixels = Vec::with_capacity(width as usize * height as usize * 4);
     let at = |x: u32, y: u32| (y as usize * level.width as usize + x as usize) * 4;
@@ -414,19 +553,31 @@ fn shrink(level: &MipLevel, srgb: bool) -> MipLevel {
                     (2 * y + 1).min(level.height - 1),
                 ),
             ];
+            let weights = sources.map(|(sx, sy)| {
+                if cutout {
+                    f32::from(level.pixels[at(sx, sy) + 3])
+                } else {
+                    1.0
+                }
+            });
+            let total: f32 = weights.iter().sum();
+            let weights = if total > 0.0 { weights } else { [1.0; 4] };
             for channel in 0..4 {
-                let sum: f32 = sources
-                    .iter()
-                    .map(|&(sx, sy)| {
+                let weighted = channel < 3;
+                let (sum, count) = sources.iter().zip(weights).fold(
+                    (0.0, 0.0),
+                    |(sum, count), (&(sx, sy), weight)| {
                         let byte = level.pixels[at(sx, sy) + channel];
-                        if srgb && channel < 3 {
+                        let value = if srgb && channel < 3 {
                             srgb_to_linear(byte)
                         } else {
                             f32::from(byte) / 255.0
-                        }
-                    })
-                    .sum();
-                let mean = sum / 4.0;
+                        };
+                        let weight = if weighted { weight } else { 1.0 };
+                        (sum + value * weight, count + weight)
+                    },
+                );
+                let mean: f32 = sum / count;
                 pixels.push(if srgb && channel < 3 {
                     linear_to_srgb(mean)
                 } else {
@@ -767,6 +918,68 @@ mod tests {
         );
         let data = &mip_chain(&source, false, 8)[1];
         assert_eq!(data.pixels[0], 128);
+    }
+
+    #[test]
+    fn transparent_points_take_the_colour_of_the_nearest_visible_one() {
+        // Красная точка слева, справа три прозрачные точки белого фона, на котором рисунок нарисован.
+        let mut pixels = vec![200, 0, 0, 255];
+        pixels.extend([255, 255, 255, 0].repeat(3));
+        let source = Image {
+            width: 4,
+            height: 1,
+            pixels,
+        };
+        let top = &mip_chain(&source, true, 8)[0];
+        let mut expected = vec![200, 0, 0, 255];
+        expected.extend([200, 0, 0, 0].repeat(3));
+        assert_eq!(top.pixels, expected);
+    }
+
+    #[test]
+    fn a_smaller_level_weighs_colour_by_transparency() {
+        // Половина рисунка — непрозрачный чёрный, половина — белый с половинной прозрачностью.
+        let source = Image {
+            width: 2,
+            height: 2,
+            pixels: [
+                [0, 0, 0, 255],
+                [255, 255, 255, 128],
+                [0, 0, 0, 255],
+                [255, 255, 255, 128],
+            ]
+            .concat(),
+        };
+        let small = &mip_chain(&source, true, 8)[1];
+        // Белый весит 128 из 383: в линейной яркости 0,334, это около 156 в sRGB; без веса вышло бы 188.
+        assert!(
+            (i32::from(small.pixels[0]) - 156).abs() <= 1,
+            "{:?}",
+            small.pixels
+        );
+        assert_eq!(small.pixels[3], 192);
+    }
+
+    #[test]
+    fn a_data_map_keeps_the_colour_of_points_with_zero_in_the_fourth_channel() {
+        let source = Image {
+            width: 2,
+            height: 1,
+            pixels: [[200, 0, 0, 255], [10, 20, 30, 0]].concat(),
+        };
+        assert_eq!(mip_chain(&source, false, 8)[0].pixels, source.pixels);
+    }
+
+    #[test]
+    fn an_opaque_picture_is_averaged_as_before() {
+        let mut pixels = [0, 0, 0, 255].repeat(2);
+        pixels.extend([255, 255, 255, 255].repeat(2));
+        let source = Image {
+            width: 2,
+            height: 2,
+            pixels,
+        };
+        assert_eq!(mip_chain(&source, false, 8)[1].pixels, [128, 128, 128, 255]);
     }
 
     #[test]

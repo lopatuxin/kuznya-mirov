@@ -1,0 +1,20 @@
+{
+  "name": "Лесенка редактора",
+  "scene": { "width": 64, "height": 36, "background": "#24272e" },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" },
+    "images": {
+      "step1": { "path": "images/step1.mp4", "smooth": true },
+      "step2": { "path": "images/step2.mp4", "smooth": true },
+      "step3": { "path": "images/step3.mp4", "smooth": true },
+      "step4": { "path": "images/step4.mp4", "smooth": true }
+    }
+  }
+}

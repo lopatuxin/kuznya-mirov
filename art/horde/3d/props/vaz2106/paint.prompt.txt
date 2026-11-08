@@ -1,0 +1,19 @@
+EDIT INPUT IMAGE 1 IN PLACE. Required PNG dimensions: 1024 pixels wide by 1024 pixels tall (1024x1024). Keep the ORIGINAL 1024x1024 canvas. Do not change resolution. Produce one image.
+
+This is a registered hand-painted replacement texture for a 3D blockout, not a new illustration layout. The first image guide.png is the exact drawing that must be painted over, with 100% unchanged geometry. References 2 and 3 provide only the art style and upper-left sunlight. Do not adopt their composition.
+
+ABSOLUTE GEOMETRY:
+The original car occupies x=138 through 885 and y=303 through 705 inclusive in the 1024x1024 image: maximum width 748 pixels, maximum height 403 pixels. Preserve ALL of that original outline exactly. Leave 303 blank pixels above the topmost point, 318 blank pixels below the bottommost point, 138 blank pixels left and 138 blank pixels right. Do not zoom in to fill the canvas. Retain the exact original orthographic camera at 30 degrees down. Front points lower right. Trace the first image's hood, sloping glass, roof, sloping trunk, softly rounded edges, side and semicircular wheel arches without moving a single edge. Paint only INSIDE the existing complete car silhouette, including the original bumpers and dark empty wheel wells. No additions outside this outline.
+
+BACKGROUND:
+All original transparent pixels become EXACTLY RGB 201,185,138 (hex #c9b98a). Perfectly solid uniform flat color. No gradient, no lighting variation on background, no noise or grain, no paper texture, no ground, no shadow whatsoever outside the car. Car's shading is internal only.
+
+PAINT-OVER:
+Turn the first image's existing brown body surfaces into the abandoned wheel-less 1980s Soviet VAZ-2106 Zhiguli / Lada 1600. Faded cream-white enamel; naturally painted orange-brown rust heaviest on sills, lower doors and wheel-arch edges, variable peeling chips and seam streaks, dusty roof and hood. Organic varied hand-painted corrosion, no repeated pattern, no pasted texture. Follow the guide's rounded contours precisely, do not make it boxier.
+Paint onto the lower-right front face four round headlights in chrome rings, two pairs, a finely slatted black grille with tiny centered VAZ boat emblem, and the source chrome bumper with a black rubber strip and rubber overriders. No writing or plate characters. Follow existing bumper boundaries.
+Paint onto the visible left side thin chrome trim, two door seams, handles, thin chrome window frames with B-pillar and wide C-pillar. Rear side window broken out to a dark cabin and torn seat. The slanted windshield facing lower right is cracked and dusty blue-grey. Deep black empty arches with small rusty brake drums, no tires or wheels. Car lies on its belly, no ground added.
+
+STYLE:
+Faithful to the rusty cars in image 2 and the approved painted tower in image 3. Clean ink-like outlines, soft cel-like painted shading, saturated natural hues, sunny upper-left light. Confident brush-painted material wear. No photorealism, no 3D-render finish, no pixel art.
+
+FINAL CHECK BEFORE RETURNING: 1024x1024 pixels; car outline and position unchanged from input 1 at x138..885/y303..705; all background exactly #c9b98a. Do not output 1254x1254 or any other size.

@@ -1,0 +1,15 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "name": "p1", "platform": true, "position": [3, 12], "size": [8, 1], "color": "#7d838e", "layer": 1 },
+    { "name": "p2", "platform": true, "position": [13.5, 9], "size": [5, 1], "color": "#7d838e", "layer": 1 },
+    { "name": "p3", "platform": true, "position": [21, 12], "size": [8, 1], "color": "#7d838e", "layer": 1 },
+
+    { "name": "hero", "hero": true, "position": [6.1, 10.2], "size": [1.8, 1.8], "color": "#3d7eff", "layer": 2 },
+    { "name": "enemy", "enemy": true, "position": [25.3, 10.2], "size": [1.8, 1.8], "color": "#ff4d4d", "layer": 2 },
+
+    { "name": "caption", "caption_spot": true, "position": [3, 15.2], "size": [26, 1.4] },
+    { "name": "question", "mark_spot": true, "position": [13, 0.6], "size": [6, 7] }
+  ]
+}

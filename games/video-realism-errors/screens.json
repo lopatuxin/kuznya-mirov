@@ -1,0 +1,10 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "label", "for": { "has": ["caption"] }, "anchor": "center",
+      "size": [5, 1.6], "text": "{caption}", "font": "ui", "font_size": 1.1, "align": "center",
+      "color": "#ffffff" }
+  ]
+}

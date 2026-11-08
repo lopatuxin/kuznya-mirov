@@ -1,0 +1,62 @@
+{
+  "name": "Десять проб стиля",
+  "scene": {
+    "width": 32,
+    "height": 18,
+    "background": "#24272e"
+  },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {
+      "ui": "fonts/Rubik.ttf"
+    },
+    "images": {
+      "s01": {
+        "path": "images/01-realism.png",
+        "smooth": true
+      },
+      "s02": {
+        "path": "images/02-soviet.png",
+        "smooth": true
+      },
+      "s03": {
+        "path": "images/03-modern-cartoon.png",
+        "smooth": true
+      },
+      "s04": {
+        "path": "images/04-dark-gothic.png",
+        "smooth": true
+      },
+      "s05": {
+        "path": "images/05-paper-cutout.png",
+        "smooth": true
+      },
+      "s06": {
+        "path": "images/06-silhouette.png",
+        "smooth": true
+      },
+      "s07": {
+        "path": "images/07-pixel-8bit.png",
+        "smooth": true
+      },
+      "s08": {
+        "path": "images/08-anime.png",
+        "smooth": true
+      },
+      "s09": {
+        "path": "images/09-pixel-16bit.png",
+        "smooth": true
+      },
+      "s10": {
+        "path": "images/10-western-cartoon.png",
+        "smooth": true
+      }
+    }
+  }
+}

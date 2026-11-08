@@ -1,0 +1,101 @@
+{
+ "part": "envelope",
+ "fail": [],
+ "warn": [],
+ "views": {
+  "right": {
+   "part_iou": 0.9834,
+   "model_only_pct": 0.96,
+   "ref_only_pct": 0.7,
+   "view_iou": 0.9833,
+   "bands": [
+    {
+     "up_m": 0.26,
+     "ref_width_m": 0.349,
+     "left_m": 0.0,
+     "right_m": 0.0
+    },
+    {
+     "up_m": 0.237,
+     "ref_width_m": 0.576,
+     "left_m": 0.001,
+     "right_m": -0.001
+    },
+    {
+     "up_m": 0.214,
+     "ref_width_m": 0.875,
+     "left_m": 0.001,
+     "right_m": 0.0
+    },
+    {
+     "up_m": 0.192,
+     "ref_width_m": 0.803,
+     "left_m": 0.0,
+     "right_m": -0.001
+    },
+    {
+     "up_m": 0.169,
+     "ref_width_m": 0.449,
+     "left_m": 0.001,
+     "right_m": -0.001
+    },
+    {
+     "up_m": 0.147,
+     "ref_width_m": 0.455,
+     "left_m": 0.001,
+     "right_m": 0.0
+    },
+    {
+     "up_m": 0.124,
+     "ref_width_m": 0.467,
+     "left_m": 0.0,
+     "right_m": 0.0
+    },
+    {
+     "up_m": 0.101,
+     "ref_width_m": 0.261,
+     "left_m": 0.001,
+     "right_m": 0.0
+    },
+    {
+     "up_m": 0.079,
+     "ref_width_m": 0.283,
+     "left_m": 0.001,
+     "right_m": -0.001
+    },
+    {
+     "up_m": 0.056,
+     "ref_width_m": 0.103,
+     "left_m": 0.0,
+     "right_m": -0.001
+    },
+    {
+     "up_m": 0.034,
+     "ref_width_m": 0.071,
+     "left_m": 0.0,
+     "right_m": -0.001
+    },
+    {
+     "up_m": 0.011,
+     "ref_width_m": 0.03,
+     "left_m": 0.0,
+     "right_m": -0.001
+    }
+   ],
+   "diff": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\work\\r2\\envelope\\diff_right.png",
+   "compare": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\work\\r2\\envelope\\compare_right.png"
+  }
+ },
+ "size": [
+  0.036,
+  0.88,
+  0.2709
+ ],
+ "mesh": {
+  "tris_total": 27100,
+  "coplanar": [],
+  "below": []
+ },
+ "floating": [],
+ "passed": true
+}

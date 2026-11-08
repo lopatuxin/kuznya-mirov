@@ -1,0 +1,18 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "name": "forest", "position": [0, 0], "size": [32, 18], "image": "forest", "layer": 1 },
+    { "name": "leaves", "position": [-2, -4], "size": [36, 23], "leaf_fall": 0.03, "parallax": 3, "layer": 2 },
+    { "part": "edge", "side": "left", "position": [1.6833, 3.8833], "size": [13.6333, 9.6333], "image": "card_glow", "opacity": 0, "layer": 4 },
+    { "part": "card", "side": "left", "position": [1.6833, 3.8833], "size": [13.6333, 9.6333], "image": "card", "layer": 3 },
+    { "part": "head", "side": "left", "head": "Dark Souls", "position": [2.5, 5.9], "size": [12, 2] },
+    { "part": "desc1", "side": "left", "desc": "блок и перекат", "tone": 5, "position": [2.5, 8.8], "size": [12, 1.4] },
+    { "part": "desc2", "side": "left", "desc": "жмёте сами", "tone": 5, "position": [2.5, 10.1], "size": [12, 1.4] },
+    { "part": "edge", "side": "right", "position": [16.6833, 3.8833], "size": [13.6333, 9.6333], "image": "card_glow", "opacity": 0, "layer": 4 },
+    { "part": "card", "side": "right", "position": [16.6833, 3.8833], "size": [13.6333, 9.6333], "image": "card", "layer": 3 },
+    { "part": "head", "side": "right", "head": "У нас", "position": [17.5, 5.9], "size": [12, 2] },
+    { "part": "desc1", "side": "right", "desc": "защищается сам", "tone": 5, "position": [17.5, 9.45], "size": [12, 1.4] },
+    { "part": "caption", "caption": "пишите в комментариях", "position": [5, 14.45], "size": [22, 1.7] }
+  ]
+}

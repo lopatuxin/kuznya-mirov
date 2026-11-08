@@ -1,0 +1,10 @@
+Edit this ONE game sprite, not a sheet or variants. Image 1 is the sprite to correct. Image 2 is the original character identity reference. Image 3 is only the camera elevation reference; do not include any scenery.
+
+Keep the SAME young male zombie, ordinary build, grey-blue skin, messy dark-brown hair, white pupil-less eyes, torn red hoodie with drawstrings, dirty white T-shirt, torn dark jeans, brown dirt, ONE dirty red sneaker on the anatomical right foot, anatomical left foot bare, same clean dark outlined soft shaded cartoon rendering.
+
+Make these precise corrections:
+1. Turn the WHOLE BODY and HEAD further toward the RIGHT into a side-facing game sprite: nose and movement point at the RIGHT EDGE at 3 o'clock; see the near eye with the far eye largely occluded by the nose, see the side of his torso. He does NOT look out at the viewer. Orthographic view from above at about 45 degrees, see the tops of his head and shoulders. Near arm hangs limp; other arm reaches toward the RIGHT; slow slumped, unbalanced mid-step shuffle.
+2. Make the entire character visibly smaller on the canvas: silhouette from hair tip to lowest sole is ONLY 70% of canvas height, centered vertically with about 15% completely empty green space both above and below. Center the overall silhouette horizontally with generous empty green on both sides. Full body intact, no cropping. Landscape exact 16:9.
+3. Replace the entire background with a mechanically FLAT SOLID pure chroma key green RGB(0,255,0), #00FF00. It must be a uniform unshaded digital color fill, not painted or photographic green. Zero grain, zero noise, zero color variation, zero gradient. The corners must also be pure #00FF00. Fully opaque PNG. No ground, floor, contact shadow, cast shadow, plants or other objects. Character has no green color and no green spill. Preserve dark outline without a green halo.
+
+Output just the single corrected picture.

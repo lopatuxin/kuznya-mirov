@@ -1,0 +1,21 @@
+{
+  "name": "Ещё далеко",
+  "scene": { "width": 32, "height": 18, "background": "#24272e" },
+  "max_objects": 16,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": {},
+    "images": {
+      "smithy": { "path": "images/smithy_handlebar.png", "smooth": true },
+      "frame_gold": { "path": "images/frame_gold.png", "smooth": true },
+      "bar_gold": { "path": "images/bar_gold.png", "smooth": true },
+      "print_gold": { "path": "images/print_gold.png", "smooth": true },
+      "print_dashed": { "path": "images/print_dashed.png", "smooth": true }
+    }
+  }
+}

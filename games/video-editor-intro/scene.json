@@ -1,0 +1,8 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "part": "border", "position": [0, 0], "size": [64, 36], "color": "#4a4f5a", "layer": 1 },
+    { "part": "screen", "position": [0, 0], "size": [64, 36], "image": "editor", "layer": 2 },
+    { "part": "caption", "caption": "редактор", "position": [17, 0.6], "size": [30, 3.4] }
+  ]
+}

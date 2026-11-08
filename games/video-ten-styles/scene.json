@@ -1,0 +1,18 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "tile": 1, "position": [1.2, 5.65], "size": [5.6, 3.15], "image": "s01", "layer": 3 },
+    { "tile": 2, "position": [7.2, 5.65], "size": [5.6, 3.15], "image": "s02", "layer": 3 },
+    { "tile": 3, "position": [13.2, 5.65], "size": [5.6, 3.15], "image": "s03", "layer": 3 },
+    { "tile": 4, "position": [19.2, 5.65], "size": [5.6, 3.15], "image": "s04", "layer": 2 },
+    { "tile": 5, "position": [25.2, 5.65], "size": [5.6, 3.15], "image": "s05", "layer": 2 },
+    { "tile": 6, "position": [1.2, 9.2], "size": [5.6, 3.15], "image": "s06", "layer": 2 },
+    { "tile": 7, "position": [7.2, 9.2], "size": [5.6, 3.15], "image": "s07", "layer": 2 },
+    { "tile": 8, "position": [13.2, 9.2], "size": [5.6, 3.15], "image": "s08", "layer": 2 },
+    { "tile": 9, "position": [19.2, 9.2], "size": [5.6, 3.15], "image": "s09", "layer": 2 },
+    { "tile": 10, "position": [25.2, 9.2], "size": [5.6, 3.15], "image": "s10", "layer": 2 },
+    { "caption_of": 1, "position": [0.7, 10.2], "size": [10.2, 1.4] },
+    { "caption_of": 2, "position": [10.9, 10.2], "size": [10.2, 1.4] },
+    { "caption_of": 3, "position": [21.1, 10.2], "size": [10.2, 1.4] }
+  ]
+}

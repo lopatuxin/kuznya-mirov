@@ -1,0 +1,22 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "picture", "backdrop": true, "position": [0, 0], "size": [32, 18], "image": "forest", "layer": 1 },
+    { "part": "card", "backdrop": true, "position": [0, 0], "size": [32, 18], "image": "card", "layer": 3 },
+    { "part": "leaves", "position": [-2, -4], "size": [36, 23], "leaf_fall": 0.05, "parallax": 3, "layer": 9 },
+
+    { "part": "badge1", "item": 1, "position": [8.6, 12.6], "size": [2.1333, 2.1333], "image": "rhomb_dim", "layer": 5 },
+    { "part": "num1", "item": 1, "num": "1", "lit": 0, "position": [8.6, 12.6], "size": [2.1333, 2.1333] },
+    { "part": "word1", "item": 1, "word": "Прыжок", "lit": 0, "position": [5.6667, 14.2333], "size": [8, 1.2] },
+
+    { "part": "badge2", "item": 2, "position": [14.9333, 12.6], "size": [2.1333, 2.1333], "image": "rhomb_dim", "layer": 5 },
+    { "part": "num2", "item": 2, "num": "2", "lit": 0, "position": [14.9333, 12.6], "size": [2.1333, 2.1333] },
+    { "part": "word2", "item": 2, "word": "Герой и уровень", "lit": 0, "position": [12, 14.2333], "size": [8, 1.2] },
+
+    { "part": "badge3", "item": 3, "position": [21.2667, 12.6], "size": [2.1333, 2.1333], "image": "rhomb_dim", "layer": 5 },
+    { "part": "num3", "item": 3, "num": "3", "lit": 0, "position": [21.2667, 12.6], "size": [2.1333, 2.1333] },
+    { "part": "word3", "item": 3, "word": "Бой", "lit": 0, "position": [18.3333, 14.2333], "size": [8, 1.2] }
+  ]
+}

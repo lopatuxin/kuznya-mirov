@@ -1,0 +1,40 @@
+{
+  "file": "C:\\projects\\kuznya-mirov\\art\\horde\\3d\\hero\\rifle\\akm_v1\\akm-v1.glb",
+  "tris": 27100,
+  "primitives": 1,
+  "size_gltf": [
+    0.0174,
+    0.1309,
+    0.4251
+  ],
+  "size_blender": [
+    0.0174,
+    0.4251,
+    0.1309
+  ],
+  "lowest_gltf_y": -0.0636,
+  "materials": [
+    {
+      "name": "HordeAKMv1_artwork",
+      "base_color_factor": [
+        1,
+        1,
+        1,
+        1
+      ],
+      "maps": [
+        "baseColorTexture"
+      ]
+    }
+  ],
+  "images": 1,
+  "attributes": [
+    "NORMAL",
+    "POSITION",
+    "TEXCOORD_0"
+  ],
+  "color_0_types": [],
+  "extensions": [
+    "KHR_materials_specular"
+  ]
+}

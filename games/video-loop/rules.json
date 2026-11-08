@@ -1,0 +1,25 @@
+{
+  "rules": [
+    { "kind": "check", "for": { "has": ["paddle"] }, "when": ["score", ">=", 0],
+      "do": [["run", "autopilot"]] },
+
+    { "kind": "move", "for": { "has": ["position", "velocity"] } },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["solid"], "without": ["paddle"] },
+      "effects": { "a": [["bounce"]] } },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["paddle"] },
+      "effects": { "a": [["run", "paddle_bounce"]] } },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick"], "without": ["strong"] },
+      "effects": { "a": [["bounce"]], "b": [["delete"]] },
+      "do": [["add", "score", 10]] },
+
+    { "kind": "collide", "a": { "has": ["ball"] }, "b": { "has": ["brick", "strong"] },
+      "effects": { "a": [["bounce"]] },
+      "do": [["run", "strong_brick_hit"]] },
+
+    { "kind": "check", "for": { "has": ["clock"] }, "when": ["clock", ">", 0],
+      "do": [["run", "direct"]] }
+  ]
+}

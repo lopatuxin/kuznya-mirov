@@ -1,0 +1,27 @@
+{
+  "verdict": "pass_for_requested_rounding_correction",
+  "high": [],
+  "medium": [],
+  "correction_verified": {
+    "receiver_width_mm": 36,
+    "receiver_curved_shoulder_depth_mm": 14,
+    "handguard_width_mm": 34,
+    "stock_width_mm": 32,
+    "geometry_source_and_export_tris": 27100,
+    "nonmanifold_edges": 0,
+    "zero_area_faces": 0,
+    "silhouette_iou": 0.9833
+  },
+  "low": [
+    {
+      "part": "envelope",
+      "finding": "Small outline unevenness remains; measured upper silhouette deviation is about 1 mm. It does not restore the former rectangular cross-section.",
+      "confidence": 0.95
+    }
+  ],
+  "notes": [
+    "Newest supplied top/threequarter/back images show curved caps instead of flat thick rectangular edges.",
+    "UVs finite within [0,1]; actual GLB contains 27100 triangles, one embedded PNG, texture coordinates and support.",
+    "review/export-result.json was stale at review start; actual GLB was checked independently."
+  ]
+}

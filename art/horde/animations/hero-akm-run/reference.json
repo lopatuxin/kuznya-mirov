@@ -1,0 +1,35 @@
+{
+  "status": "approved",
+  "source_url": "https://animmade.com/animation/1427",
+  "preview_url": "https://sketchfab.com/models/e96efae801f64b6f82b88c96766c7857/embed?autostart=1&camera=0&ui_hint=0&ui_theme=dark",
+  "title": "Running with a rifle 4",
+  "segment_seconds": [
+    0,
+    2
+  ],
+  "subject": "single mocap mannequin",
+  "requested_action": "looped run holding AKM with both hands",
+  "observed": "Legs and torso visible in 3D preview; weapon itself is not displayed.",
+  "animation_modified": true,
+  "approval": "Owner explicitly approved this source, segment and mannequin in chat on 2026-11-07.",
+  "result": "Integrated into Horde: бег_героя and matching idle rifle grip",
+  "cycle_seconds": [
+    0.7166666666666667,
+    1.65
+  ],
+  "source_download": {
+    "page": "https://animmade.com/animation/1427",
+    "file": "reference-60fps.fbx",
+    "fps": 60,
+    "fbx_first_frame": 3,
+    "segment_time_origin": "first animated FBX pose; preview-to-FBX leading-frame alignment not measured"
+  },
+  "transfer": {
+    "method": "Measured FBX joint matrices, proportional retargeting and two-bone fitting; corrections evaluated by native engine and inspected on stand",
+    "game_speed_mps": 2.2,
+    "cycle_seconds": 0.5185185,
+    "source_cycle_seconds": 0.9333333333333333,
+    "tempo_factor": 1.8,
+    "limitations": "Base clip pelvis translations remain, scaled by bounce=0.4; original source root path is removed for in-place gameplay. Foot contact is fitted; exact foot locking throughout the cycle is not established."
+  }
+}

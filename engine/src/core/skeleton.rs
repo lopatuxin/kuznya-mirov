@@ -5,6 +5,7 @@
 
 use super::climb::{Grip, Point};
 use super::math3::{IDENTITY, Mat4, mul};
+use super::model::{HeldHand, Model};
 use super::surface;
 
 type V3 = [f32; 3];
@@ -382,7 +383,7 @@ pub struct Stance {
 }
 
 impl Stance {
-    fn world(&self, local: V3) -> [f64; 2] {
+    pub(crate) fn world(&self, local: V3) -> [f64; 2] {
         let (x, y) = (
             f64::from(local[0]) * self.scale,
             f64::from(local[1]) * self.scale,
@@ -841,6 +842,43 @@ impl Skeleton {
                 self.bend_chain(chain, bend, target, scratch);
             }
         }
+    }
+
+    /// Матрица кисти, держащей `item`; при `reach_support` вторая кисть дотягивается до его `support`, а локоть
+    /// остаётся по ту сторону, куда его согнуло движение.
+    pub fn hold_item(
+        &self,
+        item: &Model,
+        reach_support: bool,
+        scratch: &mut PoseScratch,
+    ) -> Option<Mat4> {
+        let hands = self.hands?;
+        let main = match item.held_hand {
+            HeldHand::Left => 0,
+            HeldHand::Right => 1,
+        };
+        let item_axes = [
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let held = mul(&scratch.globals[hands[main]], &item_axes);
+        if reach_support
+            && let Some(support) = item.support
+            && let Some(arm) = self.arm_of(hands[1 - main])
+        {
+            let support = add(support, item.building.shift);
+            let target = std::array::from_fn(|row| {
+                (0..3).map(|k| held[k][row] * support[k]).sum::<f32>() + held[3][row]
+            });
+            let bend = sub(
+                point_of(&scratch.globals[arm[1]]),
+                point_of(&scratch.globals[arm[0]]),
+            );
+            self.bend_chain(arm, bend, target, scratch);
+        }
+        Some(held)
     }
 
     /// Плечо, локоть и кисть руки с кистью `hand`.

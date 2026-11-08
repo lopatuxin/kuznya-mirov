@@ -562,6 +562,59 @@ fn a_step_of_a_third_is_climbed_and_a_step_of_a_half_is_not() {
     climb("high", 0.0, false);
 }
 
+/// `walkable: false`: на низкую твёрдую модель ступенька не поднимает — она препятствие от земли, и пола у неё нет.
+#[test]
+fn a_solid_model_that_is_not_walkable_stops_the_walker_at_any_height() {
+    let models = r#"{"low":{"path":"models/low.glb","solid":true,"walkable":false}}"#;
+    let objects = format!(
+        r#"{{"name":"step","model":"low","position":[8,5],"size":[2,2]}},{}"#,
+        hero("[5,5.75]", "[3,0]", "")
+    );
+    let mut game = build_with(&objects, MOVE, models, vec![("low", slab(0.3))]);
+    let id = hero_id(&game);
+    step(&mut game, 75);
+    let [x, _] = hero_position(&game, id);
+    near(game.world.base_z(id), 0.0, "высота героя");
+    assert!(x < 8.0, "зашёл на модель без пола: x = {x}");
+    assert!(x > 7.0, "не дошёл до модели: x = {x}");
+}
+
+/// `walkable: false`: пола у модели нет — объект без `z` над ней стоит на земле, а не на её верху, и курсор её верха
+/// не видит.
+#[test]
+fn a_solid_model_that_is_not_walkable_has_no_floor_for_seating_or_the_pointer() {
+    let models = r#"{"low":{"path":"models/low.glb","solid":true,"walkable":false}}"#;
+    let objects = format!(
+        r#"{{"name":"step","model":"low","position":[8,5],"size":[2,2]}},{}"#,
+        hero("[8.75,5.75]", "[0,0]", "")
+    );
+    let game = build_with(&objects, NO_RULES, models, vec![("low", slab(0.3))]);
+    near(
+        game.world.base_z(hero_id(&game)),
+        0.0,
+        "без z над моделью без пола",
+    );
+    let down =
+        engine::core::building::floor_hit(&game.world, [9.0, 6.0, 5.0], [0.0, 0.0, -1.0], 10.0);
+    assert_eq!(down, None, "курсор видит верх модели без пола");
+}
+
+#[test]
+fn walkable_that_is_not_a_flag_or_without_solid_is_an_error() {
+    let case = |low: &str, fragment: &str| {
+        let mut setup = Setup::new(HALL, NO_RULES);
+        let models = format!(
+            r#"{{"hall":{{"path":"models/hall.glb"}},"hall_cut":{{"path":"models/hall_cut.glb"}},
+            "low":{{"path":"models/low.glb"{low}}},"high":{{"path":"models/high.glb"}}}}"#
+        );
+        setup.models = &models;
+        expect_error(setup.load(), "files → models → low → walkable", fragment);
+    };
+    case(r#","walkable":false"#, "только у твёрдой");
+    case(r#","solid":false,"walkable":false"#, "только у твёрдой");
+    case(r#","solid":true,"walkable":"no""#, "true или false");
+}
+
 #[test]
 fn an_object_without_z_stands_on_the_highest_floor_of_a_solid_model_and_z_in_the_data_is_exact() {
     let seated = |position: &str| {

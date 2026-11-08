@@ -1,0 +1,12 @@
+{
+  "properties": {
+    "clock": "timer",
+    "part": "text",
+    "slot": "number",
+    "mark": "text",
+    "big": "text",
+    "num": "text",
+    "caption": "text",
+    "tone": "number"
+  }
+}

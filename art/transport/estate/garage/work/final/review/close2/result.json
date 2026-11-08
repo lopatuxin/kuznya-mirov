@@ -1,0 +1,22 @@
+{
+ "rendered": [
+  "d01_fence_gap_topdown",
+  "d02_fence_gap_end",
+  "d03_wheel_side",
+  "d04_wheel_bottom",
+  "d05_fuel_wallgap",
+  "d06_fireboard_side",
+  "d07_rack_side",
+  "d08_sign_side",
+  "d09_leaf_hinge_top",
+  "d10_brace_overlap",
+  "d11_dormer_valley",
+  "d12_workshop_window",
+  "d13_gable_corner",
+  "d14_roof_texture_close",
+  "d15_drum_end",
+  "d16_right_gable",
+  "d17_shed_wall_close",
+  "d18_bucket"
+ ]
+}

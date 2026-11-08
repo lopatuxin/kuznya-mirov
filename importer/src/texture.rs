@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use crate::ktx2_writer::{self, Format};
 
 /// Версия формата службы: входит в хеш файла картинки и в `index.json`.
-pub const FORMAT_VERSION: u32 = 1;
+pub const FORMAT_VERSION: u32 = 2;
 
 const STRIP_ROWS: usize = 16;
 

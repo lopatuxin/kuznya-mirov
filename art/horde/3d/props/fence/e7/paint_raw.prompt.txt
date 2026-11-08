@@ -1,0 +1,11 @@
+Tool: built-in image_gen__imagegen
+Edit input: guide.png
+Output: paint_raw.png (1254 x 1254 pixels), copied without pixel modifications.
+
+Final prompt:
+
+EDIT THIS IMAGE IN PLACE. Paint directly over the attached fence blockout, keeping its silhouette, positions, exact thicknesses, all endpoints and all holes. Keep the same square composition. Do not reposition, resize or reframe anything. Orthographic game camera, 30 degrees downward. Three support posts, two rails, nine slim slats; preserve every part exactly as shown.
+
+Make all transparent pixels one completely solid opaque sand color: #c9b98a (RGB 201,185,138). Use a plain, single-color digital fill. Every pixel outside the fence, including all gaps, should be the identical color. This is a flat color plate, with NO gradient, NO texture, NO grain, NO vignette, NO shadows. Absolutely no ground or scenery.
+
+Repaint only the existing wood as hand-painted survivor game art: aged grey-brown posts, rough unbarked wooden pole rails, sun-bleached split slats. Fine directional woodgrain, a few narrow cracks, worn pale edges, small rusty nailheads and tiny wire bindings drawn ON the wood. Thin crisp dark ink outlines inside the existing silhouette. Soft cel-like light and shade on the wood, daylight from upper left. Make it rickety through material detail while preserving every existing geometric edge. Detailed stylized painted wood, not photorealistic, not 3D rendered, not pixel art. Do not extend a single chip, nail or wire outside the original wood silhouette. Entire original wood silhouette fully painted, all openings remain completely empty solid sand. ONE image only.

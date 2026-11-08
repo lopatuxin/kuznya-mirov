@@ -1,0 +1,22 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "name": "forest", "position": [0, 0], "size": [64, 36], "image": "forest", "layer": 1 },
+    { "name": "leaves", "position": [-4, -8], "size": [72, 46], "leaf_fall": 0.008, "parallax": 6, "layer": 2 },
+    { "part": "edge", "slot": 1, "position": [8.7667, 4.3167], "size": [16.4667, 23.9667], "image": "card_glow", "opacity": 1, "layer": 7 },
+    { "part": "card", "slot": 1, "position": [8.7667, 4.3167], "size": [16.4667, 23.9667], "image": "card", "layer": 3 },
+    { "part": "figure", "slot": 1, "position": [13.12, 10.4], "size": [7.76, 15.6], "image": "ilya", "layer": 6 },
+    { "part": "title", "slot": 1, "title": "Илья Муромец", "position": [7, 27.3], "size": [20, 3] },
+    { "part": "edge", "slot": 2, "position": [23.7667, 4.3167], "size": [16.4667, 23.9667], "image": "card_glow", "opacity": 0, "layer": 7 },
+    { "part": "card", "slot": 2, "position": [23.7667, 4.3167], "size": [16.4667, 23.9667], "image": "card", "layer": 3 },
+    { "part": "dark", "slot": 2, "position": [28.585, 10.6], "size": [6.83, 15.4], "image": "shadow_a", "layer": 5 },
+    { "part": "lit", "slot": 2, "position": [28.585, 10.6], "size": [6.83, 15.4], "image": "shadow_a_lit", "opacity": 0, "layer": 6 },
+    { "part": "mark", "slot": 2, "mark": "?", "position": [29.5, 13.95], "size": [5, 5] },
+    { "part": "edge", "slot": 3, "position": [38.7667, 4.3167], "size": [16.4667, 23.9667], "image": "card_glow", "opacity": 0, "layer": 7 },
+    { "part": "card", "slot": 3, "position": [38.7667, 4.3167], "size": [16.4667, 23.9667], "image": "card", "layer": 3 },
+    { "part": "dark", "slot": 3, "position": [44.11, 9.81], "size": [5.78, 16.19], "image": "shadow_b", "layer": 5 },
+    { "part": "lit", "slot": 3, "position": [44.11, 9.81], "size": [5.78, 16.19], "image": "shadow_b_lit", "opacity": 0, "layer": 6 },
+    { "part": "mark", "slot": 3, "mark": "?", "position": [44.5, 13.46], "size": [5, 5] }
+  ]
+}

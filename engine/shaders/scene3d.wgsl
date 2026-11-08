@@ -981,6 +981,8 @@ struct ModelInstance {
     // «Здания», срез: 0 — модель рисуется целиком; положительное число — доля точек экрана, отданных модели среза, они
     // здесь не рисуются; отрицательное — экземпляр модели среза: рисуются только эти точки, а тени он не бросает.
     @location(9) fade: f32,
+    // Кватернион дополнительного поворота предмета вместе с кистью; у обычного объекта (0, 0, 0, 1).
+    @location(10) attachment: vec4<f32>,
 };
 
 // Наклон вдоль локальной оси +Y: конец +Y поднимается при положительном угле.
@@ -990,8 +992,13 @@ fn model_tilt(v: vec3<f32>, instance: ModelInstance) -> vec3<f32> {
     return vec3<f32>(v.x, v.y * cs - v.z * sn, v.y * sn + v.z * cs);
 }
 
+fn model_turn(v: vec3<f32>, q: vec4<f32>) -> vec3<f32> {
+    return v + 2.0 * cross(q.xyz, cross(q.xyz, v) + q.w * v);
+}
+
 fn model_world(vertex: ModelVertex, instance: ModelInstance) -> vec3<f32> {
-    let local = model_tilt(vertex.position * instance.base.y * vec3<f32>(1.0, instance.base.z, 1.0), instance);
+    let scaled = model_tilt(vertex.position * instance.base.y * vec3<f32>(1.0, instance.base.z, 1.0), instance);
+    let local = model_turn(scaled, instance.attachment);
     let c = instance.placement.z;
     let s = instance.placement.w;
     return vec3<f32>(
@@ -1003,7 +1010,7 @@ fn model_world(vertex: ModelVertex, instance: ModelInstance) -> vec3<f32> {
 
 // Направление модели, повёрнутое вместе с объектом; увеличение его длины не меняет.
 fn model_direction(direction: vec3<f32>, instance: ModelInstance) -> vec3<f32> {
-    let tilted = model_tilt(direction, instance);
+    let tilted = model_turn(model_tilt(direction, instance), instance.attachment);
     let c = instance.placement.z;
     let s = instance.placement.w;
     return vec3<f32>(c * tilted.x - s * tilted.y, s * tilted.x + c * tilted.y, tilted.z);

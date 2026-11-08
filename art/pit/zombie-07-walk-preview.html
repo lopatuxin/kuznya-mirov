@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<title>Зомби в яме</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #222; overflow: hidden; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// Показ обычного зомби на картинке первой ямы: вылезает из дыры, встаёт и ковыляет к выходу справа.
+// Все места и размеры — в точках картинки ямы pit-01-ground.png (2117 × 941).
+const CLIMB = { sheet: "zombie-07-climb-sheet.png", frames: 130, columns: 13, w: 329, h: 194, time: 1 / 12 };
+const WALK = { sheet: "zombie-07-walk-sheet.png", frames: 36, columns: 6, w: 252, h: 256, time: 1 / 24 };
+// Кадр вылезания — кусок картинки ямы от (1007, 374.5): так напечатала нарезка (кусок фона от (454, 149)
+// в картинке дыры, вырезанной из ямы от (780, 300) с увеличением вдвое).
+const CLIMB_AT = [1007, 374.5];
+// Первый кадр ходьбы совпадает с последним кадром вылезания: тот же рост и то же место ног.
+const WALK_SCALE = 0.602, WALK_AT = [1183 - 2 * WALK_SCALE, 389.5 - 17 * WALK_SCALE];
+// Скорость — в ростах кадра ходьбы за секунду, по ступням в ролике.
+const SPEED = 0.3 * WALK.h * WALK_SCALE, EXIT_X = 2250, EVERY = 3.5;
+const ground = new Image(); ground.src = "pit-01-ground.png";
+const sheets = { climb: new Image(), walk: new Image() };
+sheets.climb.src = CLIMB.sheet; sheets.walk.src = WALK.sheet;
+const canvas = document.getElementById("c"), ctx = canvas.getContext("2d");
+
+function frame(anim, image, k, x, y, scale, view) {
+  ctx.drawImage(image, (k % anim.columns) * anim.w, Math.floor(k / anim.columns) * anim.h, anim.w, anim.h,
+    view.x + x * view.s, view.y + y * view.s, anim.w * scale * view.s, anim.h * scale * view.s);
+}
+
+function draw(now) {
+  const t = now / 1000;
+  canvas.width = innerWidth; canvas.height = innerHeight;
+  const s = Math.max(canvas.width / ground.width, canvas.height / ground.height);
+  const view = { s, x: (canvas.width - ground.width * s) / 2, y: (canvas.height - ground.height * s) / 2 };
+  ctx.drawImage(ground, view.x, view.y, ground.width * s, ground.height * s);
+  const climbTime = CLIMB.frames * CLIMB.time;
+  const walkTime = (EXIT_X - WALK_AT[0]) / SPEED;
+  for (let born = Math.floor(t / EVERY) * EVERY; born > t - climbTime - walkTime; born -= EVERY) {
+    const age = t - born;
+    if (age < climbTime) {
+      frame(CLIMB, sheets.climb, Math.floor(age / CLIMB.time), CLIMB_AT[0], CLIMB_AT[1], 1, view);
+    } else {
+      const walked = age - climbTime;
+      frame(WALK, sheets.walk, Math.floor(walked / WALK.time) % WALK.frames, WALK_AT[0] + walked * SPEED, WALK_AT[1], WALK_SCALE, view);
+    }
+  }
+  requestAnimationFrame(draw);
+}
+Promise.all([ground.decode(), sheets.climb.decode(), sheets.walk.decode()]).then(() => requestAnimationFrame(draw));
+</script>
+</body>
+</html>

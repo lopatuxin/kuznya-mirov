@@ -1,0 +1,13 @@
+{
+  "screens": [
+    { "name": "game", "world_runs": true, "elements": [] }
+  ],
+  "world_elements": [
+    { "kind": "label", "for": { "has": ["num"] }, "anchor": "center",
+      "size": [2.1333, 2.1333], "text": "{num}", "font": "ui", "font_size": 0.62, "align": "center",
+      "color": { "table": ["#8c7b62", "#2a1608", "#3a2616"], "by": "lit" } },
+    { "kind": "label", "for": { "has": ["word"] }, "anchor": "center",
+      "size": [8, 1.2], "text": "{word}", "font": "ui", "font_size": 0.72, "align": "center",
+      "color": { "table": ["#b5a27f", "#ffd36a", "#f3e6c4"], "by": "lit" } }
+  ]
+}

@@ -1,0 +1,19 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "name": "forest", "position": [0, 0], "size": [32, 18], "image": "forest", "layer": 1 },
+    { "name": "leaves", "position": [-2, -4], "size": [36, 23], "leaf_fall": 0.03, "parallax": 3, "layer": 2 },
+    { "name": "panel", "position": [2.3333, 0.7333], "size": [27.3333, 16.3333], "image": "panel", "layer": 3 },
+    { "part": "heading", "heading": "шансы постоянные", "tone": 0, "position": [4, 2.2], "size": [24, 1.6] },
+    { "part": "label", "row": 1, "label": "", "tone": 0, "position": [4, 5.25], "size": [20, 1.5] },
+    { "part": "track", "row": 1, "position": [3.8333, 6.6333], "size": [24.3333, 1.5333], "image": "track", "layer": 4 },
+    { "part": "bar", "row": 1, "position": [4, 6.8], "size": [8.4, 1.2], "image": "bar_gold", "layer": 5 },
+    { "part": "label", "row": 2, "label": "", "tone": 0, "position": [4, 8.85], "size": [20, 1.5] },
+    { "part": "track", "row": 2, "position": [3.8333, 10.2333], "size": [24.3333, 1.5333], "image": "track", "layer": 4 },
+    { "part": "bar", "row": 2, "position": [4, 10.4], "size": [8.4, 1.2], "image": "bar_gold", "layer": 5 },
+    { "part": "label", "row": 3, "label": "", "tone": 0, "position": [4, 12.45], "size": [20, 1.5] },
+    { "part": "track", "row": 3, "position": [3.8333, 13.8333], "size": [24.3333, 1.5333], "image": "track", "layer": 4 },
+    { "part": "bar", "row": 3, "position": [4, 14], "size": [7.2, 1.2], "image": "bar_gold", "layer": 5 }
+  ]
+}

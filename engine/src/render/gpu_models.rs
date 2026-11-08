@@ -25,7 +25,7 @@ use super::models::{
 pub const VERTEX_STRIDE: u64 = 64;
 
 /// Байт на объект: `ModelInstance`.
-pub const INSTANCE_STRIDE: u64 = 36;
+pub const INSTANCE_STRIDE: u64 = 52;
 
 /// Вершина части, как её читает `scene3d.wgsl`.
 pub const VERTEX_ATTRIBUTES: [wgpu::VertexAttribute; 5] = [
@@ -73,7 +73,7 @@ pub const SKIN_ATTRIBUTES: [wgpu::VertexAttribute; 2] = [
     },
 ];
 
-pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
+pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 4] = [
     wgpu::VertexAttribute {
         format: wgpu::VertexFormat::Float32x4,
         offset: 0,
@@ -88,6 +88,11 @@ pub const INSTANCE_ATTRIBUTES: [wgpu::VertexAttribute; 3] = [
         format: wgpu::VertexFormat::Float32,
         offset: 32,
         shader_location: 9,
+    },
+    wgpu::VertexAttribute {
+        format: wgpu::VertexFormat::Float32x4,
+        offset: 36,
+        shader_location: 10,
     },
 ];
 
@@ -710,6 +715,7 @@ impl ModelsGpu {
                         .into_iter()
                         .chain(instance.base)
                         .chain([instance.fade])
+                        .chain(instance.attachment)
                     {
                         self.scratch.extend(value.to_le_bytes());
                     }

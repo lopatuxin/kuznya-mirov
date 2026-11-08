@@ -1,0 +1,17 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+
+    { "part": "box1", "position": [5.5, 4.6], "size": [1.9, 1.9], "color": "#e9ecf2", "layer": 1 },
+    { "part": "hole1", "position": [5.77, 4.87], "size": [1.36, 1.36], "color": "#24272e", "layer": 2 },
+    { "part": "tick1", "position": [5.35, 3.95], "size": [2.3, 2.3], "image": "tick", "layer": 3 },
+    { "part": "text1", "label": "бой", "lit": 0, "position": [8.6, 4.45], "size": [15, 2.2] },
+
+    { "part": "box2", "position": [5.5, 8.6], "size": [1.9, 1.9], "color": "#e9ecf2", "layer": 1 },
+    { "part": "hole2", "position": [5.77, 8.87], "size": [1.36, 1.36], "color": "#24272e", "layer": 2 },
+    { "part": "tick2", "position": [5.35, 7.95], "size": [2.3, 2.3], "image": "tick", "layer": 3 },
+    { "part": "text2", "label": "прыжки", "lit": 0, "position": [8.6, 8.45], "size": [15, 2.2] },
+
+    { "part": "text3", "later": "остальное — потом", "fade": 0, "position": [8.6, 12.45], "size": [15, 2.2] }
+  ]
+}

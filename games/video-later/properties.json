@@ -1,0 +1,10 @@
+{
+  "properties": {
+    "clock": "timer",
+    "part": "text",
+    "label": "text",
+    "lit": "number",
+    "later": "text",
+    "fade": "number"
+  }
+}

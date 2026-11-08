@@ -1,0 +1,28 @@
+{
+  "objects": [
+    {"name":"director","clock":1000},
+    {"part":"border","position":[9.35,1.35],"size":[45.3,33.3],"color":"#4a4f5a","layer":1},
+    {"part":"editor","position":[9.5,1.5],"size":[45,33],"image":"editor","layer":2},
+    {"part":"frame","side":1,"position":[30,2],"size":[1,0.1],"color":"#ffd34d","layer":3},
+    {"part":"frame","side":2,"position":[30,2],"size":[1,0.1],"color":"#ffd34d","layer":3},
+    {"part":"frame","side":3,"position":[30,2],"size":[1,0.1],"color":"#ffd34d","layer":3},
+    {"part":"frame","side":4,"position":[30,2],"size":[1,0.1],"color":"#ffd34d","layer":3},
+    {"part":"ring","position":[30,12],"size":[3,3],"image":"ring","layer":4},
+    {"part":"box","item":1,"position":[48.3,11.6],"size":[1.6,1.6],"color":"#6b717c","layer":1},
+    {"part":"hole","item":1,"position":[48.52,11.82],"size":[1.16,1.16],"color":"#24272e","layer":2},
+    {"part":"tick","item":1,"position":[48.17,11.05],"size":[1.94,1.94],"image":"tick","layer":3},
+    {"part":"text","item":1,"label":"увидеть сцену","tone":0,"position":[50.6,11.450000000000001],"size":[12.6,1.9]},
+    {"part":"box","item":2,"position":[48.3,14.8],"size":[1.6,1.6],"color":"#6b717c","layer":1},
+    {"part":"hole","item":2,"position":[48.52,15.020000000000001],"size":[1.16,1.16],"color":"#24272e","layer":2},
+    {"part":"tick","item":2,"position":[48.17,14.250000000000002],"size":[1.94,1.94],"image":"tick","layer":3},
+    {"part":"text","item":2,"label":"свойства предмета","tone":0,"position":[50.6,14.650000000000002],"size":[12.6,1.9]},
+    {"part":"box","item":3,"position":[48.3,18],"size":[1.6,1.6],"color":"#6b717c","layer":1},
+    {"part":"hole","item":3,"position":[48.52,18.220000000000002],"size":[1.16,1.16],"color":"#24272e","layer":2},
+    {"part":"tick","item":3,"position":[48.17,17.45],"size":[1.94,1.94],"image":"tick","layer":3},
+    {"part":"text","item":3,"label":"двигать и отменять","tone":0,"position":[50.6,17.85],"size":[12.6,1.9]},
+    {"part":"box","item":4,"position":[48.3,21.2],"size":[1.6,1.6],"color":"#6b717c","layer":1},
+    {"part":"hole","item":4,"position":[48.52,21.42],"size":[1.16,1.16],"color":"#24272e","layer":2},
+    {"part":"tick","item":4,"position":[48.17,20.65],"size":[1.94,1.94],"image":"tick","layer":3},
+    {"part":"text","item":4,"label":"запуск, пауза, шаг","tone":0,"position":[50.6,21.05],"size":[12.6,1.9]}
+  ]
+}

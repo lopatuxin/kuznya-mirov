@@ -7,7 +7,7 @@ use std::sync::Arc;
 use serde_json::Value as Json;
 
 use crate::core::keys::{EditValue, KeyEdit};
-use crate::core::model::{Image, Look, Model, ModelImage, ModelTable};
+use crate::core::model::{HeldHand, Image, Look, Model, ModelImage, ModelTable};
 use crate::core::property::PropertyId;
 use crate::core::skeleton::{Leg, Skeleton};
 use crate::core::solid::SolidGrid;
@@ -23,7 +23,7 @@ use super::{
 };
 
 /// Одна модель `files.models`: имя, путь файла `.glb` от папки игры, как она освещена и, у модели со скелетом,
-/// движения стойки, ходьбы и лазания, кости ступней, кость начала верха тела и две кисти.
+/// движения стойки, ходьбы и лазания, кости ступней и кистей; у предмета — рука и точка `support`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ModelDecl {
     pub name: String,
@@ -33,6 +33,8 @@ pub struct ModelDecl {
     pub shadow: Option<bool>,
     /// `solid`: есть ли ключ и его значение.
     pub solid: Option<bool>,
+    /// `walkable`: есть ли ключ и его значение; ключ бывает только у твёрдой модели.
+    pub walkable: Option<bool>,
     /// `cutaway`: имя модели среза.
     pub cutaway: Option<String>,
     pub idle: Option<String>,
@@ -41,6 +43,8 @@ pub struct ModelDecl {
     pub feet: Option<[String; 2]>,
     pub spine: Option<String>,
     pub hands: Option<[String; 2]>,
+    pub hand: Option<HeldHand>,
+    pub support: Option<String>,
 }
 
 /// Ответ страницы по файлу одной модели: его байты, если файл нашёлся, и по каждой картинке внутри него —
@@ -97,8 +101,8 @@ fn parse_model_decl(
 ) -> Option<ModelDecl> {
     let obj = expect_object(value, file, path, errors)?;
     let known = [
-        "path", "look", "shadow", "solid", "cutaway", "idle", "walk", "climb", "feet", "spine",
-        "hands",
+        "path", "look", "shadow", "solid", "walkable", "cutaway", "idle", "walk", "climb", "feet",
+        "spine", "hands", "hand", "support",
     ];
     reject_unknown_keys(obj, &known, file, path, errors);
     if !obj.keys().all(|key| known.contains(&key.as_str())) {
@@ -130,6 +134,22 @@ fn parse_model_decl(
         &join(path, "solid"),
         errors,
     );
+    // Испорченный solid уже дал свою ошибку: walkable рядом с ним не проверяется.
+    if obj.contains_key("walkable") && solid.is_some_and(|solid| solid != Some(true)) {
+        errors.push(
+            file,
+            &join(path, "walkable"),
+            "walkable есть только у твёрдой модели (solid: true): по нетвёрдой и так не ходят",
+        );
+        return None;
+    }
+    let walkable = parse_flag(
+        "walkable",
+        obj.get("walkable"),
+        file,
+        &join(path, "walkable"),
+        errors,
+    );
     if obj.contains_key("shadow") && look == Some(Look::Lit) {
         errors.push(
             file,
@@ -155,6 +175,22 @@ fn parse_model_decl(
             parse_bone_pair(value, "кисти", file, &join(path, "hands"), errors).map(Some)
         }
     };
+    let hand = match obj.get("hand") {
+        None => Some(None),
+        Some(value) => match expect_string(value, file, &join(path, "hand"), errors)?.as_str() {
+            "left" => Some(Some(HeldHand::Left)),
+            "right" => Some(Some(HeldHand::Right)),
+            other => {
+                errors.push(
+                    file,
+                    &join(path, "hand"),
+                    format!("hand должен быть \"right\" или \"left\", получено \"{other}\""),
+                );
+                None
+            }
+        },
+    };
+    let support = motion("support", errors);
     let field = join(path, "path");
     let model_path = expect_string(
         require_field(obj, "path", file, path, errors)?,
@@ -178,6 +214,7 @@ fn parse_model_decl(
         look: look?,
         shadow: shadow?,
         solid: solid?,
+        walkable: walkable?,
         cutaway: cutaway?,
         idle: idle?,
         walk: walk?,
@@ -185,6 +222,8 @@ fn parse_model_decl(
         feet: feet?,
         spine: spine?,
         hands: hands?,
+        hand: hand?,
+        support: support?,
     })
 }
 
@@ -381,21 +420,36 @@ pub(super) fn load_models(
                 }
                 return Model::placeholder(&decl.name);
             };
-            let parsed = glb::parse_model_images(&decl.name, bytes, |source| match source {
-                FileImage::Embedded(index) => model_image(file, index).map(ModelImage::Pixels),
-                FileImage::Linked { uri, .. } => {
-                    let packed_path = resolve_uri(path, uri);
-                    packed
-                        .get(&packed_path)
-                        .map(ModelImage::Packed)
-                        .map_err(|fault| packed_problem(&fault, &packed_path, &decl.name))
-                }
-            });
+            let parsed = glb::parse_model_images(
+                &decl.name,
+                decl.support.as_deref(),
+                bytes,
+                |source| match source {
+                    FileImage::Embedded(index) => model_image(file, index).map(ModelImage::Pixels),
+                    FileImage::Linked { uri, .. } => {
+                        let packed_path = resolve_uri(path, uri);
+                        packed
+                            .get(&packed_path)
+                            .map(ModelImage::Packed)
+                            .map_err(|fault| packed_problem(&fault, &packed_path, &decl.name))
+                    }
+                },
+            );
             match parsed {
                 Ok(mut model) => {
                     attach_motion(decl, &mut model, &field, motions, errors);
                     model.look = decl.look;
                     model.picture_shadow = decl.shadow == Some(true);
+                    model.held_hand = decl.hand.unwrap_or_default();
+                    if let Some(support) = &decl.support
+                        && model.support.is_none()
+                    {
+                        errors.push(
+                            "game.json",
+                            &join(&field, "support"),
+                            format!("в файле модели {} нет точки \"{support}\"", decl.name),
+                        );
+                    }
                     attach_building(decl, &mut model, &field, errors);
                     if imported.is_none() && !skip_media && !model.images.is_empty() {
                         errors.push_warning(
@@ -430,6 +484,7 @@ pub(super) fn load_models(
 fn attach_building(decl: &ModelDecl, model: &mut Model, field: &str, errors: &mut ErrorSink) {
     if decl.solid == Some(true) {
         model.building.solid = Some(Arc::new(SolidGrid::build(&model.parts, model.size)));
+        model.building.obstacle_only = decl.walkable == Some(false);
     }
     if decl.cutaway.is_some() && model.building.inside.is_empty() {
         errors.push_warning(

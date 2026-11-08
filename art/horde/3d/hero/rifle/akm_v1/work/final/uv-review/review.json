@@ -1,0 +1,43 @@
+{
+  "verdict": "pass_for_uv_fix_and_requested_central_stripe_removal",
+  "scope": "Approved geometry is locked; only UV texture correction and export regressions reviewed.",
+  "high": [],
+  "medium": [],
+  "low": [],
+  "verified": [
+    "Independent renders from the actual final akm-v1.blend, without material reapplication or rebuilding, reproduce the corrected roof and magazine closeups.",
+    "The earlier conspicuous scalloped/wavy bands across the long receiver roof and magazine leading rim are gone. In the latest saved blend, the central painted white stripe has also been removed from both metal caps.",
+    "No white/transparent seams or wood-to-metal bleeding were observed in the initial review. The one magazine-cap UV discontinuity was fixed and independently re-rendered from the actual final blend.",
+    "The approved illustrated side artwork remains visually consistent with the original reference.",
+    "Final blend coordinate hash exactly matches approved geometry; 13538 vertices and 27100 triangles. One UVMap, no color attributes.",
+    "Actual GLB has 27100 triangles, one material, one embedded PNG, TEXCOORD_0, no COLOR_0, and support node.",
+    "Prepared source akm-basecolor.png exactly matches the packed PNG in before-uv-fix.blend by SHA-256.",
+    "Original reference SHA-256 matches the initial generated image, as independently checked and supplied by the director: 16f78b34e9d68df13ffb1d56fdb95b4ed6039527c58dbeaf1346123844efe202.",
+    "Focused final rerender of latest actual saved blend, with no material reapplication or geometry rebuild: receiver roof and magazine leading cap have no central white stripe; the closed magazine heel seam has not returned."
+  ],
+  "limitations": [
+    "Single-reference inferred cap artwork remains softer than side artwork at extreme enlargement; no remaining large melted-wave artifact was observed."
+  ],
+  "evidence": [
+    "independent-check.json",
+    "roof-final.png",
+    "magazine-final.png",
+    "../../../review/top.png",
+    "../../../review/back.png",
+    "../../../review/threequarter.png",
+    "magazine-heel-final.png",
+    "magazine-heel-fixed-final.png",
+    "roof-no-stripe-final.png",
+    "magazine-heel-no-stripe-final.png"
+  ],
+  "closed_findings": [
+    {
+      "part": "magazine / leading cap",
+      "previous_finding": "A transverse dark band with diagonal triangular joins interrupts the longitudinal highlight roughly 40-50 mm above the heel. It reads as a UV chart discontinuity across the approximately 16-20 mm cap width. The previous large X artifact is gone, but this closeup still exposes a seam.",
+      "resolution": "Re-rendered the latest final akm-v1.blend using exactly the original heel review camera, without apply() or geometry rebuild. The transverse dark band and diagonal triangular joins at x480-640 y365-405 remain absent after central white stripe removal.",
+      "status": "resolved",
+      "confidence": 0.97,
+      "evidence": "magazine-heel-no-stripe-final.png"
+    }
+  ]
+}

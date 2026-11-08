@@ -1,0 +1,18 @@
+{
+  "name": "Список: бой и прыжки",
+  "scene": { "width": 32, "height": 18, "background": "#24272e" },
+  "max_objects": 64,
+  "start_screen": "game",
+  "files": {
+    "properties": "properties.json",
+    "scene": "scene.json",
+    "rules": "rules.json",
+    "screens": "screens.json",
+    "code": "code.lua",
+    "fonts": { "ui": "fonts/Rubik.ttf" },
+    "images": {
+      "tick": { "path": "images/tick.png", "smooth": true },
+      "bush": { "path": "images/bush_flowers.mp4", "smooth": true }
+    }
+  }
+}

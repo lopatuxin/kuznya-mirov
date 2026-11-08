@@ -1,0 +1,19 @@
+{
+  "verdict": "pass_for_requested_rough_blank",
+  "high": [],
+  "medium": [],
+  "low": [
+    {
+      "part": "whole",
+      "finding": "Silhouette edge is about 1 mm above the source at the upper extremity. Whole filled-outline IoU 0.983, raw silhouette including holes 0.9779.",
+      "confidence": 0.99
+    }
+  ],
+  "accepted_limitations": [
+    "Reverse deliberately mirrors the approved side image.",
+    "Thickness and upper/bottom appearance inferred from one side image; edge texture is reconstructed from nearby source pixels.",
+    "Detailed mechanics, round barrel cross-section and asymmetric side details are outside the explicitly requested rough-blank scope."
+  ],
+  "evidence": "independent-check.json and supplied latest threequarter/back/top renders",
+  "not_tested": "Gameplay attachment and appearance in the running Horde game."
+}

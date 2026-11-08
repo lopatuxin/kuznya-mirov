@@ -1,0 +1,8 @@
+{
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "part": "picture", "position": [0, 0], "size": [32, 18], "image": "old_hero", "layer": 1 },
+    { "part": "dash_a", "position": [7.9, 3.6], "size": [4.7, 4.4], "image": "dash_a", "layer": 3 },
+    { "part": "dash_b", "position": [7.9, 3.6], "size": [4.7, 4.4], "image": "dash_b", "layer": 3 }
+  ]
+}

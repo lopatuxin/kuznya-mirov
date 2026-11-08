@@ -1,0 +1,18 @@
+{
+  "wind": [0.4, 0],
+  "objects": [
+    { "name": "director", "clock": 1000 },
+    { "name": "forest", "position": [0, 0], "size": [32, 18], "image": "forest", "layer": 1 },
+    { "name": "leaves", "position": [-2, -4], "size": [36, 23], "leaf_fall": 0.03, "parallax": 3, "layer": 2 },
+    { "name": "panel", "position": [1.3333, 0.7333], "size": [29.3333, 15.9333], "image": "panel", "layer": 3 },
+    { "part": "floor", "position": [3, 12.8], "size": [24, 1], "color": "#7d838e", "layer": 4 },
+    { "part": "wall", "position": [27, 4.8], "size": [1.5, 9], "color": "#7d838e", "layer": 4 },
+    { "part": "mark", "position": [8.32, 12], "size": [0.16, 2.1], "color": "#f3e6c4", "layer": 5 },
+    { "part": "hero", "position": [4.3, 11], "size": [1.8, 1.8], "color": "#3d7eff", "layer": 6 },
+    { "part": "shade", "position": [0, 0], "size": [32, 18], "image": "shade", "opacity": 0, "layer": 12 },
+    { "part": "head", "head": "физика как в жизни", "dim": 0, "position": [6, 2.2], "size": [20, 1.8] },
+    { "part": "slidecap", "warn": "скользит", "dim": 0, "position": [9.15, 9], "size": [8, 1.6] },
+    { "part": "stickcap", "warn": "залипает", "dim": 0, "position": [17.9, 7.1], "size": [8, 1.6] },
+    { "part": "note", "note": "отпустил", "dim": 0, "position": [5.4, 14.25], "size": [6, 1.3] }
+  ]
+}

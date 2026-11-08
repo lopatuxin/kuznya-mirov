@@ -1,0 +1,7 @@
+{
+  "frames": 240,
+  "max_hip_head_hand_displacement_per_60hz_frame_m": 0.03402329981327057,
+  "max_support_error_m": 1.3570003432050726e-7,
+  "seconds": 4,
+  "sequence": "idle/run right/idle/run up/idle"
+}
