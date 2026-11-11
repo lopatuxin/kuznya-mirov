@@ -1,0 +1,9 @@
+{
+  "properties": {
+    "hero": "flag",
+    "go_left": "flag",
+    "go_right": "flag",
+    "go_up": "flag",
+    "go_down": "flag"
+  }
+}

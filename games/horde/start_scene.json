@@ -1,0 +1,21 @@
+{
+  "objects": [
+    { "name": "hero", "model": "hero", "position": [25.5, 27.3], "size": [0.6, 0.6], "height": 1.73, "velocity": [0, 0],
+      "climb_speed": 1.2, "camera_follows": true, "hero": true, "hold": "rifle",
+      "keys": {
+        "ArrowLeft":   { "press": [["go_left", true]], "release": [["go_left", false]] },
+        "KeyA":        { "press": [["go_left", true]], "release": [["go_left", false]] },
+        "ArrowRight":  { "press": [["go_right", true]], "release": [["go_right", false]] },
+        "KeyD":        { "press": [["go_right", true]], "release": [["go_right", false]] },
+        "ArrowUp":     { "press": [["go_up", true]], "release": [["go_up", false]] },
+        "KeyW":        { "press": [["go_up", true]], "release": [["go_up", false]] },
+        "ArrowDown":   { "press": [["go_down", true]], "release": [["go_down", false]] },
+        "KeyS":        { "press": [["go_down", true]], "release": [["go_down", false]] },
+        "KeyE":        { "press": [["climb", true]], "release": [["climb", false]] }
+      } },
+
+    { "model": "start_ground_01", "position": [0, 0, 0], "size": [18, 36] },
+    { "model": "start_ground_02", "position": [18, 0, 0], "size": [18, 36] },
+    { "model": "start_ground_03", "position": [36, 0, 0], "size": [17, 36] }
+  ]
+}
