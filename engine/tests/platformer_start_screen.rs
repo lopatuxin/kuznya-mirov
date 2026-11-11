@@ -1,8 +1,5 @@
-//! Фаза 07 платформера — начальный экран `games/platformer`: игра грузится без ошибок и предупреждений,
-//! стартует с экрана `menu`, «Новая игра» ведёт на экран героя (фаза 10), «Выход» просит страницу уйти к списку игр, три
-//! героя — места наведения с видео героя и его имени и горящей строкой. Фаза 08 — живой фон: вся картина
-//! роликом по кругу, листья с берёзы, пух и бабочки при ветре экрана. Фаза 09 — герои без мыши дышат роликами
-//! покоя. Видео и курсор в браузере — только QA на стенде.
+//! Начальный экран `games/platformer`: статичная утверждённая картина, переход в зал выбора,
+//! прямой выбор героя на картине и выход к списку игр. Вид экрана — только QA на стенде.
 
 use std::fs;
 
@@ -129,37 +126,24 @@ fn choose_hero(ui: &mut Ui, hero: &str) {
 }
 
 #[test]
-fn new_game_stays_shut_until_a_hero_is_chosen() {
+fn new_game_opens_the_hall_without_creating_a_world() {
     let mut ui = ui();
     let new_game = new_game_button(&ui);
+    assert_eq!(place_at(&ui, new_game).as_deref(), Some("new_game"));
     ui.click(new_game[0], new_game[1]);
-    assert_eq!(active_screen(&ui), "menu");
+    assert_eq!(active_screen(&ui), "hero_select");
     assert!(!ui.game.has_world());
-    assert_eq!(
-        place_at(&ui, new_game),
-        None,
-        "запертая кнопка не место наведения"
-    );
 }
 
 #[test]
-fn a_click_on_a_hero_chooses_him_and_a_click_on_another_moves_the_choice() {
-    let mut ui = ui();
-    assert_eq!(ui.state.chosen("heroes"), None);
-    choose_hero(&mut ui, "ilya");
-    assert_eq!(ui.state.chosen("heroes"), Some("ilya"));
-    choose_hero(&mut ui, "alyosha");
-    assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
-}
-
-#[test]
-fn new_game_leads_to_the_hero_screen_once_a_hero_is_chosen() {
-    let mut ui = ui();
-    choose_hero(&mut ui, "vasilisa");
-    let new_game = new_game_button(&ui);
-    ui.click(new_game[0], new_game[1]);
-    assert_eq!(active_screen(&ui), "hero");
-    assert!(!ui.game.has_world());
+fn clicking_a_hero_on_the_start_screen_opens_that_heros_card() {
+    for hero in HEROES {
+        let mut ui = ui();
+        choose_hero(&mut ui, hero);
+        assert_eq!(active_screen(&ui), "hero", "{hero}");
+        assert_eq!(ui.state.chosen("heroes"), Some(hero));
+        assert!(!ui.game.has_world());
+    }
 }
 
 #[test]
@@ -173,16 +157,21 @@ fn exit_asks_the_page_to_leave_to_the_list_of_games() {
 }
 
 #[test]
-fn only_new_game_and_exit_are_buttons_on_the_menu() {
+fn the_menu_has_new_game_exit_and_three_hero_buttons() {
     let ui = ui();
     let commands: Vec<ButtonCommand> = ui.config.screens[ui.state.active()]
         .elements
         .iter()
         .filter_map(button_command)
         .collect();
-    assert_eq!(commands.len(), 2, "{commands:?}");
+    assert_eq!(commands.len(), 5, "{commands:?}");
     assert!(matches!(commands[0], ButtonCommand::ShowScreen(..)));
     assert_eq!(commands[1], ButtonCommand::Exit);
+    assert!(
+        commands[2..]
+            .iter()
+            .all(|command| matches!(command, ButtonCommand::ShowScreen(..)))
+    );
 }
 
 #[test]
@@ -200,90 +189,52 @@ fn continue_and_settings_do_not_press() {
 }
 
 #[test]
-fn each_hero_is_a_place_with_videos_of_him_and_his_name_and_a_glowing_line() {
-    let (ui, _, images) = load();
+fn each_hero_is_a_clickable_place_with_a_stone_inscription_highlight() {
+    let (ui, _, _) = load();
     let elements = &ui.config.screens[ui.state.active()].elements;
     for hero in HEROES {
         let place = elements
             .iter()
             .position(|element| element.place_name() == Some(hero))
             .unwrap_or_else(|| panic!("нет места {hero}"));
-        let plays = elements
-            .iter()
-            .filter(|element| element.play_on_hover() == Some(place))
-            .count();
         let glows = elements
             .iter()
             .filter(|element| element.show_on_hover() == Some(place))
             .count();
-        assert_eq!(plays, 2, "{hero}: видео героя и его имени");
         assert_eq!(glows, 1, "{hero}: высеченная строка горит золотом");
-    }
-    let videos = ui.config.panel_videos();
-    assert_eq!(videos.len(), 6);
-    for video in videos {
-        assert!(images[video].reverse.is_some(), "{}", images[video].name);
+        assert!(matches!(
+            button_command(&elements[place]),
+            Some(ButtonCommand::ShowScreen(..))
+        ));
     }
 }
 
 #[test]
-fn the_heroes_breathe_in_their_idle_videos_until_the_cursor_comes() {
+fn the_menu_uses_the_approved_static_picture() {
     let (ui, _, images) = load();
-    let idles: Vec<(&str, &str)> = ui.config.screens[ui.state.active()]
+    let menu = &ui.config.screens[ui.state.active()];
+    let pictures: Vec<_> = menu
         .elements
         .iter()
         .filter_map(|element| match element {
             Element::Panel {
                 fill: screens::PanelFill::Fixed(screens::Fill::Image { image, .. }),
-                idle: Some(idle),
                 ..
-            } => Some((images[*image].name.as_str(), images[*idle].name.as_str())),
+            } => Some(images[*image].name.as_str()),
             _ => None,
         })
         .collect();
-    assert_eq!(
-        idles,
-        [
-            ("vasilisa_greet", "vasilisa_idle"),
-            ("alyosha_greet", "alyosha_idle"),
-            ("ilya_greet", "ilya_idle")
-        ]
+    assert_eq!(pictures, ["start_wide"]);
+    assert!(
+        menu.elements
+            .iter()
+            .all(|element| element.play_on_hover().is_none())
     );
-}
-
-#[test]
-fn the_menu_background_lives_with_loops_wind_and_particles() {
-    let (ui, _, images) = load();
-    let menu = &ui.config.screens[ui.state.active()];
-    let loops: Vec<&str> = ui
-        .config
-        .loop_videos(|id| images[id].path.ends_with(".mp4"))
-        .into_iter()
-        .map(|id| images[id].name.as_str())
-        .collect();
-    assert_eq!(
-        loops,
-        [
-            "living_bg",
-            "river",
-            "vasilisa_idle",
-            "alyosha_idle",
-            "ilya_idle",
-            "alyosha_portrait",
-            "ilya_portrait",
-            "vasilisa_portrait"
-        ]
+    assert!(
+        menu.elements
+            .iter()
+            .all(|element| element.particles().is_none())
     );
-    assert!(menu.wind[0] > 0.0, "ветер вправо: {:?}", menu.wind);
-    assert!(menu.cell_pixels.is_some());
-    let sources: Vec<_> = menu
-        .elements
-        .iter()
-        .filter_map(Element::particles)
-        .collect();
-    assert!(sources.iter().any(|s| s.leaf_fall > 0.0), "листья с берёзы");
-    assert!(sources.iter().any(|s| s.fluff > 0.0), "пух");
-    assert!(sources.iter().any(|s| s.butterflies > 0.0), "бабочки");
 }
 
 #[test]
@@ -299,9 +250,10 @@ fn the_cursor_over_a_hero_is_over_his_place() {
 #[test]
 fn the_pause_returns_to_the_start_screen_with_the_same_hero_chosen() {
     let mut ui = ui();
-    choose_hero(&mut ui, "alyosha");
     let new_game = new_game_button(&ui);
     ui.click(new_game[0], new_game[1]);
+    choose_hero(&mut ui, "alyosha");
+    choose_hero(&mut ui, "alyosha");
     let go = go_button(&ui);
     ui.click(go[0], go[1]);
     ui.key("Escape");

@@ -96,11 +96,22 @@ fn click_place(ui: &mut Ui, name: &str) {
     ui.click(at[0], at[1]);
 }
 
-/// Выбор героя на «Распутье» и «Новая игра».
+/// Выбор героя в зале после «Новой игры».
 fn hero_screen_of(hero: &str) -> (Ui, Vec<ImageDecl>) {
     let (mut ui, images) = load();
-    click_place(&mut ui, hero);
     click_place(&mut ui, "new_game");
+    assert_eq!(active_screen(&ui), "hero_select");
+    if hero != "vasilisa" {
+        click_place(&mut ui, hero);
+    }
+    let selection = match hero {
+        "ilya" => "hero_select_ilya",
+        "alyosha" => "hero_select_alyosha",
+        "vasilisa" => "hero_select",
+        _ => panic!("неизвестный герой: {hero}"),
+    };
+    assert_eq!(active_screen(&ui), selection);
+    click_place(&mut ui, hero);
     assert_eq!(active_screen(&ui), "hero", "{hero}");
     (ui, images)
 }
@@ -180,11 +191,25 @@ fn the_hero_screen_shows_the_portrait_of_the_chosen_hero() {
 }
 
 #[test]
-fn back_returns_to_the_crossroads_with_the_same_hero_chosen() {
+fn back_returns_to_the_hall_with_the_same_hero_chosen() {
     let (mut ui, _) = hero_screen_of("alyosha");
     click_place(&mut ui, "back");
-    assert_eq!(active_screen(&ui), "menu");
+    assert_eq!(active_screen(&ui), "hero_select_alyosha");
     assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
+    assert!(!ui.game.has_world());
+}
+
+#[test]
+fn hall_arrows_change_the_central_hero_and_back_returns_to_menu() {
+    let (mut ui, _) = load();
+    click_place(&mut ui, "new_game");
+    assert_eq!(active_screen(&ui), "hero_select");
+    click_place(&mut ui, "next_hero");
+    assert_eq!(active_screen(&ui), "hero_select_alyosha");
+    click_place(&mut ui, "previous_hero");
+    assert_eq!(active_screen(&ui), "hero_select_ilya");
+    click_place(&mut ui, "back_select");
+    assert_eq!(active_screen(&ui), "menu");
     assert!(!ui.game.has_world());
 }
 
