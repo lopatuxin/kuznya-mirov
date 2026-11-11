@@ -14,9 +14,10 @@
     "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf", "menu": "fonts/Monomakh.ttf" },
     "images": {
       "start_wide": { "path": "images/start_wide_menu_clean_v1.png", "smooth": true },
-      "hero_select_hall_vasilisa": { "path": "images/hero_select_hall_vasilisa_wide.png", "smooth": true },
-      "hero_select_hall_ilya": { "path": "images/hero_select_hall_ilya_wide.png", "smooth": true },
-      "hero_select_hall_alyosha": { "path": "images/hero_select_hall_alyosha_wide.png", "smooth": true },
+      "hero_select_hall": { "path": "images/hero_select_hall_fixed.png", "smooth": true },
+      "hall_vasilisa": { "path": "images/hall_vasilisa.png", "smooth": true },
+      "hall_alyosha": { "path": "images/hall_alyosha.png", "smooth": true },
+      "hall_ilya_exit": { "path": "images/hall_ilya_exit.mp4", "smooth": true, "reverse": "images/hall_ilya_exit-reverse.mp4" },
       "menu_clear": { "path": "images/menu_clear.png" },
       "parchment_glow": { "path": "images/parchment_glow.png", "smooth": true },
       "hero_bg": { "path": "images/hero_bg.png", "smooth": true },
