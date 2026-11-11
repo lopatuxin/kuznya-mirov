@@ -1,6 +1,7 @@
 {
   "properties": {
     "hero": "flag",
+    "tower": "flag",
     "go_left": "flag",
     "go_right": "flag",
     "go_up": "flag",

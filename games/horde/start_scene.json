@@ -16,6 +16,28 @@
 
     { "model": "start_ground_01", "position": [0, 0, 0], "size": [18, 36] },
     { "model": "start_ground_02", "position": [18, 0, 0], "size": [18, 36] },
-    { "model": "start_ground_03", "position": [36, 0, 0], "size": [17, 36] }
+    { "model": "start_ground_03", "position": [36, 0, 0], "size": [17, 36] },
+
+    { "model": "start_tower_soil", "position": [8, 15, 0.01], "size": [2, 2] },
+    { "name": "tower", "model": "tower", "position": [8, 15, 0], "size": [2, 2], "tower": true },
+
+    { "model": "start_fence_soil", "position": [8.74338, 15.52299, 0.01], "size": [2, 2] },
+    { "model": "start_fence_01", "position": [18.01786, 10.97365, 0], "size": [2, 2] },
+    { "model": "start_fence_02", "position": [17.97952, 6.67724, 0], "size": [2, 2] },
+    { "model": "start_fence_03", "position": [15.74618, 4.49159, 0], "size": [2, 2] },
+    { "model": "start_fence_04", "position": [11.15775, 4.50011, 0], "size": [2, 2] },
+    { "model": "start_fence_05", "position": [6.53244, 4.55109, 0], "size": [2, 2] },
+    { "model": "start_fence_06", "position": [1.8838, 4.48642, 0], "size": [2, 2] },
+    { "model": "start_fence_07", "position": [-0.49957, 6.65268, 0], "size": [2, 2] },
+    { "model": "start_fence_08", "position": [-0.51581, 11.04752, 0], "size": [2, 2] },
+    { "model": "start_fence_09", "position": [-0.53263, 15.40203, 0], "size": [2, 2] },
+    { "model": "start_fence_10", "position": [-0.44187, 19.78032, 0], "size": [2, 2] },
+    { "model": "start_fence_11", "position": [-0.55214, 24.27285, 0], "size": [2, 2] },
+    { "model": "start_fence_12", "position": [1.74115, 26.51817, 0], "size": [2, 2] },
+    { "model": "start_fence_13", "position": [6.3515, 26.4839, 0], "size": [2, 2] },
+    { "model": "start_fence_14", "position": [11.00662, 26.49942, 0], "size": [2, 2] },
+    { "model": "start_fence_15", "position": [15.59162, 26.54996, 0], "size": [2, 2] },
+    { "model": "start_fence_16", "position": [17.97823, 24.02826, 0], "size": [2, 2] },
+    { "model": "start_fence_17", "position": [17.98826, 18.99084, 0], "size": [2, 2] }
   ]
 }
