@@ -21,7 +21,7 @@
     { "name": "hero_select", "world_runs": false, "keys": { "Escape": ["show_screen", "menu"] }, "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [6000, 4000], "color": "#20131c" },
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [2560, 1080], "image": "hero_select_hall" },
-      { "kind": "panel", "anchor": "center", "offset": [0, 24], "size": [352, 528], "image": "hall_vasilisa" },
+      { "kind": "panel", "anchor": "center", "offset": [0, -60], "size": [640, 960], "image": "hall_vasilisa_exit", "play_on_hover": "vasilisa" },
       { "kind": "panel", "anchor": "center", "offset": [546, 24], "size": [352, 528], "image": "hall_alyosha" },
       { "kind": "panel", "anchor": "center", "offset": [-536, 19], "size": [610, 658], "image": "hall_ilya_exit", "play_on_hover": "ilya", "rest_at": 3.5 },
       { "kind": "label", "anchor": "center", "offset": [0, -469], "size": [920, 104], "text": "Выберите героя", "font": "menu", "font_size": 72, "color": "#fff1cf", "align": "center" },

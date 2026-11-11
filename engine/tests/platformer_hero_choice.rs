@@ -11,7 +11,7 @@ mod support;
 mod platformer;
 
 use engine::core::interface;
-use engine::core::screens::{self, ButtonCommand, Element, PanelFill};
+use engine::core::screens::{self, ButtonCommand, Element, Fill, PanelFill};
 use engine::data::load::{ImageDecl, load_rest_with_stamps, read_entry};
 use platformer::{platformer_dir, read};
 use support::{Ui, VIEWPORT};
@@ -194,28 +194,45 @@ fn back_returns_to_the_hall_with_the_same_hero_chosen() {
 }
 
 #[test]
-fn ilyas_exit_stays_in_the_left_arch_and_back_returns_to_menu() {
-    let (mut ui, _) = load();
+fn hero_exits_stay_in_their_arches_and_back_returns_to_menu() {
+    let (mut ui, images) = load();
     click_place(&mut ui, "new_game");
     assert_eq!(active_screen(&ui), "hero_select");
 
-    let video_position = |element: &Element| element.play_on_hover().is_some();
-    let idle_position = middle_of(&ui, video_position);
-    assert!(idle_position[0] < VIEWPORT[0] / 2.0);
-    let hall = &ui.config.screens[ui.state.active()];
-    let exit_target = hall
-        .elements
-        .iter()
-        .find_map(Element::play_on_hover)
-        .unwrap();
-    assert_eq!(hall.elements[exit_target].place_name(), Some("ilya"));
-    assert!(!ui.state.lit(hall, None).contains(exit_target));
+    for hero in ["ilya", "vasilisa"] {
+        let hall = &ui.config.screens[ui.state.active()];
+        let exit_target = hall
+            .elements
+            .iter()
+            .position(|element| element.place_name() == Some(hero))
+            .expect("место героя в зале");
+        let exit_panel = |element: &Element| element.play_on_hover() == Some(exit_target);
+        let idle_position = middle_of(&ui, exit_panel);
+        let center = VIEWPORT[0] / 2.0;
+        if hero == "ilya" {
+            assert!(idle_position[0] < center);
+        } else {
+            assert!((idle_position[0] - center).abs() < 1.0);
+        }
+        let panel = hall.elements.iter().find(|element| exit_panel(element));
+        let Some(Element::Panel {
+            fill: PanelFill::Fixed(Fill::Image { image, .. }),
+            ..
+        }) = panel
+        else {
+            panic!("{hero}: нет панели с видео выхода");
+        };
+        let video = &images[*image];
+        assert_eq!(video.name, format!("hall_{hero}_exit"));
+        assert!(video.video && video.reverse.is_some(), "{hero}");
+        assert!(!ui.state.lit(hall, None).contains(exit_target));
 
-    click_place(&mut ui, "ilya");
-    assert_eq!(active_screen(&ui), "hero_select");
-    assert_eq!(middle_of(&ui, video_position), idle_position);
-    let hall = &ui.config.screens[ui.state.active()];
-    assert!(ui.state.lit(hall, None).is_held(exit_target));
+        click_place(&mut ui, hero);
+        assert_eq!(active_screen(&ui), "hero_select");
+        assert_eq!(middle_of(&ui, exit_panel), idle_position);
+        let hall = &ui.config.screens[ui.state.active()];
+        assert!(ui.state.lit(hall, None).is_held(exit_target));
+    }
 
     click_place(&mut ui, "back_select");
     assert_eq!(active_screen(&ui), "menu");

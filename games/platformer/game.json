@@ -15,7 +15,7 @@
     "images": {
       "start_wide": { "path": "images/start_wide_menu_clean_v1.png", "smooth": true },
       "hero_select_hall": { "path": "images/hero_select_hall_fixed.png", "smooth": true },
-      "hall_vasilisa": { "path": "images/hall_vasilisa.png", "smooth": true },
+      "hall_vasilisa_exit": { "path": "images/hall_vasilisa_exit.mp4", "smooth": true, "reverse": "images/hall_vasilisa_exit-reverse.mp4" },
       "hall_alyosha": { "path": "images/hall_alyosha.png", "smooth": true },
       "hall_ilya_exit": { "path": "images/hall_ilya_exit.mp4", "smooth": true, "reverse": "images/hall_ilya_exit-reverse.mp4" },
       "menu_clear": { "path": "images/menu_clear.png" },
