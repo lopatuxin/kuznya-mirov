@@ -253,7 +253,8 @@ fn the_pause_returns_to_the_start_screen_with_the_same_hero_chosen() {
     let new_game = new_game_button(&ui);
     ui.click(new_game[0], new_game[1]);
     choose_hero(&mut ui, "alyosha");
-    choose_hero(&mut ui, "alyosha");
+    let details = middle_of(&ui, |element| element.place_name() == Some("hero_details"));
+    ui.click(details[0], details[1]);
     let go = go_button(&ui);
     ui.click(go[0], go[1]);
     ui.key("Escape");

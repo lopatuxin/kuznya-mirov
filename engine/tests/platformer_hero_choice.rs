@@ -101,17 +101,9 @@ fn hero_screen_of(hero: &str) -> (Ui, Vec<ImageDecl>) {
     let (mut ui, images) = load();
     click_place(&mut ui, "new_game");
     assert_eq!(active_screen(&ui), "hero_select");
-    if hero != "vasilisa" {
-        click_place(&mut ui, hero);
-    }
-    let selection = match hero {
-        "ilya" => "hero_select_ilya",
-        "alyosha" => "hero_select_alyosha",
-        "vasilisa" => "hero_select",
-        _ => panic!("неизвестный герой: {hero}"),
-    };
-    assert_eq!(active_screen(&ui), selection);
     click_place(&mut ui, hero);
+    assert_eq!(active_screen(&ui), "hero_select");
+    click_place(&mut ui, "hero_details");
     assert_eq!(active_screen(&ui), "hero", "{hero}");
     (ui, images)
 }
@@ -192,22 +184,39 @@ fn the_hero_screen_shows_the_portrait_of_the_chosen_hero() {
 
 #[test]
 fn back_returns_to_the_hall_with_the_same_hero_chosen() {
-    let (mut ui, _) = hero_screen_of("alyosha");
-    click_place(&mut ui, "back");
-    assert_eq!(active_screen(&ui), "hero_select_alyosha");
-    assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
-    assert!(!ui.game.has_world());
+    for (hero, ..) in HEROES {
+        let (mut ui, _) = hero_screen_of(hero);
+        click_place(&mut ui, "back");
+        assert_eq!(active_screen(&ui), "hero_select");
+        assert_eq!(ui.state.chosen("heroes"), Some(hero));
+        assert!(!ui.game.has_world());
+    }
 }
 
 #[test]
-fn hall_arrows_change_the_central_hero_and_back_returns_to_menu() {
+fn ilyas_exit_stays_in_the_left_arch_and_back_returns_to_menu() {
     let (mut ui, _) = load();
     click_place(&mut ui, "new_game");
     assert_eq!(active_screen(&ui), "hero_select");
-    click_place(&mut ui, "next_hero");
-    assert_eq!(active_screen(&ui), "hero_select_alyosha");
-    click_place(&mut ui, "previous_hero");
-    assert_eq!(active_screen(&ui), "hero_select_ilya");
+
+    let video_position = |element: &Element| element.play_on_hover().is_some();
+    let idle_position = middle_of(&ui, video_position);
+    assert!(idle_position[0] < VIEWPORT[0] / 2.0);
+    let hall = &ui.config.screens[ui.state.active()];
+    let exit_target = hall
+        .elements
+        .iter()
+        .find_map(Element::play_on_hover)
+        .unwrap();
+    assert_eq!(hall.elements[exit_target].place_name(), Some("ilya"));
+    assert!(!ui.state.lit(hall, None).contains(exit_target));
+
+    click_place(&mut ui, "ilya");
+    assert_eq!(active_screen(&ui), "hero_select");
+    assert_eq!(middle_of(&ui, video_position), idle_position);
+    let hall = &ui.config.screens[ui.state.active()];
+    assert!(ui.state.lit(hall, None).is_held(exit_target));
+
     click_place(&mut ui, "back_select");
     assert_eq!(active_screen(&ui), "menu");
     assert!(!ui.game.has_world());
