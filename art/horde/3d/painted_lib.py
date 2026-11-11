@@ -407,6 +407,23 @@ class Frame:
         return obj
 
 
+def crop_projected_texture(frame: Frame, obj: bpy.types.Object, rgba: numpy.ndarray) -> None:
+    """Оставляет модели её участок общей картины и пересчитывает UV."""
+    layer = obj.data.uv_layers.active.data
+    uvs = numpy.array([loop.uv[:] for loop in layer])
+    low = numpy.clip(numpy.floor(uvs.min(axis=0) * frame.px) - 2, 0, frame.px - 1).astype(int)
+    high = numpy.clip(numpy.ceil(uvs.max(axis=0) * frame.px) + 2, 1, frame.px).astype(int)
+    piece = rgba[low[1]:high[1], low[0]:high[0]].copy()
+    size = high - low
+    for loop in layer:
+        loop.uv = ((loop.uv[0] * frame.px - low[0]) / size[0], (loop.uv[1] * frame.px - low[1]) / size[1])
+    image = bpy.data.images.new("picture_" + obj.name, int(size[0]), int(size[1]), alpha=True)
+    image.pixels = piece.ravel()
+    image.pack()
+    texture = next(n for n in obj.data.materials[0].node_tree.nodes if n.bl_idname == "ShaderNodeTexImage")
+    texture.image = image
+
+
 PROPS = os.path.join(ROOT, "art", "horde", "3d", "props")
 
 
@@ -640,12 +657,14 @@ def finish_planting(names, folder):
     return frame, planted, frame.load("plant_guide.png"), (scale, shift)
 
 
-def export_soil(frame, rgba, names, name):
+def export_soil(frame, rgba, names, name, *, object_mask=None):
     """<name>.glb: заплатка земли под объектами `names` — плоскость по их коробке по плану с запасом на
     SOIL_FADE[1], серединой там же, где середина коробки; картина — посаженная раскраска с прозрачностью по
     расстоянию до основания."""
     pixels = rgba.copy()
     pixels[:, :, 3] = soil_alpha(base_distance(frame, names))
+    if object_mask is not None:
+        pixels[:, :, 3][object_mask[:, :, 3] > 0.5] = 0.0
     points = world_points(names)
     (x0, y0), (x1, y1) = plan_box(points)
     # Движок ставит и предмет, и заплатку низшей точкой на землю: заплатка лежит на высоте низшей точки предмета,

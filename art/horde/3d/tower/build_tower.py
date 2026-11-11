@@ -24,7 +24,7 @@ import painted_lib  # noqa: E402
 
 importlib.reload(painted_lib)
 from painted_lib import PITCH, ROOT, Frame, Part, beam, box, box_faces, export, fresh_collection, frustum, \
-    load_any, make_object, merge_cut, register  # noqa: E402
+    grow, load_any, make_object, merge_cut, register  # noqa: E402
 
 TURN = math.radians(45)
 
@@ -45,6 +45,9 @@ GUIDE_SIZE, GUIDE_UP, GUIDE_PX = 12.0, 3.25, 1024
 CUT_MARGIN = 4  # запас вокруг отличий разреза, в точках картины
 PAINT = os.path.join(ROOT, "art", "horde", "3d", "tower", "paint")
 FRAME = Frame(GUIDE_SIZE, GUIDE_UP, GUIDE_PX, PAINT)
+START_PLANT_FRAME = Frame(16.0, 2.5, GUIDE_PX, PAINT)
+START_PLANT_PAINT = "start_tower_planted.png"
+START_SOIL_HALF = (8.0, 7.5)
 # Где вышка стоит в Орде: середина в клетках сцены.
 TOWER_AT = (9.0, 16.0)
 # Заплатка земли под вышкой — плоскость на земле, полуширина по X и полуглубина по Y в клетках; дорисованная
@@ -321,14 +324,6 @@ def render_guides():
     FRAME.render([("mask_outside.png", {"tower"}), ("mask_cut.png", {"tower_cut"})])
 
 
-def frame_ground():
-    """Точки кадра камеры игры на земле (z = 0): для каждой точки картины — клетки сцены Орды."""
-    rows, cols = numpy.mgrid[0:GUIDE_PX, 0:GUIDE_PX]
-    across = ((cols + 0.5) / GUIDE_PX - 0.5) * GUIDE_SIZE
-    deep = (((rows + 0.5) / GUIDE_PX - 0.5) * GUIDE_SIZE + GUIDE_UP) / math.sin(PITCH)
-    return TOWER_AT[0] + across, TOWER_AT[1] - deep
-
-
 def ground_under():
     """Подкладка для посадки в PAINT: земля карты Орды за вышкой (ground_under.png) и раскраска вышки снаружи поверх
     неё (tower_on_ground.png). Нейросеть дорисовывает по подкладке присыпку у тумб, тень под настилом и тропу —
@@ -351,47 +346,57 @@ def planted():
     return scale, shift
 
 
-def soil_image():
+def soil_image(*, for_start: bool = False) -> bpy.types.Image:
     """Земля под вышкой: раскраска снаружи вместе с дорисованной присыпкой у тумб, тенью и тропой, видимая
     целиком у опор и у низа лестницы и растворяющаяся в земле карты дальше от них."""
-    pixels = FRAME.load("paint_outside.png")
-    scene_x, scene_y = frame_ground()
+    frame = START_PLANT_FRAME if for_start else FRAME
+    pixels = frame.load(START_PLANT_PAINT if for_start else "paint_outside.png")
+    dx, dy = frame.ground_points()
     turn = -TURN
-    dx, dy = scene_x - TOWER_AT[0], -(scene_y - TOWER_AT[1])
     local_x = dx * math.cos(turn) - dy * math.sin(turn)
     local_y = dx * math.sin(turn) + dy * math.cos(turn)
     reach = POST_AT + FOOTING_LOW / 2
     outside_x = numpy.maximum(numpy.abs(local_x) - reach, 0.0)
     outside_y = numpy.maximum(numpy.abs(local_y) - reach, 0.0)
     distance = numpy.hypot(outside_x, outside_y)
-    ladder = (0.6 + 0.1 + LADDER_WIDTH / 2, -DECK / 2 - LADDER_RUN)
-    distance = numpy.minimum(distance, numpy.maximum(numpy.hypot(local_x - ladder[0], local_y - ladder[1]) - 0.6, 0.0))
+    foot, _ = ladder_line()
+    ladder_margin = 2.15 if for_start else 0.6
+    ladder_distance = numpy.hypot(local_x - foot[0], local_y - foot[1])
+    distance = numpy.minimum(distance, numpy.maximum(ladder_distance - ladder_margin, 0.0))
     fade = numpy.clip((SOIL_FADE[1] - distance) / (SOIL_FADE[1] - SOIL_FADE[0]), 0.0, 1.0)
-    pixels[:, :, 3] = fade * fade * (3 - 2 * fade)
-    image = bpy.data.images.new("picture_soil", GUIDE_PX, GUIDE_PX, alpha=True)
+    alpha = fade * fade * (3 - 2 * fade)
+    if for_start:
+        edge = numpy.minimum(START_SOIL_HALF[0] - numpy.abs(dx), START_SOIL_HALF[1] - numpy.abs(dy))
+        edge = numpy.clip(edge / 0.8, 0.0, 1.0)
+        alpha *= edge * edge * (3 - 2 * edge)
+        tower = frame.resample(FRAME.load("mask_outside.png"), FRAME)
+        alpha[tower[:, :, 3] > 0.5] = 0.0
+    pixels[:, :, 3] = alpha
+    image = bpy.data.images.new("picture_soil", frame.px, frame.px, alpha=True)
     image.pixels = pixels.ravel()
     image.pack()
     return image
 
 
-def export_soil():
-    """Заплатка земли soil.glb: плоскость на земле под кадром вышки, картина смешивается с землёй карты."""
+def export_soil(*, for_start: bool = False) -> None:
+    """Плоскость под вышкой с картиной, которая плавно смешивается с землёй карты."""
+    frame = START_PLANT_FRAME if for_start else FRAME
     mesh = bpy.data.meshes.new("tower_soil")
     bm = bmesh.new()
-    half_x, half_y = SOIL_HALF
+    half_x, half_y = START_SOIL_HALF if for_start else SOIL_HALF
     corners = [(-half_x, -half_y, 0.0), (half_x, -half_y, 0.0), (half_x, half_y, 0.0), (-half_x, half_y, 0.0)]
     bm.faces.new([bm.verts.new(c) for c in corners])
     bm.to_mesh(mesh)
     bm.free()
     layer = mesh.uv_layers.new(name="UVMap")
     for loop in mesh.loops:
-        layer.data[loop.index].uv = FRAME.uv(mesh.vertices[loop.vertex_index].co)
+        layer.data[loop.index].uv = frame.uv(mesh.vertices[loop.vertex_index].co)
     made = bpy.data.materials.new("tower_soil")
     made.use_nodes = True
     nodes, links = made.node_tree.nodes, made.node_tree.links
     bsdf = next(n for n in nodes if n.bl_idname == "ShaderNodeBsdfPrincipled")
     texture = nodes.new("ShaderNodeTexImage")
-    texture.image = soil_image()
+    texture.image = soil_image(for_start=for_start)
     texture.extension = "EXTEND"
     links.new(texture.outputs["Color"], bsdf.inputs["Base Color"])
     links.new(texture.outputs["Alpha"], bsdf.inputs["Alpha"])
@@ -400,7 +405,7 @@ def export_soil():
     mesh.materials.append(made)
     obj = bpy.data.objects.new("tower_soil", mesh)
     bpy.context.scene.collection.objects.link(obj)
-    export(obj, [], "soil.glb")
+    export(obj, [], "start_tower_soil.glb" if for_start else "soil.glb")
     bpy.data.objects.remove(obj, do_unlink=True)
 
 
@@ -415,30 +420,111 @@ def behind_front_walls():
     return FRAME.quads_mask([[turn @ Vector(p) for p in wall] for wall in walls])
 
 
-def picture_image(name):
+def start_contact_weights() -> numpy.ndarray:
+    turn = Matrix.Rotation(TURN, 3, "Z")
+    dx, dy = FRAME.ground_points()
+    weights = numpy.zeros_like(dx)
+    foot, _ = ladder_line()
+    contacts = [
+        (x, y, 0.2, 1.0, 1.3)
+        for x in (-POST_AT, POST_AT)
+        for y in (-POST_AT, POST_AT)
+    ]
+    contacts.append((*foot[:2], 0.27, 0.82, 1.45))
+    for x, y, z, width, depth in contacts:
+        point = turn @ Vector((x, y, z))
+        projected_y = point.y + point.z / math.tan(PITCH)
+        distance = numpy.hypot((dx - point.x) / width, (dy - projected_y) / depth)
+        weights = numpy.maximum(weights, numpy.clip((1.0 - distance) / 0.35, 0.0, 1.0))
+    return weights[:, :, None]
+
+
+def visible_deck_props() -> numpy.ndarray:
+    props, cabin = Part(), Part()
+    deck_props(props)
+    hut(cabin, False)
+    turn = Matrix.Rotation(TURN, 3, "Z")
+    boxes, walls = (
+        FRAME.quads_mask([
+            [turn @ Vector(point) for point in face]
+            for faces in part.faces.values()
+            for face in faces
+            if len(face) == 4
+        ])
+        for part in (props, cabin)
+    )
+    return boxes & ~(walls | behind_front_walls())
+
+
+def start_outside_picture() -> numpy.ndarray:
+    original = FRAME.load("paint_outside_before_soil.png")
+    planted = FRAME.resample(START_PLANT_FRAME.load(START_PLANT_PAINT), START_PLANT_FRAME)
+    weights = start_contact_weights()
+    outside = original * (1.0 - weights) + planted * weights
+    props = visible_deck_props()
+    outside[props] = FRAME.load("paint_cut.png")[props]
+    return outside
+
+
+def pad_tower_texture(rgba: numpy.ndarray, mask: numpy.ndarray) -> numpy.ndarray:
+    """Продлевает цвет раскраски за силуэт, чтобы фильтрация не подмешивала светлый фон на краях."""
+    padded = rgba.copy()
+    colors = padded[:, :, :3]
+    visible = mask[:, :, 3] > 0.5
+    neutral = colors.max(axis=2) - colors.min(axis=2) < 0.07
+    pale = neutral & (colors.mean(axis=2) > 0.44)
+    wood = visible & (colors[:, :, 0] - colors[:, :, 2] > 0.10)
+    fringe = pale & grow(~visible, 3) & grow(wood, 3)
+    filled = visible & ~fringe
+    padding = 8
+    region = grow(visible, padding)
+    full = slice(None)
+    neighbors = (
+        ((full, slice(1, None)), (full, slice(None, -1))),
+        ((full, slice(None, -1)), (full, slice(1, None))),
+        ((slice(1, None), full), (slice(None, -1), full)),
+        ((slice(None, -1), full), (slice(1, None), full)),
+    )
+    for _ in range(padding + 3):
+        next_filled = filled.copy()
+        for target, source in neighbors:
+            extend = region[target] & ~next_filled[target] & filled[source]
+            colors[target][extend] = colors[source][extend]
+            next_filled[target][extend] = True
+        filled = next_filled
+    return padded
+
+
+def picture_image(name: str, outside: numpy.ndarray | None = None, *, for_start: bool = False) -> bpy.types.Image:
     """Картина для игры из раскраски paint_<name>.png и силуэта mask_<name>.png.
 
     Разрез берёт из своей раскраски только то, чем он отличается от вышки снаружи (комната и срезанные стены
     по снимкам объёма, с запасом CUT_MARGIN точек), остальное — из раскраски снаружи: при смене вида опоры,
     настил и перила не меняют рисунок."""
-    rgba = FRAME.load(f"paint_{name}.png")
+    if outside is None:
+        outside = FRAME.load("paint_outside.png")
     mask = FRAME.load(f"mask_{name}.png")
-    if name == "cut":
-        rgba = merge_cut(FRAME.load("paint_outside.png"), rgba, FRAME.load("mask_outside.png"), mask,
-                         behind_front_walls(), CUT_MARGIN)
+    rgba = outside if name == "outside" else merge_cut(
+        outside, FRAME.load("paint_cut.png"), FRAME.load("mask_outside.png"), mask,
+        behind_front_walls(), CUT_MARGIN,
+    )
+    if for_start:
+        rgba = pad_tower_texture(rgba, mask)
     return FRAME.picture(name, rgba, mask)
 
 
-def export_painted():
-    """Модели игры: tower.glb (с узлом inside_hut, перекладинами rung и поручнями grab) и tower_cut.glb с картинами из раскрасок и
-    силуэтов."""
+def export_painted(*, for_start: bool = False) -> None:
+    """Выгружает вышку и срез. Для стартовой сцены берёт раскраску опор с новым грунтом."""
+    outside = start_outside_picture() if for_start else FRAME.load("paint_outside.png")
+    prefix = "start_" if for_start else ""
     made = []
     rungs = [f"rung_{index:02d}" for index in range(1, LADDER_STEPS)]
     extra_tower = ["inside_hut", *rungs, "grab_left", "grab_right"]
     for name, picture, extra in (("tower", "outside", extra_tower), ("tower_cut", "cut", [])):
-        obj = FRAME.projected_copy(bpy.data.objects[name], name + "_game", picture_image(picture))
+        image = picture_image(picture, outside, for_start=for_start)
+        obj = FRAME.projected_copy(bpy.data.objects[name], name + "_game", image)
         made.append(obj)
-        export(obj, extra, name + ".glb")
+        export(obj, extra, prefix + name + ".glb")
     for obj in made:
         bpy.data.objects.remove(obj, do_unlink=True)
 

@@ -23,7 +23,7 @@ sys.path.insert(0, r"C:\projects\kuznya-mirov\art\horde\3d")
 import painted_lib  # noqa: E402
 
 importlib.reload(painted_lib)
-from painted_lib import PROPS, Frame, Part, beam, export, fresh_collection, make_object  # noqa: E402
+from painted_lib import PROPS, Frame, Part, beam, crop_projected_texture as cropped, export, fresh_collection, make_object  # noqa: E402
 
 RUNS = [
     [(0.5, 6.0), (8.0, 5.5), (15.0, 7.0), (18.5, 11.0), (19.0, 14.0)],
@@ -115,23 +115,6 @@ def render_guide():
     """Снимки участков на прозрачном фоне: e<номер>/guide.png — основа раскраски и силуэт картины."""
     for number, *_ in edges():
         frame(number).render([("guide.png", set(spans_of(number)))])
-
-
-def cropped(of, obj, rgba):
-    """Кусок картины участка под пролёт: UV пролёта переводятся в его кусок, чтобы модель не несла весь участок."""
-    layer = obj.data.uv_layers.active.data
-    uvs = numpy.array([loop.uv[:] for loop in layer])
-    low = numpy.clip(numpy.floor(uvs.min(axis=0) * of.px) - 2, 0, of.px - 1).astype(int)
-    high = numpy.clip(numpy.ceil(uvs.max(axis=0) * of.px) + 2, 1, of.px).astype(int)
-    piece = rgba[low[1]:high[1], low[0]:high[0]].copy()
-    size = high - low
-    for loop in layer:
-        loop.uv = ((loop.uv[0] * of.px - low[0]) / size[0], (loop.uv[1] * of.px - low[1]) / size[1])
-    image = bpy.data.images.new("picture_" + obj.name, int(size[0]), int(size[1]), alpha=True)
-    image.pixels = piece.ravel()
-    image.pack()
-    texture = next(n for n in obj.data.materials[0].node_tree.nodes if n.bl_idname == "ShaderNodeTexImage")
-    texture.image = image
 
 
 def prepare_planting():
