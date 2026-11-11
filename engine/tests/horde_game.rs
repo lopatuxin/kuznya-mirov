@@ -57,9 +57,9 @@ fn read(name: &str) -> String {
 }
 
 fn load() -> Game {
-    let game_json = read("game.json");
+    let game_json = read("game_with_props.json");
     let (config, entry_warnings) =
-        read_entry(&game_json).expect("game.json Орды должен разбираться");
+        read_entry(&game_json).expect("настройки сцены Орды с объектами должны разбираться");
     let image = ImageVerdict::Ok {
         width: 4,
         height: 4,
