@@ -10,9 +10,8 @@ struct Globals {
 };
 
 // «Картинки» → «Атлас»: one shared atlas for both passes — a plain color fill and an image go
-// out through the same texture (a stack of `ATLAS_SIZE`×`ATLAS_SIZE` sheets, one array layer
+// out through the same texture (a stack of square sheets, one array layer
 // each), same sampler, same instance layout.
-const ATLAS_SIZE: f32 = 2048.0;
 
 @group(0) @binding(0)
 var<uniform> globals: Globals;
@@ -470,7 +469,7 @@ fn coals_color(in: VertexOutput) -> vec4<f32> {
 @fragment
 fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     let clamped = clamp(in.uv_px, in.uv_min, in.uv_max);
-    let uv = clamped / ATLAS_SIZE;
+    let uv = clamped / vec2<f32>(textureDimensions(atlas_texture));
     // «Картинки» → «Сглаживание»: both paths run unconditionally and `select` picks the result —
     // a texture sample needs the same control-flow path for every fragment in a quad, so the
     // choice can't be a branch. The crisp path is a texel fetch, not a second sampler (see the

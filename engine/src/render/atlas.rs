@@ -1,4 +1,4 @@
-//! «Картинки» → «Атлас и отрисовка»: packs every declared image into a stack of fixed-size sheets
+//! «Картинки» → «Атлас и отрисовка»: packs every declared image into sheets sized for the game
 //! with MaxRects (biggest piece first, each into the free rectangle it fits tightest, a new sheet
 //! when none has room), with a one-pixel gap between neighbors and one opaque white pixel reserved
 //! for color fills, then writes the points one sheet at a time (`fill_sheet`). A piece is a whole
@@ -35,13 +35,11 @@ use super::wind::{Motion, SwayObject, swaying_frame};
 
 mod max_rects;
 
-/// «Картинки» → «Атлас», требование 14: the canvas is this size in every browser, so the game
-/// either starts everywhere or nowhere, never differently depending on what WebGPU would actually
-/// allow.
+/// Smallest atlas sheet; larger images grow the sheet to fit the game's own pictures.
 pub const ATLAS_SIZE: u32 = 2048;
 
 /// «Картинки» → «Атлас», требования 14, 21: the atlas is a stack of at most this many
-/// `ATLAS_SIZE`×`ATLAS_SIZE` sheets — `pack` fails once a set of images needs one more.
+/// sheets — `pack` fails once a set of images needs one more.
 pub const MAX_SHEETS: u32 = 16;
 
 const PADDING: u32 = 1;
@@ -286,19 +284,26 @@ fn shape_frame_rect(shape: ParticleShape, frame: u32) -> AtlasRect {
 /// (its whole strip, or its frames one by one) landed, in the same order `pack` was given them, so
 /// `i` doubles as that image's `ImageId`; `sheet_count` sheets hold them all. The points are written by `fill_sheet`
 /// one sheet at a time into one reused buffer, uploaded and overwritten by the next — wasm memory
-/// never shrinks, so holding every sheet at once would keep up to `MAX_SHEETS` × `SHEET_BYTES`
+/// never shrinks, so holding every sheet at once would keep up to `MAX_SHEETS` sheet buffers
 /// reserved for the page's whole life.
 #[derive(Debug)]
 pub struct Atlas {
     pub rects: Vec<ImagePlace>,
     pub sheet_count: u32,
+    pub side: u32,
 }
 
-/// Bytes of one sheet's points: RGBA8, `ATLAS_SIZE` × `ATLAS_SIZE`.
+impl Atlas {
+    pub fn sheet_bytes(&self) -> usize {
+        self.side as usize * self.side as usize * 4
+    }
+}
+
+/// Bytes of the default 2048×2048 sheet used by existing atlas tests.
 pub const SHEET_BYTES: usize = ATLAS_SIZE as usize * ATLAS_SIZE as usize * 4;
 
-fn set_pixel(pixels: &mut [u8], x: u32, y: u32, rgba: [u8; 4]) {
-    let start = ((y * ATLAS_SIZE + x) * 4) as usize;
+fn set_pixel(pixels: &mut [u8], side: u32, x: u32, y: u32, rgba: [u8; 4]) {
+    let start = ((y * side + x) * 4) as usize;
     pixels[start..start + 4].copy_from_slice(&rgba);
 }
 
@@ -307,9 +312,16 @@ fn set_pixel(pixels: &mut [u8], x: u32, y: u32, rgba: [u8; 4]) {
 /// neighbor blends only the picture's own color and whatever is behind it, never a fraction of
 /// black. Rounds to the nearest whole channel value (требование 6's own one-step tolerance).
 /// `src` is `src_width` points wide and the copied piece starts at `origin` in it.
-fn blit(pixels: &mut [u8], rect: AtlasRect, src: &[u8], src_width: u32, origin: [u32; 2]) {
+fn blit(
+    pixels: &mut [u8],
+    side: u32,
+    rect: AtlasRect,
+    src: &[u8],
+    src_width: u32,
+    origin: [u32; 2],
+) {
     for row in 0..rect.h {
-        let dst_row_start = (((rect.y + row) * ATLAS_SIZE + rect.x) * 4) as usize;
+        let dst_row_start = (((rect.y + row) * side + rect.x) * 4) as usize;
         let src_row_start = (((origin[1] + row) * src_width + origin[0]) * 4) as usize;
         for col in 0..rect.w as usize {
             let s = src_row_start + col * 4;
@@ -425,13 +437,13 @@ fn opaque_bounds(pixels: &[u8], stride: u32, origin: [u32; 2], size: [u32; 2]) -
     bounds
 }
 
-fn empty_sheet() -> Sheet {
-    Sheet::new(ATLAS_SIZE + PADDING, ATLAS_SIZE + PADDING)
+fn empty_sheet(side: u32) -> Sheet {
+    Sheet::new(side + PADDING, side + PADDING)
 }
 
 /// The first sheet with the white pixel and the built-in particle pictures already on it.
-fn first_sheet() -> Sheet {
-    let mut sheet = empty_sheet();
+fn first_sheet(side: u32) -> Sheet {
+    let mut sheet = empty_sheet(side);
     let fixed = std::iter::once(WHITE_PIXEL).chain(BUILT_IN_SHAPES.iter().map(|(_, rect)| *rect));
     for rect in fixed {
         sheet.reserve(Space {
@@ -446,14 +458,19 @@ fn first_sheet() -> Sheet {
 
 /// The first sheet with room for `width` × `height` points and a gap after them, opening a new
 /// one when none has; `None` once `MAX_SHEETS` are open and full. Gives the sheet and the corner.
-fn find_room(sheets: &mut Vec<Sheet>, width: u32, height: u32) -> Option<(usize, u32, u32)> {
+fn find_room(
+    sheets: &mut Vec<Sheet>,
+    side: u32,
+    width: u32,
+    height: u32,
+) -> Option<(usize, u32, u32)> {
     let mut index = 0;
     loop {
         if index == sheets.len() {
             if index >= MAX_SHEETS as usize {
                 return None;
             }
-            sheets.push(empty_sheet());
+            sheets.push(empty_sheet(side));
         }
         if let Some((x, y)) = sheets[index].take(width + PADDING, height + PADDING) {
             return Some((index, x, y));
@@ -462,15 +479,14 @@ fn find_room(sheets: &mut Vec<Sheet>, width: u32, height: u32) -> Option<(usize,
     }
 }
 
-/// Packs every image into a stack of `ATLAS_SIZE`×`ATLAS_SIZE` sheets with MaxRects —
+/// Packs every image into sheets sized for the largest piece, starting at `ATLAS_SIZE`, with MaxRects —
 /// «Картинки» → «Атлас», требования 8–11. A piece is an image's whole strip, or, for an image with
 /// a `grid`, each of its frames cut down to the opaque points plus a one-point margin (a fully
 /// transparent frame takes no room). Pieces go biggest first (longest side, then area, then
 /// declaration order, so a set of images always lays out the same way), each into the free
 /// rectangle of the first sheet that has one where it fits tightest, with a one-pixel gap after it;
 /// the white pixel and the built-in particle pictures keep their places on sheet 0. `Err` names
-/// what didn't fit: a single piece — a whole image, or one cut-down frame — wider or taller than one
-/// sheet on its own, or the declared set needing more than `MAX_SHEETS` sheets (требование 21). A
+/// the declared set needing more than `MAX_SHEETS` sheets (требование 21). A
 /// frame sheet may itself be larger than a sheet: only its frames are laid out.
 pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
     for img in images {
@@ -490,22 +506,13 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
         .enumerate()
         .flat_map(|(index, image)| pieces_of(index, image))
         .collect();
-    if let Some(piece) = pieces
-        .iter()
-        .find(|piece| piece.width > ATLAS_SIZE || piece.height > ATLAS_SIZE)
-    {
-        let image = &images[piece.image];
-        return Err(match piece.frame {
-            None => format!(
-                "картинка {}×{} шире или выше полотна {ATLAS_SIZE}×{ATLAS_SIZE}",
-                image.width, image.height
-            ),
-            Some(frame) => format!(
-                "кадр {frame} картинки {}×{} — {}×{} точек, шире или выше полотна {ATLAS_SIZE}×{ATLAS_SIZE}",
-                image.width, image.height, piece.width, piece.height
-            ),
-        });
-    }
+    let largest = pieces.iter().fold(ATLAS_SIZE, |side, piece| {
+        side.max(piece.width).max(piece.height)
+    });
+    let side = largest
+        .div_ceil(64)
+        .checked_mul(64)
+        .ok_or_else(|| "размер листа атласа переполнен".to_string())?;
     pieces.sort_by_key(|piece| {
         (
             Reverse(piece.width.max(piece.height)),
@@ -522,11 +529,11 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
             None => ImagePlace::Whole(FramePlace::EMPTY.rect),
         })
         .collect();
-    let mut sheets = vec![first_sheet()];
+    let mut sheets = vec![first_sheet(side)];
     for piece in &pieces {
-        let Some((sheet, x, y)) = find_room(&mut sheets, piece.width, piece.height) else {
+        let Some((sheet, x, y)) = find_room(&mut sheets, side, piece.width, piece.height) else {
             return Err(format!(
-                "картинки не умещаются в атлас: предел {MAX_SHEETS} листов {ATLAS_SIZE}×{ATLAS_SIZE}; суммарно все картинки занимают {} точек",
+                "картинки не умещаются в атлас: предел {MAX_SHEETS} листов {side}×{side}; суммарно все картинки занимают {} точек",
                 occupied_area(&pieces)
             ));
         };
@@ -552,21 +559,29 @@ pub fn pack(images: &[AtlasImage]) -> Result<Atlas, String> {
     Ok(Atlas {
         rects,
         sheet_count: sheets.len() as u32,
+        side,
     })
 }
 
 /// «Картинки» → «Атлас», требование 14: writes sheet `sheet`'s points into `pixels`
-/// (`SHEET_BYTES` long, reused from one sheet to the next): cleared to transparent, the white
+/// (`atlas.sheet_bytes()` long, reused from one sheet to the next): cleared to transparent, the white
 /// pixel and the built-in particle pictures on the first sheet, and every piece `atlas` placed on
 /// this sheet, color multiplied by
 /// alpha (требование 5). `images` is the same slice `pack` was given.
 pub fn fill_sheet(atlas: &Atlas, images: &[AtlasImage], sheet: u32, pixels: &mut [u8]) {
     pixels.fill(0);
     if sheet == WHITE_PIXEL.sheet {
-        set_pixel(pixels, WHITE_PIXEL.x, WHITE_PIXEL.y, [255, 255, 255, 255]);
+        set_pixel(
+            pixels,
+            atlas.side,
+            WHITE_PIXEL.x,
+            WHITE_PIXEL.y,
+            [255, 255, 255, 255],
+        );
         for (shape, rect) in BUILT_IN_SHAPES {
             blit(
                 pixels,
+                atlas.side,
                 rect,
                 &particle_shapes::draw(shape).pixels,
                 rect.w,
@@ -580,7 +595,7 @@ pub fn fill_sheet(atlas: &Atlas, images: &[AtlasImage], sheet: u32, pixels: &mut
         }
         match place {
             ImagePlace::Whole(rect) if rect.sheet == sheet => {
-                blit(pixels, *rect, &img.pixels, img.width, [0, 0]);
+                blit(pixels, atlas.side, *rect, &img.pixels, img.width, [0, 0]);
             }
             ImagePlace::Whole(_) => {}
             ImagePlace::Frames(frames) => {
@@ -588,7 +603,14 @@ pub fn fill_sheet(atlas: &Atlas, images: &[AtlasImage], sheet: u32, pixels: &mut
                     .iter()
                     .filter(|frame| frame.rect.sheet == sheet && !frame.crop.is_empty())
                 {
-                    blit(pixels, frame.rect, &img.pixels, img.width, frame.source);
+                    blit(
+                        pixels,
+                        atlas.side,
+                        frame.rect,
+                        &img.pixels,
+                        img.width,
+                        frame.source,
+                    );
                 }
             }
         }
@@ -1981,7 +2003,7 @@ mod tests {
     }
 
     fn sheet_pixels(atlas: &Atlas, images: &[AtlasImage], sheet: u32) -> Vec<u8> {
-        let mut pixels = vec![0u8; SHEET_BYTES];
+        let mut pixels = vec![0u8; atlas.sheet_bytes()];
         fill_sheet(atlas, images, sheet, &mut pixels);
         pixels
     }
@@ -2085,7 +2107,7 @@ mod tests {
         let last = rect(&atlas, 2);
         assert_ne!(first.sheet, last.sheet, "{:?}", atlas.rects);
 
-        let mut pixels = vec![0u8; SHEET_BYTES];
+        let mut pixels = vec![0u8; atlas.sheet_bytes()];
         fill_sheet(&atlas, &images, first.sheet, &mut pixels);
         assert_eq!(pixel_at(&pixels, first.x, first.y), &[9, 9, 9, 255]);
         fill_sheet(&atlas, &images, last.sheet, &mut pixels);
@@ -2153,16 +2175,22 @@ mod tests {
     }
 
     #[test]
-    fn an_image_wider_than_the_atlas_is_rejected() {
+    fn an_image_wider_than_the_default_sheet_grows_the_atlas() {
         let images = vec![img(ATLAS_SIZE + 1, 10)];
-        let err = pack(&images).expect_err("шире полотна — ошибка");
-        assert!(err.contains("полотна"), "{err}");
+        let atlas = pack(&images).expect("лист вырастает под картинку");
+        assert_eq!(atlas.side, 2112);
+        let rect = rect(&atlas, 0);
+        let sheet = sheet_pixels(&atlas, &images, rect.sheet);
+        let last = ((rect.y * atlas.side + rect.x + ATLAS_SIZE) * 4) as usize;
+        assert_eq!(&sheet[last..last + 4], &[0, 0, 0, 7]);
     }
 
     #[test]
-    fn an_image_taller_than_the_atlas_is_rejected() {
+    fn an_image_taller_than_the_default_sheet_grows_the_atlas() {
         let images = vec![img(10, ATLAS_SIZE + 1)];
-        assert!(pack(&images).is_err());
+        let atlas = pack(&images).expect("лист вырастает под картинку");
+        assert_eq!(atlas.side, 2112);
+        assert_eq!(rect(&atlas, 0).h, ATLAS_SIZE + 1);
     }
 
     /// «Картинки» → «Атлас», требование 21: 17 картинок 2048×2048 нужны 17+ листов (белая точка
@@ -2269,21 +2297,19 @@ mod tests {
     }
 
     #[test]
-    fn rect_wgsl_atlas_size_matches_the_rust_constant() {
-        let shader = include_str!("../../shaders/rect.wgsl");
-        let marker = "const ATLAS_SIZE: f32 = ";
-        let start = shader.find(marker).expect("шейдер объявляет ATLAS_SIZE") + marker.len();
-        let rest = &shader[start..];
-        let end = rest
-            .find(';')
-            .expect("объявление ATLAS_SIZE оканчивается ;");
-        let declared: f32 = rest[..end].trim().parse().expect("ATLAS_SIZE — число");
-        assert_eq!(declared, ATLAS_SIZE as f32);
+    fn shaders_read_the_current_atlas_size() {
+        for shader in [
+            include_str!("../../shaders/rect.wgsl"),
+            include_str!("../../shaders/scene3d.wgsl"),
+        ] {
+            assert!(shader.contains("textureDimensions(atlas_texture)"));
+            assert!(!shader.contains("const ATLAS_SIZE"));
+        }
     }
 
     /// `smooth` is a WGSL reserved word — naga rejects an instance field with that name, but only
     /// wasm32-side (`include_str!` is opaque to a native build), so this is checked on the source
-    /// text instead, same as `rect_wgsl_atlas_size_matches_the_rust_constant` above.
+    /// text instead, same as the atlas-size shader check above.
     #[test]
     fn rect_wgsl_does_not_declare_a_reserved_smooth_field() {
         let shader = include_str!("../../shaders/rect.wgsl");
@@ -3881,10 +3907,11 @@ mod tests {
     }
 
     #[test]
-    fn a_frame_wider_than_a_sheet_is_refused_by_its_own_size() {
+    fn a_frame_wider_than_the_default_sheet_grows_the_atlas() {
         let images = [painted_strip([2100, 10], 1, &[Some([0, 0, 2060, 5])])];
-        let err = pack(&images).expect_err("кадр 2061 точка не ложится на лист 2048");
-        assert!(err.contains("кадр 0 картинки 2100×10 — 2061×6"), "{err}");
+        let atlas = pack(&images).expect("обрезанный кадр помещается на выросший лист");
+        assert_eq!(atlas.side, 2112);
+        assert_eq!(frames_of(&atlas, 0)[0].rect.w, 2061);
     }
 
     #[test]

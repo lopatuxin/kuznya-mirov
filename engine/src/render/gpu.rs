@@ -21,7 +21,7 @@ pub struct DrawRect {
     pub size: [f32; 2],
     pub color: [f32; 4],
     /// «Картинки» → «Атлас»: the rectangle in the atlas this instance samples, in that sheet's
-    /// own pixels — the shader divides by `ATLAS_SIZE` itself. A plain color fill uses
+    /// own pixels — the shader divides by the current atlas texture size. A plain color fill uses
     /// `atlas::WHITE_PIXEL` here, stretched and multiplied by `color`, so a fill and an image go
     /// out through the very same instance and the very same draw call.
     pub atlas_pos: [f32; 2],
@@ -255,9 +255,9 @@ pub struct Renderer {
 
     /// «Картинки» → «Атлас», требование 14: a `D2` texture with one layer per atlas sheet,
     /// sampled through a `D2Array` view — `build_atlas` recreates it (and both bind groups above,
-    /// which reference its view) whenever the layer count a game needs changes, since a texture's
-    /// own layer count is fixed at creation; it never grows or shrinks in place otherwise.
+    /// which reference its view) whenever the sheet side or layer count changes.
     atlas_texture: wgpu::Texture,
+    atlas_side: u32,
     /// The layer count `atlas_texture` currently has — compared against what the next
     /// `build_atlas` needs before deciding whether to recreate it.
     atlas_layers: u32,
@@ -475,7 +475,7 @@ impl Renderer {
             GpuBackend::WebGpu => 1,
             GpuBackend::WebGl2 => atlas::webgl2_safe_layer_count(1),
         };
-        let atlas_texture = create_atlas_texture(&device, atlas_layers);
+        let atlas_texture = create_atlas_texture(&device, ATLAS_SIZE, atlas_layers);
         let atlas_view = atlas_texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -698,6 +698,7 @@ impl Renderer {
             ui_instance_buffer,
             ui_instance_capacity,
             atlas_texture,
+            atlas_side: ATLAS_SIZE,
             atlas_layers,
             atlas_bind_group_layout,
             linear_sampler,
@@ -821,8 +822,8 @@ impl Renderer {
     /// 29.0.4's GLES backend turns a one-layer `D2` into a plain `TEXTURE_2D` and a square one
     /// with a layer count divisible by 6 into a cube map, either of which breaks this module's
     /// `D2Array` view; WebGPU always gets exactly as many layers as there are sheets. Recreates
-    /// the texture (and both bind groups, which reference its view) only when that layer count
-    /// actually changes from one game to the next. Returns where each picture landed — whole, or
+    /// the texture (and both bind groups, which reference its view) when its side or layer count
+    /// changes from one game to the next. Returns where each picture landed — whole, or
     /// frame by frame — indexed the same way `images` was, i.e. by `ImageId`. The points go through one sheet-sized buffer, filled
     /// and uploaded sheet by sheet (`write_texture` copies it before returning), so no more than
     /// one sheet's bytes ever exist at once, and it is dropped right after the last upload.
@@ -832,14 +833,21 @@ impl Renderer {
     ) -> Result<Vec<atlas::ImagePlace>, String> {
         self.videos.release();
         let packed = atlas::pack(images)?;
+        let max_side = self.device.limits().max_texture_dimension_2d;
+        if packed.side > max_side {
+            return Err(format!(
+                "картинки требуют лист атласа {}×{}, видеокарта поддерживает не больше {max_side}×{max_side}",
+                packed.side, packed.side
+            ));
+        }
         let layers = match self.backend {
             GpuBackend::WebGpu => packed.sheet_count,
             GpuBackend::WebGl2 => atlas::webgl2_safe_layer_count(packed.sheet_count),
         };
-        if layers != self.atlas_layers {
-            self.recreate_atlas_texture(layers);
+        if layers != self.atlas_layers || packed.side != self.atlas_side {
+            self.recreate_atlas_texture(packed.side, layers);
         }
-        let mut pixels = vec![0u8; atlas::SHEET_BYTES];
+        let mut pixels = vec![0u8; packed.sheet_bytes()];
         for sheet in 0..packed.sheet_count {
             atlas::fill_sheet(&packed, images, sheet, &mut pixels);
             self.queue.write_texture(
@@ -856,12 +864,12 @@ impl Renderer {
                 &pixels,
                 wgpu::TexelCopyBufferLayout {
                     offset: 0,
-                    bytes_per_row: Some(ATLAS_SIZE * 4),
-                    rows_per_image: Some(ATLAS_SIZE),
+                    bytes_per_row: Some(packed.side * 4),
+                    rows_per_image: Some(packed.side),
                 },
                 wgpu::Extent3d {
-                    width: ATLAS_SIZE,
-                    height: ATLAS_SIZE,
+                    width: packed.side,
+                    height: packed.side,
                     depth_or_array_layers: 1,
                 },
             );
@@ -891,8 +899,8 @@ impl Renderer {
         self.videos.set_playing(playing);
     }
 
-    fn recreate_atlas_texture(&mut self, layers: u32) {
-        let texture = create_atlas_texture(&self.device, layers);
+    fn recreate_atlas_texture(&mut self, side: u32, layers: u32) {
+        let texture = create_atlas_texture(&self.device, side, layers);
         let view = texture.create_view(&wgpu::TextureViewDescriptor {
             dimension: Some(wgpu::TextureViewDimension::D2Array),
             ..Default::default()
@@ -914,6 +922,7 @@ impl Renderer {
             "ui_globals_bind_group",
         );
         self.atlas_texture = texture;
+        self.atlas_side = side;
         self.atlas_layers = layers;
         self.scene3d = None;
     }
@@ -1530,16 +1539,16 @@ fn make_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer 
     })
 }
 
-/// «Картинки» → «Атлас», требование 14: a `D2` texture of `layers` array layers, `ATLAS_SIZE`²
-/// each — shared by `Renderer::new` (the placeholder texture before any game has loaded) and
+/// «Картинки» → «Атлас», требование 14: a `D2` texture of `layers` square array layers,
+/// each with `side` points — shared by `Renderer::new` (the placeholder texture before any game has loaded) and
 /// `Renderer::recreate_atlas_texture` (a real game's own sheet count). `RENDER_ATTACHMENT` — в слои
 /// атласа пишет проход видео.
-fn create_atlas_texture(device: &wgpu::Device, layers: u32) -> wgpu::Texture {
+fn create_atlas_texture(device: &wgpu::Device, side: u32, layers: u32) -> wgpu::Texture {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("atlas"),
         size: wgpu::Extent3d {
-            width: ATLAS_SIZE,
-            height: ATLAS_SIZE,
+            width: side,
+            height: side,
             depth_or_array_layers: layers.max(1),
         },
         mip_level_count: 1,

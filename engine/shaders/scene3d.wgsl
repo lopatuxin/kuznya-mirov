@@ -47,7 +47,6 @@ struct Covers {
     layers: array<vec4<f32>, 8>,
 };
 
-const ATLAS_SIZE: f32 = 2048.0;
 const PI: f32 = 3.14159265;
 
 // Маска не меньше этого — слой лежит целиком.
@@ -915,7 +914,7 @@ fn vs_ground(vertex: GroundVertex) -> GroundOutput {
 @fragment
 fn fs_ground(in: GroundOutput) -> @location(0) vec4<f32> {
     let clamped = clamp(in.uv_px, in.uv_min, in.uv_max);
-    let uv = clamped / ATLAS_SIZE;
+    let uv = clamped / vec2<f32>(textureDimensions(atlas_texture));
     let nearest = textureLoad(atlas_texture, vec2<i32>(floor(clamped)), in.atlas_layer, 0);
     let linear = textureSample(atlas_texture, atlas_sampler_linear, uv, in.atlas_layer);
     let sampled = select(nearest, linear, in.smooth_sample > 0.5);

@@ -20,7 +20,7 @@
     ] },
     { "name": "hero_select", "world_runs": false, "keys": { "Escape": ["show_screen", "menu"] }, "elements": [
       {"kind":"panel","anchor":"center","offset":[0,0],"size":[6000,4000],"color":"#20131c"},
-      {"kind":"panel","anchor":"center","offset":[0,0],"size":[1920,1080],"image":"hero_select_hall_vasilisa"},
+      {"kind":"panel","anchor":"center","offset":[0,0],"size":[2560,1080],"image":"hero_select_hall_vasilisa"},
       {"kind":"panel","anchor":"center","offset":[-615,454],"size":[380,5],"color":"#f7d284","show_on_hover":"ilya"},
       {"kind":"panel","anchor":"center","offset":[615,454],"size":[380,5],"color":"#f7d284","show_on_hover":"alyosha"},
       {"kind":"panel","anchor":"center","offset":[0,476],"size":[600,5],"color":"#fff0bc","show_on_hover":"vasilisa"},
@@ -36,7 +36,7 @@
     ] },
     { "name": "hero_select_ilya", "world_runs": false, "keys": { "Escape": ["show_screen", "menu"] }, "elements": [
       {"kind":"panel","anchor":"center","offset":[0,0],"size":[6000,4000],"color":"#20131c"},
-      {"kind":"panel","anchor":"center","offset":[0,0],"size":[1920,1080],"image":"hero_select_hall_ilya"},
+      {"kind":"panel","anchor":"center","offset":[0,0],"size":[2560,1080],"image":"hero_select_hall_ilya"},
       {"kind":"panel","anchor":"center","offset":[-615,454],"size":[380,5],"color":"#f7d284","show_on_hover":"vasilisa"},
       {"kind":"panel","anchor":"center","offset":[615,454],"size":[380,5],"color":"#f7d284","show_on_hover":"alyosha"},
       {"kind":"panel","anchor":"center","offset":[0,476],"size":[600,5],"color":"#fff0bc","show_on_hover":"ilya"},
@@ -52,7 +52,7 @@
     ] },
     { "name": "hero_select_alyosha", "world_runs": false, "keys": { "Escape": ["show_screen", "menu"] }, "elements": [
       {"kind":"panel","anchor":"center","offset":[0,0],"size":[6000,4000],"color":"#20131c"},
-      {"kind":"panel","anchor":"center","offset":[0,0],"size":[1920,1080],"image":"hero_select_hall_alyosha"},
+      {"kind":"panel","anchor":"center","offset":[0,0],"size":[2560,1080],"image":"hero_select_hall_alyosha"},
       {"kind":"panel","anchor":"center","offset":[-615,454],"size":[380,5],"color":"#f7d284","show_on_hover":"ilya"},
       {"kind":"panel","anchor":"center","offset":[615,454],"size":[380,5],"color":"#f7d284","show_on_hover":"vasilisa"},
       {"kind":"panel","anchor":"center","offset":[0,476],"size":[600,5],"color":"#fff0bc","show_on_hover":"alyosha"},
