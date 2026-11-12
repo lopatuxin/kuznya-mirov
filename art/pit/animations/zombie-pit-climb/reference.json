@@ -40,5 +40,18 @@
     ],
     "game": "games/pit: зомби рождается в норе посреди дна (земля с норой глубиной 6,2 клетки — art/pit/ground/build_ground_hole.mjs, стоит на −6,2), после движения идёт к склону; новый — раз в 10 с.",
     "endHipsForward": 0.7
+  },
+  "northFit": {
+    "motion": "подъём_зомби_из_ямы_к_забору",
+    "clip": "Основа_вылезания_к_забору",
+    "build": "hole/build.mjs --north",
+    "reference": "emergenceSource, боковой подъём в игре и hole/source/zombie-07-climb-sheet.png",
+    "fit": "Дополнительные перехваты и опоры на дальней стенке под ракурс камеры. После хвата за край темп совпадает с боковым подъёмом.",
+    "bothHandsOnRimSeconds": 5,
+    "hipsOverRimSeconds": 6.7,
+    "durationSeconds": 10.6,
+    "maxHeadAndHipsTravelPerStepSceneUnits": 0.0265,
+    "stationaryRimGripFramesChecked": 70,
+    "maxMeshPenetrationInSceneUnits": 0.07
   }
 }
