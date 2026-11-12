@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { EditorIcon } from "./EditorIcon";
 import { EditorLogoMark } from "./EditorLogoMark";
 import type { SaveState } from "./editSession";
-import type { ProjectSource } from "./projectSource";
+import { listedProjectBaseUrl, type ProjectSource } from "./projectSource";
 import { ToolMenu, ToolMenuItem } from "./ToolMenu";
 import type { BattleSessionState } from "./useBattleSession";
 
@@ -266,7 +266,7 @@ function BattleNotices({ battle }: { battle: BattleSessionState }): React.JSX.El
  * «Отменить» неактивна без истории (требования 2, 4, 21); во время партии и повтора полоса подсвечена (требование 5).
  */
 export function ProjectTopBar({ projectName, source, headerNotice, loadedAt, saveState, canUndo, onUndo, onBackToProjects, battle, onToolbarSlotChange, stand }: ProjectTopBarProps): React.JSX.Element {
-  const sourceTitle = source.kind === "listed" ? `Проект из списка: games/${source.name}` : `Папка с диска: ${source.displayName}`;
+  const sourceTitle = source.kind === "listed" ? `Адрес проекта ${listedProjectBaseUrl(source)}` : `Папка с диска: ${source.displayName}`;
   return (
     <header className={`project-topbar${battle.mode !== "edit" ? ` project-topbar--${battle.mode}` : ""}`}>
       <div className="project-topbar__project">

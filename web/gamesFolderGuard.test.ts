@@ -66,6 +66,41 @@ describe("resolveGameFilePath", () => {
   });
 });
 
+describe("recording scenes", () => {
+  let dir: string | null = null;
+
+  afterEach(() => {
+    if (dir !== null) rmSync(dir, { recursive: true, force: true });
+    dir = null;
+  });
+
+  it("сохраняет адрес сцены и пишет запись партии в её папку", () => {
+    dir = mkdtempSync(join(tmpdir(), "kuznya-recording-scenes-"));
+    const scene = join(dir, "recording-scenes", "video-camp");
+    mkdirSync(scene, { recursive: true });
+    const gameFile = join(scene, "game.json");
+    writeFileSync(gameFile, "{}");
+
+    expect(resolveGameFilePath("/video-camp/game.json", dir)).toBe(gameFile);
+    expect(resolvePutTarget("/video-camp/replays/party.json", dir)).toEqual({
+      status: "ok",
+      filePath: join(scene, "replays", "party.json"),
+      createDirectory: true,
+    });
+    expect(resolvePutTarget("/recording-scenes/replays/party.json", dir)).toEqual({ status: "forbidden" });
+  });
+
+  it("находит временную сцену прямо в games", () => {
+    dir = mkdtempSync(join(tmpdir(), "kuznya-recording-scenes-"));
+    const scene = join(dir, "video-temp");
+    mkdirSync(scene);
+    const gameFile = join(scene, "game.json");
+    writeFileSync(gameFile, "{}");
+
+    expect(resolveGameFilePath("/video-temp/game.json", dir)).toBe(gameFile);
+  });
+});
+
 describe("buildGamesFileResponse", () => {
   let dir: string | null = null;
 

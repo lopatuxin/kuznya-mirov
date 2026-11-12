@@ -14,7 +14,7 @@ import bpy
 
 ROOT = r"C:\projects\kuznya-mirov"
 OUT = os.path.join(ROOT, "games", "pit", "models")
-PICTURE = os.path.join(ROOT, "art", "pit", "pit-01-ground.png")
+PICTURE = os.path.join(ROOT, "art", "pit", "ground", "pit-01-ground.png")
 
 DEPTH = 28.0
 WIDTH = DEPTH * math.sin(math.radians(45)) * 2117 / 941
