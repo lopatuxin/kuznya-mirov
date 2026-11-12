@@ -199,7 +199,7 @@ fn hero_exits_stay_in_their_arches_and_back_returns_to_menu() {
     click_place(&mut ui, "new_game");
     assert_eq!(active_screen(&ui), "hero_select");
 
-    for hero in ["ilya", "vasilisa"] {
+    for hero in ["ilya", "vasilisa", "alyosha"] {
         let hall = &ui.config.screens[ui.state.active()];
         let exit_target = hall
             .elements
@@ -209,10 +209,10 @@ fn hero_exits_stay_in_their_arches_and_back_returns_to_menu() {
         let exit_panel = |element: &Element| element.play_on_hover() == Some(exit_target);
         let idle_position = middle_of(&ui, exit_panel);
         let center = VIEWPORT[0] / 2.0;
-        if hero == "ilya" {
-            assert!(idle_position[0] < center);
-        } else {
-            assert!((idle_position[0] - center).abs() < 1.0);
+        match hero {
+            "ilya" => assert!(idle_position[0] < center),
+            "alyosha" => assert!(idle_position[0] > center),
+            _ => assert!((idle_position[0] - center).abs() < 1.0),
         }
         let panel = hall.elements.iter().find(|element| exit_panel(element));
         let Some(Element::Panel {
