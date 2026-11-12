@@ -11,6 +11,7 @@ use anyhow::{Context, Result, bail};
 use crate::game::{self, Log, Refused};
 
 const POLL: Duration = Duration::from_secs(2);
+const RECORDING_SCENES_DIR: &str = "recording-scenes";
 
 type State = (u64, Option<SystemTime>);
 type Snapshot = BTreeMap<PathBuf, State>;
@@ -113,6 +114,17 @@ fn sync(game: &Path, log: Log, refusals: &mut Refusals, stale: &mut Stale) -> Re
 }
 
 fn games(root: &Path) -> Result<Vec<PathBuf>> {
+    let mut games = game_directories(root)?;
+    let recording_scenes = root.join(RECORDING_SCENES_DIR);
+    if games.contains(&recording_scenes) {
+        games.retain(|game| game != &recording_scenes);
+        games.extend(game_directories(&recording_scenes)?);
+    }
+    games.sort();
+    Ok(games)
+}
+
+fn game_directories(root: &Path) -> Result<Vec<PathBuf>> {
     let entries =
         fs::read_dir(root).with_context(|| format!("папка игр не читается: {}", root.display()))?;
     let mut games = Vec::new();
@@ -122,7 +134,6 @@ fn games(root: &Path) -> Result<Vec<PathBuf>> {
             games.push(entry.path());
         }
     }
-    games.sort();
     Ok(games)
 }
 
@@ -166,8 +177,13 @@ fn changed_games(root: &Path, before: &Snapshot, after: &Snapshot) -> BTreeSet<P
                 .map(|(path, _)| path),
         )
         .filter_map(|path| {
-            let first = path.strip_prefix(root).ok()?.components().next()?;
-            Some(root.join(first))
+            let mut components = path.strip_prefix(root).ok()?.components();
+            let first = components.next()?;
+            let project = root.join(first);
+            if first.as_os_str() == RECORDING_SCENES_DIR {
+                return Some(project.join(components.next()?));
+            }
+            Some(project)
         })
         .collect()
 }
@@ -216,6 +232,23 @@ mod tests {
     fn nothing_changed_names_no_game() {
         let same = snapshot_of(&[("games/a/x.glb", 1)]);
         assert!(changed_games(Path::new("games"), &same, &same).is_empty());
+    }
+
+    #[test]
+    fn a_recording_scene_has_its_own_imported_files() {
+        let dir = TempDir::new();
+        let root = dir.path();
+        let scene = root.join("recording-scenes/video-camp");
+        let models = scene.join("models");
+        fs::create_dir_all(&models).unwrap();
+        fs::write(models.join("x.glb"), png_model()).unwrap();
+
+        let mut watch = Watch::default();
+        let lines = watch.poll(root);
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert!(lines[0].starts_with("сжато: video-camp/models/x.glb"));
+        assert!(game::index_path(&scene).is_file());
+        assert!(watch.poll(root).is_empty());
     }
 
     #[test]

@@ -17,11 +17,11 @@ const ENGINE_SOURCE_PATHS = [
   "shaders",
   "Cargo.toml",
   "Cargo.lock",
-  "../luars/src",
-  "../luars/Cargo.toml",
-  "../luars/Cargo.lock",
-  "../cosmic-text/src",
-  "../cosmic-text/Cargo.toml",
+  "vendor/luars/src",
+  "vendor/luars/Cargo.toml",
+  "vendor/luars/Cargo.lock",
+  "vendor/cosmic-text/src",
+  "vendor/cosmic-text/Cargo.toml",
 ].map((entry) => resolve(engineDir, entry));
 
 /**

@@ -2411,7 +2411,7 @@ mod tests {
     /// объекта начинал молча отдавать `nil` вместо только что записанного числа (тот же цикл
     /// внутри ОДНОГО вызова `run`, сколько угодно раз подряд, не ломался никогда — расходится
     /// именно число отдельных вызовов `execute_sandboxed`, то есть число атомных фаз GC).
-    /// Исправлено в `luars/src/lua_vm/execute/call.rs`: top не опускается ниже
+    /// Исправлено в `engine/vendor/luars/src/lua_vm/execute/call.rs`: top не опускается ниже
     /// `func_idx + nresults`, пока не пройдёт `check_gc_safe_point`. Тест держит регресс закрытым.
     #[test]
     fn object_property_survives_many_separate_run_calls() {

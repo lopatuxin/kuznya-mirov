@@ -10,7 +10,8 @@ Dockerfile
 engine/target
 engine/pkg
 
-luars/target
+engine/vendor/luars/target
+engine/vendor/cosmic-text/target
 importer/target
 
 web/node_modules

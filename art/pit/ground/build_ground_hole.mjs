@@ -3,11 +3,11 @@
 // стенки берёт цвет той точки картины, в которую её видит камера игры: ортографическая камера с наклоном 45°
 // показывает точку на глубине d там же, где точку земли на d ближе к игроку.
 // Движок ставит самую низкую точку модели на землю, поэтому плита стоит в сцене на высоте −DEPTH.
-// node art/pit/build_ground_hole.mjs [исходная плита] [куда записать]
+// node art/pit/ground/build_ground_hole.mjs [исходная плита] [куда записать]
 import fs from 'fs';
 
 const here = (p) => new URL(p, import.meta.url).pathname.replace(/^\/(\w:)/, '$1');
-const SOURCE = process.argv[2] ?? here('../../games/pit/models/ground.glb');
+const SOURCE = process.argv[2] ?? here('../../../games/pit/models/ground.glb');
 const TARGET = process.argv[3] ?? SOURCE;
 const PICTURE_W = 2117, PICTURE_H = 941;
 const WIDTH = 44.5424690246582, LENGTH = 28;

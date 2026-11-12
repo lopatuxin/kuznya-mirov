@@ -52,7 +52,7 @@ try {
         $checkouts += @(Get-ChildItem -LiteralPath $worktrees -Directory -Force | ForEach-Object { $_.FullName })
     }
     $profiles = @(foreach ($checkout in $checkouts) {
-        foreach ($crate in @('engine', 'importer', 'luars', 'cosmic-text')) {
+        foreach ($crate in @('engine', 'importer', 'engine/vendor/luars', 'engine/vendor/cosmic-text', 'luars', 'cosmic-text')) {
             $crateRoot = Join-Path $checkout $crate
             $target = Join-Path $crateRoot 'target'
             if (-not (Test-Path -LiteralPath $target) -or -not (Test-Path -LiteralPath (Join-Path $crateRoot 'Cargo.toml'))) { continue }

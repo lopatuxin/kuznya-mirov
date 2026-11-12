@@ -12,11 +12,11 @@
 - Кусты и передний план — видео игры из роликов нейросети `<имя>_clip.mp4`: ролик по картинке `<имя>.png`, его первый кадр совпадает с картинкой. Петлю программа находит сама. Трава `fg_grass`, метёлки `fg_panicles` и папоротник `fg_fern` — без увеличения, кусты — в масштабе прежних картинок (×0,48 и ×0,5). Видео выше картинки на размах движения, поэтому `position` кустов и папоротника сдвинута так, что низ и середина куста стоят там же, где стояли у картинки; у трав `position.y` прежний — верх кадра там же. `sway` у видео нет: движение в самом видео.
 
   ```
-  node tools/art/sheet.mjs art/village/fg_grass_clip.mp4 games/village/images/fg_grass.mp4 --key magenta --fade-ends 48
-  node tools/art/sheet.mjs art/village/fg_panicles_clip.mp4 games/village/images/fg_panicles.mp4 --key magenta --fade-ends 48
-  node tools/art/sheet.mjs art/village/fg_fern_clip.mp4 games/village/images/fg_fern.mp4 --key magenta
-  node tools/art/sheet.mjs art/village/bush_hazel_clip.mp4 games/village/images/bush_hazel.mp4 --key magenta --height 298
-  node tools/art/sheet.mjs art/village/bush_flowers_clip.mp4 games/village/images/bush_flowers.mp4 --key magenta --height 176
+  node tools/art/sheet.mjs art/village/vegetation/fg_grass_clip.mp4 games/village/images/fg_grass.mp4 --key magenta --fade-ends 48
+  node tools/art/sheet.mjs art/village/vegetation/fg_panicles_clip.mp4 games/village/images/fg_panicles.mp4 --key magenta --fade-ends 48
+  node tools/art/sheet.mjs art/village/vegetation/fg_fern_clip.mp4 games/village/images/fg_fern.mp4 --key magenta
+  node tools/art/sheet.mjs art/village/vegetation/bush_hazel_clip.mp4 games/village/images/bush_hazel.mp4 --key magenta --height 298
+  node tools/art/sheet.mjs art/village/vegetation/bush_flowers_clip.mp4 games/village/images/bush_flowers.mp4 --key magenta --height 176
   ```
 
   Петли: трава — кадры 66–106, метёлки — 9–117, папоротник — 8–120, орешник — 4–112, куст с цветами — 32–95.

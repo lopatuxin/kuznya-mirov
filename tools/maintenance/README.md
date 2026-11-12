@@ -9,8 +9,9 @@
 `KuznyaMirov-RustCacheCleanup` для текущего пользователя: при входе и каждый час.
 Работает без Claude и Codex, когда пользователь вошёл в Windows.
 
-`clean-rust-cache.ps1 -Apply` обслуживает только `target` у engine, importer,
-luars и cosmic-text в основной папке проекта и в `.claude/worktrees/*`.
+`clean-rust-cache.ps1 -Apply` обслуживает `target` у `engine/`, `importer/` и библиотек
+в `engine/vendor/` в основной папке проекта и в `.claude/worktrees/*`.
+Старые рабочие копии с `luars/` и `cosmic-text/` в корне тоже обслуживаются.
 Нестандартные `CARGO_TARGET_DIR` за пределами этих папок не обслуживаются;
 временные сборки нужно удалять после завершения их задачи.
 

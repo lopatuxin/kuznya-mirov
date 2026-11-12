@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { cpSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { rename, writeFile } from "node:fs/promises";
-import { dirname, extname, join, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import type { IncomingMessage } from "node:http";
 import react from "@vitejs/plugin-react";
@@ -9,6 +9,7 @@ import { defineConfig, type Plugin } from "vite";
 
 const rootDir = fileURLToPath(new URL(".", import.meta.url));
 const gamesDir = resolve(rootDir, "../games");
+const recordingScenesFolder = "recording-scenes";
 
 const CONTENT_TYPES: Record<string, string> = {
   ".json": "application/json; charset=utf-8",
@@ -29,7 +30,7 @@ export function isPathWithinDirectory(candidatePath: string, directoryPath: stri
  * Оба случая — невалидный запрос, а не сбой сервера, поэтому здесь они гасятся в `null`, а
  * вызывающий код сам отвечает на него 404 (см. комментарий у `configureServer` ниже).
  */
-export function resolveGameFilePath(requestUrl: string, directoryPath: string): string | null {
+function locateGameFile(requestUrl: string, directoryPath: string): { filePath: string; projectParent: string } | null {
   let requestPath: string;
   try {
     requestPath = decodeURIComponent(requestUrl.split("?")[0] ?? "");
@@ -38,12 +39,27 @@ export function resolveGameFilePath(requestUrl: string, directoryPath: string): 
   }
 
   const filePath = resolve(join(directoryPath, requestPath));
-  if (!isPathWithinDirectory(filePath, directoryPath)) {
-    return null;
+  if (requestPath.includes("\0") || !isPathWithinDirectory(filePath, directoryPath)) return null;
+
+  const relativePath = filePath.slice(directoryPath.length + 1);
+  const [project, recordingScene] = relativePath.split(sep);
+  const recordingScenesDir = join(directoryPath, recordingScenesFolder);
+  if (project === recordingScenesFolder) {
+    if (!recordingScene?.startsWith("video-")) return null;
+    return { filePath, projectParent: recordingScenesDir };
   }
+  if (project?.startsWith("video-") && existsSync(join(recordingScenesDir, project))) {
+    return { filePath: join(recordingScenesDir, relativePath), projectParent: recordingScenesDir };
+  }
+  return { filePath, projectParent: directoryPath };
+}
+
+export function resolveGameFilePath(requestUrl: string, directoryPath: string): string | null {
+  const target = locateGameFile(requestUrl, directoryPath);
+  if (target === null) return null;
 
   try {
-    return statSync(filePath).isFile() ? filePath : null;
+    return statSync(target.filePath).isFile() ? target.filePath : null;
   } catch {
     return null;
   }
@@ -98,21 +114,12 @@ export type PutTargetResult =
  * `terrain/<материал>.png`, а папки `terrain/` у проекта может ещё не быть; проекта нет — 403.
  */
 export function resolvePutTarget(requestUrl: string, directoryPath: string): PutTargetResult {
-  let requestPath: string;
-  try {
-    requestPath = decodeURIComponent(requestUrl.split("?")[0] ?? "");
-  } catch {
+  const target = locateGameFile(requestUrl, directoryPath);
+  if (target === null || target.filePath === target.projectParent) {
     return { status: "forbidden" };
   }
-  // Нулевой байт роняет запись файла так же, как statSync у чтения — тут его некому поймать заранее.
-  if (requestPath.includes("\0")) return { status: "forbidden" };
-
-  const filePath = resolve(join(directoryPath, requestPath));
-  if (!isPathWithinDirectory(filePath, directoryPath) || filePath === directoryPath) {
-    return { status: "forbidden" };
-  }
-
-  const relativeSegments = filePath.slice(directoryPath.length + 1).split(sep);
+  const { filePath, projectParent } = target;
+  const relativeSegments = filePath.slice(projectParent.length + 1).split(sep);
   const isProjectFile = relativeSegments.length >= 2 && relativeSegments.every((segment) => segment !== "");
   const extension = extname(filePath);
   if (!isProjectFile || (extension !== ".json" && extension !== ".png")) {
@@ -121,7 +128,7 @@ export function resolvePutTarget(requestUrl: string, directoryPath: string): Put
 
   const isReplayFile = relativeSegments.length === 3 && relativeSegments[1] === "replays";
   const canCreateDirectory = isReplayFile || extension === ".png";
-  if (canCreateDirectory && !existsSync(join(directoryPath, relativeSegments[0] as string))) {
+  if (canCreateDirectory && !existsSync(join(projectParent, relativeSegments[0] as string))) {
     return { status: "forbidden" };
   }
   return { status: "ok", filePath, createDirectory: canCreateDirectory };
@@ -241,8 +248,21 @@ function serveGamesFolder(): Plugin {
       if (!existsSync(gamesDir)) {
         throw new Error(`Папка с играми не найдена: ${gamesDir}. Сборка остановлена.`);
       }
-      mkdirSync(outDir, { recursive: true });
-      cpSync(gamesDir, join(outDir, "games"), { recursive: true });
+      const recordingScenesDir = join(gamesDir, recordingScenesFolder);
+      const recordingScenes = new Set(existsSync(recordingScenesDir)
+        ? readdirSync(recordingScenesDir, { withFileTypes: true })
+          .filter((entry) => entry.isDirectory() && entry.name.startsWith("video-"))
+          .map((entry) => entry.name)
+        : []);
+      const outputGamesDir = join(outDir, "games");
+      cpSync(gamesDir, outputGamesDir, {
+        recursive: true,
+        filter: (source) => source !== recordingScenesDir
+          && (dirname(source) !== gamesDir || !recordingScenes.has(basename(source))),
+      });
+      for (const scene of recordingScenes) {
+        cpSync(join(recordingScenesDir, scene), join(outputGamesDir, scene), { recursive: true });
+      }
     },
   };
 }

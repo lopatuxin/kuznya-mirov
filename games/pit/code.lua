@@ -3,7 +3,7 @@ local PX, PY = 44.543 / 2117, 28 / 941
 local LEFT = 0.2285
 local SPAWN_EVERY = 10
 local FLOOR_Y = 385.3
--- Нора посреди дна: середина на картине и радиус в клетках — как у земли с норой (art/pit/build_ground_hole.mjs).
+-- Нора посреди дна: середина на картине и радиус в клетках — как у земли с норой (art/pit/ground/build_ground_hole.mjs).
 local HOLE_X, HOLE_Y, HOLE_RADIUS = 1068, 490, 1.45
 local EMERGE_RIM, EMERGE_TRAVEL, EMERGE_TIME, EMERGE_SETTLE = 0.24, 0.7, 8.5, 1
 local SLOPE_START_X, SLOPE_END_X = 1447, 1615
