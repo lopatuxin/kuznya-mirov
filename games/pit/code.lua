@@ -9,9 +9,10 @@ local EMERGE_RIM, EMERGE_TRAVEL, EMERGE_TIME, EMERGE_SETTLE = 0.24, 0.7, 8.5, 1
 local SLOPE_START_X, SLOPE_END_X = 1447, 1615
 local TOP_Y = 274.4
 local WALK_SPEED = 144.5 * PX / (3 * 2.71)
+local ZOMBIE_SIZE = 0.31
 local ORIGIN_X, ORIGIN_Y = 102.5 * 0.54, 217.06 * 0.54
 local CLIMB_TIME, FADE_TIME = 6.98 / 0.8, 12 / 60
-local RAMP_RUN, RAMP_RISE, ROOT_TRAVEL = 0.8735, 0.8137, 1.3835
+local RAMP_RUN, RAMP_RISE, ROOT_TRAVEL = 1.683368, 1.568124, 2.193368
 local RUN = (SLOPE_END_X - SLOPE_START_X) * PX
 local RISE = (FLOOR_Y - TOP_Y) * PY
 local A, B = RAMP_RUN * RAMP_RUN - RAMP_RISE * RAMP_RISE, 2 * RAMP_RISE * RISE
@@ -29,7 +30,7 @@ local BASE_Y = (FLOOR_Y + ORIGIN_Y) * PY - 0.26 * HEIGHT * COS
 local EXIT_X, EXIT_Y, EXIT_Z = ROOT_TRAVEL * HEIGHT * SIN, ROOT_TRAVEL * HEIGHT * COS, RAMP_RISE * HEIGHT
 
 local function place(zombie, x, y, z)
-  zombie.position = { x = x - 0.3, y = y - 0.3, z = z }
+  zombie.position = { x = x - ZOMBIE_SIZE / 2, y = y - ZOMBIE_SIZE / 2, z = z }
 end
 
 local function leave_slope(zombie, age)
@@ -43,8 +44,8 @@ function spawn_zombies(spawner)
   create({
     zombie = true,
     model = "zombie",
-    position = { HOLE - 0.3, HOLE_ROW - 0.3, 0 },
-    size = { 0.6, 0.6 },
+    position = { HOLE - ZOMBIE_SIZE / 2, HOLE_ROW - ZOMBIE_SIZE / 2, 0 },
+    size = { ZOMBIE_SIZE, ZOMBIE_SIZE },
     height = HEIGHT,
     rotation = ROTATION,
     animation = "подъём_зомби_из_ямы",
