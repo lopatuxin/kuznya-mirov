@@ -7,23 +7,27 @@
 // Нора та же, что в игре (art/pit/ground/build_ground_hole.mjs): круг радиусом 1,45 клетки при росте зомби HEIGHT;
 // локти и колени в каждом кадре отводятся туда, где рука или нога не входит в землю и в стенку норы.
 // Оси модели: X — влево, Y — вверх, Z — вперёд; земля — Y = 0, кромка норы впереди — Z = RIM.
-// node build.mjs [glb] [motions.json]   — заменяет клип в модели, печатает замеры опор и провалов.
+// node build.mjs [glb] [motions.json] [--north] — заменяет выбранный клип, печатает замеры опор и провалов.
 import fs from 'fs';
 import { loadRig, qmul, qinv, axq, add, sub, mul, dot, norm, unit, fromTo, slerp, smooth, eulerQuat, qrot, cross, toEuler } from '../steep-slope/rig.mjs';
 
 const here = (p) => new URL(p, import.meta.url).pathname.replace(/^\/(\w:)/, '$1');
-const FILE = process.argv[2] || here('../../../../../games/pit/models/zombie.glb');
-const MOTIONS = process.argv[3] || here('../../../../../games/pit/motions.json');
+const args = process.argv.slice(2);
+const north = args.at(-1) === '--north';
+if (north) args.pop();
+const FILE = args[0] || here('../../../../../games/pit/models/zombie.glb');
+const MOTIONS = args[1] || here('../../../../../games/pit/motions.json');
 const BASE_CLIP = 'Основа_шага';
 const BASE_MOTION = 'ходьба_зомби_кино';
-const TARGET = 'Основа_вылезания_из_ямы';
+const TARGET = north ? 'Основа_вылезания_к_забору' : 'Основа_вылезания_из_ямы';
 const FPS = 60;
 const RIM = 0.24;
 const LENGTH = 8.5;
+const NORTH_RIM_DELAY = 2.1;
 const BLEND_FROM = 8.2; // с этого места поза сходится к первой позе ходьбы
 const END_Z = 0.7; // где встаёт таз
 // Нора в осях модели: рост зомби в игре HEIGHT клеток, радиус норы 1,45 клетки, глубина 6,2 клетки.
-const HEIGHT = 4.0467;
+const HEIGHT = north ? 2.1 : 4.0467;
 const HOLE_R = 1.45 / HEIGHT, HOLE_DEPTH = 6.2 / HEIGHT, CZ = RIM - HOLE_R;
 
 // Ключи: [время, значение]; между ключами — монотонная кубическая кривая по каждой оси:
@@ -60,13 +64,58 @@ function track(keys) {
 const G = 0.045; // сустав кисти над землёй, когда ладонь лежит: пальцы не уходят в землю
 const EDGE = 0.22; // кисть, закинутая на кромку: запястье сразу за краем норы
 
+// На дальнем краю камера смотрит вдоль стенки. Отдельные опоры дают начать ниже и
+// подняться до кромки перехватами, пока ноги отталкиваются от стенки.
+function wallSteps(x, onWall, offWall, holds) {
+  const keys = [];
+  for (const [index, [plant, release, y]] of holds.entries()) {
+    if (index > 0) {
+      const [, previousRelease, previousY] = holds[index - 1];
+      keys.push([(previousRelease + plant) / 2, [x, (previousY + y) / 2, offWall]]);
+    }
+    const contact = [x, y, onWall];
+    keys.push([plant, contact], [release, contact]);
+  }
+  return keys;
+}
+
+const northHips = [
+  [0, [0, -2.22, 0.012]], [0.16, [-0.012, -2.14, 0.016]], [0.48, [0.012, -1.88, 0.023]],
+  [0.9, [-0.012, -1.54, 0.026]], [1.25, [0.01, -1.27, 0.028]], [1.59, [-0.01, -1, 0.035]],
+  [1.9, [0.01, -0.74, 0.037]], [2.1, [0, -0.57, 0.04]], [2.3, [0, -0.47, 0.04]],
+];
+const northHands = {
+  Left: wallSteps(0.16, 0.18, 0.13, [
+    [0, 0.10, -2.12], [0.28, 0.50, -1.68], [0.68, 0.91, -1.5],
+    [1.08, 1.30, -1.03], [1.47, 1.69, -0.73], [1.86, 2.05, -0.4],
+  ]),
+  Right: wallSteps(-0.16, 0.18, 0.13, [
+    [0, 0.29, -2.03], [0.47, 0.71, -1.58], [0.88, 1.10, -1.29],
+    [1.27, 1.49, -0.88], [1.66, 1.89, -0.58], [2.08, 2.18, -0.22],
+  ]),
+};
+const northFeet = {
+  Left: wallSteps(0.08, 0.1, 0.065, [
+    [0, 0.12, -2.54], [0.29, 0.54, -2.25], [0.70, 0.89, -1.94],
+    [1.07, 1.31, -1.62], [1.48, 1.71, -1.31], [1.87, 2.12, -0.98],
+  ]),
+  Right: wallSteps(-0.08, 0.1, 0.065, [
+    [0, 0.32, -2.44], [0.49, 0.73, -2.09], [0.90, 1.14, -1.77],
+    [1.30, 1.53, -1.45], [1.69, 1.92, -1.13], [2.07, 2.4, -0.82],
+  ]),
+};
+
 const hips = track([
-  [0, [0, -0.98, 0]], [0.7, [0, -0.8, 0.01]], [1.4, [0, -0.6, 0.02]], [2.6, [0, -0.42, 0.04]], [2.9, [0, -0.38, 0.03]],
+  ...(north ? northHips : [[0, [0, -0.98, 0]], [0.7, [0, -0.8, 0.01]], [1.4, [0, -0.6, 0.02]]]),
+  [2.6, [0, -0.42, 0.04]], [2.9, [0, -0.38, 0.03]],
   [3.9, [0, -0.11, 0.06]], [4.5, [0, 0.07, 0.16]], [5.1, [0, 0.1, 0.28]], [5.7, [0, 0.11, 0.4]], [6.3, [0, 0.13, 0.52]],
   [6.9, [0, 0.24, 0.56]], [7.5, [0, 0.38, 0.66]], [8.5, [0, 0.493, END_Z]],
 ]);
 // Наклон корпуса вперёд, сгорбленность спины и подъём головы, градусы.
-const lean = track([[0, -3], [1.4, -4], [2.0, -8], [2.6, -2], [2.9, 5], [3.9, 30], [4.5, 55], [5.1, 75], [6.3, 82], [6.9, 72], [7.5, 40], [8.5, 0]]);
+const lean = track([
+  ...(north ? [[0, 7], [1.4, 7], [2.0, 3]] : [[0, -3], [1.4, -4], [2.0, -8]]),
+  [2.6, -2], [2.9, 5], [3.9, 30], [4.5, 55], [5.1, 75], [6.3, 82], [6.9, 72], [7.5, 40], [8.5, 0],
+]);
 const hunch = track([[0, 0], [2.9, 5], [3.9, 12], [6.9, 12], [7.5, 8], [8.5, 0]]);
 const headUp = track([[0, 15], [1.4, 25], [2.6, 20], [2.9, 10], [3.9, 25], [4.5, 45], [5.1, 60], [6.3, 60], [6.9, 50], [7.5, 25], [8.5, 0]]);
 // Лёгкое покачивание корпуса за опорной рукой: зомби переваливается.
@@ -76,13 +125,17 @@ const roll = track([[0, 0], [0.35, 4], [0.75, -4], [1.15, 3], [2.7, 6], [3.0, -4
 // упор на четвереньках.
 const hands = {
   Left: track([
-    [0, [0.16, -0.82, 0.15]], [0.4, [0.16, -0.82, 0.15]], [0.7, [0.17, -0.6, 0.15]], [1.3, [0.17, -0.6, 0.15]], [1.9, [0.21, -0.4, 0.12]],
+    ...(north ? [...northHands.Left, [2.22, [0.16, -0.24, 0.123]]] : [
+      [0, [0.16, -0.82, 0.15]], [0.4, [0.16, -0.82, 0.15]], [0.7, [0.17, -0.6, 0.15]], [1.3, [0.17, -0.6, 0.15]], [1.9, [0.21, -0.4, 0.12]],
+    ]),
     [2.4, [0.16, 0.07, 0.2]], [2.7, [0.15, G, EDGE]], [4.15, [0.15, G, EDGE]], [4.3, [0.24, 0.07, 0.35]], [4.45, [0.17, G, 0.47]],
     [5.2, [0.17, G, 0.47]], [5.35, [0.23, 0.07, 0.56]], [5.5, [0.17, G, 0.65]], [6.3, [0.17, G, 0.65]], [6.45, [0.22, 0.07, 0.74]],
     [6.6, [0.17, G, 0.82]], [7.3, [0.17, G, 0.82]], [7.9, [0.117, 0.457, 0.679]],
   ]),
   Right: track([
-    [0, [-0.16, -0.7, 0.15]], [0.2, [-0.16, -0.7, 0.15]], [0.55, [-0.17, -0.5, 0.15]], [1.1, [-0.17, -0.5, 0.15]], [2.1, [-0.21, -0.32, 0.12]],
+    ...(north ? [...northHands.Right, [2.37, [-0.16, -0.14, 0.126]]] : [
+      [0, [-0.16, -0.7, 0.15]], [0.2, [-0.16, -0.7, 0.15]], [0.55, [-0.17, -0.5, 0.15]], [1.1, [-0.17, -0.5, 0.15]], [2.1, [-0.21, -0.32, 0.12]],
+    ]),
     [2.6, [-0.16, 0.08, 0.2]], [2.9, [-0.15, G, EDGE]], [4.4, [-0.15, G, EDGE]], [4.55, [-0.24, 0.07, 0.38]], [4.7, [-0.18, G, 0.5]],
     [5.75, [-0.18, G, 0.5]], [5.9, [-0.23, 0.07, 0.62]], [6.05, [-0.17, G, 0.72]], [6.85, [-0.17, G, 0.72]], [7.0, [-0.22, 0.07, 0.8]],
     [7.15, [-0.17, G, 0.88]], [7.3, [-0.17, G, 0.88]], [7.9, [-0.117, 0.461, 0.778]],
@@ -102,14 +155,19 @@ const palm = {
 // выпад и стойка.
 const feet = {
   Left: track([
-    [0, [0.08, -1.38, 0.05]], [0.3, [0.08, -1.38, 0.05]], [0.6, [0.08, -1.15, 0.05]], [1.0, [0.08, -1.15, 0.05]], [1.4, [0.08, -0.92, 0.05]],
-    [2.0, [0.08, -0.92, 0.05]], [2.35, [0.08, -0.78, 0.05]], [2.85, [0.08, -0.78, 0.05]], [3.25, [0.08, -0.68, 0.05]], [3.55, [0.08, -0.68, 0.05]],
+    ...(north ? northFeet.Left : [
+      [0, [0.08, -1.38, 0.05]], [0.3, [0.08, -1.38, 0.05]], [0.6, [0.08, -1.15, 0.05]], [1.0, [0.08, -1.15, 0.05]], [1.4, [0.08, -0.92, 0.05]],
+      [2.0, [0.08, -0.92, 0.05]],
+    ]),
+    [2.35, [0.08, -0.78, 0.05]], [2.85, [0.08, -0.78, 0.05]], [3.25, [0.08, -0.68, 0.05]], [3.55, [0.08, -0.68, 0.05]],
     [3.8, [0.08, -0.5, 0.05]], [4.2, [0.08, -0.5, 0.05]], [4.6, [0.08, -0.33, 0.0]], [5.1, [0.09, -0.32, 0.05]], [5.7, [0.09, -0.22, 0.1]],
     [6.1, [0.09, -0.02, 0.18]], [6.5, [0.09, 0.07, 0.26]], [6.9, [0.09, 0.07, 0.34]], [7.75, [0.09, 0.07, 0.34]], [8.0, [0.08, 0.18, 0.62]], [8.25, [0.073, 0.074, 0.81]],
     [8.5, [0.073, 0.074, 0.81]],
   ]),
   Right: track([
-    [0, [-0.08, -1.25, 0.05]], [0.45, [-0.08, -1.25, 0.05]], [0.8, [-0.08, -1.02, 0.05]], [1.3, [-0.08, -1.02, 0.05]], [1.65, [-0.08, -0.85, 0.05]],
+    ...(north ? northFeet.Right : [
+      [0, [-0.08, -1.25, 0.05]], [0.45, [-0.08, -1.25, 0.05]], [0.8, [-0.08, -1.02, 0.05]], [1.3, [-0.08, -1.02, 0.05]], [1.65, [-0.08, -0.85, 0.05]],
+    ]),
     [2.8, [-0.08, -0.85, 0.05]], [3.35, [-0.08, -0.58, 0.05]], [3.8, [-0.08, -0.58, 0.05]], [4.05, [-0.08, -0.38, 0.05]], [4.6, [-0.08, -0.38, 0.05]],
     [5.0, [-0.08, -0.3, 0.03]], [5.5, [-0.09, -0.3, 0.06]], [6.1, [-0.09, -0.18, 0.11]], [6.5, [-0.09, -0.02, 0.16]], [6.75, [-0.09, 0.06, 0.24]], [7.0, [-0.09, 0.07, 0.36]],
     [7.3, [-0.09, 0.07, 0.36]], [7.45, [-0.09, 0.16, 0.52]], [7.7, [-0.073, 0.077, 0.679]], [8.5, [-0.073, 0.077, 0.679]],
@@ -287,12 +345,17 @@ function sinkOf(t, s, kind, spread) {
   (kind === 'Arm' ? arm : leg)(L, s, t, spread);
   return limbSink(L, s, kind) + 0.00002 * Math.abs(spread);
 }
-const frames = Math.round(LENGTH * FPS);
+const duration = LENGTH + (north ? NORTH_RIM_DELAY : 0);
+const frames = Math.round(duration * FPS);
 const times = [...Array(frames + 1)].map((_, f) => f / FPS);
+// После хвата за кромку фаза северного клипа идёт с темпом бокового подъёма.
+const poseTimes = north
+  ? times.map(track([[0, 0], [3.7, 1.75], [4.7, 2.6], [5, 2.9], [duration, LENGTH]]))
+  : times;
 const spreads = {};
 for (const s of SIDES) for (const kind of ['Arm', 'Leg']) {
   const range = SPREADS[kind];
-  const cost = times.map((t) => range.map((spread) => sinkOf(t, s, kind, spread)));
+  const cost = poseTimes.map((t) => range.map((spread) => sinkOf(t, s, kind, spread)));
   const total = [cost[0].slice()], from = [range.map(() => 0)];
   for (let f = 1; f < cost.length; f++) {
     total.push([]); from.push([]);
@@ -331,17 +394,17 @@ function pose(t, f) {
   return L;
 }
 
-const poses = times.map((t, f) => ({ t, L: pose(t, f) }));
+const poses = times.map((t, f) => ({ t, poseTime: poseTimes[f], L: pose(poseTimes[f], f) }));
 
 // Замеры: промах кистей и стоп до цели, провал рук и ног в землю, наибольший скачок кости за кадр.
 const report = { handMiss: 0, footMiss: 0, limbSink: 0, limbSinkAt: 0, jump: 0, jumpAt: 0, kneeBack: 0, kneeBackAt: 0 };
 const restTurn = JSON.parse(fs.readFileSync(FILE).slice(20, 20 + fs.readFileSync(FILE).readUInt32LE(12))).nodes.map((n) => n.rotation ?? [0, 0, 0, 1]);
 let prev = null;
-for (const { t, L } of poses) {
+for (const { t, poseTime, L } of poses) {
   const Gs = globals(L);
-  if (t < BLEND_FROM) for (const s of SIDES) {
-    report.handMiss = Math.max(report.handMiss, norm(sub(Gs[id(s + 'Hand')].p, hands[s](t))));
-    report.footMiss = Math.max(report.footMiss, norm(sub(Gs[id(s + 'Foot')].p, feet[s](t))));
+  if (poseTime < BLEND_FROM) for (const s of SIDES) {
+    report.handMiss = Math.max(report.handMiss, norm(sub(Gs[id(s + 'Hand')].p, hands[s](poseTime))));
+    report.footMiss = Math.max(report.footMiss, norm(sub(Gs[id(s + 'Foot')].p, feet[s](poseTime))));
   }
   for (const s of SIDES) {
     // Колено этой модели сгибается поворотом голени вокруг её оси Z в плюс; минус — колено вывернуто назад.
@@ -449,12 +512,12 @@ header.writeUInt32LE(12 + 8 + json.length + 8 + bytes.length, 8);
 const chunkHeader = (len, type) => { const b = Buffer.alloc(8); b.writeUInt32LE(len, 0); b.writeUInt32LE(type, 4); return b; };
 if (!process.env.DRY) fs.writeFileSync(FILE, Buffer.concat([header, chunkHeader(json.length, 0x4e4f534a), json, chunkHeader(bytes.length, 0x004e4942), bytes]));
 
-console.log(JSON.stringify({ clip: TARGET, seconds: LENGTH, keys: poses.length, ...Object.fromEntries(Object.entries(report).map(([k, v]) => [k, +v.toFixed(3)])) }));
-if (process.env.ROWS) for (const { t, L } of poses.filter((_, i) => i % 6 === 0)) {
+console.log(JSON.stringify({ clip: TARGET, seconds: duration, keys: poses.length, ...Object.fromEntries(Object.entries(report).map(([k, v]) => [k, +v.toFixed(3)])) }));
+if (process.env.ROWS) for (const { t, poseTime, L } of poses.filter((_, i) => i % 6 === 0)) {
   const Gs = globals(L);
   const P = (n) => Gs[id(n)].p;
   const f = (v) => v.map((x) => x.toFixed(2)).join(',');
-  const miss = (s, part, tr) => norm(sub(P(s + part), tr[s](t))).toFixed(2);
+  const miss = (s, part, tr) => norm(sub(P(s + part), tr[s](poseTime))).toFixed(2);
   console.log(t.toFixed(1), 'плечоЛ', f(P('LeftArm')), 'промах кисть', miss('Left', 'Hand', hands), miss('Right', 'Hand', hands),
     'стопа', miss('Left', 'Foot', feet), miss('Right', 'Foot', feet), 'бедро', f(P('LeftUpLeg')), 'коленоЛ', f(P('LeftLeg')), 'коленоП', f(P('RightLeg')), 'стопы', f(P('LeftFoot')), f(P('RightFoot')), 'голова', f(P('HeadTop_End')));
 }

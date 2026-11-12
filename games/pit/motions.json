@@ -7933,5 +7933,12 @@
     "speed": 1,
     "loop": false,
     "reference": "https://www.youtube.com/watch?v=J5Rpsd5F1_Q&t=45s"
+  },
+  "подъём_зомби_из_ямы_к_забору": {
+    "model": "zombie",
+    "clip": "Основа_вылезания_к_забору",
+    "speed": 1,
+    "loop": false,
+    "reference": "https://www.youtube.com/watch?v=J5Rpsd5F1_Q&t=45s"
   }
 }

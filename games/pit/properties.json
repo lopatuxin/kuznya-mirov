@@ -2,6 +2,7 @@
   "properties": {
     "spawner": "flag",
     "spawn_wait": "timer",
+    "hole_side": "number",
     "zombie": "flag",
     "zombie_age": "number",
     "zombie_stage": "number"
