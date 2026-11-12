@@ -167,7 +167,8 @@ def inside_box(collection):
     inner = HALF - THICK
     mesh = bpy.data.meshes.new("inside_room")
     bm = bmesh.new()
-    for points in box_faces((-inner, -inner, 0.0), (inner, inner, 2.5)):
+    # Движок ставит модель на землю по нижнему обломку, который лежит ниже нуля.
+    for points in box_faces((-inner, -inner, -0.05), (inner, inner, 2.5)):
         bm.faces.new([bm.verts.new(p) for p in points])
     bm.to_mesh(mesh)
     bm.free()
