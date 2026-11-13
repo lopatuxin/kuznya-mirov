@@ -41,6 +41,7 @@ use crate::render::{
 };
 use crate::render::{PanelInput, PanelPlay, VideoRole, VideoSource};
 
+mod book;
 mod stand;
 
 fn set(obj: &Object, key: &str, value: &JsValue) {
@@ -1070,6 +1071,7 @@ fn draw_rect(paint: &RectPaint) -> DrawRect {
             atlas_rect.h as f32,
         ],
         lean_cut: paint.lean_cut,
+        vertical_offsets: [0.0; 4],
     }
 }
 
@@ -1317,8 +1319,9 @@ fn push_fill(
 fn compose_ui(
     renderer: &mut Renderer,
     motion: &mut Motion,
+    book_motion: &mut book::Motion,
     config: &ScreensConfig,
-    state: &ScreenState,
+    state: &mut ScreenState,
     world: &World,
     properties: &PropertyTable,
     mouse: &MouseState,
@@ -1337,10 +1340,31 @@ fn compose_ui(
         ..UiLayers::default()
     };
     let mut paints = Vec::new();
+    let (choices, page_text_opacity, turning_page) = if let Some(book) = &screen.book
+        && let Some(selected) = book.selected(state)
+    {
+        let position = book_motion.update(state.opened(), selected, tooltip.now);
+        let frame = book::draw(
+            &mut layers.rects,
+            book,
+            frame.viewport,
+            position,
+            images,
+            atlas_rects,
+        );
+        let place = &book.bookmarks[frame.page].place;
+        state.show_book_page(frame.page);
+        (
+            state.choices(config).with_preview(&book.group, place),
+            frame.text_opacity,
+            frame.turning,
+        )
+    } else {
+        (state.choices(config), 1.0, false)
+    };
     let parts = interface::layout(screen, screen_id, world, state, frame.viewport);
     let place = screens::hover_place(&parts, tooltip.pointer.map(|pointer| frame.point(pointer)));
     let lit = state.lit(screen, place);
-    let choices = state.choices(config);
     let cell = screen.cell_pixels.unwrap_or(1.0);
     motion.update_screen_particles(
         state.opened(),
@@ -1515,6 +1539,11 @@ fn compose_ui(
                 wrap,
                 ..
             } => {
+                if placed.element.show_on_pointer().is_some() && turning_page {
+                    continue;
+                }
+                let mut color = *color;
+                color[3] *= page_text_opacity;
                 layers.texts.push(TextDraw {
                     text: screens::format_text_with(
                         text,
@@ -1525,7 +1554,7 @@ fn compose_ui(
                     ),
                     font: *font,
                     font_size_px: *font_size,
-                    color: *color,
+                    color,
                     align: *align,
                     wrap: *wrap,
                     rect_px: rect,
@@ -1546,6 +1575,9 @@ fn compose_ui(
                 let chosen =
                     screens::button_fill(button_fill, fill_hover, fill_pressed, placed.key, mouse);
                 fill(chosen, rect, *image_scale);
+                let mut color =
+                    screens::button_text_color(*text_color, *text_color_disabled, placed.locked);
+                color[3] *= page_text_opacity;
                 // Button captions have no `align` field in the data — «Интерфейс игры»: they
                 // always sit centered in the button.
                 layers.texts.push(TextDraw {
@@ -1558,11 +1590,7 @@ fn compose_ui(
                     ),
                     font: *font,
                     font_size_px: *font_size,
-                    color: screens::button_text_color(
-                        *text_color,
-                        *text_color_disabled,
-                        placed.locked,
-                    ),
+                    color,
                     align: screens::Align::Center,
                     wrap: false,
                     rect_px: rect,
@@ -2033,6 +2061,7 @@ pub struct Engine {
     mouse: MouseState,
     /// «Подсказка»: над каким элементом курсор и с какого времени окна — не ввод, в запись не идёт.
     tooltip_hover: TooltipHover,
+    book_motion: book::Motion,
     ui_queue: UiQueue,
     pending_config: load::PendingConfig,
     /// «Картинки»: `files.images`, in `ImageId` order — kept here (not just inside `Game`) so
@@ -2105,6 +2134,7 @@ impl Engine {
             runner: Runner::new(),
             mouse: MouseState::default(),
             tooltip_hover: TooltipHover::default(),
+            book_motion: book::Motion::default(),
             ui_queue: UiQueue::new(),
             pending_config: load::PendingConfig::default(),
             images: Vec::new(),
@@ -2651,11 +2681,12 @@ impl Engine {
         let ui = match (
             show_ui,
             self.screens_config.as_ref(),
-            self.screen_state.as_ref(),
+            self.screen_state.as_mut(),
         ) {
             (true, Some(config), Some(state)) => compose_ui(
                 &mut self.renderer,
                 &mut self.motion,
+                &mut self.book_motion,
                 config,
                 state,
                 &game.world,
@@ -3320,6 +3351,7 @@ impl Engine {
         let ui = compose_ui(
             &mut self.renderer,
             &mut self.motion,
+            &mut self.book_motion,
             config,
             state,
             &game.world,

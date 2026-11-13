@@ -10,7 +10,6 @@
     "wisdom": 2,
     "spirit": "Удаль — копится, когда он держит удары",
     "growth": "больше всего растёт Сила богатырская",
-    "book": "hero_book_ilya",
     "sheet": "hero_ilya",
     "reach": 1.5
   },
@@ -25,8 +24,6 @@
     "wisdom": 3,
     "spirit": "Задор — копится, когда он уходит от ударов",
     "growth": "больше всего растёт Прыть",
-    "book": "hero_book_alyosha",
-    "bookmarks": "hero_bookmarks_alyosha",
     "sheet": "hero_alyosha",
     "reach": 1.3
   },
@@ -41,8 +38,6 @@
     "wisdom": 8,
     "spirit": "Чары — восстанавливаются сами",
     "growth": "больше всего растёт Мудрость",
-    "book": "hero_book_vasilisa",
-    "bookmarks": "hero_bookmarks_vasilisa",
     "sheet": "hero_vasilisa",
     "reach": 1.6
   }

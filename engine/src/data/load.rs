@@ -22,9 +22,9 @@ use crate::core::scene::{
     CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, Projection, SceneConfig,
 };
 use crate::core::screens::{
-    Align, Anchor, ButtonCommand, ChoiceRef, ChoiceTable, Element, Fill, FontId, ImageRef,
-    InitialValue, MaxSpec, MusicId, PanelFill, Placement, RunCall, RunId, Screen, ScreenId,
-    ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle, WorldColor, WorldElement,
+    Align, Anchor, Book, Bookmark, ButtonCommand, ChoiceRef, ChoiceTable, Element, Fill, FontId,
+    ImageRef, InitialValue, MaxSpec, MusicId, PanelFill, Placement, RunCall, RunId, Screen,
+    ScreenId, ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle, WorldColor, WorldElement,
     WorldElementKind, WorldTextPart,
 };
 use crate::core::terrain::{DENSITIES, Terrain};
@@ -9774,6 +9774,18 @@ fn parse_screen_keys(
         .collect()
 }
 
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ParsedBook {
+    group: String,
+    binding: String,
+    tabs: String,
+    tab_area: [f32; 4],
+    spine: f32,
+    leaf: [f32; 4],
+    pages: Vec<[String; 2]>,
+}
+
 struct ParsedScreen {
     name: String,
     world_runs: bool,
@@ -9781,6 +9793,7 @@ struct ParsedScreen {
     elements: ParsedElements,
     keys: Vec<(String, ParsedCommand)>,
     default_choices: Vec<(String, String)>,
+    book: Option<ParsedBook>,
     /// Raw `music` name, not yet resolved against `files.music` — «Звук» →«Два вида звука». Resolution happens in `resolve_screens`, same as `font` on an element.
     music: Option<String>,
     /// «Ветер и частицы» → «На экране»: клетка частиц экрана в точках `screens.json`.
@@ -9808,6 +9821,7 @@ fn parse_screen(
             "elements",
             "keys",
             "default_choices",
+            "book",
             "music",
             "cell_pixels",
             "wind",
@@ -9867,6 +9881,11 @@ fn parse_screen(
                 .collect()
         })
         .unwrap_or_default();
+    let book = obj.get("book").and_then(|value| {
+        serde_json::from_value(value.clone())
+            .map_err(|err| errors.push(file, &join(&path, "book"), format!("{err}")))
+            .ok()
+    });
     // «Звук»: список — самая частая опечатка (плейлист вместо одного трека), и у
     // неё свой текст, отдельный от обычного «ожидалась строка».
     let music = match obj.get("music") {
@@ -9899,6 +9918,7 @@ fn parse_screen(
         elements,
         keys,
         default_choices,
+        book,
         music,
         cell_pixels,
         wind,
@@ -10791,6 +10811,118 @@ fn resolve_panel_video(
     Some(Fill::Image {
         image,
         opacity: opacity.unwrap_or(1.0),
+    })
+}
+
+fn resolve_book_image(
+    name: &str,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ImageId> {
+    let image = resolve_image(name, images, file, path, errors)?;
+    let decl = &images[image];
+    if decl.frames != 1 || decl.video || decl.slice.is_some() || decl.size.is_some() {
+        errors.push(
+            file,
+            path,
+            format!("книга ожидает неподвижную картинку, получено \"{name}\""),
+        );
+        return None;
+    }
+    Some(image)
+}
+
+fn resolve_book(
+    book: &ParsedBook,
+    elements: &[Element],
+    default_choices: &[(String, String)],
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Book> {
+    let placement = |[x, y, width, height]: [f32; 4]| Placement {
+        anchor: Anchor::Center,
+        offset: [x, y],
+        size: [width, height],
+    };
+    let leaf = placement(book.leaf);
+    let tab_area = placement(book.tab_area);
+    if !book.spine.is_finite()
+        || [book.leaf, book.tab_area].iter().any(|rect| {
+            !rect.iter().all(|value| value.is_finite()) || rect[2] <= 0.0 || rect[3] <= 0.0
+        })
+    {
+        errors.push(
+            file,
+            path,
+            "координаты книги должны быть конечными, а размеры — положительными",
+        );
+        return None;
+    }
+    if (book.spine - leaf.offset[0]).abs() >= leaf.size[0] * 0.5 {
+        errors.push(
+            file,
+            &join(path, "spine"),
+            "сгиб должен проходить внутри листа",
+        );
+        return None;
+    }
+    let binding = resolve_book_image(&book.binding, images, file, &join(path, "binding"), errors)?;
+    let tabs = resolve_book_image(&book.tabs, images, file, &join(path, "tabs"), errors)?;
+    let mut bookmarks = Vec::with_capacity(book.pages.len());
+    for (index, [place, image]) in book.pages.iter().enumerate() {
+        let page_path = join(path, &format!("pages[{index}]"));
+        let matching = elements
+            .iter()
+            .find(|element| element.place_name() == Some(place));
+        if matching.and_then(Element::choose) != Some(book.group.as_str())
+            || bookmarks
+                .iter()
+                .any(|bookmark: &Bookmark| bookmark.place == *place)
+        {
+            errors.push(
+                file,
+                &page_path,
+                format!(
+                    "\"{place}\" должна быть отдельной закладкой с choose: \"{}\"",
+                    book.group
+                ),
+            );
+            return None;
+        }
+        let spread = resolve_book_image(image, images, file, &page_path, errors)?;
+        bookmarks.push(Bookmark {
+            place: place.clone(),
+            spread,
+        });
+    }
+    let in_book = |place: &str| bookmarks.iter().any(|bookmark| bookmark.place == place);
+    if !default_choices
+        .iter()
+        .any(|(group, place)| group == &book.group && in_book(place))
+        || elements.iter().any(|element| {
+            element.choose() == Some(book.group.as_str())
+                && !element.place_name().is_some_and(in_book)
+        })
+    {
+        errors.push(
+            file,
+            &join(path, "pages"),
+            "перечислите все закладки книги и укажите начальную в default_choices",
+        );
+        return None;
+    }
+    Some(Book {
+        group: book.group.clone(),
+        binding,
+        tabs,
+        tab_area,
+        spine: book.spine,
+        leaf,
+        bookmarks,
     })
 }
 
@@ -11955,7 +12087,7 @@ fn resolve_screens(
         .map(|screen| {
             let elements_path = join(&screen.path, "elements");
             let places = screen_hover_places(screen, &elements_path, file, errors);
-            let elements = screen
+            let elements: Vec<_> = screen
                 .elements
                 .iter()
                 .filter_map(|(i, data)| {
@@ -12014,7 +12146,7 @@ fn resolve_screens(
                 )
             });
             let default_choices_path = join(&screen.path, "default_choices");
-            let default_choices = screen
+            let default_choices: Vec<_> = screen
                 .default_choices
                 .iter()
                 .filter(|(group, place)| {
@@ -12023,6 +12155,17 @@ fn resolve_screens(
                 })
                 .cloned()
                 .collect();
+            let book = screen.book.as_ref().and_then(|book| {
+                resolve_book(
+                    book,
+                    &elements,
+                    &default_choices,
+                    images,
+                    file,
+                    &join(&screen.path, "book"),
+                    errors,
+                )
+            });
             Screen {
                 name: screen.name.clone(),
                 world_runs: screen.world_runs,
@@ -12030,6 +12173,7 @@ fn resolve_screens(
                 elements,
                 keys,
                 default_choices,
+                book,
                 music,
                 cell_pixels: screen.cell_pixels,
                 wind: screen.wind,
@@ -12789,6 +12933,10 @@ fn collect_used_images(
         }
     }
     for screen in screens {
+        if let Some(book) = &screen.book {
+            used.extend([book.binding, book.tabs]);
+            used.extend(book.bookmarks.iter().map(|bookmark| bookmark.spread));
+        }
         for element in screen.elements.iter().flat_map(Element::leaves) {
             match element {
                 Element::Panel {
