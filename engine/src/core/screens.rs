@@ -432,6 +432,7 @@ pub enum Element {
         for_: Option<Selector>,
         /// «Наведение»: номер элемента экрана — места, пока курсор над которым надпись рисуется.
         show_on_hover: Option<usize>,
+        show_on_pointer: Option<usize>,
     },
     Button {
         placement: Placement,
@@ -529,6 +530,15 @@ impl Element {
         }
     }
 
+    pub fn show_on_pointer(&self) -> Option<usize> {
+        match self {
+            Element::Label {
+                show_on_pointer, ..
+            } => *show_on_pointer,
+            _ => None,
+        }
+    }
+
     /// «Выбор»: группа, в которой щелчок по панели или кнопке выбирает её место.
     pub fn choose(&self) -> Option<&str> {
         match self {
@@ -545,8 +555,11 @@ impl Element {
         }
     }
 
-    /// «Наведение», «Выбор»: рисуется ли элемент, когда горят места `lit`: без `show_on_hover` рисуется всегда.
+    /// «Наведение», «Выбор»: рисуется ли элемент при текущем наведении и выборе.
     pub fn visible_over(&self, lit: &Lit) -> bool {
+        if let Some(target) = self.show_on_pointer() {
+            return lit.hover == Some(target);
+        }
         self.show_on_hover()
             .is_none_or(|target| lit.contains(target))
     }
