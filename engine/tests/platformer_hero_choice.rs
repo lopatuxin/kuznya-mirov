@@ -182,6 +182,87 @@ fn the_chosen_heros_spread_fills_the_window() {
 }
 
 #[test]
+fn bookmark_colors_follow_the_chosen_hero_while_hovering_another() {
+    let (mut ui, images) = load();
+    click_place(&mut ui, "new_game");
+
+    for (hero, hovered, expected) in [
+        ("vasilisa", "ilya", Some("hero_bookmarks_vasilisa")),
+        ("alyosha", "vasilisa", Some("hero_bookmarks_alyosha")),
+        ("ilya", "alyosha", None),
+    ] {
+        click_place(&mut ui, hero);
+        let [x, y] = middle_of(&ui, |element| element.place_name() == Some(hovered));
+        ui.queue.push_mouse_move(x, y);
+        screens::process_ui_queue(
+            &mut ui.queue,
+            &mut ui.mouse,
+            &mut ui.game,
+            &ui.config,
+            &mut ui.state,
+            VIEWPORT,
+        );
+        assert_eq!(ui.state.chosen("heroes"), Some(hero));
+
+        let elements = &ui.config.screens[ui.state.active()].elements;
+        let (choice, names) = elements
+            .iter()
+            .find_map(|element| match element {
+                Element::Panel {
+                    fill: PanelFill::Choice { choice, names, .. },
+                    show_on_hover: None,
+                    ..
+                } if choice.field.as_deref() == Some("bookmarks") => Some((choice, names)),
+                _ => None,
+            })
+            .expect("слой закладок зависит от выбора героя");
+        let image = ui.state.choices(&ui.config).image(choice, names);
+        assert_eq!(image.map(|id| images[id].name.as_str()), expected, "{hero}");
+    }
+}
+
+#[test]
+fn the_diamond_follows_the_pointer_over_equal_bookmark_areas() {
+    let (ui, _) = book_page_of("vasilisa");
+    let screen_id = ui.state.active();
+    let screen = &ui.config.screens[screen_id];
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
+    let parts = interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport);
+    let bookmarks = screen
+        .elements
+        .iter()
+        .filter(|element| element.choose() == Some("heroes"));
+    for bookmark in bookmarks {
+        assert_eq!(bookmark.placement().offset[0], 809.0);
+        assert_eq!(bookmark.placement().size, [226.0, 194.0]);
+    }
+
+    let visible_diamonds = |pointer: Option<[f32; 2]>| {
+        let hover = screens::hover_place(&parts, pointer.map(|point| frame.point(point)));
+        let lit = ui.state.lit(screen, hover);
+        screen
+            .elements
+            .iter()
+            .filter_map(|element| match element {
+                Element::Label { text, placement, .. }
+                    if element.visible_over(&lit)
+                        && matches!(text.as_slice(), [screens::TextPart::Literal(glyph)] if glyph == "◆") =>
+                {
+                    Some(placement.offset[1])
+                }
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert!(visible_diamonds(None).is_empty());
+    assert!(visible_diamonds(Some([400.0, 300.0])).is_empty());
+    for (hero, row) in [("ilya", -285.0), ("vasilisa", -55.0), ("alyosha", 178.0)] {
+        let point = middle_of(&ui, |element| element.place_name() == Some(hero));
+        assert_eq!(visible_diamonds(Some(point)), [row], "{hero}");
+    }
+}
+
+#[test]
 fn the_right_edge_of_the_bookmark_selects_the_hero_in_a_wide_window() {
     let (mut ui, _) = book_page_of("ilya");
     ui.queue.push_mouse_move(1880.0, 408.0);

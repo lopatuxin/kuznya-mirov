@@ -8533,6 +8533,7 @@ const LABEL_KEYS: &[&str] = &[
     "for",
     "name",
     "show_on_hover",
+    "show_on_pointer",
     "play_on_hover",
     "choose",
     "needs_choice",
@@ -8724,11 +8725,12 @@ fn parse_particle_field(
     true
 }
 
-/// «Наведение»: `name`, `show_on_hover` и `play_on_hover` одного элемента, места ещё по именам.
+/// «Наведение»: имя места и отклики одного элемента, места ещё по именам.
 #[derive(Debug, Clone, Default)]
 struct HoverFields {
     name: Option<String>,
     show_on_hover: Option<String>,
+    show_on_pointer: Option<String>,
     play_on_hover: Option<String>,
 }
 
@@ -8754,9 +8756,8 @@ impl HoverOwner {
     }
 }
 
-/// «Наведение»: разбирает `name`, `show_on_hover` и `play_on_hover` элемента `owner`. `name` бывает у панели
-/// и кнопки, `show_on_hover` — у панели и надписи, `play_on_hover` — у панели; все три — только у элемента
-/// самого экрана, `name` — ещё и без отбора `for`. Внешний `None` — ошибка уже названа.
+/// «Наведение»: имя места и отклики задают у элементов самого экрана. У элемента с `for`
+/// можно задать отклик. Внешний `None` — ошибка уже названа.
 fn parse_hover_fields(
     obj: &serde_json::Map<String, Json>,
     owner: HoverOwner,
@@ -8777,6 +8778,11 @@ fn parse_hover_fields(
             "show_on_hover",
             matches!(owner, HoverOwner::Panel | HoverOwner::Label),
             "показ по наведению бывает только у панели и надписи",
+        ),
+        (
+            "show_on_pointer",
+            owner == HoverOwner::Label,
+            "показ по положению курсора бывает только у надписи",
         ),
         (
             "play_on_hover",
@@ -8819,8 +8825,17 @@ fn parse_hover_fields(
         match key {
             "name" => fields.name = Some(text),
             "show_on_hover" => fields.show_on_hover = Some(text),
+            "show_on_pointer" => fields.show_on_pointer = Some(text),
             _ => fields.play_on_hover = Some(text),
         }
+    }
+    if fields.show_on_hover.is_some() && fields.show_on_pointer.is_some() {
+        errors.push(
+            file,
+            &join(path, "show_on_pointer"),
+            "у надписи задают либо show_on_hover, либо show_on_pointer",
+        );
+        ok = false;
     }
     ok.then_some(fields)
 }
@@ -10722,7 +10737,7 @@ fn screen_hover_places(
     places
 }
 
-/// «Наведение»: место, названное в `key` (`show_on_hover` или `play_on_hover`) элемента по пути `path`.
+/// «Наведение»: место, названное в поле отклика `key` элемента по пути `path`.
 /// `Some(None)` — поля нет, внешний `None` — места с таким именем на экране нет, ошибка названа.
 fn resolve_hover_place(
     name: Option<&str>,
@@ -10968,6 +10983,15 @@ fn resolve_element(
                 path,
                 errors,
             );
+            let show_on_pointer = resolve_hover_place(
+                hover.show_on_pointer.as_deref(),
+                "show_on_pointer",
+                places,
+                screen_name,
+                file,
+                path,
+                errors,
+            );
             let font = resolve_font(font_name, fonts, file, &join(path, "font"), errors);
             let text_ok = validate_text_refs(
                 text,
@@ -10992,6 +11016,7 @@ fn resolve_element(
                 wrap: *wrap,
                 for_: for_.clone(),
                 show_on_hover,
+                show_on_pointer: show_on_pointer?,
             })
         }
         ParsedElementData::Button {
@@ -12960,8 +12985,7 @@ fn validate_rest_at(
     }
 }
 
-/// «Наведение»: предупреждение (игра идёт) о месте наведения, на которое не откликается ни один элемент
-/// того же экрана — ни `show_on_hover`, ни `play_on_hover` с его именем.
+/// «Наведение»: предупреждение о месте наведения, на которое не откликается ни один элемент экрана.
 fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: &mut ErrorSink) {
     for (screen_index, screen) in screens.iter().enumerate() {
         let answered = answered_places(screen);
@@ -12977,7 +13001,7 @@ fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: 
                     screens_file,
                     &format!("screens[{screen_index}].elements[{element_index}].name"),
                     format!(
-                        "место наведения \"{name}\" на экране \"{}\": на него не откликается ни один элемент; ожидался show_on_hover или play_on_hover с этим именем",
+                        "место наведения \"{name}\" на экране \"{}\": на него не откликается ни один элемент; ожидался show_on_hover, show_on_pointer или play_on_hover с этим именем",
                         screen.name
                     ),
                 );
@@ -12986,13 +13010,18 @@ fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: 
     }
 }
 
-/// «Наведение»: номера мест экрана, на которые откликается хоть один элемент — `show_on_hover` или
-/// `play_on_hover` с их именем.
+/// «Наведение»: номера мест экрана, на которые откликается хотя бы один элемент.
 fn answered_places(screen: &Screen) -> std::collections::HashSet<usize> {
     screen
         .elements
         .iter()
-        .flat_map(|element| [element.show_on_hover(), element.play_on_hover()])
+        .flat_map(|element| {
+            [
+                element.show_on_hover(),
+                element.show_on_pointer(),
+                element.play_on_hover(),
+            ]
+        })
         .flatten()
         .collect()
 }
