@@ -593,6 +593,7 @@ pub type ScreenKeyTable = HashMap<String, ButtonCommand>;
 pub struct Screen {
     pub name: String,
     pub world_runs: bool,
+    pub stretch_ui: bool,
     pub elements: Vec<Element>,
     pub keys: ScreenKeyTable,
     pub default_choices: Vec<(String, String)>,
@@ -647,14 +648,17 @@ pub struct TooltipStyle {
 /// окно в этих точках.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UiFrame {
-    pub scale: f32,
+    pub scale: [f32; 2],
     pub viewport: [f32; 2],
 }
 
 impl UiFrame {
     /// Точка окна в точках `screens.json`.
     pub fn point(&self, window_point: [f32; 2]) -> [f32; 2] {
-        [window_point[0] / self.scale, window_point[1] / self.scale]
+        [
+            window_point[0] / self.scale[0],
+            window_point[1] / self.scale[1],
+        ]
     }
 }
 
@@ -745,15 +749,25 @@ impl ScreensConfig {
         videos
     }
 
-    /// Интерфейс окна `window` (в точках CSS): с `ui_reference` всё умножено на
-    /// `min(ширина окна / ширина, высота окна / высота)`, без него — как есть.
-    pub fn ui_frame(&self, window: [f32; 2]) -> UiFrame {
-        let scale = self
-            .ui_reference
-            .map_or(1.0, |[w, h]| (window[0] / w).min(window[1] / h));
+    /// С `ui_reference` интерфейс вписывается в окно. `stretch_ui` масштабирует каждую ось отдельно.
+    pub fn ui_frame(&self, screen: ScreenId, window: [f32; 2]) -> UiFrame {
+        let Some(reference) = self.ui_reference else {
+            return UiFrame {
+                scale: [1.0; 2],
+                viewport: window,
+            };
+        };
+        let scale = [window[0] / reference[0], window[1] / reference[1]];
+        if self.screens[screen].stretch_ui {
+            return UiFrame {
+                scale,
+                viewport: reference,
+            };
+        }
+        let scale = scale[0].min(scale[1]);
         UiFrame {
-            scale,
-            viewport: [window[0] / scale, window[1] / scale],
+            scale: [scale; 2],
+            viewport: window.map(|side| side / scale),
         }
     }
 }
@@ -1345,12 +1359,13 @@ pub fn over_interface(
     window: [f32; 2],
     point: [f32; 2],
 ) -> bool {
-    let screen = &config.screens[state.active()];
-    let frame = config.ui_frame(window);
+    let screen_id = state.active();
+    let screen = &config.screens[screen_id];
+    let frame = config.ui_frame(screen_id, window);
     let point = frame.point(point);
     interface::list_under(screen, world, frame.viewport, point).is_some()
         || topmost_interface_hit(
-            &interface::layout(screen, state.active(), world, state, frame.viewport),
+            &interface::layout(screen, screen_id, world, state, frame.viewport),
             point,
         )
         .is_some()
@@ -1369,7 +1384,7 @@ pub fn scroll_wheel(
 ) -> bool {
     let screen_id = state.active();
     let screen = &config.screens[screen_id];
-    let frame = config.ui_frame(window);
+    let frame = config.ui_frame(screen_id, window);
     let Some(index) = interface::list_under(screen, world, frame.viewport, frame.point(point))
     else {
         return false;
@@ -1412,9 +1427,10 @@ fn press_outcome(
     mouse: &mut MouseState,
     parts: &[Part<'_>],
     world_accepts: bool,
+    point: [f32; 2],
     image_object: Option<u32>,
 ) -> MouseOutcome {
-    match topmost_interface_hit(parts, mouse.position) {
+    match topmost_interface_hit(parts, point) {
         Some(InterfaceHit::Button(placed)) => {
             mouse.captured = Some(placed.key);
             choose_outcome(&placed)
@@ -1445,13 +1461,14 @@ fn handle_mouse_event(
     mouse: &mut MouseState,
     parts: &[Part<'_>],
     world_accepts: bool,
+    frame: UiFrame,
     event: MouseEvent,
 ) -> MouseOutcome {
     match event {
         MouseEvent::Move(pos) => {
             mouse.position = pos;
             if mouse.captured.is_none() {
-                mouse.hover = match topmost_interface_hit(parts, pos) {
+                mouse.hover = match topmost_interface_hit(parts, frame.point(pos)) {
                     Some(InterfaceHit::Button(placed)) => Some(placed.key),
                     _ => None,
                 };
@@ -1460,7 +1477,8 @@ fn handle_mouse_event(
         }
         MouseEvent::Down(image_object) => {
             mouse.presses = mouse.presses.wrapping_add(1);
-            press_outcome(mouse, parts, world_accepts, image_object)
+            let point = frame.point(mouse.position);
+            press_outcome(mouse, parts, world_accepts, point, image_object)
         }
         MouseEvent::Up => {
             mouse.releases = mouse.releases.wrapping_add(1);
@@ -1471,12 +1489,11 @@ fn handle_mouse_event(
             let Some(captured) = mouse.captured.take() else {
                 return MouseOutcome::None;
             };
+            let point = frame.point(mouse.position);
             // Команда срабатывает, только если под указателем кнопка, на которой нажали, — тот же
             // элемент и тот же объект: строки списка могли сдвинуться.
             let released_on = parts.iter().find_map(|part| match part {
-                Part::Element(placed)
-                    if placed.key == captured && placed.contains(mouse.position) =>
-                {
+                Part::Element(placed) if placed.key == captured && placed.contains(point) => {
                     match placed.element {
                         Element::Button { on_click, .. } => Some((*on_click, placed.object)),
                         _ => None,
@@ -1548,7 +1565,7 @@ pub fn process_ui_queue_recording(
         match event {
             UiEvent::Mouse(mouse_event) => {
                 let screen_id = state.active();
-                let frame = config.ui_frame(viewport);
+                let frame = config.ui_frame(screen_id, viewport);
                 let parts = interface::layout(
                     &config.screens[screen_id],
                     screen_id,
@@ -1556,12 +1573,8 @@ pub fn process_ui_queue_recording(
                     state,
                     frame.viewport,
                 );
-                let mouse_event = match mouse_event {
-                    MouseEvent::Move(pos) => MouseEvent::Move(frame.point(pos)),
-                    other => other,
-                };
                 let accepts = world_accepts_input(game, config, state);
-                match handle_mouse_event(mouse, &parts, accepts, mouse_event) {
+                match handle_mouse_event(mouse, &parts, accepts, frame, mouse_event) {
                     MouseOutcome::Command(cmd, object) => {
                         apply_command_recording(
                             cmd,

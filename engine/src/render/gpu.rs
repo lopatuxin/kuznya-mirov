@@ -302,7 +302,7 @@ pub struct Renderer {
     scene_cells: [f32; 2],
     device_pixel_ratio: f32,
     /// «Раскладка экрана»: масштаб интерфейса от `ui_reference`; перемножается с плотностью экрана.
-    ui_scale: f32,
+    ui_scale: [f32; 2],
     /// «Трёхмерная сцена»: ресурсы создаются при первом её кадре; сброшены, когда атлас получил новую
     /// текстуру.
     scene3d: Option<gpu3d::Scene3d>,
@@ -500,7 +500,7 @@ impl Renderer {
             "world_globals_bind_group",
         );
 
-        let ui_globals = ui_globals_data(canvas_size_px, 1.0);
+        let ui_globals = ui_globals_data(canvas_size_px, [1.0; 2]);
         let ui_globals_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("ui_globals"),
             contents: bytemuck::bytes_of(&ui_globals),
@@ -718,7 +718,7 @@ impl Renderer {
             world_offset,
             scene_cells,
             device_pixel_ratio: 1.0,
-            ui_scale: 1.0,
+            ui_scale: [1.0; 2],
             scene3d: None,
             materials,
             material_options,
@@ -775,7 +775,7 @@ impl Renderer {
     /// «Подсказка»: ширина строки `text` шрифтом `font` размера `font_size` — в точках `screens.json`, как
     /// и сам размер.
     pub fn text_width(&mut self, text: &str, font: FontId, font_size: f32) -> f32 {
-        let scale = self.device_pixel_ratio * self.ui_scale;
+        let scale = self.ui_font_scale_px();
         let font_size_px = (font_size * scale).max(1.0);
         let metrics =
             glyphon::Metrics::new(font_size_px, text_area::line_height(font_size_px, false));
@@ -793,7 +793,11 @@ impl Renderer {
         let width = buffer
             .layout_runs()
             .fold(0.0f32, |width, run| width.max(run.line_w));
-        width / scale
+        width / (self.device_pixel_ratio * self.ui_scale[0])
+    }
+
+    fn ui_font_scale_px(&self) -> f32 {
+        self.device_pixel_ratio * self.ui_scale[0].min(self.ui_scale[1])
     }
 
     /// «Редактор», требование 20: a repeated `load()` must not pile fonts up under the previous
@@ -1025,7 +1029,7 @@ impl Renderer {
     }
 
     /// «Раскладка экрана»: масштаб интерфейса этого кадра от `ui_reference` — 1 без него.
-    pub fn set_ui_scale(&mut self, scale: f32) {
+    pub fn set_ui_scale(&mut self, scale: [f32; 2]) {
         if scale != self.ui_scale {
             self.ui_scale = scale;
             self.write_ui_globals();
@@ -1039,7 +1043,8 @@ impl Renderer {
     }
 
     fn write_ui_globals(&mut self) {
-        let globals = ui_globals_data(self.canvas_size_px, self.device_pixel_ratio * self.ui_scale);
+        let scale = self.ui_scale.map(|axis| axis * self.device_pixel_ratio);
+        let globals = ui_globals_data(self.canvas_size_px, scale);
         self.queue
             .write_buffer(&self.ui_globals_buffer, 0, bytemuck::bytes_of(&globals));
     }
@@ -1115,16 +1120,17 @@ impl Renderer {
     /// One `cosmic-text` buffer per `TextDraw` — «Интерфейс игры»: `rect_px` is in `screens.json`
     /// points, scaled up here by the device pixel ratio and the interface scale, same as `ui_rects`.
     fn build_text_buffers(&mut self, texts: &[TextDraw]) -> Vec<ShapedText> {
-        let dpr = self.device_pixel_ratio * self.ui_scale;
+        let [scale_x, scale_y] = self.ui_scale.map(|axis| axis * self.device_pixel_ratio);
+        let font_scale = self.ui_font_scale_px();
         texts
             .iter()
             .map(|t| {
-                let font_size_px = (t.font_size_px * dpr).max(1.0);
+                let font_size_px = (t.font_size_px * font_scale).max(1.0);
                 let rect_px = [
-                    t.rect_px[0] * dpr,
-                    t.rect_px[1] * dpr,
-                    t.rect_px[2] * dpr,
-                    t.rect_px[3] * dpr,
+                    t.rect_px[0] * scale_x,
+                    t.rect_px[1] * scale_y,
+                    t.rect_px[2] * scale_x,
+                    t.rect_px[3] * scale_y,
                 ];
                 let buffer = self.shape_text_buffer(
                     &t.text,
@@ -1611,9 +1617,9 @@ fn world_globals_data(canvas_size_px: [f32; 2], scale: f32, offset: [f32; 2]) ->
 
 /// UI pass: window pixels (as `screens.json` and `core::screens::Placement` use them) scale up
 /// by the device pixel ratio to the canvas's own device pixels — «Интерфейс игры» → «Раскладка».
-fn ui_globals_data(canvas_size_px: [f32; 2], device_pixel_ratio: f32) -> Globals {
+fn ui_globals_data(canvas_size_px: [f32; 2], scale: [f32; 2]) -> Globals {
     Globals {
-        scale: [device_pixel_ratio, device_pixel_ratio],
+        scale,
         offset: [0.0, 0.0],
         canvas_size_px,
         _padding: [0.0, 0.0],

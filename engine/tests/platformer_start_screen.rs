@@ -65,13 +65,13 @@ fn active_screen(ui: &Ui) -> &str {
 fn middle_of(ui: &Ui, matches: impl Fn(&Element) -> bool) -> [f32; 2] {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport)
         .iter()
         .find_map(|part| match part {
             interface::Part::Element(placed) if matches(placed.element) => Some([
-                (placed.rect[0] + placed.rect[2] / 2.0) * frame.scale,
-                (placed.rect[1] + placed.rect[3] / 2.0) * frame.scale,
+                (placed.rect[0] + placed.rect[2] / 2.0) * frame.scale[0],
+                (placed.rect[1] + placed.rect[3] / 2.0) * frame.scale[1],
             ]),
             _ => None,
         })
@@ -88,7 +88,7 @@ fn button_command(element: &Element) -> Option<ButtonCommand> {
 fn place_at(ui: &Ui, point: [f32; 2]) -> Option<String> {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     let parts = interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport);
     screens::hover_place(&parts, Some(frame.point(point))).map(|index| {
         screen.elements[index]

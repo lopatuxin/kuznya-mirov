@@ -18,9 +18,9 @@
       { "kind": "button", "anchor": "center", "name": "vasilisa", "choose": "heroes", "offset": [-111, 84], "size": [435, 820], "text": "", "font": "menu", "font_size": 30, "text_color": "#00000000", "color": "#00000000", "on_click": ["show_screen", "hero_select"] },
       { "kind": "button", "anchor": "center", "name": "ilya", "choose": "heroes", "offset": [-630, 61], "size": [485, 930], "text": "", "font": "menu", "font_size": 30, "text_color": "#00000000", "color": "#00000000", "on_click": ["show_screen", "hero_select"] }
     ] },
-    { "name": "hero_select", "world_runs": false, "default_choices": { "heroes": "ilya" }, "keys": { "Escape": ["show_screen", "menu"] }, "elements": [
-      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [6000, 4000], "color": "#26140e" },
-      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [1920, 1074.6], "image": "{choice:heroes.book}" },
+    { "name": "hero_select", "world_runs": false, "stretch_ui": true, "default_choices": { "heroes": "ilya" }, "keys": { "Escape": ["show_screen", "menu"] }, "elements": [
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [1920, 1080], "image": "{choice:heroes.book}" },
+      { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [1920, 1080], "image": "hero_book_cover" },
       { "kind": "label", "anchor": "center", "offset": [-378, -284], "size": [588, 82], "text": "{choice:heroes.name}", "font": "menu", "font_size": 55, "color": "#7d2418", "align": "center" },
       { "kind": "label", "anchor": "center", "offset": [-408, -210], "size": [470, 56], "text": "Сила богатырская", "font": "menu", "font_size": 40, "color": "#3b2215", "align": "left" },
       { "kind": "label", "anchor": "center", "offset": [-146, -210], "size": [68, 58], "text": "{choice:heroes.strength}", "font": "menu", "font_size": 47, "color": "#7d2418", "align": "right" },

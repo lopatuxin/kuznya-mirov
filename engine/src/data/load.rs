@@ -4343,8 +4343,8 @@ fn parse_images_table(
             },
         };
         // «Картинки» → «Сглаживание», требования 1–2: необязательный, true/false.
-        let smooth = parse_image_flag(decl_obj, "smooth", file, &entry_path, errors);
-        let glow = parse_image_flag(decl_obj, "glow", file, &entry_path, errors);
+        let smooth = parse_optional_flag(decl_obj, "smooth", file, &entry_path, errors);
+        let glow = parse_optional_flag(decl_obj, "glow", file, &entry_path, errors);
         let (Some(smooth), Some(glow)) = (smooth, glow) else {
             continue;
         };
@@ -4480,15 +4480,14 @@ fn reject_video_frame_keys(
     rejected
 }
 
-/// Необязательный признак описания картинки — `smooth`, `glow`: `true`/`false`, без ключа `false`.
-fn parse_image_flag(
-    decl_obj: &serde_json::Map<String, Json>,
+fn parse_optional_flag(
+    object: &serde_json::Map<String, Json>,
     key: &str,
     file: &str,
     entry_path: &str,
     errors: &mut ErrorSink,
 ) -> Option<bool> {
-    let Some(value) = decl_obj.get(key) else {
+    let Some(value) = object.get(key) else {
         return Some(false);
     };
     let flag = value.as_bool();
@@ -9763,6 +9762,7 @@ fn parse_screen_keys(
 struct ParsedScreen {
     name: String,
     world_runs: bool,
+    stretch_ui: bool,
     elements: ParsedElements,
     keys: Vec<(String, ParsedCommand)>,
     default_choices: Vec<(String, String)>,
@@ -9789,6 +9789,7 @@ fn parse_screen(
         &[
             "name",
             "world_runs",
+            "stretch_ui",
             "elements",
             "keys",
             "default_choices",
@@ -9875,9 +9876,11 @@ fn parse_screen(
         .get("wind")
         .and_then(|v| parse_vec2(v, file, &join(&path, "wind"), errors))
         .unwrap_or_default();
+    let stretch_ui = parse_optional_flag(obj, "stretch_ui", file, &path, errors);
     Some(ParsedScreen {
         name: name?,
         world_runs: world_runs?,
+        stretch_ui: stretch_ui?,
         elements,
         keys,
         default_choices,
@@ -11998,6 +12001,7 @@ fn resolve_screens(
             Screen {
                 name: screen.name.clone(),
                 world_runs: screen.world_runs,
+                stretch_ui: screen.stretch_ui,
                 elements,
                 keys,
                 default_choices,

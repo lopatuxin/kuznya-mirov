@@ -257,7 +257,7 @@ fn active(ui: &Ui) -> &str {
 fn lit_places(ui: &Ui, pointer: Option<[f32; 2]>) -> Vec<String> {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     let parts = interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport);
     let hover = screens::hover_place(&parts, pointer.map(|point| frame.point(point)));
     let lit = ui.state.lit(screen, hover);
@@ -274,7 +274,7 @@ fn lit_places(ui: &Ui, pointer: Option<[f32; 2]>) -> Vec<String> {
 fn glowing_labels(ui: &Ui, pointer: Option<[f32; 2]>) -> Vec<String> {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     let parts = interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport);
     let hover = screens::hover_place(&parts, pointer.map(|point| frame.point(point)));
     let lit = ui.state.lit(screen, hover);
@@ -327,7 +327,7 @@ fn menu_button<'a>(ui: &'a Ui, caption: &str) -> &'a Element {
 fn locked_buttons(ui: &Ui) -> Vec<bool> {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport)
         .iter()
         .filter_map(|part| match part {

@@ -846,7 +846,7 @@ fn particle_properties_on_anything_but_a_free_panel_are_errors() {
 /// Источники активного экрана этого кадра: раскладка окна с масштабом интерфейса, как у `compose_ui`.
 fn emitters_of(ui: &Ui, window: [f32; 2]) -> Vec<engine::render::particles::Emitter> {
     let screen_id = ui.state.active();
-    let frame = ui.config.ui_frame(window);
+    let frame = ui.config.ui_frame(screen_id, window);
     let parts = interface::layout(
         &ui.config.screens[screen_id],
         screen_id,
@@ -1148,7 +1148,8 @@ fn the_particles_grow_and_shrink_with_the_interface() {
         (points - butterfly.width as f32 * 40.0).abs() < 1e-4 && (34.0..=40.0).contains(&points),
         "кадр бабочки в клетку, крылья в нём — полклетки, 20 точек screens.json: {points}"
     );
-    let on_screen = |window: [f32; 2]| points * ui.config.ui_frame(window).scale;
+    let on_screen =
+        |window: [f32; 2]| points * ui.config.ui_frame(ui.state.active(), window).scale[0];
     let big = on_screen([1920.0, 1080.0]);
     let small = on_screen([1280.0, 720.0]);
     assert!((big / small - 1.5).abs() < 1e-4, "{big} и {small}");
@@ -1193,7 +1194,7 @@ fn the_particles_of_a_panel_are_drawn_right_over_it_before_the_next_element_of_t
     update(&mut motion, &ui, 600.0);
 
     let screen_id = ui.state.active();
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     let parts = interface::layout(
         &ui.config.screens[screen_id],
         screen_id,
@@ -1271,7 +1272,7 @@ fn live_ui(elements: &str) -> Ui {
 fn place_at(ui: &Ui, point: [f32; 2]) -> Option<String> {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     let parts = interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport);
     screens::hover_place(&parts, Some(frame.point(point))).map(|index| {
         screen.elements[index]

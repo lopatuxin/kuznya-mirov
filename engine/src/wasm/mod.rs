@@ -1328,9 +1328,9 @@ fn compose_ui(
     atlas_rects: &[ImagePlace],
     ui_elapsed_steps: f64,
 ) -> UiLayers {
-    let frame = config.ui_frame(window);
-    renderer.set_ui_scale(frame.scale);
     let screen_id = state.active();
+    let frame = config.ui_frame(screen_id, window);
+    renderer.set_ui_scale(frame.scale);
     let screen = &config.screens[screen_id];
     let mut layers = UiLayers {
         rects: Vec::with_capacity(screen.elements.len()),

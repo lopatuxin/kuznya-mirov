@@ -153,7 +153,7 @@ fn load() -> (Ui, Vec<ImageDecl>) {
 
 fn parts(ui: &Ui) -> Vec<Part<'_>> {
     let screen = ui.state.active();
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen, VIEWPORT);
     interface::layout(
         &ui.config.screens[screen],
         screen,
@@ -613,9 +613,10 @@ fn scaled_screens() -> String {
 #[test]
 fn the_interface_is_multiplied_by_the_smaller_ratio_to_the_reference_window() {
     let (ui, _) = load_ui(&scaled_screens());
-    let frame = ui.config.ui_frame(SCALED_WINDOW);
-    assert!((frame.scale - 2.0 / 3.0).abs() < 1e-6);
     let screen = ui.state.active();
+    let frame = ui.config.ui_frame(screen, SCALED_WINDOW);
+    let scale = frame.scale[0];
+    assert_eq!(frame.scale, [2.0 / 3.0; 2]);
     let parts = interface::layout(
         &ui.config.screens[screen],
         screen,
@@ -626,7 +627,7 @@ fn the_interface_is_multiplied_by_the_smaller_ratio_to_the_reference_window() {
     let rects: Vec<[f32; 4]> = parts
         .iter()
         .filter_map(|part| match part {
-            Part::Element(placed) => Some(placed.rect.map(|v| v * frame.scale)),
+            Part::Element(placed) => Some(placed.rect.map(|v| v * scale)),
             Part::ScrollBar { .. } => None,
         })
         .collect();
@@ -641,19 +642,22 @@ fn the_interface_is_multiplied_by_the_smaller_ratio_to_the_reference_window() {
     let Element::Label { font_size, .. } = &ui.config.screens[0].elements[2] else {
         panic!("третий — надпись");
     };
-    assert!(close(font_size * frame.scale, 12.0));
+    assert!(close(font_size * scale, 12.0));
     // Вдвое большее окно образца — всё вдвое крупнее.
     assert_eq!(
-        ui.config.ui_frame([2560.0, 1280.0]).scale,
-        2.0 * ui.config.ui_frame([1280.0, 640.0]).scale
+        ui.config.ui_frame(screen, [2560.0, 1280.0]).scale,
+        ui.config
+            .ui_frame(screen, [1280.0, 640.0])
+            .scale
+            .map(|axis| axis * 2.0)
     );
 }
 
 #[test]
 fn a_button_takes_the_click_where_it_is_drawn_at_the_scaled_size() {
     let (mut ui, _) = load_ui(&scaled_screens());
-    let frame = ui.config.ui_frame(SCALED_WINDOW);
     let screen = ui.state.active();
+    let frame = ui.config.ui_frame(screen, SCALED_WINDOW);
     let rect = interface::layout(
         &ui.config.screens[screen],
         screen,
@@ -664,7 +668,7 @@ fn a_button_takes_the_click_where_it_is_drawn_at_the_scaled_size() {
     .iter()
     .find_map(|part| match part {
         Part::Element(placed) if matches!(placed.element, Element::Button { .. }) => {
-            Some(placed.rect.map(|v| v * frame.scale))
+            Some(placed.rect.map(|v| v * frame.scale[0]))
         }
         _ => None,
     })
@@ -703,8 +707,8 @@ fn a_button_takes_the_click_where_it_is_drawn_at_the_scaled_size() {
 #[test]
 fn without_ui_reference_the_interface_stays_point_for_point() {
     let (ui, _) = load();
-    let frame = ui.config.ui_frame(VIEWPORT);
-    assert_eq!(frame.scale, 1.0);
+    let frame = ui.config.ui_frame(ui.state.active(), VIEWPORT);
+    assert_eq!(frame.scale, [1.0; 2]);
     assert_eq!(frame.viewport, VIEWPORT);
     assert_eq!(frame.point([123.0, 45.0]), [123.0, 45.0]);
 }

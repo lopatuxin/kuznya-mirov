@@ -154,7 +154,7 @@ const HERO_MENU: &str = r##"
 fn place_at(ui: &Ui, point: Option<[f32; 2]>) -> Option<String> {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     let parts = interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport);
     screens::hover_place(&parts, point.map(|point| frame.point(point))).map(|index| {
         screen.elements[index]
