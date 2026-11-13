@@ -9765,6 +9765,7 @@ struct ParsedScreen {
     world_runs: bool,
     elements: ParsedElements,
     keys: Vec<(String, ParsedCommand)>,
+    default_choices: Vec<(String, String)>,
     /// Raw `music` name, not yet resolved against `files.music` — «Звук» →«Два вида звука». Resolution happens in `resolve_screens`, same as `font` on an element.
     music: Option<String>,
     /// «Ветер и частицы» → «На экране»: клетка частиц экрана в точках `screens.json`.
@@ -9790,6 +9791,7 @@ fn parse_screen(
             "world_runs",
             "elements",
             "keys",
+            "default_choices",
             "music",
             "cell_pixels",
             "wind",
@@ -9835,6 +9837,20 @@ fn parse_screen(
         Some(v) => parse_screen_keys(v, &join(&path, "keys"), file, errors),
         None => Vec::new(),
     };
+    let default_choices_path = join(&path, "default_choices");
+    let default_choices = obj
+        .get("default_choices")
+        .and_then(|v| expect_object(v, file, &default_choices_path, errors))
+        .map(|groups| {
+            groups
+                .iter()
+                .filter_map(|(group, place)| {
+                    expect_string(place, file, &join(&default_choices_path, group), errors)
+                        .map(|place| (group.clone(), place))
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     // «Звук»: список — самая частая опечатка (плейлист вместо одного трека), и у
     // неё свой текст, отдельный от обычного «ожидалась строка».
     let music = match obj.get("music") {
@@ -9864,6 +9880,7 @@ fn parse_screen(
         world_runs: world_runs?,
         elements,
         keys,
+        default_choices,
         music,
         cell_pixels,
         wind,
@@ -11968,11 +11985,22 @@ fn resolve_screens(
                     errors,
                 )
             });
+            let default_choices_path = join(&screen.path, "default_choices");
+            let default_choices = screen
+                .default_choices
+                .iter()
+                .filter(|(group, place)| {
+                    let path = join(&default_choices_path, group);
+                    choices.place(group, place, file, &path, &path, errors)
+                })
+                .cloned()
+                .collect();
             Screen {
                 name: screen.name.clone(),
                 world_runs: screen.world_runs,
                 elements,
                 keys,
+                default_choices,
                 music,
                 cell_pixels: screen.cell_pixels,
                 wind: screen.wind,

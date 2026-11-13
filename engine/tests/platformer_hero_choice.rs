@@ -1,6 +1,4 @@
-//! Фаза 10 платформера — экран героя `games/platformer`: выбранный на «Распутье» герой, «Новая игра» открывает его
-//! экран с портретом и числами таблицы `heroes`, «Назад» возвращает к выбору, «В путь» начинает партию, в которой
-//! герой получает лист кадров, дальность удара и числа своей строки. Вид экрана — только QA на стенде.
+//! Книга героев «Распутья»: закладки, числа из `heroes` и запуск партии с разворота.
 
 use std::fs;
 
@@ -11,21 +9,15 @@ mod support;
 mod platformer;
 
 use engine::core::interface;
-use engine::core::screens::{self, ButtonCommand, Element, Fill, PanelFill};
+use engine::core::screens::{self, ButtonCommand, Element, PanelFill};
 use engine::data::load::{ImageDecl, load_rest_with_stamps, read_entry};
 use platformer::{platformer_dir, read};
 use support::{Ui, VIEWPORT};
 
-/// Герой, его имя, прозвище и числа Силы богатырской, Сноровки, Прыти и Мудрости — как в `heroes.json`.
-const HEROES: [(&str, &str, &str, [f64; 4]); 3] = [
-    ("ilya", "Илья Муромец", "громила", [8.0, 4.0, 3.0, 2.0]),
-    ("alyosha", "Алёша Попович", "ловкач", [4.0, 6.0, 7.0, 3.0]),
-    (
-        "vasilisa",
-        "Василиса Премудрая",
-        "чародейка",
-        [3.0, 4.0, 4.0, 8.0],
-    ),
+const HEROES: [(&str, &str, [f64; 4]); 3] = [
+    ("ilya", "Илья Муромец", [8.0, 4.0, 3.0, 2.0]),
+    ("alyosha", "Алёша Попович", [4.0, 6.0, 7.0, 3.0]),
+    ("vasilisa", "Василиса Премудрая", [3.0, 4.0, 4.0, 8.0]),
 ];
 
 /// Лист кадров героя и дальность его удара в клетках — как в `heroes.json`: докуда достаёт нарисованное оружие.
@@ -96,15 +88,16 @@ fn click_place(ui: &mut Ui, name: &str) {
     ui.click(at[0], at[1]);
 }
 
-/// Выбор героя в зале после «Новой игры».
-fn hero_screen_of(hero: &str) -> (Ui, Vec<ImageDecl>) {
+fn book_page_of(hero: &str) -> (Ui, Vec<ImageDecl>) {
     let (mut ui, images) = load();
     click_place(&mut ui, "new_game");
     assert_eq!(active_screen(&ui), "hero_select");
-    click_place(&mut ui, hero);
-    assert_eq!(active_screen(&ui), "hero_select");
-    click_place(&mut ui, "hero_details");
-    assert_eq!(active_screen(&ui), "hero", "{hero}");
+    assert_eq!(ui.state.chosen("heroes"), Some("ilya"));
+    if hero != "ilya" {
+        click_place(&mut ui, hero);
+    }
+    assert_eq!(active_screen(&ui), "hero_select", "{hero}");
+    assert_eq!(ui.state.chosen("heroes"), Some(hero));
     (ui, images)
 }
 
@@ -127,30 +120,22 @@ fn label_texts(ui: &Ui) -> Vec<String> {
 }
 
 #[test]
-fn the_hero_screen_shows_the_chosen_hero_with_the_numbers_of_his_row() {
-    for (hero, name, epithet, numbers) in HEROES {
-        let (ui, _) = hero_screen_of(hero);
+fn the_book_shows_the_chosen_hero_with_the_numbers_of_their_row() {
+    for (hero, name, numbers) in HEROES {
+        let (ui, _) = book_page_of(hero);
         let texts = label_texts(&ui);
-        for expected in [
-            name,
-            epithet,
-            "Сила богатырская",
-            "Сноровка",
-            "Прыть",
-            "Мудрость",
-        ] {
-            assert!(
-                texts.iter().any(|t| t == expected),
-                "{hero}: нет «{expected}» в {texts:?}"
-            );
-        }
-        for number in numbers {
-            let shown = format!("{number}");
-            assert!(
-                texts.contains(&shown),
-                "{hero}: нет числа {shown} в {texts:?}"
-            );
-        }
+        let expected = [
+            name.to_string(),
+            "Сила богатырская".to_string(),
+            numbers[0].to_string(),
+            "Сноровка".to_string(),
+            numbers[1].to_string(),
+            "Прыть".to_string(),
+            numbers[2].to_string(),
+            "Мудрость".to_string(),
+            numbers[3].to_string(),
+        ];
+        assert!(texts.starts_with(&expected), "{hero}: {texts:?}");
         assert!(
             texts.iter().all(|t| !t.contains('{')),
             "{hero}: подстановка не раскрыта: {texts:?}"
@@ -159,90 +144,73 @@ fn the_hero_screen_shows_the_chosen_hero_with_the_numbers_of_his_row() {
 }
 
 #[test]
-fn the_hero_screen_shows_the_portrait_of_the_chosen_hero() {
+fn the_chosen_heros_spread_fills_the_book() {
     for (hero, ..) in HEROES {
-        let (ui, images) = hero_screen_of(hero);
-        let (choice, names) = ui.config.screens[ui.state.active()]
-            .elements
+        let (ui, images) = book_page_of(hero);
+        let elements = &ui.config.screens[ui.state.active()].elements;
+        let (spread, choice, names) = elements
             .iter()
             .find_map(|element| match element {
                 Element::Panel {
+                    placement,
                     fill: PanelFill::Choice { choice, names, .. },
                     ..
-                } => Some((choice, names)),
+                } => Some((placement, choice, names)),
                 _ => None,
             })
-            .expect("панель портрета");
+            .expect("разворот выбранного героя");
         let image = ui
             .state
             .choices(&ui.config)
             .image(choice, names)
-            .expect("картинка портрета");
-        assert_eq!(images[image].name, format!("{hero}_portrait"));
+            .expect("иллюстрация разворота");
+        assert_eq!(images[image].name, format!("hero_book_{hero}"));
+        assert!(matches!(spread.anchor, screens::Anchor::Center));
+        assert_eq!(spread.offset, [0.0, 0.0]);
+        assert_eq!(spread.size, [1920.0, 1074.6]);
     }
 }
 
 #[test]
-fn back_returns_to_the_hall_with_the_same_hero_chosen() {
+fn back_returns_to_the_menu_with_the_same_hero_chosen() {
     for (hero, ..) in HEROES {
-        let (mut ui, _) = hero_screen_of(hero);
-        click_place(&mut ui, "back");
-        assert_eq!(active_screen(&ui), "hero_select");
+        let (mut ui, _) = book_page_of(hero);
+        click_place(&mut ui, "back_select");
+        assert_eq!(active_screen(&ui), "menu");
         assert_eq!(ui.state.chosen("heroes"), Some(hero));
         assert!(!ui.game.has_world());
     }
 }
 
 #[test]
-fn hero_exits_stay_in_their_arches_and_back_returns_to_menu() {
-    let (mut ui, images) = load();
+fn bookmarks_switch_the_page_and_keep_the_choice_when_the_book_reopens() {
+    let (mut ui, _) = load();
     click_place(&mut ui, "new_game");
     assert_eq!(active_screen(&ui), "hero_select");
+    assert_eq!(ui.state.chosen("heroes"), Some("ilya"));
+    assert!(!ui.game.has_world());
 
-    for hero in ["ilya", "vasilisa", "alyosha"] {
-        let hall = &ui.config.screens[ui.state.active()];
-        let exit_target = hall
-            .elements
-            .iter()
-            .position(|element| element.place_name() == Some(hero))
-            .expect("место героя в зале");
-        let exit_panel = |element: &Element| element.play_on_hover() == Some(exit_target);
-        let idle_position = middle_of(&ui, exit_panel);
-        let center = VIEWPORT[0] / 2.0;
-        match hero {
-            "ilya" => assert!(idle_position[0] < center),
-            "alyosha" => assert!(idle_position[0] > center),
-            _ => assert!((idle_position[0] - center).abs() < 1.0),
-        }
-        let panel = hall.elements.iter().find(|element| exit_panel(element));
-        let Some(Element::Panel {
-            fill: PanelFill::Fixed(Fill::Image { image, .. }),
-            ..
-        }) = panel
-        else {
-            panic!("{hero}: нет панели с видео выхода");
-        };
-        let video = &images[*image];
-        assert_eq!(video.name, format!("hall_{hero}_exit"));
-        assert!(video.video && video.reverse.is_some(), "{hero}");
-        assert!(!ui.state.lit(hall, None).contains(exit_target));
-
+    for (hero, name, _) in HEROES {
         click_place(&mut ui, hero);
         assert_eq!(active_screen(&ui), "hero_select");
-        assert_eq!(middle_of(&ui, exit_panel), idle_position);
-        let hall = &ui.config.screens[ui.state.active()];
-        assert!(ui.state.lit(hall, None).is_held(exit_target));
+        assert_eq!(label_texts(&ui).first().map(String::as_str), Some(name));
+        assert_eq!(ui.state.chosen("heroes"), Some(hero));
+        assert!(!ui.game.has_world());
     }
 
     click_place(&mut ui, "back_select");
-    assert_eq!(active_screen(&ui), "menu");
-    assert!(!ui.game.has_world());
+    click_place(&mut ui, "new_game");
+    assert_eq!(ui.state.chosen("heroes"), Some("vasilisa"));
+    assert_eq!(
+        label_texts(&ui).first().map(String::as_str),
+        Some("Василиса Премудрая")
+    );
 }
 
 #[test]
 fn on_the_road_the_hero_gets_the_numbers_of_his_row() {
-    for (hero, _, _, numbers) in HEROES {
-        let (mut ui, _) = hero_screen_of(hero);
+    for (hero, _, numbers) in HEROES {
+        let (mut ui, _) = book_page_of(hero);
         click_place(&mut ui, "go");
         assert_eq!(active_screen(&ui), "game", "{hero}");
         ui.ticks(2, 1.0 / 60.0);
@@ -256,7 +224,7 @@ fn on_the_road_the_hero_gets_the_numbers_of_his_row() {
 #[test]
 fn on_the_road_the_hero_gets_the_sheet_and_reach_of_his_row() {
     for (hero, sheet, reach) in SHEETS {
-        let (mut ui, images) = hero_screen_of(hero);
+        let (mut ui, images) = book_page_of(hero);
         click_place(&mut ui, "go");
         ui.ticks(2, 1.0 / 60.0);
         let id = ui.id_of("Герой");
@@ -272,7 +240,7 @@ fn on_the_road_the_hero_gets_the_sheet_and_reach_of_his_row() {
 
 #[test]
 fn starting_over_from_the_pause_keeps_the_chosen_hero() {
-    let (mut ui, _) = hero_screen_of("alyosha");
+    let (mut ui, _) = book_page_of("alyosha");
     click_place(&mut ui, "go");
     ui.key("Escape");
     assert_eq!(active_screen(&ui), "pause");

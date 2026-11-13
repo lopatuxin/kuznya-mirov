@@ -129,7 +129,7 @@ pub struct Ui {
 
 impl Ui {
     pub fn new(game: Game, config: ScreensConfig) -> Self {
-        let state = ScreenState::new(config.start_screen);
+        let state = ScreenState::from_config(&config);
         Ui {
             game,
             config,

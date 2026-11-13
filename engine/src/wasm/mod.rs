@@ -2444,7 +2444,7 @@ impl Engine {
                     };
                     self.renderer.add_font(family, settings);
                 }
-                self.screen_state = Some(ScreenState::new(screens_config.start_screen));
+                self.screen_state = Some(ScreenState::from_config(&screens_config));
                 self.screens_config = Some(screens_config);
                 self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
                 self.terrain_revision = game.world.terrain_revision();

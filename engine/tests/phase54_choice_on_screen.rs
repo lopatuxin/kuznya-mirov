@@ -99,6 +99,14 @@ fn try_load_tables(menu: &str, tables: &[(&str, &str)]) -> Result<Loaded, LoadFa
 }
 
 fn try_load_scene(menu: &str, tables: &[(&str, &str)], scene: &str) -> Result<Loaded, LoadFailure> {
+    try_load_screens(&screens_json(menu), tables, scene)
+}
+
+fn try_load_screens(
+    screens: &str,
+    tables: &[(&str, &str)],
+    scene: &str,
+) -> Result<Loaded, LoadFailure> {
     let game = game_json();
     let (config, _) = read_entry(&game).expect("game.json должен разбираться");
     let tables: Vec<(String, Option<String>)> = tables
@@ -111,7 +119,7 @@ fn try_load_scene(menu: &str, tables: &[(&str, &str)], scene: &str) -> Result<Lo
         Some(PROPS),
         Some(scene),
         Some(NO_RULES),
-        Some(&screens_json(menu)),
+        Some(screens),
         &[("ui".to_string(), Some(vec![0x00, 0x01, 0x00, 0x00]))],
         &[],
         &[],
@@ -140,6 +148,40 @@ fn assert_error(errors: &[GameError], path: &str, message: &str) {
             .iter()
             .any(|e| e.path.contains(path) && e.message.contains(message)),
         "нет ошибки {path}: {message}: {errors:?}"
+    );
+}
+
+#[test]
+fn the_start_screen_applies_its_default_choice() {
+    let screens = screens_json(&hero_menu()).replacen(
+        "\"name\":\"menu\",",
+        r#""name":"menu","default_choices":{"heroes":"ilya"},"#,
+        1,
+    );
+    let (game, config, _, _) =
+        try_load_screens(&screens, &[("heroes", HEROES), ("other", "{}")], SCENE)
+            .expect("выбор по умолчанию должен разбираться");
+    let ui = Ui::new(game, config);
+    assert_eq!(ui.state.chosen("heroes"), Some("ilya"));
+}
+
+#[test]
+fn a_default_choice_must_name_a_table_and_its_row() {
+    let screens = screens_json(&hero_menu()).replacen(
+        "\"name\":\"menu\",",
+        r#""name":"menu","default_choices":{"ghost":"ilya","heroes":"stranger"},"#,
+        1,
+    );
+    let errors = errors_of(try_load_screens(
+        &screens,
+        &[("heroes", HEROES), ("other", "{}")],
+        SCENE,
+    ));
+    assert_error(&errors, "default_choices → ghost", "нет в files.tables");
+    assert_error(
+        &errors,
+        "default_choices → heroes",
+        "не ключ строки таблицы",
     );
 }
 
@@ -895,6 +937,43 @@ fn a_replay_of_a_partiya_started_with_nothing_chosen_keeps_the_scene_value() {
         !text.contains("hero.hero_id"),
         "ничего не выбрано, значение не пишется: {text}"
     );
+}
+
+#[test]
+fn a_default_choice_on_the_target_screen_does_not_change_the_recorded_start() {
+    let screens = screens_json(&hero_menu()).replacen(
+        r#""name":"game","world_runs":true,"#,
+        r#""name":"game","world_runs":true,"default_choices":{"heroes":"alyosha"},"#,
+        1,
+    );
+    let (game, config, _, _) =
+        try_load_screens(&screens, &[("heroes", HEROES), ("other", "{}")], SCENE)
+            .expect("игра с начальным выбором на целевом экране");
+    let mut ui = Ui::new(game, config);
+    let mut session = PlaySession::begin_live(&mut ui.game, &ui.config, &mut ui.state);
+    live_tick(&mut ui, &mut session, &[PLAY]);
+    live_tick(&mut ui, &mut session, &[]);
+    let steps = ui.game.session_step_count();
+    assert!(steps > 0);
+    assert_eq!(hero_text(&ui, "hero_id"), "nobody");
+    assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
+    session.end(&mut ui.game);
+    let text = session.recording_text(&ui.game);
+
+    let mut replay = PlaySession::begin_replay(&text, &mut ui.game, &ui.config, &mut ui.state)
+        .expect("запись читается");
+    replay.seek(
+        steps,
+        &mut ui.queue,
+        &mut ui.mouse,
+        &mut ui.game,
+        &ui.config,
+        &mut ui.state,
+        VIEWPORT,
+        &[],
+    );
+    assert_eq!(hero_text(&ui, "hero_id"), "nobody");
+    assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
 }
 
 // -------------------------------------------------------------------------------------------

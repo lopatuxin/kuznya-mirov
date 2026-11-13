@@ -52,7 +52,7 @@ impl PlaySession {
     pub fn begin_live(game: &mut Game, config: &ScreensConfig, state: &mut ScreenState) -> Self {
         let start_is_live = config.screens[config.start_screen].world_runs;
         game.reset_for_play(start_is_live);
-        *state = ScreenState::new(config.start_screen);
+        *state = ScreenState::from_config(config);
         game.begin_session();
         PlaySession {
             mode: Mode::Live,
@@ -86,7 +86,7 @@ impl PlaySession {
         }
         let start_is_live = config.screens[config.start_screen].world_runs;
         game.reset_for_play(start_is_live);
-        *state = ScreenState::new(config.start_screen);
+        *state = ScreenState::from_config(config);
         game.begin_session();
         Ok(PlaySession {
             mode: Mode::Replay,
@@ -150,19 +150,26 @@ impl PlaySession {
         events: Vec<RecordedEvent>,
         game: &Game,
         config: &ScreensConfig,
-        state: &ScreenState,
         images: &[ImageDecl],
     ) {
         for event in events {
-            let kind =
-                match event {
-                    RecordedEvent::WorldKeyDown(code) => ReplayEventKind::KeyDown(code),
-                    RecordedEvent::WorldKeyUp(code) => ReplayEventKind::KeyUp(code),
-                    RecordedEvent::WorldClick(object) => ReplayEventKind::Click(object),
-                    RecordedEvent::Command(cmd, object) => ReplayEventKind::Command(
-                        replay_command_of(cmd, object, config, state, &game.properties, images),
-                    ),
-                };
+            let kind = match event {
+                RecordedEvent::WorldKeyDown(code) => ReplayEventKind::KeyDown(code),
+                RecordedEvent::WorldKeyUp(code) => ReplayEventKind::KeyUp(code),
+                RecordedEvent::WorldClick(object) => ReplayEventKind::Click(object),
+                RecordedEvent::Command {
+                    cmd,
+                    object,
+                    initial_values,
+                } => ReplayEventKind::Command(replay_command_of(
+                    cmd,
+                    object,
+                    &initial_values,
+                    config,
+                    &game.properties,
+                    images,
+                )),
+            };
             self.recording.events.push(ReplayEvent { step, kind });
         }
     }
@@ -271,7 +278,7 @@ impl PlaySession {
             Some(&mut events),
             true,
         );
-        self.push_screen_events(step_before, events, game, config, state, images);
+        self.push_screen_events(step_before, events, game, config, images);
         Self::annotate_screen_change(game, config, before_screen, state.active());
     }
 
@@ -380,7 +387,7 @@ impl PlaySession {
             true,
         );
         if !self.is_replay() {
-            self.push_screen_events(step_before, events, game, config, state, images);
+            self.push_screen_events(step_before, events, game, config, images);
         }
         Self::annotate_screen_change(game, config, before_screen, state.active());
     }
@@ -413,7 +420,7 @@ impl PlaySession {
         let target = target.min(self.recording.steps);
         let start_is_live = config.screens[config.start_screen].world_runs;
         game.reset_for_play(start_is_live);
-        *state = ScreenState::new(config.start_screen);
+        *state = ScreenState::from_config(config);
         game.begin_session();
         self.applied_events_step = None;
         let mut before_screen = state.active();
@@ -728,29 +735,24 @@ fn parse_wind(wind: &Json) -> Result<[f64; 2], String> {
 fn replay_command_of(
     cmd: screens::ButtonCommand,
     object: Option<u32>,
+    initial_values: &[(String, PropertyId, Value)],
     config: &ScreensConfig,
-    state: &ScreenState,
     properties: &crate::core::property::PropertyTable,
     images: &[ImageDecl],
 ) -> ReplayCommand {
     use crate::core::screens::ButtonCommand;
     match cmd {
         ButtonCommand::ShowScreen(id) => ReplayCommand::ShowScreen(config.screens[id].name.clone()),
-        ButtonCommand::NewGame(id, values_id) => {
-            let values = values_id
-                .and_then(|vid| config.initial_values.get(vid))
-                .map(|list| {
-                    screens::resolve_initial_values(list, state.choices(config))
-                        .iter()
-                        .map(|(name, prop, value)| {
-                            (
-                                format!("{name}.{}", properties.name(*prop)),
-                                edit::value_to_json(value, images),
-                            )
-                        })
-                        .collect()
+        ButtonCommand::NewGame(id, _) => {
+            let values = initial_values
+                .iter()
+                .map(|(name, prop, value)| {
+                    (
+                        format!("{name}.{}", properties.name(*prop)),
+                        edit::value_to_json(value, images),
+                    )
                 })
-                .unwrap_or_default();
+                .collect();
             ReplayCommand::NewGame(config.screens[id].name.clone(), values)
         }
         ButtonCommand::Resume => ReplayCommand::Resume,
@@ -804,7 +806,7 @@ fn apply_replay_command(
                 .iter()
                 .filter_map(|(key, json)| resolve_named_value(key, json, game, images))
                 .collect();
-            screens::apply_replay_new_game(id, &values, game, config, state);
+            screens::apply_new_game(id, &values, game, config, state);
         }
         ReplayCommand::Resume => {
             screens::apply_command(screens::ButtonCommand::Resume, game, config, state);
