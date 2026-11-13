@@ -595,6 +595,7 @@ pub struct Screen {
     pub world_runs: bool,
     pub elements: Vec<Element>,
     pub keys: ScreenKeyTable,
+    pub default_choices: Vec<(String, String)>,
     /// «Звук» → «Два вида звука»: `None` is silence, same as the pause screen.
     pub music: Option<MusicId>,
     /// «Ветер и частицы» → «На экране»: клетка экрана — сколько точек `screens.json` в одной клетке частиц;
@@ -879,7 +880,7 @@ pub struct ScreenState {
     /// «Экраны и состояние» → «Команды»: `exit` сработал — игра просит страницу уйти к списку игр.
     exit_requested: bool,
     /// «Выбор»: выбранное место каждой группы выбора. Принадлежит странице, а не партии и не экрану: смена
-    /// экрана, `new_game` и `quit` его не трогают, новое состояние экранов начинается без выбора.
+    /// экрана, `new_game` и `quit` его сохраняют, а начальный выбор экрана заполняет свободные группы.
     chosen: HashMap<String, String>,
     /// Номер последнего открытия экрана: частицы и видео экрана начинаются заново при каждом открытии, и
     /// номер говорит об этом, даже когда экран открыт заново между двумя кадрами.
@@ -901,6 +902,12 @@ struct ListScroll {
 }
 
 impl ScreenState {
+    pub fn from_config(config: &ScreensConfig) -> Self {
+        let mut state = Self::new(config.start_screen);
+        state.apply_default_choices(&config.screens[config.start_screen]);
+        state
+    }
+
     pub fn new(start_screen: ScreenId) -> Self {
         ScreenState {
             active: start_screen,
@@ -962,6 +969,14 @@ impl ScreenState {
     /// «Выбор»: выбор группы переходит на место `place`; выбранное повторно остаётся.
     fn choose(&mut self, group: String, place: String) {
         self.chosen.insert(group, place);
+    }
+
+    fn apply_default_choices(&mut self, screen: &Screen) {
+        for (group, place) in &screen.default_choices {
+            self.chosen
+                .entry(group.clone())
+                .or_insert_with(|| place.clone());
+        }
     }
 
     /// «Выбор»: выбранное и таблицы, по которым подставляются поля.
@@ -1029,6 +1044,7 @@ fn switch_to(
 ) {
     let was_live = config.screens[state.active].world_runs;
     state.switch(target, remember);
+    state.apply_default_choices(&config.screens[target]);
     if was_live && !config.screens[target].world_runs {
         game.release_held_keys();
     }
@@ -1042,30 +1058,25 @@ pub fn apply_command(
     config: &ScreensConfig,
     state: &mut ScreenState,
 ) {
-    apply_command_on(cmd, None, game, config, state);
+    apply_command_recording(cmd, None, game, config, state, None);
 }
 
-/// То же для кнопки, у которой есть объект — строки списка или элемента с `for`: `run` передаёт его
-/// функции кода.
-pub fn apply_command_on(
+fn apply_command_recording(
     cmd: ButtonCommand,
     object: Option<u32>,
     game: &mut Game,
     config: &ScreensConfig,
     state: &mut ScreenState,
+    events: Option<&mut Vec<RecordedEvent>>,
 ) {
+    let mut initial_values = Vec::new();
     match cmd {
         ButtonCommand::ShowScreen(target) => switch_to(state, config, game, target, true),
         ButtonCommand::NewGame(target, values_id) => {
-            match values_id.and_then(|id| config.initial_values.get(id)) {
-                Some(values) => {
-                    let values = resolve_initial_values(values, state.choices(config));
-                    game.new_game_with_values(&values);
-                }
-                None => game.new_game(),
+            if let Some(values) = values_id.and_then(|id| config.initial_values.get(id)) {
+                initial_values = resolve_initial_values(values, state.choices(config));
             }
-            state.reset_scrolls();
-            switch_to(state, config, game, target, false);
+            apply_new_game(target, &initial_values, game, config, state);
         }
         ButtonCommand::Resume => {
             if let Some(previous) = state.previous {
@@ -1092,11 +1103,18 @@ pub fn apply_command_on(
         // screen, no queued anything — the whole command is this one flip.
         ButtonCommand::ToggleSound => state.sound_enabled = !state.sound_enabled,
     }
+    if let Some(events) = events {
+        events.push(RecordedEvent::Command {
+            cmd,
+            object,
+            initial_values,
+        });
+    }
 }
 
 /// «Выбор»: начальные значения `new_game` с выбором страницы. Ничего не выбрано — значение не пишется, у объекта
 /// остаётся значение из сцены.
-pub(crate) fn resolve_initial_values(
+fn resolve_initial_values(
     values: &[(String, PropertyId, InitialValue)],
     choices: Choices<'_>,
 ) -> Vec<(String, PropertyId, Value)> {
@@ -1112,11 +1130,7 @@ pub(crate) fn resolve_initial_values(
         .collect()
 }
 
-/// «Редактор», требование 27–28: same transition as `apply_command`'s own `NewGame` branch, for a
-/// replay's resolved values — a `(имя объекта, свойство, значение)` list, rather than a
-/// pre-registered `InitialValuesId`, since a replay's own values were never registered at load
-/// time the way a button's or a screen key's own `new_game` third element is.
-pub fn apply_replay_new_game(
+pub(crate) fn apply_new_game(
     target: ScreenId,
     values: &[(String, PropertyId, Value)],
     game: &mut Game,
@@ -1256,10 +1270,7 @@ pub fn handle_screen_key_up(
         if was_held && let Some(events) = events.as_deref_mut() {
             events.push(RecordedEvent::WorldKeyUp(code.to_string()));
         }
-        apply_command(cmd, game, config, state);
-        if let Some(events) = events {
-            events.push(RecordedEvent::Command(cmd, None));
-        }
+        apply_command_recording(cmd, None, game, config, state, events);
         return;
     }
     if world_accepts_input(game, config, state) {
@@ -1495,7 +1506,11 @@ pub enum RecordedEvent {
     /// номер объекта, чья она; повтор щёлкает по тому же объекту.
     WorldClick(u32),
     /// Команда и объект кнопки — строки списка или элемента с `for`, если он был.
-    Command(ButtonCommand, Option<u32>),
+    Command {
+        cmd: ButtonCommand,
+        object: Option<u32>,
+        initial_values: Vec<(String, PropertyId, Value)>,
+    },
 }
 
 /// Drains the shared mouse/screen-key queue, judging every event — mouse or keyboard — against
@@ -1548,10 +1563,14 @@ pub fn process_ui_queue_recording(
                 let accepts = world_accepts_input(game, config, state);
                 match handle_mouse_event(mouse, &parts, accepts, mouse_event) {
                     MouseOutcome::Command(cmd, object) => {
-                        apply_command_on(cmd, object, game, config, state);
-                        if let Some(events) = events.as_deref_mut() {
-                            events.push(RecordedEvent::Command(cmd, object));
-                        }
+                        apply_command_recording(
+                            cmd,
+                            object,
+                            game,
+                            config,
+                            state,
+                            events.as_deref_mut(),
+                        );
                     }
                     // «Мышь в мире», требование 21: тем же путём, что клавиша экрана без
                     // команды — этап 2 шага (очередь) или сразу (`apply_now`, партия/повтор в

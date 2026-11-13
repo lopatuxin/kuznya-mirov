@@ -1,4 +1,4 @@
-//! Начальный экран `games/platformer`: статичная утверждённая картина, переход в зал выбора,
+//! Начальный экран `games/platformer`: статичная утверждённая картина, переход в книгу героев,
 //! прямой выбор героя на картине и выход к списку игр. Вид экрана — только QA на стенде.
 
 use std::fs;
@@ -126,7 +126,7 @@ fn choose_hero(ui: &mut Ui, hero: &str) {
 }
 
 #[test]
-fn new_game_opens_the_hall_without_creating_a_world() {
+fn new_game_opens_the_book_without_creating_a_world() {
     let mut ui = ui();
     let new_game = new_game_button(&ui);
     assert_eq!(place_at(&ui, new_game).as_deref(), Some("new_game"));
@@ -136,11 +136,11 @@ fn new_game_opens_the_hall_without_creating_a_world() {
 }
 
 #[test]
-fn clicking_a_hero_on_the_start_screen_opens_that_heros_card() {
+fn clicking_a_hero_on_the_start_screen_opens_their_book_page() {
     for hero in HEROES {
         let mut ui = ui();
         choose_hero(&mut ui, hero);
-        assert_eq!(active_screen(&ui), "hero", "{hero}");
+        assert_eq!(active_screen(&ui), "hero_select", "{hero}");
         assert_eq!(ui.state.chosen("heroes"), Some(hero));
         assert!(!ui.game.has_world());
     }
@@ -253,8 +253,6 @@ fn the_pause_returns_to_the_start_screen_with_the_same_hero_chosen() {
     let new_game = new_game_button(&ui);
     ui.click(new_game[0], new_game[1]);
     choose_hero(&mut ui, "alyosha");
-    let details = middle_of(&ui, |element| element.place_name() == Some("hero_details"));
-    ui.click(details[0], details[1]);
     let go = go_button(&ui);
     ui.click(go[0], go[1]);
     ui.key("Escape");
