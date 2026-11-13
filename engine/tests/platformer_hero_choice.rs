@@ -70,13 +70,13 @@ fn active_screen(ui: &Ui) -> &str {
 fn middle_of(ui: &Ui, matches: impl Fn(&Element) -> bool) -> [f32; 2] {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
-    let frame = ui.config.ui_frame(VIEWPORT);
+    let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport)
         .iter()
         .find_map(|part| match part {
             interface::Part::Element(placed) if matches(placed.element) => Some([
-                (placed.rect[0] + placed.rect[2] / 2.0) * frame.scale,
-                (placed.rect[1] + placed.rect[3] / 2.0) * frame.scale,
+                (placed.rect[0] + placed.rect[2] / 2.0) * frame.scale[0],
+                (placed.rect[1] + placed.rect[3] / 2.0) * frame.scale[1],
             ]),
             _ => None,
         })
@@ -144,7 +144,7 @@ fn the_book_shows_the_chosen_hero_with_the_numbers_of_their_row() {
 }
 
 #[test]
-fn the_chosen_heros_spread_fills_the_book() {
+fn the_chosen_heros_spread_fills_the_window() {
     for (hero, ..) in HEROES {
         let (ui, images) = book_page_of(hero);
         let elements = &ui.config.screens[ui.state.active()].elements;
@@ -167,8 +167,35 @@ fn the_chosen_heros_spread_fills_the_book() {
         assert_eq!(images[image].name, format!("hero_book_{hero}"));
         assert!(matches!(spread.anchor, screens::Anchor::Center));
         assert_eq!(spread.offset, [0.0, 0.0]);
-        assert_eq!(spread.size, [1920.0, 1074.6]);
+        for window in [[1920.0, 911.0], [1920.0, 1080.0], [1280.0, 960.0]] {
+            let frame = ui.config.ui_frame(ui.state.active(), window);
+            assert_eq!(spread.top_left(frame.viewport), [0.0, 0.0]);
+            assert_eq!(
+                [
+                    spread.size[0] * frame.scale[0],
+                    spread.size[1] * frame.scale[1]
+                ],
+                window
+            );
+        }
     }
+}
+
+#[test]
+fn the_right_edge_of_the_bookmark_selects_the_hero_in_a_wide_window() {
+    let (mut ui, _) = book_page_of("ilya");
+    ui.queue.push_mouse_move(1880.0, 408.0);
+    ui.queue.push_mouse_down();
+    ui.queue.push_mouse_up();
+    screens::process_ui_queue(
+        &mut ui.queue,
+        &mut ui.mouse,
+        &mut ui.game,
+        &ui.config,
+        &mut ui.state,
+        [1920.0, 911.0],
+    );
+    assert_eq!(ui.state.chosen("heroes"), Some("vasilisa"));
 }
 
 #[test]

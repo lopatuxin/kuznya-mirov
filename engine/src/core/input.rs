@@ -214,6 +214,7 @@ impl ButtonKey {
 /// «Мышь».
 #[derive(Debug, Clone, Copy, Default)]
 pub struct MouseState {
+    /// Точка указателя в окне до пересчёта в координаты активного экрана.
     pub position: [f32; 2],
     pub hover: Option<ButtonKey>,
     pub captured: Option<ButtonKey>,

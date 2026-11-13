@@ -20,6 +20,7 @@
       "hero_book_ilya": { "path": "images/hero_book_ilya.png", "smooth": true },
       "hero_book_alyosha": { "path": "images/hero_book_alyosha.png", "smooth": true },
       "hero_book_vasilisa": { "path": "images/hero_book_vasilisa.png", "smooth": true },
+      "hero_book_cover": { "path": "images/hero_book_cover.png", "smooth": true },
       "sky": { "path": "images/sky.png", "smooth": true },
       "cloud_a": { "path": "images/cloud_a.png", "smooth": true },
       "cloud_b": { "path": "images/cloud_b.png", "smooth": true },
