@@ -189,12 +189,24 @@ pub type ChoiceTable = HashMap<String, HashMap<String, String>>;
 pub struct Choices<'a> {
     tables: &'a HashMap<String, ChoiceTable>,
     chosen: &'a HashMap<String, String>,
+    preview: Option<(&'a str, &'a str)>,
 }
 
 impl<'a> Choices<'a> {
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn with_preview(self, group: &'a str, place: &'a str) -> Self {
+        Self {
+            preview: Some((group, place)),
+            ..self
+        }
+    }
+
     /// Имя выбранного места группы или поле его строки; `None` — ничего не выбрано или у строки нет поля.
     pub fn text(&self, choice: &ChoiceRef) -> Option<&'a str> {
-        let place = self.chosen.get(&choice.group)?;
+        let place = match self.preview {
+            Some((group, place)) if group == choice.group => place,
+            _ => self.chosen.get(&choice.group)?,
+        };
         match &choice.field {
             None => Some(place),
             Some(field) => self
@@ -603,6 +615,39 @@ impl Element {
 pub type ScreenKeyTable = HashMap<String, ButtonCommand>;
 
 #[derive(Debug, Clone)]
+pub struct Book {
+    pub group: String,
+    pub binding: ImageId,
+    pub tabs: ImageId,
+    pub tab_area: Placement,
+    pub spine: f32,
+    pub leaf: Placement,
+    pub bookmarks: Vec<Bookmark>,
+}
+
+#[derive(Debug, Clone)]
+pub struct Bookmark {
+    pub place: String,
+    pub spread: ImageId,
+}
+
+impl Book {
+    pub fn selected(&self, state: &ScreenState) -> Option<usize> {
+        state.chosen(&self.group).and_then(|place| {
+            self.bookmarks
+                .iter()
+                .position(|bookmark| bookmark.place == place)
+        })
+    }
+
+    pub(crate) fn is_left(&self, place: &str, selected: usize) -> bool {
+        self.bookmarks[..selected]
+            .iter()
+            .any(|bookmark| bookmark.place == place)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct Screen {
     pub name: String,
     pub world_runs: bool,
@@ -610,6 +655,7 @@ pub struct Screen {
     pub elements: Vec<Element>,
     pub keys: ScreenKeyTable,
     pub default_choices: Vec<(String, String)>,
+    pub book: Option<Book>,
     /// «Звук» → «Два вида звука»: `None` is silence, same as the pause screen.
     pub music: Option<MusicId>,
     /// «Ветер и частицы» → «На экране»: клетка экрана — сколько точек `screens.json` в одной клетке частиц;
@@ -909,6 +955,7 @@ pub struct ScreenState {
     /// «Выбор»: выбранное место каждой группы выбора. Принадлежит странице, а не партии и не экрану: смена
     /// экрана, `new_game` и `quit` его сохраняют, а начальный выбор экрана заполняет свободные группы.
     chosen: HashMap<String, String>,
+    book_page: Option<usize>,
     /// Номер последнего открытия экрана: частицы и видео экрана начинаются заново при каждом открытии, и
     /// номер говорит об этом, даже когда экран открыт заново между двумя кадрами.
     opened: u64,
@@ -943,6 +990,7 @@ impl ScreenState {
             scrolls: HashMap::new(),
             exit_requested: false,
             chosen: HashMap::new(),
+            book_page: None,
             opened: NEXT_OPENED.fetch_add(OPENINGS_PER_STATE, Ordering::Relaxed),
         }
     }
@@ -993,6 +1041,15 @@ impl ScreenState {
         self.chosen.get(group).map(String::as_str)
     }
 
+    pub(crate) fn visible_book_page(&self, book: &Book) -> Option<usize> {
+        self.book_page.or_else(|| book.selected(self))
+    }
+
+    #[cfg(target_arch = "wasm32")]
+    pub(crate) fn show_book_page(&mut self, page: usize) {
+        self.book_page = Some(page);
+    }
+
     /// «Выбор»: выбор группы переходит на место `place`; выбранное повторно остаётся.
     fn choose(&mut self, group: String, place: String) {
         self.chosen.insert(group, place);
@@ -1011,6 +1068,7 @@ impl ScreenState {
         Choices {
             tables: &config.choices,
             chosen: &self.chosen,
+            preview: None,
         }
     }
 
@@ -1056,6 +1114,7 @@ impl ScreenState {
     fn switch(&mut self, target: ScreenId, remember: bool) {
         self.previous = if remember { Some(self.active) } else { None };
         self.active = target;
+        self.book_page = None;
         self.opened += 1;
     }
 }

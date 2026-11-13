@@ -36,17 +36,9 @@ struct InstanceInput {
     // white, sheet 0), stretched over the whole rectangle exactly like a real image would be.
     @location(4) atlas_pos: vec2<f32>,
     @location(5) atlas_size: vec2<f32>,
-    // «Картинки», требование 24: quarter turns (0–3) clockwise; a color fill always gets 0.
-    @location(6) rotation_quarters: f32,
-    // «Картинки» → «Атлас», требование 14: which array layer of `atlas_texture` to sample.
-    @location(7) atlas_layer: f32,
-    // «Картинки» → «Сглаживание»: 0.0/1.0 — `atlas::AtlasImage`'s own `smooth`, a color fill
-    // always gets 0.0 (doesn't matter: `WHITE_PIXEL` samples the same either way). Named
-    // `smooth_flag`, not `smooth` — `smooth` is a WGSL reserved word.
-    @location(8) smooth_flag: f32,
-    // «Картинки» → «Отражение», требование 9: 0.0/1.0 — mirrors the sampled point in the image's
-    // own axes, after `rotation_quarters` above has already picked which corner maps where.
-    @location(9) flip_x: f32,
+    // «Картинки»: четверти оборота, слой атласа, сглаживание и отражение по горизонтали.
+    @location(6) sampling: vec4<f32>,
+    @location(7) vertical_offsets: vec4<f32>,
     // «Картинки», «Таблица картинок»: 0.0/1.0 — светящаяся картинка: фрагмент отдаёт `(цвет, 0)`, и
     // смешивание `PREMULTIPLIED_ALPHA_BLENDING` прибавляет цвет к тому, что под ней.
     @location(10) glow_flag: f32,
@@ -108,7 +100,10 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
         from_middle.x * cos(radians) - from_middle.y * sin(radians),
         from_middle.x * sin(radians) + from_middle.y * cos(radians),
     );
-    let corner = select(straight, turned, instance.lean_angle.y != 0.0);
+    let top_offset = mix(instance.vertical_offsets.x, instance.vertical_offsets.y, vertex.unit.x);
+    let bottom_offset = mix(instance.vertical_offsets.z, instance.vertical_offsets.w, vertex.unit.x);
+    let corner = select(straight, turned, instance.lean_angle.y != 0.0)
+        + vec2<f32>(0.0, mix(top_offset, bottom_offset, vertex.unit.y));
     let px = globals.offset + corner * globals.scale;
     let ndc_x = (px.x / globals.canvas_size_px.x) * 2.0 - 1.0;
     let ndc_y = 1.0 - (px.y / globals.canvas_size_px.y) * 2.0;
@@ -118,7 +113,7 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     // shape, only which part of the atlas lands where. Derived by tracing each quarter turn's
     // corner-to-corner mapping once and folding it into one integer-indexed formula: `k=1`
     // samples `(y, 1-x)`, `k=2` samples `(1-x, 1-y)`, `k=3` samples `(1-y, x)`.
-    let k = i32(instance.rotation_quarters + 0.5);
+    let k = i32(instance.sampling.x + 0.5);
     var sample_unit = vertex.unit;
     if (k == 1) {
         sample_unit = vec2<f32>(vertex.unit.y, 1.0 - vertex.unit.x);
@@ -130,7 +125,7 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
 
     // «Картинки» → «Отражение», требование 9: mirrors the sampled point in the image's own axes,
     // after the rotation mapping above has already picked which corner maps where.
-    if (instance.flip_x > 0.5) {
+    if (instance.sampling.w > 0.5) {
         sample_unit = vec2<f32>(1.0 - sample_unit.x, sample_unit.y);
     }
 
@@ -139,6 +134,7 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     // into a neighboring frame, grid cell or ground tile; the mapping itself stays linear, so
     // every texel keeps its full on-screen size.
     let sample_px = instance.atlas_pos + sample_unit * instance.atlas_size;
+    let smooth_flag = instance.sampling.z;
 
     var out: VertexOutput;
     out.clip_position = vec4<f32>(ndc_x, ndc_y, 0.0, 1.0);
@@ -151,8 +147,8 @@ fn vs_main(vertex: VertexInput, instance: InstanceInput) -> VertexOutput {
     out.uv_px = sample_px;
     out.uv_min = instance.clamp_rect.xy + vec2<f32>(0.5, 0.5);
     out.uv_max = max(instance.clamp_rect.xy + instance.clamp_rect.zw - vec2<f32>(0.5, 0.5), out.uv_min);
-    out.atlas_layer = i32(instance.atlas_layer + 0.5);
-    out.smooth_sample = instance.smooth_flag;
+    out.atlas_layer = i32(instance.sampling.y + 0.5);
+    out.smooth_sample = smooth_flag;
     out.glow = instance.glow_flag;
     out.unit = vertex.unit;
     out.fire = instance.fire;

@@ -9,7 +9,7 @@ mod support;
 mod platformer;
 
 use engine::core::interface;
-use engine::core::screens::{self, ButtonCommand, Element, PanelFill};
+use engine::core::screens::{self, ButtonCommand, Element};
 use engine::data::load::{ImageDecl, load_rest_with_stamps, read_entry};
 use platformer::{platformer_dir, read};
 use support::{Ui, VIEWPORT};
@@ -147,33 +147,20 @@ fn the_book_shows_the_chosen_hero_with_the_numbers_of_their_row() {
 fn the_chosen_heros_spread_fills_the_window() {
     for (hero, ..) in HEROES {
         let (ui, images) = book_page_of(hero);
-        let elements = &ui.config.screens[ui.state.active()].elements;
-        let (spread, choice, names) = elements
-            .iter()
-            .find_map(|element| match element {
-                Element::Panel {
-                    placement,
-                    fill: PanelFill::Choice { choice, names, .. },
-                    ..
-                } => Some((placement, choice, names)),
-                _ => None,
-            })
-            .expect("разворот выбранного героя");
-        let image = ui
-            .state
-            .choices(&ui.config)
-            .image(choice, names)
-            .expect("иллюстрация разворота");
-        assert_eq!(images[image].name, format!("hero_book_{hero}"));
-        assert!(matches!(spread.anchor, screens::Anchor::Center));
-        assert_eq!(spread.offset, [0.0, 0.0]);
+        let screen = &ui.config.screens[ui.state.active()];
+        let book = screen.book.as_ref().expect("книга выбора героя");
+        let page = book.selected(&ui.state).expect("разворот выбранного героя");
+        assert_eq!(
+            images[book.bookmarks[page].spread].name,
+            format!("hero_book_{hero}")
+        );
         for window in [[1920.0, 911.0], [1920.0, 1080.0], [1280.0, 960.0]] {
             let frame = ui.config.ui_frame(ui.state.active(), window);
-            assert_eq!(spread.top_left(frame.viewport), [0.0, 0.0]);
+            assert_eq!(frame.viewport, [1920.0, 1080.0]);
             assert_eq!(
                 [
-                    spread.size[0] * frame.scale[0],
-                    spread.size[1] * frame.scale[1]
+                    frame.viewport[0] * frame.scale[0],
+                    frame.viewport[1] * frame.scale[1]
                 ],
                 window
             );
@@ -182,42 +169,27 @@ fn the_chosen_heros_spread_fills_the_window() {
 }
 
 #[test]
-fn bookmark_colors_follow_the_chosen_hero_while_hovering_another() {
-    let (mut ui, images) = load();
+fn bookmarks_for_preceding_pages_move_left_and_still_accept_clicks() {
+    let (mut ui, _) = load();
     click_place(&mut ui, "new_game");
-
-    for (hero, hovered, expected) in [
-        ("vasilisa", "ilya", Some("hero_bookmarks_vasilisa")),
-        ("alyosha", "vasilisa", Some("hero_bookmarks_alyosha")),
-        ("ilya", "alyosha", None),
+    let heroes = ["ilya", "vasilisa", "alyosha"];
+    for (hero, on_left) in [
+        ("ilya", 0),
+        ("vasilisa", 1),
+        ("alyosha", 2),
+        ("vasilisa", 1),
+        ("ilya", 0),
+        ("alyosha", 2),
+        ("ilya", 0),
     ] {
         click_place(&mut ui, hero);
-        let [x, y] = middle_of(&ui, |element| element.place_name() == Some(hovered));
-        ui.queue.push_mouse_move(x, y);
-        screens::process_ui_queue(
-            &mut ui.queue,
-            &mut ui.mouse,
-            &mut ui.game,
-            &ui.config,
-            &mut ui.state,
-            VIEWPORT,
-        );
         assert_eq!(ui.state.chosen("heroes"), Some(hero));
-
-        let elements = &ui.config.screens[ui.state.active()].elements;
-        let (choice, names) = elements
-            .iter()
-            .find_map(|element| match element {
-                Element::Panel {
-                    fill: PanelFill::Choice { choice, names, .. },
-                    show_on_hover: None,
-                    ..
-                } if choice.field.as_deref() == Some("bookmarks") => Some((choice, names)),
-                _ => None,
-            })
-            .expect("слой закладок зависит от выбора героя");
-        let image = ui.state.choices(&ui.config).image(choice, names);
-        assert_eq!(image.map(|id| images[id].name.as_str()), expected, "{hero}");
+        for (index, name) in heroes.iter().enumerate() {
+            let [x, y] = middle_of(&ui, |element| element.place_name() == Some(name));
+            assert_eq!(x < VIEWPORT[0] / 2.0, index < on_left, "{hero}: {name}");
+            ui.click(VIEWPORT[0] - x, y);
+            assert_eq!(ui.state.chosen("heroes"), Some(hero), "пустое место {name}");
+        }
     }
 }
 
@@ -233,8 +205,8 @@ fn the_diamond_follows_the_pointer_over_equal_bookmark_areas() {
         .iter()
         .filter(|element| element.choose() == Some("heroes"));
     for bookmark in bookmarks {
-        assert_eq!(bookmark.placement().offset[0], 809.0);
-        assert_eq!(bookmark.placement().size, [226.0, 194.0]);
+        assert_eq!(bookmark.placement().offset[0], 811.0);
+        assert_eq!(bookmark.placement().size, [244.0, 202.0]);
     }
 
     let visible_diamonds = |pointer: Option<[f32; 2]>| {
@@ -256,7 +228,7 @@ fn the_diamond_follows_the_pointer_over_equal_bookmark_areas() {
     };
     assert!(visible_diamonds(None).is_empty());
     assert!(visible_diamonds(Some([400.0, 300.0])).is_empty());
-    for (hero, row) in [("ilya", -285.0), ("vasilisa", -55.0), ("alyosha", 178.0)] {
+    for (hero, row) in [("ilya", -293.0), ("vasilisa", -60.0), ("alyosha", 175.0)] {
         let point = middle_of(&ui, |element| element.place_name() == Some(hero));
         assert_eq!(visible_diamonds(Some(point)), [row], "{hero}");
     }

@@ -126,10 +126,24 @@ pub fn layout<'a>(
     viewport: [f32; 2],
 ) -> Vec<Part<'a>> {
     let mut parts = Vec::with_capacity(screen.elements.len());
+    let book = screen
+        .book
+        .as_ref()
+        .and_then(|book| Some((book, state.visible_book_page(book)?)));
     for (index, element) in screen.elements.iter().enumerate() {
         let placement = element.placement();
-        let [x, y] = placement.top_left(viewport);
+        let [mut x, y] = placement.top_left(viewport);
         let [width, height] = placement.size;
+        if let Some((book, selected)) = book
+            && let Some(place) = element
+                .show_on_pointer()
+                .and_then(|target| screen.elements.get(target))
+                .unwrap_or(element)
+                .place_name()
+            && book.is_left(place, selected)
+        {
+            x = viewport[0] - x - width;
+        }
         let Element::List {
             for_,
             row_height,

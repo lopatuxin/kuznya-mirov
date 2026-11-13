@@ -63,6 +63,7 @@ pub struct DrawRect {
     /// `atlas_size` — кусок кадра без прозрачной каймы; наклон `lean` считается от низа и высоты рисунка
     /// целиком. `[0, 0]` — прямоугольник и есть рисунок.
     pub lean_cut: [f32; 2],
+    pub vertical_offsets: [f32; 4],
 }
 
 /// Интерфейс кадра: прямоугольники и надписи элементов экрана, а над ними, поверх текста всех элементов, —
@@ -560,24 +561,14 @@ impl Renderer {
                     shader_location: 5,
                 },
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
+                    format: wgpu::VertexFormat::Float32x4,
                     offset: 48,
                     shader_location: 6,
                 },
                 wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 52,
+                    format: wgpu::VertexFormat::Float32x4,
+                    offset: 120,
                     shader_location: 7,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 56,
-                    shader_location: 8,
-                },
-                wgpu::VertexAttribute {
-                    format: wgpu::VertexFormat::Float32,
-                    offset: 60,
-                    shader_location: 9,
                 },
                 wgpu::VertexAttribute {
                     format: wgpu::VertexFormat::Float32,
