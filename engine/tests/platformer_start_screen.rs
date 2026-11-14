@@ -1,5 +1,4 @@
-//! Начальный экран `games/platformer`: статичная утверждённая картина, переход в книгу героев,
-//! прямой выбор героя на картине и выход к списку игр. Вид экрана — только QA на стенде.
+//! Начальный экран `games/platformer`: статичная картина, переход в книгу героев и выход к списку игр.
 
 use std::fs;
 
@@ -14,8 +13,6 @@ use engine::core::screens::{self, ButtonCommand, Element, TextPart};
 use engine::data::load::{ImageDecl, load_rest_with_stamps, read_entry};
 use platformer::{platformer_dir, read};
 use support::{Ui, VIEWPORT};
-
-const HEROES: [&str; 3] = ["ilya", "alyosha", "vasilisa"];
 
 fn load() -> (Ui, Vec<engine::data::error::GameError>, Vec<ImageDecl>) {
     let game_json = read("game.json");
@@ -136,13 +133,22 @@ fn new_game_opens_the_book_without_creating_a_world() {
 }
 
 #[test]
-fn clicking_a_hero_on_the_start_screen_opens_their_book_page() {
-    for hero in HEROES {
-        let mut ui = ui();
-        choose_hero(&mut ui, hero);
-        assert_eq!(active_screen(&ui), "hero_select", "{hero}");
-        assert_eq!(ui.state.chosen("heroes"), Some(hero));
-        assert!(!ui.game.has_world());
+fn heroes_on_the_start_screen_do_not_react_to_the_mouse() {
+    let mut ui = ui();
+    let frame = ui.config.ui_frame(ui.state.active(), VIEWPORT);
+    for (hero, [x, y]) in [
+        ("ilya", [-630.0, 61.0]),
+        ("alyosha", [-333.0, -160.0]),
+        ("vasilisa", [-111.0, 84.0]),
+    ] {
+        let at = [
+            VIEWPORT[0] / 2.0 + x * frame.scale[0],
+            VIEWPORT[1] / 2.0 + y * frame.scale[1],
+        ];
+        assert_eq!(place_at(&ui, at), None, "{hero}");
+        ui.click(at[0], at[1]);
+        assert_eq!(active_screen(&ui), "menu", "{hero}");
+        assert_eq!(ui.state.chosen("heroes"), None, "{hero}");
     }
 }
 
@@ -157,20 +163,19 @@ fn exit_asks_the_page_to_leave_to_the_list_of_games() {
 }
 
 #[test]
-fn the_menu_has_new_game_exit_and_three_hero_buttons() {
+fn the_menu_has_only_new_game_and_exit_buttons() {
     let ui = ui();
     let commands: Vec<ButtonCommand> = ui.config.screens[ui.state.active()]
         .elements
         .iter()
         .filter_map(button_command)
         .collect();
-    assert_eq!(commands.len(), 5, "{commands:?}");
-    assert!(matches!(commands[0], ButtonCommand::ShowScreen(..)));
-    assert_eq!(commands[1], ButtonCommand::Exit);
     assert!(
-        commands[2..]
-            .iter()
-            .all(|command| matches!(command, ButtonCommand::ShowScreen(..)))
+        matches!(
+            commands.as_slice(),
+            [ButtonCommand::ShowScreen(_), ButtonCommand::Exit]
+        ),
+        "{commands:?}"
     );
 }
 
@@ -185,27 +190,6 @@ fn continue_and_settings_do_not_press() {
         ui.click(at[0], at[1]);
         assert_eq!(active_screen(&ui), "menu", "{caption}");
         assert!(!ui.state.exit_requested(), "{caption}");
-    }
-}
-
-#[test]
-fn each_hero_is_a_clickable_place_with_a_stone_inscription_highlight() {
-    let (ui, _, _) = load();
-    let elements = &ui.config.screens[ui.state.active()].elements;
-    for hero in HEROES {
-        let place = elements
-            .iter()
-            .position(|element| element.place_name() == Some(hero))
-            .unwrap_or_else(|| panic!("нет места {hero}"));
-        let glows = elements
-            .iter()
-            .filter(|element| element.show_on_hover() == Some(place))
-            .count();
-        assert_eq!(glows, 1, "{hero}: высеченная строка горит золотом");
-        assert!(matches!(
-            button_command(&elements[place]),
-            Some(ButtonCommand::ShowScreen(..))
-        ));
     }
 }
 
@@ -235,16 +219,6 @@ fn the_menu_uses_the_approved_static_picture() {
             .iter()
             .all(|element| element.particles().is_none())
     );
-}
-
-#[test]
-fn the_cursor_over_a_hero_is_over_his_place() {
-    let ui = ui();
-    for hero in HEROES {
-        let at = middle_of(&ui, |element| element.place_name() == Some(hero));
-        assert_eq!(place_at(&ui, at).as_deref(), Some(hero));
-    }
-    assert_eq!(place_at(&ui, [5.0, 5.0]), None);
 }
 
 #[test]
