@@ -14,11 +14,10 @@
     "fonts": { "title": "fonts/Unbounded.ttf", "ui": "fonts/Rubik.ttf", "menu": "fonts/Monomakh.ttf" },
     "images": {
       "start_wide": { "path": "images/start_wide_menu_clean_v1.png", "smooth": true },
-      "menu_clear": { "path": "images/menu_clear.png" },
       "parchment_glow": { "path": "images/parchment_glow.png", "smooth": true },
       "menu_glow": { "path": "images/menu_glow.png", "smooth": true },
       "menu_pointer": { "path": "images/menu_pointer.png", "smooth": true },
-      "pause_sheet": { "path": "images/pause_sheet.png", "smooth": true },
+      "pause_divider": { "path": "images/pause_divider.png", "smooth": true },
       "hero_book_ilya": { "path": "images/hero_book_ilya.png", "smooth": true },
       "hero_book_alyosha": { "path": "images/hero_book_alyosha.png", "smooth": true },
       "hero_book_vasilisa": { "path": "images/hero_book_vasilisa.png", "smooth": true },

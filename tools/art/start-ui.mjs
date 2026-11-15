@@ -71,6 +71,4 @@ if (!folder) {
 }
 await sharp(Buffer.from(menuGlow(880, 168))).png().toFile(join(folder, "menu_glow.png"));
 await sharp(Buffer.from(parchmentGlow(880, 168))).png().toFile(join(folder, "parchment_glow.png"));
-// Пустая картинка — обычный вид пункта меню: у кнопки картинки во всех трёх видах, свечение — только под курсором.
-await sharp({ create: { width: 4, height: 4, channels: 4, background: { r: 0, g: 0, b: 0, alpha: 0 } } }).png().toFile(join(folder, "menu_clear.png"));
-console.log("menu_glow.png и parchment_glow.png 880×168, menu_clear.png 4×4");
+console.log("menu_glow.png и parchment_glow.png 880×168");
