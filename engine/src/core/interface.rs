@@ -8,6 +8,7 @@ use super::input::{ButtonKey, MouseState};
 use super::property::{PropertyId, PropertyTable};
 use super::rules::Selector;
 use super::screens::{Element, Screen, ScreenId, ScreenState, TooltipStyle, format_text_for};
+use super::settings::MAX_VOLUME;
 use super::world::World;
 use super::world_elements::bar_fraction;
 
@@ -230,6 +231,36 @@ pub fn bar_fill_rect(rect: [f32; 4], share: f32) -> Option<[f32; 4]> {
     (share > 0.0).then(|| [rect[0], rect[1], rect[2] * share, rect[3]])
 }
 
+/// «Настройки на экране»: середина бегунка ползунка `rect` ходит от `left + ширина бегунка / 2` до
+/// `right − ширина бегунка / 2`; громкость `volume` ставит её на свою долю этого пути.
+pub fn slider_knob_center(rect: [f32; 4], knob_width: f32, volume: u8) -> f32 {
+    let travel = (rect[2] - knob_width).max(0.0);
+    rect[0] + knob_width / 2.0 + travel * f32::from(volume) / f32::from(MAX_VOLUME)
+}
+
+/// Громкость, которую ставит точка `x` окна на ползунок `rect`; за краями пути — крайняя.
+pub fn slider_value(rect: [f32; 4], knob_width: f32, x: f32) -> u8 {
+    let travel = rect[2] - knob_width;
+    if travel <= 0.0 {
+        return 0;
+    }
+    let share = ((x - rect[0] - knob_width / 2.0) / travel).clamp(0.0, 1.0);
+    (share * f32::from(MAX_VOLUME)).round() as u8
+}
+
+/// Заливка ползунка — от левого края до середины бегунка — и сам бегунок, посередине по высоте.
+pub fn slider_parts(rect: [f32; 4], knob_size: [f32; 2], volume: u8) -> ([f32; 4], [f32; 4]) {
+    let center = slider_knob_center(rect, knob_size[0], volume);
+    let fill = [rect[0], rect[1], center - rect[0], rect[3]];
+    let knob = [
+        center - knob_size[0] / 2.0,
+        rect[1] + (rect[3] - knob_size[1]) / 2.0,
+        knob_size[0],
+        knob_size[1],
+    ];
+    (fill, knob)
+}
+
 /// «Подсказка»: что показать — текст и прямоугольник элемента, над которым он всплывает.
 #[derive(Debug, Clone, PartialEq)]
 pub struct TooltipShow {
@@ -364,6 +395,39 @@ mod tests {
         assert_eq!(first_row(9.0, 7, 4), 3);
         assert_eq!(first_row(1.0, 3, 4), 0);
         assert_eq!(first_row(-2.0, 7, 4), 0);
+    }
+
+    #[test]
+    fn the_knob_centre_travels_between_half_a_knob_in_from_each_edge() {
+        let rect = [100.0, 20.0, 400.0, 56.0];
+        assert_eq!(slider_knob_center(rect, 40.0, 0), 120.0);
+        assert_eq!(slider_knob_center(rect, 40.0, 50), 300.0);
+        assert_eq!(slider_knob_center(rect, 40.0, 100), 480.0);
+    }
+
+    #[test]
+    fn a_point_sets_the_volume_whose_knob_centre_it_is_and_the_edges_clamp() {
+        let rect = [100.0, 20.0, 400.0, 56.0];
+        assert_eq!(slider_value(rect, 40.0, 300.0), 50);
+        assert_eq!(slider_value(rect, 40.0, 120.0), 0);
+        assert_eq!(slider_value(rect, 40.0, 480.0), 100);
+        assert_eq!(slider_value(rect, 40.0, -900.0), 0);
+        assert_eq!(slider_value(rect, 40.0, 9000.0), 100);
+        assert_eq!(slider_value(rect, 40.0, 120.0 + 3.6 * 7.0), 7);
+    }
+
+    #[test]
+    fn a_knob_as_wide_as_the_slider_has_no_travel() {
+        let rect = [0.0, 0.0, 40.0, 40.0];
+        assert_eq!(slider_value(rect, 40.0, 20.0), 0);
+        assert_eq!(slider_knob_center(rect, 40.0, 100), 20.0);
+    }
+
+    #[test]
+    fn the_fill_ends_at_the_knob_centre_and_the_knob_sits_in_the_middle_of_the_height() {
+        let (fill, knob) = slider_parts([100.0, 20.0, 400.0, 56.0], [40.0, 30.0], 50);
+        assert_eq!(fill, [100.0, 20.0, 200.0, 56.0]);
+        assert_eq!(knob, [280.0, 33.0, 40.0, 30.0]);
     }
 
     #[test]

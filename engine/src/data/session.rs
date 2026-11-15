@@ -758,6 +758,7 @@ fn replay_command_of(
         ButtonCommand::Resume => ReplayCommand::Resume,
         ButtonCommand::Quit => ReplayCommand::Quit,
         ButtonCommand::ToggleSound => ReplayCommand::ToggleSound,
+        ButtonCommand::ResetKeys => ReplayCommand::ResetKeys,
         ButtonCommand::Exit => ReplayCommand::Exit,
         ButtonCommand::Run(run) => ReplayCommand::Run(config.runs[run].function.clone(), object),
     }
@@ -816,6 +817,9 @@ fn apply_replay_command(
         }
         ReplayCommand::ToggleSound => {
             screens::apply_command(screens::ButtonCommand::ToggleSound, game, config, state);
+        }
+        ReplayCommand::ResetKeys => {
+            screens::apply_command(screens::ButtonCommand::ResetKeys, game, config, state);
         }
         ReplayCommand::Exit => {
             screens::apply_command(screens::ButtonCommand::Exit, game, config, state);

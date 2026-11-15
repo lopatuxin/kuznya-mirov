@@ -191,6 +191,11 @@ impl Ui {
         self.drain();
     }
 
+    pub fn key_up(&mut self, code: &str) {
+        self.queue.push_key_up(code);
+        self.drain();
+    }
+
     fn drain(&mut self) {
         screens::process_ui_queue(
             &mut self.queue,

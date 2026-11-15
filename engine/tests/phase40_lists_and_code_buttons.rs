@@ -687,7 +687,7 @@ fn a_row_holds_only_panels_labels_and_buttons_without_anchor_or_for() {
         r##"{"kind":"list","offset":[0,0],"size":[100,50],"for":{"has":["order"]},"row_height":10,"row":[]}"##,
     );
     expect_error(&nested, None, "в строке списка нет вложенных списков");
-    let unknown = list_with("", r##"{"kind":"slider","offset":[0,0],"size":[100,50]}"##);
+    let unknown = list_with("", r##"{"kind":"dial","offset":[0,0],"size":[100,50]}"##);
     expect_error(&unknown, None, "ожидался panel, label, button или bar");
     let anchored = list_with(
         "",

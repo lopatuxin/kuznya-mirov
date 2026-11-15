@@ -1,4 +1,5 @@
-//! Начальный экран `games/platformer`: статичная картина, переход в книгу героев и выход к списку игр.
+//! Начальный экран `games/platformer`: статичная картина, переход в книгу героев и выход к списку игр; экран
+//! настроек, который открывается из меню и из паузы.
 
 use std::fs;
 
@@ -10,6 +11,7 @@ mod platformer;
 
 use engine::core::interface;
 use engine::core::screens::{self, ButtonCommand, Element, TextPart};
+use engine::core::settings::Volume;
 use engine::data::load::{ImageDecl, load_rest_with_stamps, read_entry};
 use platformer::{platformer_dir, read};
 use support::{Ui, VIEWPORT};
@@ -163,34 +165,48 @@ fn exit_asks_the_page_to_leave_to_the_list_of_games() {
 }
 
 #[test]
-fn the_menu_has_only_new_game_and_exit_buttons() {
+fn the_menu_has_only_settings_new_game_and_exit_buttons() {
     let ui = ui();
-    let commands: Vec<ButtonCommand> = ui.config.screens[ui.state.active()]
+    let buttons: Vec<(&str, ButtonCommand)> = ui.config.screens[ui.state.active()]
         .elements
         .iter()
-        .filter_map(button_command)
+        .filter_map(|element| Some((element.place_name()?, button_command(element)?)))
         .collect();
     assert!(
         matches!(
-            commands.as_slice(),
-            [ButtonCommand::ShowScreen(_), ButtonCommand::Exit]
+            buttons.as_slice(),
+            [
+                ("settings", ButtonCommand::ShowScreen(_)),
+                ("new_game", ButtonCommand::ShowScreen(_)),
+                ("exit", ButtonCommand::Exit)
+            ]
         ),
-        "{commands:?}"
+        "{buttons:?}"
     );
 }
 
 #[test]
-fn continue_and_settings_do_not_press() {
+fn continue_does_not_press() {
     let mut ui = ui();
-    for caption in ["Продолжить", "Настройки"] {
-        let at = middle_of(&ui, |element| {
-            matches!(element, Element::Label { text, .. }
-                if matches!(text.as_slice(), [TextPart::Literal(text)] if text == caption))
-        });
-        ui.click(at[0], at[1]);
-        assert_eq!(active_screen(&ui), "menu", "{caption}");
-        assert!(!ui.state.exit_requested(), "{caption}");
-    }
+    let at = middle_of(&ui, |element| {
+        matches!(element, Element::Label { text, .. }
+            if matches!(text.as_slice(), [TextPart::Literal(text)] if text == "Продолжить"))
+    });
+    ui.click(at[0], at[1]);
+    assert_eq!(active_screen(&ui), "menu");
+    assert!(!ui.state.exit_requested());
+}
+
+#[test]
+fn settings_opens_the_settings_screen_and_back_returns_to_the_menu() {
+    let mut ui = ui();
+    let settings = middle_of(&ui, |element| element.place_name() == Some("settings"));
+    ui.click(settings[0], settings[1]);
+    assert_eq!(active_screen(&ui), "settings");
+    let back = middle_of(&ui, |element| element.place_name() == Some("back"));
+    ui.click(back[0], back[1]);
+    assert_eq!(active_screen(&ui), "menu");
+    assert!(ui.state.return_chain().is_empty());
 }
 
 #[test]
@@ -203,6 +219,7 @@ fn the_menu_uses_the_approved_static_picture() {
         .filter_map(|element| match element {
             Element::Panel {
                 fill: screens::PanelFill::Fixed(screens::Fill::Image { image, .. }),
+                show_on_hover: None,
                 ..
             } => Some(images[*image].name.as_str()),
             _ => None,
@@ -237,4 +254,83 @@ fn the_pause_returns_to_the_start_screen_with_the_same_hero_chosen() {
     ui.click(to_menu[0], to_menu[1]);
     assert_eq!(active_screen(&ui), "menu");
     assert_eq!(ui.state.chosen("heroes"), Some("alyosha"));
+}
+
+// Настройки игрока — фаза 65: экран `settings` открывается из меню и из паузы.
+
+fn click_place(ui: &mut Ui, name: &str) {
+    let at = middle_of(ui, |element| element.place_name() == Some(name));
+    ui.click(at[0], at[1]);
+}
+
+fn start_game(ui: &mut Ui) {
+    let game = ui.screen_id("game");
+    screens::apply_command(
+        ButtonCommand::NewGame(game, None),
+        &mut ui.game,
+        &ui.config,
+        &mut ui.state,
+    );
+}
+
+#[test]
+fn settings_from_the_pause_go_back_to_the_pause_and_then_to_the_game() {
+    let mut ui = ui();
+    start_game(&mut ui);
+    ui.key("Escape");
+    click_place(&mut ui, "settings");
+    assert_eq!(active_screen(&ui), "settings");
+    click_place(&mut ui, "back");
+    assert_eq!(active_screen(&ui), "pause");
+    click_place(&mut ui, "resume");
+    assert_eq!(active_screen(&ui), "game");
+    assert!(ui.state.return_chain().is_empty());
+}
+
+#[test]
+fn a_slider_of_the_settings_screen_takes_the_volume_from_the_press() {
+    let mut ui = ui();
+    click_place(&mut ui, "settings");
+    for name in ["music_volume", "sound_volume"] {
+        let at = middle_of(&ui, |element| element.place_name() == Some(name));
+        ui.click(at[0], at[1]);
+    }
+    assert_eq!(ui.state.volume(Volume::Music), 50);
+    assert_eq!(ui.state.volume(Volume::Sound), 50);
+    click_place(&mut ui, "fullscreen");
+    assert!(ui.state.take_fullscreen_request());
+}
+
+#[test]
+fn every_hero_key_has_a_row_on_the_settings_screen_and_a_new_one_moves_the_hero() {
+    let mut ui = ui();
+    click_place(&mut ui, "settings");
+    let screen = &ui.config.screens[ui.state.active()];
+    let mut rows: Vec<&str> = screen
+        .elements
+        .iter()
+        .filter_map(|element| match element {
+            Element::Key { key, .. } => Some(key.as_str()),
+            _ => None,
+        })
+        .collect();
+    rows.sort_unstable();
+    assert_eq!(rows, ui.config.game_keys);
+    assert_eq!(ui.state.player_key_name("KeyD"), "D");
+
+    click_place(&mut ui, "key_KeyD");
+    ui.key("KeyL");
+    assert_eq!(ui.state.player_key_name("KeyD"), "L");
+    click_place(&mut ui, "back");
+    start_game(&mut ui);
+    let hero = ui.id_of("Герой");
+    ui.key_down("KeyD");
+    ui.tick(0.05);
+    assert!(
+        !ui.flag(hero, "hold_right"),
+        "прежняя клавиша ничего не делает"
+    );
+    ui.key_down("KeyL");
+    ui.tick(0.05);
+    assert!(ui.flag(hero, "hold_right"));
 }

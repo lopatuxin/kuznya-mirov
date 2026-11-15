@@ -27,6 +27,7 @@ pub mod run_jump;
 pub mod runner;
 pub mod scene;
 pub mod screens;
+pub mod settings;
 pub mod shapes;
 pub mod skeleton;
 pub mod solid;

@@ -17,6 +17,7 @@ function makeFakeAudioElement() {
     currentTime: 0,
     error: null,
     paused: true,
+    volume: 1,
     addEventListener(_type: string, _handler: () => void) {},
     play(): Promise<void> {
       element.paused = false;
@@ -54,10 +55,33 @@ function makeGestureCapture() {
   return () => handlers.forEach((handler) => handler());
 }
 
-const FAKE_AUDIO_CONTEXT = { state: "running", resume: async () => {} } as unknown as AudioContext;
+type FakeGain = { gain: { value: number }; connect: ReturnType<typeof vi.fn> };
 
-function snapshot(musicId: number | null): SoundWindowSnapshot {
-  return { enabled: true, musicId, raisedSoundIds: [] };
+function makeFakeAudioContext(state = "running", resume: () => Promise<void> = async () => {}) {
+  const gains: FakeGain[] = [];
+  const sources: Array<{ buffer: unknown; connect: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> }> = [];
+  const context = {
+    state,
+    resume,
+    destination: { kind: "destination" },
+    createGain(): FakeGain {
+      const gain = { gain: { value: 1 }, connect: vi.fn() };
+      gains.push(gain);
+      return gain;
+    },
+    createBufferSource() {
+      const source = { buffer: null, connect: vi.fn(), start: vi.fn() };
+      sources.push(source);
+      return source;
+    },
+  } as unknown as AudioContext;
+  return { context, gains, sources };
+}
+
+const FAKE_AUDIO_CONTEXT = makeFakeAudioContext().context;
+
+function snapshot(musicId: number | null, volumes: { musicVolume?: number; soundVolume?: number } = {}): SoundWindowSnapshot {
+  return { enabled: true, musicId, musicVolume: 100, soundVolume: 100, raisedSoundIds: [], ...volumes };
 }
 
 describe("createSoundPlayer — гонка play()/резюме одного трека", () => {
@@ -161,7 +185,7 @@ describe("createSoundPlayer — обработчик жеста только б�
       music: new Map([[1, { url: "blob:track1", path: "menu.mp3" }]]),
     };
     const resume = vi.fn(async () => {});
-    const audioContext = { state: "suspended", resume } as unknown as AudioContext;
+    const { context: audioContext } = makeFakeAudioContext("suspended", resume);
     const player = createSoundPlayer(audioContext, element, assets);
 
     player.handleFrame(snapshot(null)); // снимок экрана без музыки — сделан ДО клика
@@ -283,5 +307,57 @@ describe("createSoundPlayer — сбои play() после отказа брау
     player.handleFrame(snapshot(2)); // сменился на трек с файлом — заводится он, а не призрак трека 1
     expect(calls).toHaveLength(1);
     expect(element.src).toBe("blob:track2");
+  });
+});
+
+describe("createSoundPlayer — громкость", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+  });
+
+  it("ставит силу музыки `volume` у <audio> квадратом доли, а звуков — `gain` общего узла", () => {
+    makeGestureCapture();
+    const { element } = makeFakeAudioElement();
+    const { context, gains } = makeFakeAudioContext();
+    const player = createSoundPlayer(context, element, { sounds: new Map(), music: new Map() });
+
+    player.handleFrame(snapshot(null, { musicVolume: 50, soundVolume: 80 }));
+
+    expect(element.volume).toBe(0.25);
+    expect(gains).toHaveLength(1);
+    expect(gains[0].gain.value).toBeCloseTo(0.64);
+  });
+
+  it("громкость музыки 0 не останавливает трек: сверка его не трогает", () => {
+    makeGestureCapture();
+    const { element, calls } = makeFakeAudioElement();
+    const { context } = makeFakeAudioContext();
+    const player = createSoundPlayer(context, element, {
+      sounds: new Map(),
+      music: new Map([[1, { url: "blob:track1", path: "menu.mp3" }]]),
+    });
+
+    player.handleFrame(snapshot(1, { musicVolume: 0 }));
+    player.handleFrame(snapshot(1, { musicVolume: 0 }));
+
+    expect(element.volume).toBe(0);
+    expect(element.paused).toBe(false);
+    expect(calls).toHaveLength(1);
+  });
+
+  it("короткий звук идёт через общий узел громкости, а не прямо на выход", () => {
+    makeGestureCapture();
+    const { element } = makeFakeAudioElement();
+    const { context, gains, sources } = makeFakeAudioContext();
+    const buffer = {} as AudioBuffer;
+    const player = createSoundPlayer(context, element, { sounds: new Map([[0, buffer]]), music: new Map() });
+
+    player.handleFrame({ ...snapshot(null), raisedSoundIds: [0] });
+
+    expect(sources).toHaveLength(1);
+    expect(sources[0].connect).toHaveBeenCalledWith(gains[0]);
+    expect(gains[0].connect).toHaveBeenCalledWith(context.destination);
+    expect(sources[0].start).toHaveBeenCalled();
   });
 });

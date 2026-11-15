@@ -1,5 +1,6 @@
 import { reconcileMusic, type MusicPerformed } from "./musicReconciler";
 import type { SoundWindowSnapshot } from "./soundWindow";
+import { volumeToGain } from "./volumeGain";
 
 export type MusicAsset = { url: string; path: string };
 
@@ -35,6 +36,10 @@ export function createSoundPlayer(
   audioElement: HTMLAudioElement,
   assets: SoundAssets,
 ): SoundPlayer {
+  // Одна шина на все короткие звуки: сила звуков — это `gain` этого узла, у отдельного звука громкости нет.
+  const soundGain = audioContext.createGain();
+  soundGain.connect(audioContext.destination);
+
   // Какой трек лежит в проигрывателе; играет ли он прямо сейчас, сверка спрашивает у самого
   // элемента — см. `reconcileNow`.
   let performedTrackId: number | null = null;
@@ -142,8 +147,14 @@ export function createSoundPlayer(
     if (!buffer) return;
     const source = audioContext.createBufferSource();
     source.buffer = buffer;
-    source.connect(audioContext.destination);
+    source.connect(soundGain);
     source.start();
+  }
+
+  // Громкость 0 — тишина шины, а не выключение: трек идёт дальше, сверка его не трогает.
+  function applyVolumes(snapshot: SoundWindowSnapshot): void {
+    audioElement.volume = volumeToGain(snapshot.musicVolume);
+    soundGain.gain.value = volumeToGain(snapshot.soundVolume);
   }
 
   function reconcileNow(snapshot: SoundWindowSnapshot): void {
@@ -181,6 +192,7 @@ export function createSoundPlayer(
 
   return {
     handleFrame(snapshot) {
+      applyVolumes(snapshot);
       // «Звук выключен: новые звуки не запускаются» — и до первого нажатия игрока запускать
       // нечего: контекст стоит в `suspended`, пока его не разбудит `handleGesture`.
       if (snapshot.enabled && audioContext.state === "running") {

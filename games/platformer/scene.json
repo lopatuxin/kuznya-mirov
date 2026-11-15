@@ -80,7 +80,6 @@
         "KeyD": { "press": [["hold_right", true]], "release": [["hold_right", false]] },
         "Space": { "press": [["hold_jump", true]], "release": [["hold_jump", false]] },
         "ArrowUp": { "press": [["hold_jump", true]], "release": [["hold_jump", false]] },
-        "KeyW": { "press": [["hold_jump", true]], "release": [["hold_jump", false]] },
         "KeyJ": { "press": [["attack_key", true]] },
         "KeyX": { "press": [["attack_key", true]] }
       } }

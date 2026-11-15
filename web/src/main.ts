@@ -3,7 +3,9 @@ import { attachCameraMouse } from "./cameraInput";
 import { computeCanvasLayout } from "./canvasLayout";
 import { formatError, formatErrorScreen, type EngineError } from "./engineErrors";
 import { loadGameOptions, type GameOptionsResult } from "./gameOptions";
+import { reportFullscreenToEngine, toggleFullscreen } from "./fullscreen";
 import { gameListSearch, resolveGameName } from "./gameSelection";
+import { browserStorage, restorePlayerSettings, savePlayerSettingsIfChanged } from "./playerSettings";
 import { createHttpProjectFileReader, loadProject, type LoadedMusicVerdict, type LoadedSound } from "./projectLoader";
 import { createVideoPlayerKeeper, type VideoPlayerKeeper } from "./images/videoLoader";
 import { hideWebGpuIfRequested, logEngineBackend } from "./renderBackend";
@@ -253,7 +255,13 @@ function attachResize(engine: Engine, target: HTMLCanvasElement): void {
   });
 }
 
-function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundPlayer, videoPlayers: VideoPlayerKeeper): void {
+function runLoop(
+  engine: Engine,
+  memory: WebAssembly.Memory,
+  soundPlayer: SoundPlayer,
+  videoPlayers: VideoPlayerKeeper,
+  servePlayerRequests: () => void,
+): void {
   let loggedMessages = 0;
   let frame = 0;
 
@@ -287,6 +295,7 @@ function runLoop(engine: Engine, memory: WebAssembly.Memory, soundPlayer: SoundP
         // как вызов вернул ей управление, — то есть прямо здесь, а не отдельным пересечением границы.
         const snapshot = readSoundWindow(memory, engine.sound_window_ptr(), engine.sound_window_len());
         soundPlayer.handleFrame(snapshot);
+        servePlayerRequests();
       }
     } catch (error) {
       // Потеря контекста видеокарты и прочие сбои отрисовки уже обработаны внутри движка; эта
@@ -359,13 +368,23 @@ async function runGame(gameName: string): Promise<void> {
     music: buildMusicAssets(result.musicTracks),
   });
 
+  // «Экраны и состояние» → «Настройки игрока»: сохранённое уходит движку до первого `tick`, а сменившееся
+  // записывается после каждого; полный экран страница меняет по просьбе движка и сообщает, каково окно.
+  const storage = browserStorage();
+  restorePlayerSettings(engine, storage, gameName);
+  reportFullscreenToEngine(engine, document);
+  const servePlayerRequests = (): void => {
+    savePlayerSettingsIfChanged(engine, storage, gameName);
+    if (engine.take_fullscreen_request()) void toggleFullscreen(canvas, document);
+  };
+
   attachInput(engine);
   attachMouse(engine, canvas);
   attachVisibility(engine, soundPlayer);
   attachPixelRatio(engine);
   attachResize(engine, canvas);
   applyCanvasLayout(canvas, engine);
-  runLoop(engine, wasm.memory, soundPlayer, videoPlayers);
+  runLoop(engine, wasm.memory, soundPlayer, videoPlayers, servePlayerRequests);
 }
 
 async function boot(): Promise<void> {

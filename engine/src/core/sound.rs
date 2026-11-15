@@ -4,10 +4,13 @@
 
 use super::rules::SoundId;
 use super::screens::MusicId;
+use super::settings::MAX_VOLUME;
 
 const ENABLED_INDEX: usize = 0;
 const MUSIC_INDEX: usize = 1;
-const HEADER_LEN: usize = 2;
+const MUSIC_VOLUME_INDEX: usize = 2;
+const SOUND_VOLUME_INDEX: usize = 3;
+const HEADER_LEN: usize = 4;
 
 /// The only thing a step may do with sound: raise a mark, never read one back — not even one it
 /// just raised itself. «Звук» → «Звук ничего не решает»: this type is
@@ -34,7 +37,8 @@ impl SoundMarks<'_> {
 }
 
 /// The window of numbers the page reads after every call — «Звук» → «Окно чисел»: `[0]` whether sound is enabled, `[1]` the music id to play or `-1` for
-/// silence, `[2..]` one mark per declared sound, indexed by `SoundId`. Sized once, from the
+/// silence, `[2]` and `[3]` the music and sound volumes, `[4..]` one mark per declared sound,
+/// indexed by `SoundId`. Sized once, from the
 /// game's `files.sounds` table, and never reallocated after that — «память под набор не
 /// выделяется никогда» вне загрузки.
 #[derive(Debug)]
@@ -47,6 +51,8 @@ impl SoundWindow {
         let mut cells = vec![0; HEADER_LEN + sound_count];
         cells[ENABLED_INDEX] = 1;
         cells[MUSIC_INDEX] = -1;
+        cells[MUSIC_VOLUME_INDEX] = i32::from(MAX_VOLUME);
+        cells[SOUND_VOLUME_INDEX] = i32::from(MAX_VOLUME);
         SoundWindow { cells }
     }
 
@@ -69,9 +75,17 @@ impl SoundWindow {
     /// «Порядок работ за один вызов», пункт 5: written once per call, after the mouse and screen
     /// keys are processed, so a click that just switched screens writes the screen it landed on,
     /// not the one it left.
-    pub fn write_header(&mut self, music: Option<MusicId>, enabled: bool) {
+    pub fn write_header(
+        &mut self,
+        music: Option<MusicId>,
+        enabled: bool,
+        music_volume: u8,
+        sound_volume: u8,
+    ) {
         self.cells[ENABLED_INDEX] = enabled as i32;
         self.cells[MUSIC_INDEX] = music.map_or(-1, |id| id as i32);
+        self.cells[MUSIC_VOLUME_INDEX] = i32::from(music_volume);
+        self.cells[SOUND_VOLUME_INDEX] = i32::from(sound_volume);
     }
 
     /// Read side, for the circle and for tests — a step never sees this, only `SoundMarks`.
@@ -86,6 +100,14 @@ impl SoundWindow {
 
     pub fn sound_enabled(&self) -> bool {
         self.cells[ENABLED_INDEX] != 0
+    }
+
+    pub fn music_volume(&self) -> u8 {
+        self.cells[MUSIC_VOLUME_INDEX] as u8
+    }
+
+    pub fn sound_volume(&self) -> u8 {
+        self.cells[SOUND_VOLUME_INDEX] as u8
     }
 
     /// «Звук»: the wasm layer's `sound_window_ptr()`/`sound_window_len()` hand
@@ -127,7 +149,7 @@ mod tests {
     #[test]
     fn clear_marks_resets_marks_but_not_the_header() {
         let mut window = SoundWindow::new(2);
-        window.write_header(Some(4), true);
+        window.write_header(Some(4), true, 100, 100);
         window.marks().raise(0);
         window.clear_marks();
         assert!(!window.mark(0));
@@ -138,9 +160,28 @@ mod tests {
     #[test]
     fn write_header_encodes_silence_as_no_music() {
         let mut window = SoundWindow::new(1);
-        window.write_header(None, false);
+        window.write_header(None, false, 100, 100);
         assert_eq!(window.music(), None);
         assert!(!window.sound_enabled());
+    }
+
+    #[test]
+    fn write_header_carries_both_volumes_and_a_new_window_is_at_full_volume() {
+        let mut window = SoundWindow::new(2);
+        assert_eq!((window.music_volume(), window.sound_volume()), (100, 100));
+        window.write_header(Some(1), true, 35, 0);
+        assert_eq!((window.music_volume(), window.sound_volume()), (35, 0));
+    }
+
+    #[test]
+    fn marks_follow_the_four_header_cells() {
+        let mut window = SoundWindow::new(2);
+        assert_eq!(window.cell_count(), 6);
+        window.write_header(None, true, 7, 9);
+        window.marks().raise(1);
+        assert!(window.mark(1));
+        assert!(!window.mark(0));
+        assert_eq!((window.music_volume(), window.sound_volume()), (7, 9));
     }
 
     #[test]

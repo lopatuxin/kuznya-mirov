@@ -19,6 +19,7 @@ use crate::core::scene::{
     terrain_hit, window_point,
 };
 use crate::core::screens::{self, Fill, PanelFill, ScreenState, ScreensConfig, WorldElementKind};
+use crate::core::settings::PlayerSettings;
 use crate::core::world::World;
 use crate::core::world_elements::{self, ImageDraw, OverlayRun, WorldDraws};
 use crate::data::edit;
@@ -1596,6 +1597,65 @@ fn compose_ui(
                     rect_px: rect,
                 });
             }
+            screens::Element::Slider {
+                setting,
+                track,
+                fill: slider_fill,
+                knob,
+                knob_size,
+                image_scale,
+                ..
+            } => {
+                let (fill_rect, knob_rect) =
+                    interface::slider_parts(rect, *knob_size, state.volume(*setting));
+                if let Some(track) = track {
+                    fill(track, rect, *image_scale);
+                }
+                if let Some(slider_fill) = slider_fill {
+                    fill(slider_fill, fill_rect, *image_scale);
+                }
+                fill(knob, knob_rect, 1.0);
+            }
+            screens::Element::Switch {
+                setting, on, off, ..
+            } => fill(
+                if state.toggle_is_on(*setting) {
+                    on
+                } else {
+                    off
+                },
+                rect,
+                1.0,
+            ),
+            screens::Element::Key {
+                key,
+                font,
+                font_size,
+                text_color,
+                waiting_text,
+                waiting_color,
+                fill: key_fill,
+                ..
+            } => {
+                if let Some(key_fill) = key_fill {
+                    fill(key_fill, rect, 1.0);
+                }
+                let (text, mut color) = if state.awaiting_key() == Some(key.as_str()) {
+                    (waiting_text.clone(), waiting_color.unwrap_or(*text_color))
+                } else {
+                    (state.player_key_name(key), *text_color)
+                };
+                color[3] *= page_text_opacity;
+                layers.texts.push(TextDraw {
+                    text,
+                    font: *font,
+                    font_size_px: *font_size,
+                    color,
+                    align: screens::Align::Center,
+                    wrap: false,
+                    rect_px: rect,
+                });
+            }
             screens::Element::List { .. } => {}
         }
         // «На экране»: частицы панели — сразу поверх неё, до следующего элемента списка.
@@ -2556,8 +2616,8 @@ impl Engine {
         self.battle_view && !self.session.as_ref().is_some_and(PlaySession::is_replay)
     }
 
-    /// Берёт ли камера игрока клавишу: она клавиша камеры, мир есть и ни у одного объекта сцены, ни у
-    /// активного экрана она не названа в `keys`.
+    /// Берёт ли камера игрока клавишу: она клавиша камеры, мир есть, ни у одного объекта сцены, ни у
+    /// активного экрана она не названа в `keys`, её не переназначил игрок и экран не ждёт клавишу игрока.
     fn camera_takes_key(&self, code: &str) -> bool {
         let (Some(game), Some(config), Some(state)) = (
             self.game.as_ref(),
@@ -2569,6 +2629,8 @@ impl Engine {
         self.camera_input_open()
             && game.camera_takes_key(code)
             && !config.screens[state.active()].keys.contains_key(code)
+            && state.awaiting_key().is_none()
+            && !state.remaps_key(code)
     }
 
     /// Точка окна, у которой действует колесо и хватается карта: последняя известная точка мыши, а
@@ -3438,6 +3500,48 @@ impl Engine {
             .as_ref()
             .map(|g| g.sound_window().cell_count())
             .unwrap_or(0)
+    }
+
+    /// «Настройки игрока»: громкость и замены клавиш для хранилища браузера — JSON
+    /// `{"music_volume": 80, "sound_volume": 100, "keys": {"KeyA": "KeyJ"}}`, где `keys` — «клавиша игры →
+    /// клавиша игрока». Страница сохраняет их, когда `take_player_settings_changed` вернул `true`.
+    pub fn player_settings(&self) -> String {
+        self.screen_state.as_ref().map_or_else(
+            || PlayerSettings::default().to_json(),
+            ScreenState::settings_json,
+        )
+    }
+
+    /// Сохранённые страницей настройки в том же виде. Зовётся после `load` и до первого `tick`; что игре не
+    /// подходит — клавиши игры нет, число вне 0–100, — молча отбрасывается.
+    pub fn set_player_settings(&mut self, json: &str) {
+        if let (Some(config), Some(state)) =
+            (self.screens_config.as_ref(), self.screen_state.as_mut())
+        {
+            state.load_settings_json(config, json);
+        }
+    }
+
+    /// Менялись ли громкость или замены клавиш с прошлого вопроса; страница читает после каждого `tick`.
+    pub fn take_player_settings_changed(&mut self) -> bool {
+        self.screen_state
+            .as_mut()
+            .is_some_and(ScreenState::take_settings_changed)
+    }
+
+    /// Нажат ли переключатель «Во весь экран» с прошлого вопроса; страница читает после каждого `tick`,
+    /// как `exit`, и разворачивает или сворачивает окно игры.
+    pub fn take_fullscreen_request(&mut self) -> bool {
+        self.screen_state
+            .as_mut()
+            .is_some_and(ScreenState::take_fullscreen_request)
+    }
+
+    /// Страница сообщает, развёрнуто ли окно игры на весь экран; переключатель показывает это значение.
+    pub fn set_fullscreen(&mut self, on: bool) {
+        if let Some(state) = self.screen_state.as_mut() {
+            state.set_fullscreen(on);
+        }
     }
 
     /// «Запуск», требование 39: starts a partiya at the loaded game's own start screen and opens a

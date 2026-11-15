@@ -27,6 +27,7 @@ use crate::core::screens::{
     ScreenId, ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle, WorldColor, WorldElement,
     WorldElementKind, WorldTextPart,
 };
+use crate::core::settings::{Toggle, Volume};
 use crate::core::terrain::{DENSITIES, Terrain};
 use crate::core::time::{seconds_to_steps, seconds_to_steps_delta};
 use crate::core::value::{
@@ -7504,7 +7505,12 @@ fn mark_screen_elements_used(used: &mut std::collections::HashSet<PropertyId>, s
                 }
                 let text = match leaf {
                     Element::Label { text, .. } | Element::Button { text, .. } => text.as_slice(),
-                    Element::Panel { .. } | Element::Bar { .. } | Element::List { .. } => &[],
+                    Element::Panel { .. }
+                    | Element::Bar { .. }
+                    | Element::List { .. }
+                    | Element::Slider { .. }
+                    | Element::Switch { .. }
+                    | Element::Key { .. } => &[],
                 };
                 for part in text.iter().chain(leaf.tooltip().unwrap_or_default()) {
                     if let TextPart::Value { prop, .. } | TextPart::Own(prop) = part {
@@ -8136,6 +8142,12 @@ fn parse_rich_text(
         }
         let part = match inner.strip_prefix("choice:") {
             Some(reference) => TextPart::Choice(parse_choice_ref(reference, file, path, errors)?),
+            None if inner.starts_with("setting:") => TextPart::Setting(parse_setting_ref(
+                &inner["setting:".len()..],
+                file,
+                path,
+                errors,
+            )?),
             None => match inner.find('.') {
                 None if !inner.is_empty() && own => {
                     TextPart::Own(resolve_property(&inner, properties, file, path, errors)?)
@@ -8175,6 +8187,20 @@ fn parse_rich_text(
         parts.push(TextPart::Literal(literal));
     }
     Some(parts)
+}
+
+/// «Настройки на экране»: `music_volume` или `sound_volume` внутри `{setting:…}`.
+fn parse_setting_ref(name: &str, file: &str, path: &str, errors: &mut ErrorSink) -> Option<Volume> {
+    Volume::parse(name).or_else(|| {
+        errors.push(
+            file,
+            path,
+            format!(
+                "подстановка \"{{setting:{name}}}\" называет не громкость: ожидалось {{setting:music_volume}} или {{setting:sound_volume}}"
+            ),
+        );
+        None
+    })
 }
 
 /// «Выбор»: `таблица` или `таблица.поле` внутри `{choice:…}`.
@@ -8278,6 +8304,7 @@ enum ParsedCommand {
     Resume,
     Quit,
     ToggleSound,
+    ResetKeys,
     Exit,
     /// Имя функции кода, ещё не сверенное с файлом кода — `resolve_on_click` сверяет.
     Run(String),
@@ -8370,6 +8397,7 @@ fn parse_button_command(
         "resume" => want_args(1, errors).then_some(ParsedCommand::Resume),
         "quit" => want_args(1, errors).then_some(ParsedCommand::Quit),
         "exit" => want_args(1, errors).then_some(ParsedCommand::Exit),
+        "reset_keys" => want_args(1, errors).then_some(ParsedCommand::ResetKeys),
         "toggle_sound" => {
             if arr.len() != 1 {
                 errors.push(
@@ -8417,6 +8445,9 @@ enum ParsedElementData {
     },
     /// «Шкала»: в коробке, как кнопка, — вид элемента не раздувается.
     Bar(Box<ParsedBar>),
+    Slider(Box<ParsedSlider>),
+    Switch(Box<ParsedSwitch>),
+    Key(Box<ParsedKey>),
     Label {
         placement: Placement,
         text: Vec<TextPart>,
@@ -8565,6 +8596,49 @@ const BUTTON_KEYS: &[&str] = &[
     "choose",
     "needs_choice",
     "text_color_disabled",
+];
+const SLIDER_KEYS: &[&str] = &[
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "setting",
+    "color",
+    "image",
+    "fill_color",
+    "fill_image",
+    "knob_color",
+    "knob_image",
+    "knob_size",
+    "image_scale",
+    "name",
+];
+const SWITCH_KEYS: &[&str] = &[
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "setting",
+    "color_on",
+    "color_off",
+    "image_on",
+    "image_off",
+    "name",
+];
+const KEY_KEYS: &[&str] = &[
+    "kind",
+    "anchor",
+    "offset",
+    "size",
+    "key",
+    "font",
+    "font_size",
+    "text_color",
+    "waiting_text",
+    "waiting_color",
+    "color",
+    "image",
+    "name",
 ];
 const LIST_KEYS: &[&str] = &[
     "kind",
@@ -8742,6 +8816,9 @@ enum HoverOwner {
     Button,
     Bar,
     List,
+    Slider,
+    Switch,
+    Key,
 }
 
 impl HoverOwner {
@@ -8752,6 +8829,9 @@ impl HoverOwner {
             HoverOwner::Button => "кнопки",
             HoverOwner::Bar => "шкалы",
             HoverOwner::List => "списка",
+            HoverOwner::Slider => "ползунка",
+            HoverOwner::Switch => "переключателя",
+            HoverOwner::Key => "клавиши",
         }
     }
 }
@@ -9109,6 +9189,17 @@ fn parse_tooltip(
         );
         return None;
     }
+    if parts
+        .iter()
+        .any(|part| matches!(part, TextPart::Setting(_)))
+    {
+        errors.push(
+            file,
+            &tooltip_path,
+            "подстановка {setting:…} есть в тексте надписи и кнопки, а в подсказке её нет",
+        );
+        return None;
+    }
     Some(Some(parts))
 }
 
@@ -9349,6 +9440,318 @@ fn parse_sort_by(
         return None;
     }
     Some(Some(prop))
+}
+
+/// «Настройки на экране»: ползунок после разбора, с картинками ещё по именам.
+#[derive(Debug, Clone)]
+struct ParsedSlider {
+    placement: Placement,
+    setting: Volume,
+    color: Option<[f32; 4]>,
+    image_name: Option<String>,
+    fill_color: Option<[f32; 4]>,
+    fill_image_name: Option<String>,
+    knob_color: Option<[f32; 4]>,
+    knob_image_name: Option<String>,
+    knob_size: [f32; 2],
+    image_scale: Option<f32>,
+    name: Option<String>,
+}
+
+/// «Настройки на экране»: переключатель после разбора.
+#[derive(Debug, Clone)]
+struct ParsedSwitch {
+    placement: Placement,
+    setting: Toggle,
+    on: ParsedFill,
+    off: ParsedFill,
+    name: Option<String>,
+}
+
+/// «Настройки на экране»: клавиша после разбора.
+#[derive(Debug, Clone)]
+struct ParsedKey {
+    placement: Placement,
+    key: String,
+    font_name: String,
+    font_size: f32,
+    text_color: [f32; 4],
+    waiting_text: String,
+    waiting_color: Option<[f32; 4]>,
+    color: Option<[f32; 4]>,
+    image_name: Option<String>,
+    name: Option<String>,
+}
+
+/// Заливка по одному из двух полей: цвет или имя картинки.
+#[derive(Debug, Clone)]
+enum ParsedFill {
+    Color([f32; 4]),
+    Image(String),
+}
+
+/// `waiting_text` клавиши, когда он не задан.
+const DEFAULT_WAITING_TEXT: &str = "...";
+
+/// «Настройки на экране»: ползунок, переключатель и клавиша стоят на экране сами по себе — не в строке
+/// списка и не при объекте. Внешний `None` — ошибка уже названа.
+fn parse_setting_element_place(
+    obj: &serde_json::Map<String, Json>,
+    scope: Scope,
+    kind: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Placement> {
+    if scope == Scope::Row {
+        errors.push(
+            file,
+            &join(path, "kind"),
+            format!("в строке списка нет \"{kind}\": ползунок, переключатель и клавиша стоят на экране сами по себе"),
+        );
+        return None;
+    }
+    if obj.contains_key("for") {
+        errors.push(
+            file,
+            &join(path, "for"),
+            format!("у \"{kind}\" нет \"for\": он стоит на экране всегда, а не при объекте"),
+        );
+        return None;
+    }
+    parse_placement(obj, file, path, errors)
+}
+
+/// `name` — место наведения. Внешний `None` — ошибка уже названа.
+fn parse_setting_element_name(
+    obj: &serde_json::Map<String, Json>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<String>> {
+    let Some(value) = obj.get("name") else {
+        return Some(None);
+    };
+    let name_path = join(path, "name");
+    let name = expect_string(value, file, &name_path, errors)?;
+    if name.is_empty() {
+        errors.push(file, &name_path, "\"name\" не может быть пустым");
+        return None;
+    }
+    Some(Some(name))
+}
+
+/// Необязательная пара «цвет или картинка» одной заливки: оба сразу — ошибка с названием `what`.
+fn parse_fill_pair(
+    obj: &serde_json::Map<String, Json>,
+    color_key: &str,
+    image_key: &str,
+    what: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<(Option<[f32; 4]>, Option<String>)> {
+    let color = parse_optional_ui_color(obj, color_key, file, path, errors)?;
+    let image = parse_optional_string(obj, image_key, file, path, errors)?;
+    if color.is_some() && image.is_some() {
+        errors.push(
+            file,
+            path,
+            format!(
+                "у {what} заданы и \"{color_key}\", и \"{image_key}\"; должно быть не больше одного из двух"
+            ),
+        );
+        return None;
+    }
+    Some((color, image))
+}
+
+fn parse_slider(
+    obj: &serde_json::Map<String, Json>,
+    scope: Scope,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedElementData> {
+    reject_unknown_keys_except(obj, SLIDER_KEYS, &PARTICLE_KEYS, file, path, errors);
+    reject_foreign_particle_keys(obj, HoverOwner::Slider, file, path, errors);
+    let placement = parse_setting_element_place(obj, scope, "slider", file, path, errors)?;
+    let setting_json = require_field(obj, "setting", file, path, errors)?;
+    let setting_name = expect_string(setting_json, file, &join(path, "setting"), errors)?;
+    let setting = Volume::parse(&setting_name).or_else(|| {
+        errors.push(
+            file,
+            &join(path, "setting"),
+            format!("ползунок меняет music_volume или sound_volume, получено \"{setting_name}\""),
+        );
+        None
+    });
+    let track = parse_fill_pair(obj, "color", "image", "полосы ползунка", file, path, errors);
+    let fill = parse_fill_pair(
+        obj,
+        "fill_color",
+        "fill_image",
+        "заливки ползунка",
+        file,
+        path,
+        errors,
+    );
+    let knob = parse_fill_pair(
+        obj,
+        "knob_color",
+        "knob_image",
+        "бегунка ползунка",
+        file,
+        path,
+        errors,
+    );
+    if let Some((None, None)) = knob {
+        errors.push(
+            file,
+            path,
+            "у ползунка нет бегунка: нужен один из knob_color или knob_image",
+        );
+        return None;
+    }
+    let knob_size = match obj.get("knob_size") {
+        Some(value) => {
+            let size = parse_vec2(value, file, &join(path, "knob_size"), errors)?;
+            if size[0] <= 0.0 || size[1] <= 0.0 {
+                errors.push(
+                    file,
+                    &join(path, "knob_size"),
+                    format!(
+                        "размер бегунка должен быть больше нуля, получено [{}, {}]",
+                        size[0], size[1]
+                    ),
+                );
+                return None;
+            }
+            Some([size[0] as f32, size[1] as f32])
+        }
+        None => {
+            errors.push(
+                file,
+                path,
+                "у ползунка нет knob_size: размер бегунка [ширина, высота] нужен, чтобы вести его по полосе",
+            );
+            None
+        }
+    };
+    let (track, fill, knob) = (track?, fill?, knob?);
+    let has_image = track.1.is_some() || fill.1.is_some();
+    let image_scale = parse_image_scale(obj, has_image, file, path, errors)?;
+    let name = parse_setting_element_name(obj, file, path, errors)?;
+    Some(ParsedElementData::Slider(Box::new(ParsedSlider {
+        placement,
+        setting: setting?,
+        color: track.0,
+        image_name: track.1,
+        fill_color: fill.0,
+        fill_image_name: fill.1,
+        knob_color: knob.0,
+        knob_image_name: knob.1,
+        knob_size: knob_size?,
+        image_scale,
+        name,
+    })))
+}
+
+fn parse_switch(
+    obj: &serde_json::Map<String, Json>,
+    scope: Scope,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedElementData> {
+    reject_unknown_keys_except(obj, SWITCH_KEYS, &PARTICLE_KEYS, file, path, errors);
+    reject_foreign_particle_keys(obj, HoverOwner::Switch, file, path, errors);
+    let placement = parse_setting_element_place(obj, scope, "switch", file, path, errors)?;
+    let setting_json = require_field(obj, "setting", file, path, errors)?;
+    let setting_name = expect_string(setting_json, file, &join(path, "setting"), errors)?;
+    let setting = Toggle::parse(&setting_name).or_else(|| {
+        errors.push(
+            file,
+            &join(path, "setting"),
+            format!("переключатель меняет sound или fullscreen, получено \"{setting_name}\""),
+        );
+        None
+    });
+    let image_on = parse_optional_string(obj, "image_on", file, path, errors);
+    let image_off = parse_optional_string(obj, "image_off", file, path, errors);
+    let color_on = parse_optional_ui_color(obj, "color_on", file, path, errors);
+    let color_off = parse_optional_ui_color(obj, "color_off", file, path, errors);
+    let (image_on, image_off, color_on, color_off) = (image_on?, image_off?, color_on?, color_off?);
+    let (on, off) = match (image_on, image_off, color_on, color_off) {
+        (Some(on), Some(off), None, None) => (ParsedFill::Image(on), ParsedFill::Image(off)),
+        (None, None, Some(on), Some(off)) => (ParsedFill::Color(on), ParsedFill::Color(off)),
+        (None, None, None, None) => {
+            errors.push(
+                file,
+                path,
+                "у переключателя нет пары: нужны image_on и image_off или color_on и color_off",
+            );
+            return None;
+        }
+        _ => {
+            errors.push(
+                file,
+                path,
+                "у переключателя ровно одна пара: image_on и image_off или color_on и color_off, обе вместе или по одному полю не бывают",
+            );
+            return None;
+        }
+    };
+    let name = parse_setting_element_name(obj, file, path, errors)?;
+    Some(ParsedElementData::Switch(Box::new(ParsedSwitch {
+        placement,
+        setting: setting?,
+        on,
+        off,
+        name,
+    })))
+}
+
+fn parse_key(
+    obj: &serde_json::Map<String, Json>,
+    scope: Scope,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedElementData> {
+    reject_unknown_keys_except(obj, KEY_KEYS, &PARTICLE_KEYS, file, path, errors);
+    reject_foreign_particle_keys(obj, HoverOwner::Key, file, path, errors);
+    let placement = parse_setting_element_place(obj, scope, "key", file, path, errors)?;
+    let key_json = require_field(obj, "key", file, path, errors)?;
+    let key = expect_string(key_json, file, &join(path, "key"), errors)?;
+    let font_json = require_field(obj, "font", file, path, errors)?;
+    let font_name = expect_string(font_json, file, &join(path, "font"), errors)?;
+    let font_size = match obj.get("font_size") {
+        Some(v) => expect_number(v, file, &join(path, "font_size"), errors)?,
+        None => 16.0,
+    };
+    let text_color = match obj.get("text_color") {
+        Some(v) => expect_ui_color(v, file, &join(path, "text_color"), errors)?,
+        None => [1.0, 1.0, 1.0, 1.0],
+    };
+    let waiting_text = parse_optional_string(obj, "waiting_text", file, path, errors)?
+        .unwrap_or_else(|| DEFAULT_WAITING_TEXT.to_string());
+    let waiting_color = parse_optional_ui_color(obj, "waiting_color", file, path, errors)?;
+    let (color, image_name) =
+        parse_fill_pair(obj, "color", "image", "клавиши", file, path, errors)?;
+    let name = parse_setting_element_name(obj, file, path, errors)?;
+    Some(ParsedElementData::Key(Box::new(ParsedKey {
+        placement,
+        key,
+        font_name,
+        font_size: font_size as f32,
+        text_color,
+        waiting_text,
+        waiting_color,
+        color,
+        image_name,
+        name,
+    })))
 }
 
 fn parse_list(
@@ -9715,6 +10118,9 @@ fn parse_element(
             let bar = parse_bar(obj, scope, context, file, path, errors);
             hover.and(choice).and(bar)
         }
+        "slider" => parse_slider(obj, scope, file, path, errors),
+        "switch" => parse_switch(obj, scope, file, path, errors),
+        "key" => parse_key(obj, scope, file, path, errors),
         "list" if scope == Scope::Screen => {
             let hover = parse_hover_fields(obj, HoverOwner::List, scope, file, path, errors);
             let choice = parse_choice_fields(obj, HoverOwner::List, scope, file, path, errors);
@@ -9731,7 +10137,7 @@ fn parse_element(
         }
         other => {
             let expected = match scope {
-                Scope::Screen => "panel, label, button, bar или list",
+                Scope::Screen => "panel, label, button, bar, list, slider, switch или key",
                 Scope::Row => "panel, label, button или bar",
             };
             errors.push(
@@ -10610,6 +11016,7 @@ fn resolve_on_click(
         ParsedCommand::Resume => Some(ButtonCommand::Resume),
         ParsedCommand::Quit => Some(ButtonCommand::Quit),
         ParsedCommand::ToggleSound => Some(ButtonCommand::ToggleSound),
+        ParsedCommand::ResetKeys => Some(ButtonCommand::ResetKeys),
         ParsedCommand::Exit => Some(ButtonCommand::Exit),
         ParsedCommand::Run(function) => runs
             .add(function, origin, file, path, errors)
@@ -10738,6 +11145,9 @@ fn screen_hover_places(
             ParsedElementData::Panel { hover, .. } | ParsedElementData::Button { hover, .. } => {
                 hover.name.as_deref()
             }
+            ParsedElementData::Slider(slider) => slider.name.as_deref(),
+            ParsedElementData::Switch(switch) => switch.name.as_deref(),
+            ParsedElementData::Key(key) => key.name.as_deref(),
             _ => None,
         };
         let Some(name) = name else {
@@ -10937,6 +11347,7 @@ fn resolve_element(
     images: &[ImageDecl],
     properties: &PropertyTable,
     scene_names: &std::collections::HashSet<&str>,
+    game_keys: &[String],
     name_to_id: &std::collections::HashMap<String, ScreenId>,
     parsed_screens: &[ParsedScreen],
     places: &HoverPlaces,
@@ -11094,6 +11505,11 @@ fn resolve_element(
         }
         ParsedElementData::Bar(bar) => {
             resolve_bar(bar, path, file, scene_file, images, scene_names, errors)
+        }
+        ParsedElementData::Slider(slider) => resolve_slider(slider, path, file, images, errors),
+        ParsedElementData::Switch(switch) => resolve_switch(switch, path, file, images, errors),
+        ParsedElementData::Key(key) => {
+            resolve_key(key, path, file, fonts, images, game_keys, errors)
         }
         ParsedElementData::Label {
             placement,
@@ -11291,6 +11707,7 @@ fn resolve_element(
                         images,
                         properties,
                         scene_names,
+                        game_keys,
                         name_to_id,
                         parsed_screens,
                         places,
@@ -11334,6 +11751,156 @@ fn validate_tooltip_refs(
             &join(path, "tooltip"),
             errors,
         )
+    })
+}
+
+/// Заливка, которой может не быть: ни цвета, ни картинки — `Some(None)`.
+fn resolve_optional_fill(
+    color: Option<[f32; 4]>,
+    image_name: Option<&str>,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Option<Fill>> {
+    if color.is_none() && image_name.is_none() {
+        return Some(None);
+    }
+    resolve_fill(color, image_name, None, None, images, file, path, errors).map(Some)
+}
+
+/// «Настройки на экране»: ползунок — полоса, заливка и бегунок из цветов и картинок.
+fn resolve_slider(
+    slider: &ParsedSlider,
+    path: &str,
+    file: &str,
+    images: &[ImageDecl],
+    errors: &mut ErrorSink,
+) -> Option<Element> {
+    let track = resolve_optional_fill(
+        slider.color,
+        slider.image_name.as_deref(),
+        images,
+        file,
+        &join(path, "image"),
+        errors,
+    );
+    let fill = resolve_optional_fill(
+        slider.fill_color,
+        slider.fill_image_name.as_deref(),
+        images,
+        file,
+        &join(path, "fill_image"),
+        errors,
+    );
+    let knob = resolve_fill(
+        slider.knob_color,
+        slider.knob_image_name.as_deref(),
+        None,
+        None,
+        images,
+        file,
+        &join(path, "knob_image"),
+        errors,
+    );
+    Some(Element::Slider {
+        placement: slider.placement,
+        setting: slider.setting,
+        track: track?,
+        fill: fill?,
+        knob: knob?,
+        knob_size: slider.knob_size,
+        image_scale: slider.image_scale.unwrap_or(1.0),
+        name: slider.name.clone(),
+    })
+}
+
+fn resolve_pair_fill(
+    fill: &ParsedFill,
+    image_key: &str,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Fill> {
+    match fill {
+        ParsedFill::Color(color) => Some(Fill::Color(*color)),
+        ParsedFill::Image(name) => {
+            resolve_image_fill(name, images, file, &join(path, image_key), errors)
+        }
+    }
+}
+
+fn resolve_image_fill(
+    name: &str,
+    images: &[ImageDecl],
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<Fill> {
+    resolve_fill(None, Some(name), None, None, images, file, path, errors)
+}
+
+/// «Настройки на экране»: переключатель — две заливки, по значению настройки.
+fn resolve_switch(
+    switch: &ParsedSwitch,
+    path: &str,
+    file: &str,
+    images: &[ImageDecl],
+    errors: &mut ErrorSink,
+) -> Option<Element> {
+    let on = resolve_pair_fill(&switch.on, "image_on", images, file, path, errors);
+    let off = resolve_pair_fill(&switch.off, "image_off", images, file, path, errors);
+    Some(Element::Switch {
+        placement: switch.placement,
+        setting: switch.setting,
+        on: on?,
+        off: off?,
+        name: switch.name.clone(),
+    })
+}
+
+/// «Настройки на экране»: клавиша — шрифт найден, клавиша игры стоит в привязках `scene.json`.
+fn resolve_key(
+    key: &ParsedKey,
+    path: &str,
+    file: &str,
+    fonts: &[(String, String)],
+    images: &[ImageDecl],
+    game_keys: &[String],
+    errors: &mut ErrorSink,
+) -> Option<Element> {
+    let font = resolve_font(&key.font_name, fonts, file, &join(path, "font"), errors);
+    let fill = resolve_optional_fill(
+        key.color,
+        key.image_name.as_deref(),
+        images,
+        file,
+        &join(path, "image"),
+        errors,
+    );
+    let bound = game_keys.contains(&key.key);
+    if !bound {
+        errors.push(
+            file,
+            &join(path, "key"),
+            format!(
+                "клавиши \"{}\" нет ни в одной привязке keys объектов scene.json: клавиша игры — та, на которую объект отвечает",
+                key.key
+            ),
+        );
+    }
+    let (font, fill) = (font?, fill?);
+    bound.then(|| Element::Key {
+        placement: key.placement,
+        key: key.key.clone(),
+        font,
+        font_size: key.font_size,
+        text_color: key.text_color,
+        waiting_text: key.waiting_text.clone(),
+        waiting_color: key.waiting_color,
+        fill,
+        name: key.name.clone(),
     })
 }
 
@@ -12075,6 +12642,14 @@ fn resolve_screens(
         .filter_map(|o| o.name.as_deref())
         .collect();
 
+    let mut game_keys: Vec<String> = scene_objects
+        .iter()
+        .filter_map(|object| object.keys.as_ref())
+        .flat_map(|table| table.keys().cloned())
+        .collect();
+    game_keys.sort();
+    game_keys.dedup();
+
     let mut initial_values: Vec<Vec<(String, PropertyId, InitialValue)>> = Vec::new();
     let mut choices = ChoiceChecker::new(declared_tables, tables, parsed);
     let mut runs = RunTable {
@@ -12101,6 +12676,7 @@ fn resolve_screens(
                         images,
                         properties,
                         &scene_names,
+                        &game_keys,
                         &name_to_id,
                         parsed,
                         &places,
@@ -12265,6 +12841,7 @@ fn resolve_screens(
                 ButtonCommand::Resume
                 | ButtonCommand::Quit
                 | ButtonCommand::ToggleSound
+                | ButtonCommand::ResetKeys
                 | ButtonCommand::Exit
                 | ButtonCommand::Run(_) => {}
             }
@@ -12291,6 +12868,7 @@ fn resolve_screens(
         loss_screen,
         initial_values,
         choices: choices.into_tables(),
+        game_keys,
         // Filled in by `load_rest_with_tables` once this resolves — «Надписи и полоски в мире»
         // resolve separately (`resolve_world_elements`), since they need no scene/screen-name
         // cross-checks `resolve_screens` itself runs.
@@ -12967,6 +13545,23 @@ fn collect_used_images(
                         mark_fill_used(&mut used, back);
                     }
                 }
+                Element::Slider {
+                    track, fill, knob, ..
+                } => {
+                    for fill in track.iter().chain(fill) {
+                        mark_fill_used(&mut used, fill);
+                    }
+                    mark_fill_used(&mut used, knob);
+                }
+                Element::Switch { on, off, .. } => {
+                    mark_fill_used(&mut used, on);
+                    mark_fill_used(&mut used, off);
+                }
+                Element::Key { fill, .. } => {
+                    if let Some(fill) = fill {
+                        mark_fill_used(&mut used, fill);
+                    }
+                }
                 Element::Label { .. } | Element::List { .. } => {}
             }
         }
@@ -13338,7 +13933,10 @@ fn any_toggle_sound_bound(screens: &[Screen]) -> bool {
                     Element::Button {
                         on_click: ButtonCommand::ToggleSound,
                         ..
-                    }
+                    } | Element::Switch {
+                        setting: Toggle::Sound,
+                        ..
+                    } | Element::Slider { .. }
                 )
             });
         button_bound
@@ -13369,7 +13967,7 @@ fn validate_toggle_sound_presence(
         errors.push_warning(
             file,
             "",
-            "в игре есть звук, но toggle_sound не назначен ни одной кнопке и ни одной клавише экрана"
+            "в игре есть звук, но toggle_sound не назначен ни одной кнопке и ни одной клавише экрана, а переключателя звука и ползунка громкости нет ни на одном экране"
                 .to_string(),
         );
     }

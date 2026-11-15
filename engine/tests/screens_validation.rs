@@ -448,13 +448,13 @@ fn eight_digit_color_with_alpha_is_accepted() {
 fn unknown_element_kind_is_reported() {
     let screens = r##"{"screens":[
         {"name":"menu","world_runs":true,"elements":[
-            {"kind":"slider","anchor":"center","size":[10,10]}
+            {"kind":"dial","anchor":"center","size":[10,10]}
         ]}
     ]}"##;
     let LoadFailure { errors, .. } = load(GAME, PROPS, SCENE, RULES_EMPTY, screens, &[])
         .expect_err("неизвестный вид элемента — ошибка");
     assert!(
-        errors.iter().any(|e| e.message.contains("slider")),
+        errors.iter().any(|e| e.message.contains("dial")),
         "{errors:?}"
     );
 }

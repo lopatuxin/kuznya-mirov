@@ -18,6 +18,7 @@ pub enum ReplayCommand {
     Resume,
     Quit,
     ToggleSound,
+    ResetKeys,
     Exit,
     /// «Экраны и состояние» → «Команды», `run`: имя функции кода и номер объекта кнопки — строки списка или
     /// элемента с `for`, — если он был. Повтор вызывает функцию в то же место записи.
@@ -116,6 +117,7 @@ fn parse_command(arr: &[Json]) -> Result<ReplayCommand, String> {
         "resume" => Ok(ReplayCommand::Resume),
         "quit" => Ok(ReplayCommand::Quit),
         "toggle_sound" => Ok(ReplayCommand::ToggleSound),
+        "reset_keys" => Ok(ReplayCommand::ResetKeys),
         "exit" => Ok(ReplayCommand::Exit),
         "run" => {
             let function = want_str(arr.get(1).ok_or("run без функции")?, "run[1]")?;
@@ -149,6 +151,7 @@ fn command_to_json(cmd: &ReplayCommand) -> Json {
         ReplayCommand::Resume => Json::Array(vec![Json::String("resume".to_string())]),
         ReplayCommand::Quit => Json::Array(vec![Json::String("quit".to_string())]),
         ReplayCommand::ToggleSound => Json::Array(vec![Json::String("toggle_sound".to_string())]),
+        ReplayCommand::ResetKeys => Json::Array(vec![Json::String("reset_keys".to_string())]),
         ReplayCommand::Exit => Json::Array(vec![Json::String("exit".to_string())]),
         ReplayCommand::Run(function, object) => {
             let mut arr = vec![
@@ -527,6 +530,20 @@ mod tests {
         assert_eq!(parse(&text).expect("читается"), recording);
         let bad = r#"{"format": 1, "steps": 1, "events": [{"step": 0, "command": ["run", "take", "x"]}]}"#;
         assert!(parse(bad).unwrap_err().contains("run[2]"));
+    }
+
+    #[test]
+    fn a_reset_keys_command_survives_the_round_trip() {
+        let recording = Recording {
+            steps: 2,
+            events: vec![ReplayEvent {
+                step: 1,
+                kind: ReplayEventKind::Command(ReplayCommand::ResetKeys),
+            }],
+        };
+        let text = serialize(&recording);
+        assert!(text.contains(r#"["reset_keys"]"#), "{text}");
+        assert_eq!(parse(&text).expect("читается"), recording);
     }
 
     #[test]

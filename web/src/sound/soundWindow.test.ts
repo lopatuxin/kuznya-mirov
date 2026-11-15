@@ -15,22 +15,30 @@ function makeWindow(cells: number[]): { memory: WebAssembly.Memory; ptr: number;
 
 describe("readSoundWindow", () => {
   it("читает включённый звук, номер трека и ни одной поднятой отметки", () => {
-    const { memory, ptr, len } = makeWindow([1, 4, 0, 0, 0]);
-    expect(readSoundWindow(memory, ptr, len)).toEqual({ enabled: true, musicId: 4, raisedSoundIds: [] });
+    const { memory, ptr, len } = makeWindow([1, 4, 100, 100, 0, 0]);
+    expect(readSoundWindow(memory, ptr, len)).toEqual({ enabled: true, musicId: 4, musicVolume: 100, soundVolume: 100, raisedSoundIds: [] });
   });
 
   it("читает выключенный звук и тишину (−1) как отсутствие трека", () => {
-    const { memory, ptr, len } = makeWindow([0, -1, 0]);
-    expect(readSoundWindow(memory, ptr, len)).toEqual({ enabled: false, musicId: null, raisedSoundIds: [] });
+    const { memory, ptr, len } = makeWindow([0, -1, 100, 100]);
+    expect(readSoundWindow(memory, ptr, len)).toEqual({ enabled: false, musicId: null, musicVolume: 100, soundVolume: 100, raisedSoundIds: [] });
   });
 
   it("собирает поднятые отметки по их номеру, а не по позиции в окне", () => {
-    const { memory, ptr, len } = makeWindow([1, -1, 0, 1, 1, 0, 1]);
+    const { memory, ptr, len } = makeWindow([1, -1, 100, 100, 0, 1, 1, 0, 1]);
     expect(readSoundWindow(memory, ptr, len).raisedSoundIds).toEqual([1, 2, 4]);
   });
 
+  it("читает громкость музыки из [2] и громкость звуков из [3], а не отметки звуков", () => {
+    const { memory, ptr, len } = makeWindow([1, -1, 35, 80, 1, 0]);
+    const snapshot = readSoundWindow(memory, ptr, len);
+    expect(snapshot.musicVolume).toBe(35);
+    expect(snapshot.soundVolume).toBe(80);
+    expect(snapshot.raisedSoundIds).toEqual([0]);
+  });
+
   it("отдаёт пустой снимок для нулевого указателя — окно ещё не выделено (до load())", () => {
-    const { memory, len } = makeWindow([1, 0, 0]);
-    expect(readSoundWindow(memory, 0, len)).toEqual({ enabled: false, musicId: null, raisedSoundIds: [] });
+    const { memory, len } = makeWindow([1, 0, 50, 50]);
+    expect(readSoundWindow(memory, 0, len)).toEqual({ enabled: false, musicId: null, musicVolume: 100, soundVolume: 100, raisedSoundIds: [] });
   });
 });

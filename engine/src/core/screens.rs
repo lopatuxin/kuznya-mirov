@@ -2,7 +2,7 @@
 //! machine that moves between them. The engine itself knows nothing about "menu" or "pause" —
 //! only a screen's name, whether the world runs on it, and its list of elements.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -12,6 +12,7 @@ use super::interface::{self, Part, Placed, SCROLL_POINTS_PER_ROW};
 use super::particles::Settings;
 use super::property::{self, PropertyId, PropertyTable};
 use super::rules::{Outcome, Selector};
+use super::settings::{PlayerSettings, Toggle, Volume, key_name};
 use super::value::{ImageId, PropKind, Value};
 use super::world::World;
 
@@ -172,6 +173,8 @@ pub enum TextPart {
     Own(PropertyId),
     /// «Выбор»: `{choice:<таблица>}` или `{choice:<таблица>.<поле>}`.
     Choice(ChoiceRef),
+    /// «Настройки на экране»: `{setting:music_volume}` и `{setting:sound_volume}` — громкость числом.
+    Setting(Volume),
 }
 
 /// «Интерфейс игры» → «Выбор»: что выбранное в группе подставляется — имя места или поле его строки в таблице.
@@ -190,6 +193,8 @@ pub struct Choices<'a> {
     tables: &'a HashMap<String, ChoiceTable>,
     chosen: &'a HashMap<String, String>,
     preview: Option<(&'a str, &'a str)>,
+    /// Подстановка `{setting:…}` берёт громкость отсюда.
+    settings: &'a PlayerSettings,
 }
 
 impl<'a> Choices<'a> {
@@ -199,6 +204,11 @@ impl<'a> Choices<'a> {
             preview: Some((group, place)),
             ..self
         }
+    }
+
+    /// «Настройки на экране»: громкость для подстановки `{setting:…}`.
+    pub fn volume(&self, volume: Volume) -> u8 {
+        self.settings.volume(volume)
     }
 
     /// Имя выбранного места группы или поле его строки; `None` — ничего не выбрано или у строки нет поля.
@@ -295,6 +305,11 @@ pub fn format_text_with(
             TextPart::Choice(choice) => {
                 if let Some(text) = choices.and_then(|choices| choices.text(choice)) {
                     out.push_str(text);
+                }
+            }
+            TextPart::Setting(volume) => {
+                if let Some(choices) = choices {
+                    out.push_str(&choices.volume(*volume).to_string());
                 }
             }
         }
@@ -400,6 +415,8 @@ pub enum ButtonCommand {
     /// «Экраны и состояние» → «Команды»: выход из игры — мир уничтожается, страница уходит к списку игр
     /// (в редакторе партия останавливается, как «Стоп»).
     Exit,
+    /// «Настройки игрока»: убирает все замены клавиш игрока.
+    ResetKeys,
 }
 
 /// Элемент экрана. Панель, надпись и кнопка вне строки списка могут иметь отбор `for_` — «Элемент при
@@ -492,6 +509,40 @@ pub enum Element {
         row: Vec<Element>,
         scroll_color: [f32; 4],
     },
+    /// «Настройки на экране»: ползунок громкости — полоса, заливка до середины бегунка и бегунок.
+    Slider {
+        placement: Placement,
+        setting: Volume,
+        track: Option<Fill>,
+        fill: Option<Fill>,
+        knob: Fill,
+        knob_size: [f32; 2],
+        /// Толщина рамки картинок полосы и заливки.
+        image_scale: f32,
+        /// «Наведение»: имя места наведения.
+        name: Option<String>,
+    },
+    /// «Настройки на экране»: переключатель настройки, рисует `on` или `off` по её значению.
+    Switch {
+        placement: Placement,
+        setting: Toggle,
+        on: Fill,
+        off: Fill,
+        name: Option<String>,
+    },
+    /// «Настройки на экране»: клавиша игры и название клавиши игрока, которая на ней стоит.
+    Key {
+        placement: Placement,
+        key: String,
+        font: FontId,
+        font_size: f32,
+        text_color: [f32; 4],
+        waiting_text: String,
+        /// Цвет `waiting_text`; без него — `text_color`.
+        waiting_color: Option<[f32; 4]>,
+        fill: Option<Fill>,
+        name: Option<String>,
+    },
 }
 
 impl Element {
@@ -501,7 +552,10 @@ impl Element {
             | Element::Label { placement, .. }
             | Element::Button { placement, .. }
             | Element::Bar { placement, .. }
-            | Element::List { placement, .. } => placement,
+            | Element::List { placement, .. }
+            | Element::Slider { placement, .. }
+            | Element::Switch { placement, .. }
+            | Element::Key { placement, .. } => placement,
         }
     }
 
@@ -511,7 +565,11 @@ impl Element {
             Element::Panel { tooltip, .. }
             | Element::Button { tooltip, .. }
             | Element::Bar { tooltip, .. } => tooltip.as_deref(),
-            Element::Label { .. } | Element::List { .. } => None,
+            Element::Label { .. }
+            | Element::List { .. }
+            | Element::Slider { .. }
+            | Element::Switch { .. }
+            | Element::Key { .. } => None,
         }
     }
 
@@ -524,10 +582,14 @@ impl Element {
         single.into_iter().chain(row)
     }
 
-    /// «Наведение»: имя места наведения панели или кнопки.
+    /// «Наведение»: имя места наведения панели, кнопки, ползунка, переключателя или клавиши.
     pub fn place_name(&self) -> Option<&str> {
         match self {
-            Element::Panel { name, .. } | Element::Button { name, .. } => name.as_deref(),
+            Element::Panel { name, .. }
+            | Element::Button { name, .. }
+            | Element::Slider { name, .. }
+            | Element::Switch { name, .. }
+            | Element::Key { name, .. } => name.as_deref(),
             _ => None,
         }
     }
@@ -605,7 +667,10 @@ impl Element {
             | Element::Label { for_, .. }
             | Element::Button { for_, .. }
             | Element::Bar { for_, .. } => for_.as_ref(),
-            Element::List { .. } => None,
+            Element::List { .. }
+            | Element::Slider { .. }
+            | Element::Switch { .. }
+            | Element::Key { .. } => None,
         }
     }
 }
@@ -676,6 +741,8 @@ pub struct ScreensConfig {
     pub initial_values: Vec<Vec<(String, PropertyId, InitialValue)>>,
     /// «Выбор»: таблицы групп выбора, которые читают экраны, — поля строк текстом.
     pub choices: HashMap<String, ChoiceTable>,
+    /// «Настройки игрока»: клавиши игры — все клавиши из привязок `keys` объектов `scene.json`, по алфавиту.
+    pub game_keys: Vec<String>,
     /// «Надписи и полоски в мире», требование 1: the optional `world_elements` list, in file
     /// order — empty when `screens.json` names none.
     pub world_elements: Vec<WorldElement>,
@@ -938,15 +1005,28 @@ pub struct WorldElement {
     pub kind: WorldElementKind,
 }
 
-/// The active screen and the one remembered screen `resume` returns to — «Экраны и состояние» → «Команды»: at most one level deep, no further history.
+/// Активный экран, цепочка возвратов для `resume` — «Экраны и состояние» → «Цепочка возвратов» — и настройки игрока.
 #[derive(Debug, Clone)]
 pub struct ScreenState {
     active: ScreenId,
-    previous: Option<ScreenId>,
+    /// Экраны, с которых пришли, от самого раннего к самому позднему.
+    returns: Vec<ScreenId>,
     /// «Звук» → «Два вида звука»: belongs to the circle, next
     /// to the active screen, not to the world — `new_game`/`quit` don't touch it, and it starts
     /// `true` on every load, since the engine keeps no storage for it at all.
     sound_enabled: bool,
+    /// «Настройки игрока»: громкость и замены клавиш. Мир и шаг их не читают, `new_game` и `quit` не трогают.
+    settings: PlayerSettings,
+    /// Каково окно на деле — об этом сообщает страница.
+    fullscreen: bool,
+    /// Переключатель полного экрана нажат — страница разворачивает или сворачивает окно.
+    fullscreen_requested: bool,
+    /// Громкость или замены сменились — страница сохраняет их.
+    settings_changed: bool,
+    /// «Настройки на экране»: клавиша игры, для которой ждут нажатие клавиши игрока.
+    awaiting_key: Option<String>,
+    /// Клавиши, нажатие которых забрало ожидание: их отпускание команд экрана не запускает.
+    absorbed_keys: HashSet<String>,
     /// «Список»: на сколько строк прокручен каждый список — по экрану и номеру его элемента. Новая
     /// партия сбрасывает прокрутку.
     scrolls: HashMap<(ScreenId, usize), ListScroll>,
@@ -985,8 +1065,14 @@ impl ScreenState {
     pub fn new(start_screen: ScreenId) -> Self {
         ScreenState {
             active: start_screen,
-            previous: None,
+            returns: Vec::new(),
             sound_enabled: true,
+            settings: PlayerSettings::default(),
+            fullscreen: false,
+            fullscreen_requested: false,
+            settings_changed: false,
+            awaiting_key: None,
+            absorbed_keys: HashSet::new(),
             scrolls: HashMap::new(),
             exit_requested: false,
             chosen: HashMap::new(),
@@ -1069,6 +1155,7 @@ impl ScreenState {
             tables: &config.choices,
             chosen: &self.chosen,
             preview: None,
+            settings: &self.settings,
         }
     }
 
@@ -1101,6 +1188,121 @@ impl ScreenState {
         self.sound_enabled
     }
 
+    /// «Цепочка возвратов»: экраны, на которые вернёт `resume`; ближайший — последний.
+    pub fn return_chain(&self) -> &[ScreenId] {
+        &self.returns
+    }
+
+    pub fn volume(&self, volume: Volume) -> u8 {
+        self.settings.volume(volume)
+    }
+
+    /// Значение настройки переключателя: звук включён или окно развёрнуто.
+    pub fn toggle_is_on(&self, setting: Toggle) -> bool {
+        match setting {
+            Toggle::Sound => self.sound_enabled,
+            Toggle::Fullscreen => self.fullscreen,
+        }
+    }
+
+    /// Страница сообщает, каково окно игры.
+    pub fn set_fullscreen(&mut self, on: bool) {
+        self.fullscreen = on;
+    }
+
+    /// Нажат ли переключатель полного экрана с прошлого вопроса.
+    pub fn take_fullscreen_request(&mut self) -> bool {
+        std::mem::take(&mut self.fullscreen_requested)
+    }
+
+    /// Менялись ли громкость или замены клавиш с прошлого вопроса.
+    pub fn take_settings_changed(&mut self) -> bool {
+        std::mem::take(&mut self.settings_changed)
+    }
+
+    /// Настройки, которые страница хранит между запусками, JSON.
+    pub fn settings_json(&self) -> String {
+        self.settings.to_json()
+    }
+
+    /// Принимает сохранённые страницей настройки; что игре не подходит, отбрасывает. Сохранять их заново
+    /// из-за этого не нужно.
+    pub fn load_settings_json(&mut self, config: &ScreensConfig, text: &str) {
+        self.settings.load_json(text, &config.game_keys, |key| {
+            config
+                .screens
+                .iter()
+                .any(|screen| screen.keys.contains_key(key))
+        });
+    }
+
+    /// Клавиша игрока, которая сейчас стоит на клавише игры, названная для игрока.
+    pub fn player_key_name(&self, game_key: &str) -> String {
+        key_name(self.settings.keys.player_key(game_key))
+    }
+
+    /// Для какой клавиши игры ждут нажатие клавиши игрока.
+    pub fn awaiting_key(&self) -> Option<&str> {
+        self.awaiting_key.as_deref()
+    }
+
+    fn set_volume(&mut self, volume: Volume, value: u8) {
+        if self.settings.set_volume(volume, value) {
+            self.settings_changed = true;
+        }
+    }
+
+    fn reset_keys(&mut self) {
+        if self.settings.keys.clear() {
+            self.settings_changed = true;
+        }
+    }
+
+    /// Нажатие клавиши, пока ждут клавишу игрока: `Escape` отменяет, клавиша экрана любого экрана не
+    /// назначается и ожидание идёт дальше, любая другая назначается. `true` — нажатие забрано: ни экран, ни
+    /// мир его не видят.
+    fn take_key_down(&mut self, config: &ScreensConfig, code: &str) -> bool {
+        let Some(game_key) = self.awaiting_key.take() else {
+            // Повтор зажатой клавиши, нажатие которой забрало ожидание: метку снимает только отпускание.
+            return self.absorbed_keys.contains(code);
+        };
+        self.absorbed_keys.insert(code.to_string());
+        if code == CANCEL_KEY_WAIT {
+            return true;
+        }
+        if config
+            .screens
+            .iter()
+            .any(|screen| screen.keys.contains_key(code))
+        {
+            self.awaiting_key = Some(game_key);
+            return true;
+        }
+        let before = self.settings.keys.clone();
+        self.settings
+            .keys
+            .assign(&config.game_keys, &game_key, code);
+        self.settings_changed |= self.settings.keys != before;
+        true
+    }
+
+    /// Отпускание клавиши, нажатие которой забрало ожидание, и клавиши экрана, пока ожидание идёт, команд не
+    /// запускает.
+    fn take_key_up(&mut self, config: &ScreensConfig, code: &str) -> bool {
+        self.absorbed_keys.remove(code)
+            || (self.awaiting_key.is_some() && config.screens[self.active].keys.contains_key(code))
+    }
+
+    /// Отдаёт ли замена клавишу не ей самой: клавиша игрока стоит на другой клавише игры или отнята у игры.
+    pub fn remaps_key(&self, code: &str) -> bool {
+        self.world_key(code) != Some(code)
+    }
+
+    /// Какой клавишей игры мир видит нажатую клавишу; `None` — клавишу у игры отняла замена.
+    fn world_key<'a>(&'a self, code: &'a str) -> Option<&'a str> {
+        self.settings.keys.world_key(code)
+    }
+
     /// «Экраны и состояние» → «Команды»: сработал ли `exit` — страница уходит к списку игр, редактор
     /// останавливает партию.
     pub fn exit_requested(&self) -> bool {
@@ -1111,13 +1313,35 @@ impl ScreenState {
         config.screens[self.active].world_runs
     }
 
-    fn switch(&mut self, target: ScreenId, remember: bool) {
-        self.previous = if remember { Some(self.active) } else { None };
+    fn switch(&mut self, target: ScreenId, chain: Chain) {
+        match chain {
+            Chain::Push => match self.returns.iter().position(|&screen| screen == target) {
+                Some(at) => self.returns.truncate(at),
+                None => self.returns.push(self.active),
+            },
+            Chain::Keep => {}
+            Chain::Clear => self.returns.clear(),
+        }
         self.active = target;
+        self.awaiting_key = None;
         self.book_page = None;
         self.opened += 1;
     }
 }
+
+/// Что переход делает с цепочкой возвратов.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chain {
+    /// `show_screen`: текущий экран встаёт в конец цепочки, а переход на экран из цепочки обрезает её.
+    Push,
+    /// `resume`: нужный экран уже снят с цепочки.
+    Keep,
+    /// `new_game`, `quit`, `exit` и конец партии.
+    Clear,
+}
+
+/// Клавиша, которая отменяет ожидание клавиши игрока.
+const CANCEL_KEY_WAIT: &str = "Escape";
 
 /// Moves to `target`, releasing held keys through `game` first when the transition leaves a
 /// live screen for one that isn't — «Экраны и состояние» → «Жизнь партии».
@@ -1126,10 +1350,10 @@ fn switch_to(
     config: &ScreensConfig,
     game: &mut Game,
     target: ScreenId,
-    remember: bool,
+    chain: Chain,
 ) {
     let was_live = config.screens[state.active].world_runs;
-    state.switch(target, remember);
+    state.switch(target, chain);
     state.apply_default_choices(&config.screens[target]);
     if was_live && !config.screens[target].world_runs {
         game.release_held_keys();
@@ -1157,7 +1381,7 @@ fn apply_command_recording(
 ) {
     let mut initial_values = Vec::new();
     match cmd {
-        ButtonCommand::ShowScreen(target) => switch_to(state, config, game, target, true),
+        ButtonCommand::ShowScreen(target) => switch_to(state, config, game, target, Chain::Push),
         ButtonCommand::NewGame(target, values_id) => {
             if let Some(values) = values_id.and_then(|id| config.initial_values.get(id)) {
                 initial_values = resolve_initial_values(values, state.choices(config));
@@ -1165,19 +1389,19 @@ fn apply_command_recording(
             apply_new_game(target, &initial_values, game, config, state);
         }
         ButtonCommand::Resume => {
-            if let Some(previous) = state.previous {
-                switch_to(state, config, game, previous, true);
+            if let Some(previous) = state.returns.pop() {
+                switch_to(state, config, game, previous, Chain::Keep);
             }
         }
         ButtonCommand::Quit => {
             game.quit();
             state.reset_scrolls();
-            switch_to(state, config, game, config.start_screen, false);
+            switch_to(state, config, game, config.start_screen, Chain::Clear);
         }
         ButtonCommand::Exit => {
             game.quit();
             state.reset_scrolls();
-            switch_to(state, config, game, config.start_screen, false);
+            switch_to(state, config, game, config.start_screen, Chain::Clear);
             state.exit_requested = true;
         }
         ButtonCommand::Run(run) => {
@@ -1188,6 +1412,7 @@ fn apply_command_recording(
         // «Звук» → «Два вида звука»: touches no world property, no
         // screen, no queued anything — the whole command is this one flip.
         ButtonCommand::ToggleSound => state.sound_enabled = !state.sound_enabled,
+        ButtonCommand::ResetKeys => state.reset_keys(),
     }
     if let Some(events) = events {
         events.push(RecordedEvent::Command {
@@ -1225,7 +1450,7 @@ pub(crate) fn apply_new_game(
 ) {
     game.new_game_with_values(values);
     state.reset_scrolls();
-    switch_to(state, config, game, target, false);
+    switch_to(state, config, game, target, Chain::Clear);
 }
 
 /// Stage-9 equivalent: switches to the win/loss screen the first time `game.outcome()` reports
@@ -1242,7 +1467,7 @@ fn handle_outcome(game: &mut Game, config: &ScreensConfig, state: &mut ScreenSta
     if let Some(target) = target
         && state.active() != target
     {
-        switch_to(state, config, game, target, true);
+        switch_to(state, config, game, target, Chain::Clear);
     }
 }
 
@@ -1268,8 +1493,12 @@ pub fn tick(
 /// carries the result, `config`/`state` only supply what's currently true.
 pub fn write_sound_frame(game: &mut Game, config: &ScreensConfig, state: &ScreenState) {
     let music = config.screens[state.active()].music;
-    game.sound_window_mut()
-        .write_header(music, state.sound_enabled());
+    game.sound_window_mut().write_header(
+        music,
+        state.sound_enabled(),
+        state.volume(Volume::Music),
+        state.volume(Volume::Sound),
+    );
 }
 
 /// Принимает ли мир ввод: экран с `world_runs` и скорость времени не 0 — «Исполнение игры» → «Шаг и
@@ -1304,7 +1533,9 @@ fn release_keys_if_time_stopped(
 /// the instant this call drains the queue, not deferred to the next `Game::step`'s own stage 1 —
 /// a frame that ends up doing zero world steps still leaves the press visible, for `pause()`'s
 /// own `release_held_keys` to find and record) over `Game::key_down` (the plain page: queued,
-/// unchanged).
+/// unchanged). «Настройки игрока»: a key that isn't the screen's reaches the world as the game key
+/// the player put on it — `ScreenState::world_key` — and not at all when a replacement took it
+/// away from its game key; the recording keeps the game key the world saw.
 pub fn handle_screen_key_down(
     game: &mut Game,
     config: &ScreensConfig,
@@ -1316,14 +1547,17 @@ pub fn handle_screen_key_down(
     if config.screens[state.active()].keys.contains_key(code) {
         return;
     }
+    let Some(world_code) = state.world_key(code) else {
+        return;
+    };
     if world_accepts_input(game, config, state) {
         if apply_now {
-            game.press_key(code);
+            game.press_key(world_code);
         } else {
-            game.key_down(code);
+            game.key_down(world_code);
         }
         if let Some(events) = events {
-            events.push(RecordedEvent::WorldKeyDown(code.to_string()));
+            events.push(RecordedEvent::WorldKeyDown(world_code.to_string()));
         }
     }
 }
@@ -1359,14 +1593,17 @@ pub fn handle_screen_key_up(
         apply_command_recording(cmd, None, game, config, state, events);
         return;
     }
+    let Some(world_code) = state.world_key(code) else {
+        return;
+    };
     if world_accepts_input(game, config, state) {
         if apply_now {
-            game.release_key(code);
+            game.release_key(world_code);
         } else {
-            game.key_up(code);
+            game.key_up(world_code);
         }
         if let Some(events) = events {
-            events.push(RecordedEvent::WorldKeyUp(code.to_string()));
+            events.push(RecordedEvent::WorldKeyUp(world_code.to_string()));
         }
     }
 }
@@ -1381,6 +1618,8 @@ enum InterfaceHit<'a> {
     Panel(Placed<'a>),
     /// «Выбор»: запертая кнопка — забирает нажатие, но не нажимается и не место наведения.
     Locked,
+    /// «Настройки на экране»: ползунок, переключатель или клавиша ловят нажатие, как кнопка.
+    Control(Placed<'a>),
 }
 
 fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<InterfaceHit<'a>> {
@@ -1395,6 +1634,9 @@ fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<Inte
         match placed.element {
             Element::Button { .. } if placed.locked => return Some(InterfaceHit::Locked),
             Element::Button { .. } => return Some(InterfaceHit::Button(*placed)),
+            Element::Slider { .. } | Element::Switch { .. } | Element::Key { .. } => {
+                return Some(InterfaceHit::Control(*placed));
+            }
             // «Наведение»: панель с `show_on_hover` прозрачна для мыши, видна она сейчас или нет.
             // «На экране»: и панель-источник частиц без `name`.
             Element::Panel {
@@ -1414,7 +1656,9 @@ fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<Inte
 /// курсор ни над каким местом. `point` — в точках `screens.json`; `None` — курсор за краем окна.
 pub fn hover_place(parts: &[Part<'_>], point: Option<[f32; 2]>) -> Option<usize> {
     let placed = match topmost_interface_hit(parts, point?)? {
-        InterfaceHit::Button(placed) | InterfaceHit::Panel(placed) => placed,
+        InterfaceHit::Button(placed)
+        | InterfaceHit::Panel(placed)
+        | InterfaceHit::Control(placed) => placed,
         InterfaceHit::Locked => return None,
     };
     placed.element.place_name()?;
@@ -1492,6 +1736,14 @@ enum MouseOutcome {
     WorldRelease,
     /// «Выбор»: нажатие по месту с `choose` — группа и имя места.
     Choose(String, String),
+    /// «Настройки на экране»: нажатие или движение с зажатой кнопкой на ползунке ставит громкость.
+    Volume(Volume, u8),
+    /// Переключатель отпущен над собой.
+    Switch(Toggle),
+    /// Нажатие пришлось на клавишу экрана настроек: ожидание клавиши игрока не отменяется.
+    PressedKey,
+    /// Клавиша экрана настроек отпущена над собой: ждать клавишу игрока для этой клавиши игры.
+    AwaitKey(String),
 }
 
 /// Нажатие левой кнопки: его забирает кнопка или панель под курсором, иначе на живом экране — мир.
@@ -1508,6 +1760,10 @@ fn press_outcome(
             choose_outcome(&placed)
         }
         Some(InterfaceHit::Panel(placed)) => choose_outcome(&placed),
+        Some(InterfaceHit::Control(placed)) => {
+            mouse.captured = Some(placed.key);
+            control_press_outcome(&placed, point)
+        }
         Some(InterfaceHit::Locked) => MouseOutcome::None,
         None if world_accepts => {
             mouse.world_captured = true;
@@ -1515,6 +1771,40 @@ fn press_outcome(
         }
         None => MouseOutcome::None,
     }
+}
+
+/// «Настройки на экране»: нажатие на ползунке ставит громкость под курсором; остальные два элемента
+/// действуют, когда их отпустят.
+fn control_press_outcome(placed: &Placed<'_>, point: [f32; 2]) -> MouseOutcome {
+    match placed.element {
+        Element::Slider {
+            setting, knob_size, ..
+        } => MouseOutcome::Volume(
+            *setting,
+            interface::slider_value(placed.rect, knob_size[0], point[0]),
+        ),
+        Element::Key { .. } => MouseOutcome::PressedKey,
+        _ => MouseOutcome::None,
+    }
+}
+
+/// «Настройки на экране»: ползунок, на котором нажали, ведёт громкость и за краями ползунка.
+fn dragged_outcome(parts: &[Part<'_>], captured: ButtonKey, point: [f32; 2]) -> MouseOutcome {
+    parts
+        .iter()
+        .find_map(|part| match part {
+            Part::Element(placed) if placed.key == captured => match placed.element {
+                Element::Slider {
+                    setting, knob_size, ..
+                } => Some(MouseOutcome::Volume(
+                    *setting,
+                    interface::slider_value(placed.rect, knob_size[0], point[0]),
+                )),
+                _ => None,
+            },
+            _ => None,
+        })
+        .unwrap_or(MouseOutcome::None)
 }
 
 /// «Выбор»: нажатие по панели или кнопке с `choose` выбирает её место.
@@ -1539,12 +1829,13 @@ fn handle_mouse_event(
     match event {
         MouseEvent::Move(pos) => {
             mouse.position = pos;
-            if mouse.captured.is_none() {
-                mouse.hover = match topmost_interface_hit(parts, frame.point(pos)) {
-                    Some(InterfaceHit::Button(placed)) => Some(placed.key),
-                    _ => None,
-                };
+            if let Some(captured) = mouse.captured {
+                return dragged_outcome(parts, captured, frame.point(pos));
             }
+            mouse.hover = match topmost_interface_hit(parts, frame.point(pos)) {
+                Some(InterfaceHit::Button(placed)) => Some(placed.key),
+                _ => None,
+            };
             MouseOutcome::None
         }
         MouseEvent::Down(image_object) => {
@@ -1564,19 +1855,22 @@ fn handle_mouse_event(
             let point = frame.point(mouse.position);
             // Команда срабатывает, только если под указателем кнопка, на которой нажали, — тот же
             // элемент и тот же объект: строки списка могли сдвинуться.
-            let released_on = parts.iter().find_map(|part| match part {
-                Part::Element(placed) if placed.key == captured && placed.contains(point) => {
-                    match placed.element {
-                        Element::Button { on_click, .. } => Some((*on_click, placed.object)),
-                        _ => None,
+            parts
+                .iter()
+                .find_map(|part| match part {
+                    Part::Element(placed) if placed.key == captured && placed.contains(point) => {
+                        match placed.element {
+                            Element::Button { on_click, .. } => {
+                                Some(MouseOutcome::Command(*on_click, placed.object))
+                            }
+                            Element::Switch { setting, .. } => Some(MouseOutcome::Switch(*setting)),
+                            Element::Key { key, .. } => Some(MouseOutcome::AwaitKey(key.clone())),
+                            _ => None,
+                        }
                     }
-                }
-                _ => None,
-            });
-            match released_on {
-                Some((command, object)) => MouseOutcome::Command(command, object),
-                None => MouseOutcome::None,
-            }
+                    _ => None,
+                })
+                .unwrap_or(MouseOutcome::None)
         }
     }
 }
@@ -1646,7 +1940,13 @@ pub fn process_ui_queue_recording(
                     frame.viewport,
                 );
                 let accepts = world_accepts_input(game, config, state);
-                match handle_mouse_event(mouse, &parts, accepts, frame, mouse_event) {
+                let outcome = handle_mouse_event(mouse, &parts, accepts, frame, mouse_event);
+                if matches!(mouse_event, MouseEvent::Down(_))
+                    && !matches!(outcome, MouseOutcome::PressedKey)
+                {
+                    state.awaiting_key = None;
+                }
+                match outcome {
                     MouseOutcome::Command(cmd, object) => {
                         apply_command_recording(
                             cmd,
@@ -1685,14 +1985,43 @@ pub fn process_ui_queue_recording(
                         }
                     }
                     MouseOutcome::Choose(group, place) => state.choose(group, place),
-                    MouseOutcome::None => {}
+                    MouseOutcome::Volume(volume, value) => state.set_volume(volume, value),
+                    MouseOutcome::Switch(Toggle::Sound) => apply_command_recording(
+                        ButtonCommand::ToggleSound,
+                        None,
+                        game,
+                        config,
+                        state,
+                        events.as_deref_mut(),
+                    ),
+                    MouseOutcome::Switch(Toggle::Fullscreen) => state.fullscreen_requested = true,
+                    MouseOutcome::AwaitKey(game_key) => state.awaiting_key = Some(game_key),
+                    MouseOutcome::PressedKey | MouseOutcome::None => {}
                 }
             }
             UiEvent::KeyDown(code) => {
-                handle_screen_key_down(game, config, state, &code, events.as_deref_mut(), apply_now)
+                if !state.take_key_down(config, &code) {
+                    handle_screen_key_down(
+                        game,
+                        config,
+                        state,
+                        &code,
+                        events.as_deref_mut(),
+                        apply_now,
+                    )
+                }
             }
             UiEvent::KeyUp(code) => {
-                handle_screen_key_up(game, config, state, &code, events.as_deref_mut(), apply_now)
+                if !state.take_key_up(config, &code) {
+                    handle_screen_key_up(
+                        game,
+                        config,
+                        state,
+                        &code,
+                        events.as_deref_mut(),
+                        apply_now,
+                    )
+                }
             }
         }
     }
@@ -1838,11 +2167,11 @@ mod opened_tests {
         let mut old = ScreenState::new(0);
         let fresh = ScreenState::new(0);
         assert_ne!(old.opened(), fresh.opened());
-        old.switch(0, false);
+        old.switch(0, Chain::Clear);
         assert_ne!(old.opened(), fresh.opened());
         let before = fresh.opened();
         let mut fresh = fresh;
-        fresh.switch(0, false);
+        fresh.switch(0, Chain::Clear);
         assert!(
             fresh.opened() > before,
             "каждая смена экрана — новое открытие"

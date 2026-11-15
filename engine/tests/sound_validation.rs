@@ -849,6 +849,40 @@ fn sound_with_a_toggle_sound_binding_gets_no_such_warning() {
     );
 }
 
+/// «Звук» → «Загрузка и проверка»: способ выключить звук — не только `toggle_sound`, но и переключатель звука
+/// и ползунок громкости.
+#[test]
+fn a_sound_switch_or_a_volume_slider_gets_no_toggle_sound_warning() {
+    let game = game_json(r#","sounds":{"eat":"sounds/eat.wav"}"#);
+    let rules = r#"{"rules":[
+        {"kind":"delete","for":{"has":[]},"when":"outside_scene","do":[["play_sound","eat"]]}
+    ]}"#;
+    let switch = r##"{"kind":"switch","anchor":"top_left","size":[40,40],"setting":"sound",
+        "color_on":"#00ff00","color_off":"#ff0000"}"##;
+    let fullscreen = switch.replace(r#""setting":"sound""#, r#""setting":"fullscreen""#);
+    let slider = r##"{"kind":"slider","anchor":"top_left","size":[400,40],"setting":"sound_volume",
+        "knob_color":"#ffffff","knob_size":[40,40]}"##;
+    for (element, silences) in [(switch, true), (slider, true), (fullscreen.as_str(), false)] {
+        let screens = format!(
+            r#"{{"screens":[{{"name":"main","world_runs":true,"elements":[{element}]}}]}}"#
+        );
+        let (_game, _screens, warnings) = load(
+            &game,
+            PROPS_EMPTY,
+            SCENE_EMPTY,
+            rules,
+            &screens,
+            &[("eat", &wav_bytes(100))],
+            &[],
+        )
+        .expect("звук с выключателем — не ошибка");
+        let warned = warnings
+            .iter()
+            .any(|w| w.message.contains("toggle_sound не назначен"));
+        assert_eq!(warned, !silences, "{element}: {warnings:?}");
+    }
+}
+
 #[test]
 fn screen_key_matching_an_objects_own_key_binding_is_a_warning() {
     let game = game_json("");
