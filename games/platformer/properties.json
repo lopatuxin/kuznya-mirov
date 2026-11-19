@@ -2,6 +2,9 @@
   "properties": {
     "hero": "flag",
     "hero_id": "text",
+    "hud_portrait": "text",
+    "health": "number",
+    "spirit": "number",
     "strength": "number",
     "skill": "number",
     "agility": "number",
@@ -15,6 +18,7 @@
     "idle_time": "number",
     "run_dist": "number",
     "robber": "flag",
+    "robber_health_bar": "text",
     "robber_glow": "flag",
     "fx": "flag",
     "attack_key": "flag",

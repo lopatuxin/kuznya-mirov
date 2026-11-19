@@ -11,6 +11,7 @@
     "spirit": "Удаль — копится, когда он держит удары",
     "growth": "больше всего растёт Сила богатырская",
     "sheet": "hero_ilya",
+    "hud_portrait": "hud_portrait_ilya",
     "reach": 1.5
   },
   "alyosha": {
@@ -25,6 +26,7 @@
     "spirit": "Задор — копится, когда он уходит от ударов",
     "growth": "больше всего растёт Прыть",
     "sheet": "hero_alyosha",
+    "hud_portrait": "hud_portrait_alyosha",
     "reach": 1.3
   },
   "vasilisa": {
@@ -39,6 +41,7 @@
     "spirit": "Чары — восстанавливаются сами",
     "growth": "больше всего растёт Мудрость",
     "sheet": "hero_vasilisa",
+    "hud_portrait": "hud_portrait_vasilisa",
     "reach": 1.6
   }
 }

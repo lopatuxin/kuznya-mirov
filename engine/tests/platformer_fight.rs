@@ -334,6 +334,8 @@ fn a_chop_staggers_a_resting_robber_but_only_flashes_one_winding_up() {
         "удар не пошёл: {:?}",
         after.moods
     );
+    assert_eq!(fight.number(robber, "health"), 3.0);
+    assert_eq!(fight.text(robber, "robber_health_bar"), "robber_health_3");
 
     until_mood(&mut fight, robber, "rest", None);
     let after = after_chop(&mut fight, robber);
@@ -344,6 +346,57 @@ fn a_chop_staggers_a_resting_robber_but_only_flashes_one_winding_up() {
         after.moods
     );
     assert!(after.pushed > 0.25, "отлетел на {} клетки", after.pushed);
+    assert_eq!(fight.number(robber, "health"), 2.0);
+    assert_eq!(fight.text(robber, "robber_health_bar"), "robber_health_2");
+}
+
+#[test]
+fn the_health_bar_appears_in_combat_and_hides_when_the_robber_patrols() {
+    let start = [3.0, 7.1];
+    let mut fight = Fight::start(start);
+    let hero = fight.hero();
+    let robber = fight.robber(1.0);
+
+    fight.step(&[], &[]);
+    assert!(fight.text(robber, "robber_health_bar").is_empty());
+
+    fight
+        .game
+        .world
+        .set_vec2(hero, property::POSITION, BY_THE_FIRST_ROBBER);
+    fight.step(&[], &[]);
+    assert_eq!(fight.text(robber, "robber_health_bar"), "robber_health_3");
+
+    fight.game.world.set_vec2(hero, property::POSITION, start);
+    until_mood(&mut fight, robber, "patrol", None);
+    assert!(fight.text(robber, "robber_health_bar").is_empty());
+}
+
+#[test]
+fn three_effective_hits_remove_the_robber_and_his_glow() {
+    let mut fight = Fight::start(BY_THE_FIRST_ROBBER);
+    let robber = fight.robber(1.0);
+
+    for health in [2.0, 1.0] {
+        until_mood(&mut fight, robber, "rest", None);
+        after_chop(&mut fight, robber);
+        assert_eq!(fight.number(robber, "health"), health);
+    }
+
+    until_mood(&mut fight, robber, "rest", None);
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    for _ in 0..42 {
+        fight.step(&[], &[]);
+    }
+    assert!(!fight.game.world.is_alive(robber));
+    let robber_no = fight.prop("robber_no");
+    assert!(
+        fight
+            .game
+            .world
+            .ids()
+            .all(|id| fight.game.world.number_like(id, robber_no) != Some(1.0))
+    );
 }
 
 #[test]
