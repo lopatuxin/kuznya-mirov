@@ -1,5 +1,8 @@
 {
   "ui_reference": [1920, 1080],
+  "world_elements": [
+    { "kind": "image", "for": { "has": ["robber", "robber_health_bar"] }, "anchor": "top", "offset": [0, -0.55], "size": [0.867, 0.133], "image": "{robber_health_bar}" }
+  ],
   "screens": [
     { "name": "menu", "world_runs": false, "keys": {}, "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [6000, 4000], "color": "#6b4a37" },
@@ -46,7 +49,12 @@
       "tab_area": [814.7, -55.1, 246.89, 708.14],
       "pages": [["ilya", "hero_book_ilya"], ["vasilisa", "hero_book_vasilisa"], ["alyosha", "hero_book_alyosha"]]
     } },
-    { "name": "game", "world_runs": true, "keys": { "Escape": ["show_screen", "pause"] }, "elements": [] },
+    { "name": "game", "world_runs": true, "keys": { "Escape": ["show_screen", "pause"] }, "elements": [
+      { "kind": "panel", "anchor": "top_left", "offset": [18.3, 24.1], "size": [150.2, 136.4], "for": { "has": ["hero"] }, "image": "{hud_portrait}" },
+      { "kind": "panel", "anchor": "top_left", "offset": [170.8, 52.7], "size": [460.9, 96.3], "for": { "has": ["hero"] }, "image": "hud_gauge_tracks" },
+      { "kind": "bar", "anchor": "top_left", "offset": [211.0, 64.2], "size": [385.2, 27.5], "for": { "has": ["hero"] }, "value": "health", "max": 100, "image": "hud_health_fill", "image_scale": 1.146 },
+      { "kind": "bar", "anchor": "top_left", "offset": [211.0, 112.4], "size": [385.2, 25.2], "for": { "has": ["hero"] }, "value": "spirit", "max": 100, "image": "hud_spirit_fill", "image_scale": 1.146 }
+    ] },
     { "name": "pause", "world_runs": false, "keys": { "Escape": ["resume"] }, "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [6000, 4000], "color": "#efe2ccd1" },
       { "kind": "label", "anchor": "center", "offset": [0, -240], "size": [440, 110], "text": "Пауза", "font": "menu", "font_size": 90, "color": "#8c2416", "align": "center" },

@@ -1,5 +1,5 @@
 -- Первый уровень: кадры Ильи, бой с разбойниками и возврат в начало после падения в ущелье.
--- Здоровья и урона нет: от удара разбойник и Илья только отшатываются.
+-- Разбойник теряет здоровье от попаданий, которые его отталкивают или заставляют отшатнуться.
 
 local DT = 1 / 60
 local START_X = 3
@@ -60,6 +60,7 @@ local STAGGER_TIME, RECOIL_TIME = 0.35, 0.4
 local R_IDLE_FIRST, R_IDLE_COUNT, R_IDLE_CYCLE = 0, 4, 1.4
 local R_WALK_FIRST, R_WALK_COUNT, R_STRIDE = 4, 8, 1.6
 local R_BLOW_FIRST, R_SWEEP_FIRST, R_STAGGER_FIRST = 12, 17, 22
+local ROBBER_HEALTH_BARS = { "robber_health_1", "robber_health_2", "robber_health_3" }
 
 -- Отсвет: белая вспышка от удара Ильи и красный ореол особого замаха.
 local FLASH_TIME, FLASH_OPACITY = 0.1, 0.6
@@ -73,6 +74,7 @@ local HERO_DEFAULTS = { act = "", act_time = 0, swing = 0, hold_until = 0, push_
 local ROBBER_DEFAULTS = {
   mood = "patrol", act_time = 0, robber_frame = 0, walk_dist = 0, idle_time = 0, attacks = 0, cooldown = 0,
   hold_until = 0, flash_time = 0, push_time = 0, push_speed = 0, last_swing = 0, patrol_dir = 1,
+  health = #ROBBER_HEALTH_BARS,
 }
 
 local function ensure(obj, defaults)
@@ -206,11 +208,20 @@ local function robber_hit(robber, hero)
   hold(hero)
   spawn_fx("impact", center_x(robber), robber.position.y + 0.6)
   local mood = robber.mood
-  if mood == "rest" or mood == "patrol" or mood == "watch" then
+  local can_stagger = mood == "rest" or mood == "patrol" or mood == "watch"
+  if can_stagger or mood == "chase" then
+    robber.health = robber.health - 1
+    if robber.health <= 0 then
+      delete(robber)
+      return
+    end
+  end
+  if can_stagger then
     stagger(robber, hero)
   elseif mood == "chase" then
     push(robber, center_x(robber) < center_x(hero) and -1 or 1, STAGGER_PUSH)
   end
+  robber.robber_health_bar = ROBBER_HEALTH_BARS[robber.health]
 end
 
 local function chop_hits(hero)
@@ -289,7 +300,7 @@ local function animate(hero)
   end
 end
 
--- Лист кадров, дальность удара и числа героя — из таблицы героев по его hero_id, один раз за партию.
+-- Лист кадров, портрет, дальность удара и числа героя — из таблицы героев по его hero_id, один раз за партию.
 -- Числа бой пока не читает.
 local function take_stats(hero)
   if hero.strength ~= nil then
@@ -301,6 +312,7 @@ local function take_stats(hero)
   end
   hero.strength, hero.skill, hero.agility, hero.wisdom = row.strength, row.skill, row.agility, row.wisdom
   hero.image = row.sheet
+  hero.hud_portrait = row.hud_portrait
   hero.reach = row.reach
 end
 
@@ -566,6 +578,11 @@ function fight_robber(robber)
     robber.velocity.x = robber.push_speed
   end
   robber.robber_frame = robber_frame(robber)
+  if robber.mood == "patrol" or robber.mood == "watch" then
+    robber.robber_health_bar = nil
+  else
+    robber.robber_health_bar = ROBBER_HEALTH_BARS[robber.health]
+  end
 end
 
 -- Отсвет стоит на своём разбойнике тем же кадром: белая вспышка от удара, красный ореол особого замаха.
@@ -576,8 +593,8 @@ function follow_robber(glow)
       robber = r
     end
   end
-  if not robber then
-    glow.opacity = 0
+  if not robber or robber.health == 0 then
+    delete(glow)
     return
   end
   glow.position = { x = robber.position.x, y = robber.position.y }
