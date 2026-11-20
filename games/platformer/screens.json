@@ -1,7 +1,8 @@
 {
   "ui_reference": [1920, 1080],
   "world_elements": [
-    { "kind": "image", "for": { "has": ["robber", "robber_health_bar"] }, "anchor": "top", "offset": [0, -0.55], "size": [0.867, 0.133], "image": "{robber_health_bar}" }
+    { "kind": "image", "for": { "has": ["robber", "show_bar"], "without": ["dead"] }, "anchor": "top", "offset": [0, -0.55], "size": [0.867, 0.133], "image": "robber_bar_back" },
+    { "kind": "bar", "for": { "has": ["robber", "show_bar"], "without": ["dead"] }, "anchor": "top", "offset": [0, -0.55], "size": [0.667, 0.133], "value": "health", "max": "max_health", "image": "robber_bar_fill", "trail_image": "robber_bar_trail" }
   ],
   "screens": [
     { "name": "menu", "world_runs": false, "keys": {}, "elements": [
@@ -52,8 +53,8 @@
     { "name": "game", "world_runs": true, "keys": { "Escape": ["show_screen", "pause"] }, "elements": [
       { "kind": "panel", "anchor": "top_left", "offset": [18.3, 24.1], "size": [150.2, 136.4], "for": { "has": ["hero"] }, "image": "{hud_portrait}" },
       { "kind": "panel", "anchor": "top_left", "offset": [170.8, 52.7], "size": [460.9, 96.3], "for": { "has": ["hero"] }, "image": "hud_gauge_tracks" },
-      { "kind": "bar", "anchor": "top_left", "offset": [211.0, 64.2], "size": [385.2, 27.5], "for": { "has": ["hero"] }, "value": "health", "max": 100, "image": "hud_health_fill", "image_scale": 1.146 },
-      { "kind": "bar", "anchor": "top_left", "offset": [211.0, 112.4], "size": [385.2, 25.2], "for": { "has": ["hero"] }, "value": "spirit", "max": 100, "image": "hud_spirit_fill", "image_scale": 1.146 }
+      { "kind": "bar", "anchor": "top_left", "offset": [211.0, 64.2], "size": [385.2, 27.5], "for": { "has": ["hero"] }, "value": "health", "max": "max_health", "image": "hud_health_fill", "trail_image": "hud_health_trail", "image_scale": 1.146 },
+      { "kind": "bar", "anchor": "top_left", "offset": [211.0, 112.4], "size": [385.2, 25.2], "for": { "has": ["hero"] }, "value": "spirit", "max": "max_spirit", "image": "hud_spirit_fill", "trail_image": "hud_spirit_trail", "image_scale": 1.146 }
     ] },
     { "name": "pause", "world_runs": false, "keys": { "Escape": ["resume"] }, "elements": [
       { "kind": "panel", "anchor": "center", "offset": [0, 0], "size": [6000, 4000], "color": "#efe2ccd1" },

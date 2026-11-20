@@ -494,6 +494,8 @@ pub enum Element {
         max: MaxSpec,
         fill: Fill,
         back: Option<Fill>,
+        /// «Шкала» → «След потери»: вид следа, `None` — следа нет.
+        trail: Option<Fill>,
         image_scale: f32,
         tooltip: Option<Vec<TextPart>>,
         for_: Option<Selector>,
@@ -984,7 +986,11 @@ pub enum WorldElementKind {
     Bar {
         value: PropertyId,
         max: MaxSpec,
-        back_color: Option<[f32; 4]>,
+        /// Картинка заливки; с ней `WorldElement::color` не читается, как у `Image`.
+        image: Option<ImageId>,
+        back: Option<Fill>,
+        /// «Шкала» → «След потери»: вид следа, `None` — следа нет.
+        trail: Option<Fill>,
     },
     Image {
         image: ImageRef,
@@ -1000,7 +1006,7 @@ pub enum WorldElementKind {
 pub struct WorldElement {
     pub for_: Selector,
     pub placement: Placement,
-    /// У `image` не читается: картинка цвета не имеет.
+    /// У `image` и у `bar` с картинкой заливки не читается: картинка цвета не имеет.
     pub color: WorldColor,
     pub kind: WorldElementKind,
 }

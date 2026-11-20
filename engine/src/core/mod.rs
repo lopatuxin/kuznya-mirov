@@ -36,6 +36,7 @@ pub mod step;
 pub mod surface;
 pub mod terrain;
 pub mod time;
+pub mod trail;
 pub mod value;
 pub mod walk3d;
 pub mod water;

@@ -11,7 +11,7 @@ import { sheetSvg } from "./hero.mjs";
 import { alyoshaSvg } from "./alyosha.mjs";
 import { vasilisaSvg } from "./vasilisa.mjs";
 import { robberSvg, robberFlashSvg, robberAuraSvg } from "./robber.mjs";
-import { clashSvg, impactSvg } from "./fx.mjs";
+import { clashSvg, impactSvg, wardSvg } from "./fx.mjs";
 
 const BOTTOM = 12.6;
 const LEDGE_TOP = 0.45;
@@ -60,6 +60,7 @@ export const IMAGES = {
   robber_aura: { draw: () => ({ svg: robberAuraSvg() }) },
   clash: { draw: () => ({ svg: clashSvg() }) },
   impact: { draw: () => ({ svg: impactSvg() }) },
+  ward: { draw: () => ({ svg: wardSvg() }) },
 };
 for (const l of LEDGES) {
   const from = l.from ?? l.x0 - (l.left ? PAD : 0);

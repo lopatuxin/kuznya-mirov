@@ -280,6 +280,7 @@ impl Engine {
             &view,
             viewport,
             &UiLayers::default(),
+            None,
         ) {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }

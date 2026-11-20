@@ -20,8 +20,9 @@ use crate::core::scene::{
 };
 use crate::core::screens::{self, Fill, PanelFill, ScreenState, ScreensConfig, WorldElementKind};
 use crate::core::settings::PlayerSettings;
+use crate::core::trail::{TrailOwner, Trails};
 use crate::core::world::World;
-use crate::core::world_elements::{self, ImageDraw, OverlayRun, WorldDraws};
+use crate::core::world_elements::{self, ImageDraw, OverlayRun, WorldDraws, WorldRect};
 use crate::data::edit;
 use crate::data::error::GameError;
 use crate::data::load::{
@@ -1331,6 +1332,8 @@ fn compose_ui(
     images: &[ImageDecl],
     atlas_rects: &[ImagePlace],
     ui_elapsed_steps: f64,
+    trails: &mut Trails,
+    steps: u64,
 ) -> UiLayers {
     let screen_id = state.active();
     let frame = config.ui_frame(screen_id, window);
@@ -1375,6 +1378,7 @@ fn compose_ui(
     );
     let screen_particles = motion.screen_particles();
     let mut panel_videos = Vec::new();
+    let mut trail_pass = trails.pass(TrailOwner::Screen(screen_id), steps);
     let mut particle_paints =
         atlas::screen_particle_paints(&parts, &lit, screen_particles, cell).peekable();
     for (index, part) in parts.iter().enumerate() {
@@ -1517,6 +1521,7 @@ fn compose_ui(
             screens::Element::Bar {
                 fill: bar_fill,
                 back,
+                trail,
                 image_scale,
                 ..
             } => {
@@ -1526,6 +1531,20 @@ fn compose_ui(
                 };
                 if let Some(back) = back {
                     fill(back, rect, *image_scale);
+                }
+                // «След потери»: под заливкой, над подложкой.
+                if let Some(trail) = trail
+                    && let Some(object) = placed.object
+                    && let Some(edge) = trail_pass.observe(
+                        placed.key.element,
+                        placed.key.inner,
+                        object,
+                        world.generation(object),
+                        share,
+                    )
+                    && let Some(trail_rect) = interface::bar_fill_rect(rect, edge)
+                {
+                    fill(trail, trail_rect, *image_scale);
                 }
                 if let Some(fill_rect) = interface::bar_fill_rect(rect, share) {
                     fill(bar_fill, fill_rect, *image_scale);
@@ -1814,6 +1833,44 @@ fn world_image_rect(
     fill_rect(draw.position, draw.size, paint).map(|rect| draw_rect(&rect))
 }
 
+/// Подложка, след или заливка полоски в мире — цветом или картинкой; картинка с полями тянется девятью кусками
+/// в масштабе высоты полоски.
+fn push_world_bar_part(
+    instances: &mut Vec<DrawRect>,
+    paints: &mut Vec<UiPaint>,
+    part: &WorldRect,
+    images: &[ImageDecl],
+    atlas_rects: &[ImagePlace],
+) {
+    if part.size[0] <= 0.0 {
+        return;
+    }
+    let fill = match part.image {
+        Some(image) => Fill::Image {
+            image,
+            opacity: 1.0,
+        },
+        None => Fill::Color(part.color),
+    };
+    let scale = atlas::bar_image_scale(&fill, part.size[1], images, atlas_rects);
+    let rect = [
+        part.position[0],
+        part.position[1],
+        part.size[0],
+        part.size[1],
+    ];
+    push_fill(
+        instances,
+        paints,
+        &fill,
+        rect,
+        scale,
+        0.0,
+        images,
+        atlas_rects,
+    );
+}
+
 /// «Надписи, полоски и картинки в мире», требования 5, 13, 17, 37: слой мира над готовыми
 /// прямоугольниками `instances` (объекты мира — те же, что рисуют сами себя): полоски, картинки и
 /// надписи вперемешку в порядке списка `world_elements`, текст поверх полосок. Рисуется везде, где
@@ -1829,9 +1886,20 @@ fn compose_world_elements(
     images: &[ImageDecl],
     atlas_rects: &[ImagePlace],
     mut instances: Vec<DrawRect>,
+    trails: Option<&mut Trails>,
 ) -> WorldOverlay {
-    let (bars, labels, image_draws) =
+    let (mut bars, labels, image_draws) =
         world_element_draws(game, screens_config, camera, layers, cell);
+    if let Some(trails) = trails {
+        let mut pass = trails.pass(TrailOwner::World, game.step_count());
+        world_elements::add_trails(
+            &mut bars,
+            &screens_config.world_elements,
+            &game.world,
+            &mut pass,
+        );
+    }
+    let mut paints = Vec::new();
     let mut runs = vec![WorldRun::Rects(0..instances.len())];
     let mut texts = Vec::with_capacity(labels.len());
     let order = world_elements::overlay_runs(&bars, &labels, &image_draws);
@@ -1843,15 +1911,8 @@ fn compose_world_elements(
             OverlayRun::Bars(count) => {
                 let start = instances.len();
                 for bar in bars.by_ref().take(count) {
-                    for part in bar.back.iter().chain([&bar.fill]) {
-                        instances.push(draw_rect(&RectPaint::flat(
-                            part.position,
-                            part.size,
-                            part.color,
-                            atlas::WHITE_PIXEL,
-                            false,
-                            false,
-                        )));
+                    for part in bar.back.iter().chain(&bar.trail).chain([&bar.fill]) {
+                        push_world_bar_part(&mut instances, &mut paints, part, images, atlas_rects);
                     }
                 }
                 runs.push(WorldRun::Rects(start..instances.len()));
@@ -1962,6 +2023,7 @@ fn render_world(
     view: &View,
     viewport: [f32; 2],
     ui: &UiLayers,
+    trails: Option<&mut Trails>,
 ) -> Result<(), String> {
     match view {
         View::Flat { scale, offset } => {
@@ -1992,6 +2054,7 @@ fn render_world(
                         images,
                         atlas_rects,
                         world_instances,
+                        trails,
                     )
                 }
                 None => WorldOverlay::of_rects(world_instances),
@@ -2013,6 +2076,7 @@ fn render_world(
                     images,
                     atlas_rects,
                     Vec::new(),
+                    trails,
                 ),
                 None => WorldOverlay::default(),
             };
@@ -2121,6 +2185,8 @@ pub struct Engine {
     mouse: MouseState,
     /// «Подсказка»: над каким элементом курсор и с какого времени окна — не ввод, в запись не идёт.
     tooltip_hover: TooltipHover,
+    /// «Шкала» → «След потери»: вид, а не состояние игры — в запись и сохранение не идёт.
+    trails: Trails,
     book_motion: book::Motion,
     ui_queue: UiQueue,
     pending_config: load::PendingConfig,
@@ -2194,6 +2260,7 @@ impl Engine {
             runner: Runner::new(),
             mouse: MouseState::default(),
             tooltip_hover: TooltipHover::default(),
+            trails: Trails::default(),
             book_motion: book::Motion::default(),
             ui_queue: UiQueue::new(),
             pending_config: load::PendingConfig::default(),
@@ -2544,6 +2611,7 @@ impl Engine {
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
                 self.tooltip_hover = TooltipHover::default();
+                self.trails.clear();
                 self.ui_queue = UiQueue::new();
                 // «Редактор», требование 27: запись живёт до «Запуска», открытия другой записи или
                 // закрытия проекта — а `load()` тут же перезагружает те же файлы (после «Стопа» или
@@ -2740,6 +2808,7 @@ impl Engine {
         self.renderer
             .set_videos_playing(self.motion.clock_running(dt));
         refresh_terrain_mesh(&mut self.terrain_mesh, &mut self.terrain_revision, game);
+        self.trails.follow_world(game.world_epoch());
         let ui = match (
             show_ui,
             self.screens_config.as_ref(),
@@ -2763,6 +2832,8 @@ impl Engine {
                 &self.images,
                 &self.atlas_rects,
                 self.last_ui_elapsed_steps,
+                &mut self.trails,
+                game.step_count(),
             ),
             _ => {
                 self.renderer.set_panel_videos(&[]);
@@ -2781,6 +2852,7 @@ impl Engine {
             &view,
             viewport,
             &ui,
+            show_ui.then_some(&mut self.trails),
         ) {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
@@ -3410,6 +3482,7 @@ impl Engine {
                 .set_videos_playing(self.motion.clock_running(dt_seconds));
         }
         refresh_terrain_mesh(&mut self.terrain_mesh, &mut self.terrain_revision, game);
+        self.trails.follow_world(game.world_epoch());
         let ui = compose_ui(
             &mut self.renderer,
             &mut self.motion,
@@ -3428,6 +3501,8 @@ impl Engine {
             &self.images,
             &self.atlas_rects,
             ui_clock_steps,
+            &mut self.trails,
+            game.step_count(),
         );
         if let Err(e) = render_world(
             &mut self.renderer,
@@ -3441,6 +3516,7 @@ impl Engine {
             &view,
             viewport,
             &ui,
+            Some(&mut self.trails),
         ) {
             web_sys::console::error_1(&JsValue::from_str(&format!("отрисовка не удалась: {e}")));
         }
@@ -3559,6 +3635,7 @@ impl Engine {
         self.runner = Runner::new();
         self.mouse = MouseState::default();
         self.tooltip_hover = TooltipHover::default();
+        self.trails.clear();
         self.ui_queue = UiQueue::new();
         self.ui_clock.reset();
         self.battle_view = true;
@@ -3669,6 +3746,7 @@ impl Engine {
         self.runner = Runner::new();
         self.mouse = MouseState::default();
         self.tooltip_hover = TooltipHover::default();
+        self.trails.clear();
         self.ui_queue = UiQueue::new();
         self.battle_view = false;
     }
@@ -3875,6 +3953,7 @@ impl Engine {
                 self.runner = Runner::new();
                 self.mouse = MouseState::default();
                 self.tooltip_hover = TooltipHover::default();
+                self.trails.clear();
                 self.ui_queue = UiQueue::new();
                 self.ui_clock.reset();
                 self.battle_view = true;

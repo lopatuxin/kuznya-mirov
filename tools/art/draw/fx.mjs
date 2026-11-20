@@ -60,3 +60,43 @@ export function impactSvg() {
   const body = frames.map((f, i) => `<g transform="translate(${i * FX},0)">${f()}</g>`).join("");
   return svg(FX * frames.length, FX, body, defs);
 }
+
+const WARD_W = 144;
+const WARD_H = 200;
+
+/** Вспышка чар: золотисто-голубая оболочка вокруг фигуры вспыхивает, расходится и гаснет. 5 кадров 144 × 200. */
+export function wardSvg() {
+  const rnd = rng(91);
+  const cx = WARD_W / 2;
+  const cy = WARD_H / 2;
+  const defs =
+    radial("wardShell", [[0, "#8fd0ff", 0], [0.55, "#7fc0ff", 0.1], [0.86, "#d4ecff", 0.6], [1, "#ffd27a", 0]]) +
+    radial("wardCore", [[0, "#ffffff", 0.9], [1, "#9fd8ff", 0]]);
+  const motes = Array.from({ length: 12 }, () => ({
+    a: rnd.range(0, Math.PI * 2),
+    r: rnd.range(0.92, 1.12),
+    size: rnd.range(1.4, 2.8),
+  }));
+  const shell = (scale, shellOpacity, rim, rimOpacity, moteShare, moteOpacity) => {
+    const rx = 62 * scale;
+    const ry = 92 * scale;
+    const parts = [
+      `<ellipse cx="${cx}" cy="${cy}" rx="${num(rx)}" ry="${num(ry)}" fill="url(#wardShell)" opacity="${shellOpacity}"/>`,
+      `<ellipse cx="${cx}" cy="${cy}" rx="${num(rx * 0.97)}" ry="${num(ry * 0.97)}" fill="none" stroke="#ffe3a0" stroke-width="${rim}" opacity="${rimOpacity}"/>`,
+      `<ellipse cx="${cx}" cy="${cy}" rx="${num(rx * 0.9)}" ry="${num(ry * 0.9)}" fill="none" stroke="#a9dcff" stroke-width="${num(rim * 0.6)}" opacity="${num(rimOpacity * 0.8)}"/>`,
+    ];
+    motes.slice(0, Math.round(motes.length * moteShare)).forEach((m) => {
+      parts.push(`<circle cx="${num(cx + Math.cos(m.a) * rx * m.r)}" cy="${num(cy + Math.sin(m.a) * ry * m.r)}" r="${num(m.size)}" fill="#fff0c0" opacity="${moteOpacity}"/>`);
+    });
+    return parts.join("");
+  };
+  const frames = [
+    () => `<ellipse cx="${cx}" cy="${cy}" rx="46" ry="68" fill="url(#wardCore)"/>` + shell(0.62, 0.9, 5, 0.95, 0.3, 0.9),
+    () => shell(0.86, 1, 4.5, 1, 0.7, 0.95),
+    () => shell(0.97, 0.85, 3.2, 0.85, 1, 0.8),
+    () => shell(1.04, 0.5, 2.2, 0.55, 1, 0.55),
+    () => shell(1.1, 0.2, 1.2, 0.25, 0.6, 0.35),
+  ];
+  const body = frames.map((f, i) => `<g transform="translate(${i * WARD_W},0)">${f()}</g>`).join("");
+  return svg(WARD_W * frames.length, WARD_H, body, defs);
+}
