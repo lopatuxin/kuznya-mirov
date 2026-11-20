@@ -7,31 +7,58 @@ use super::camera::Camera3d;
 use super::property::{self, PropertyId, PropertyTable};
 use super::scene::{self, LayerView, SceneConfig};
 use super::screens::{
-    self, Align, Anchor, FontId, MaxSpec, WorldColor, WorldElement, WorldElementKind, WorldTextPart,
+    self, Align, Anchor, Fill, FontId, MaxSpec, WorldColor, WorldElement, WorldElementKind,
+    WorldTextPart,
 };
 use super::shapes::Body;
 use super::step::selector_matches;
+use super::trail::TrailPass;
 use super::value::{ImageId, Vec2};
 use super::world::World;
 
-/// One colored rectangle in scene cells — a bar's backing or fill.
+/// One rectangle in scene cells — a bar's backing, trail or fill: a color, or an image the renderer
+/// cuts into nine pieces when it has `slice` margins → «Картинки» «Растягивание рамки».
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct WorldRect {
     pub position: [f32; 2],
     pub size: [f32; 2],
     pub color: [f32; 4],
+    pub image: Option<ImageId>,
+}
+
+impl WorldRect {
+    fn of_fill(position: [f32; 2], size: [f32; 2], fill: &Fill) -> Self {
+        let (color, image) = match *fill {
+            Fill::Color(color) => (color, None),
+            Fill::Image { image, .. } => ([1.0; 4], Some(image)),
+        };
+        WorldRect {
+            position,
+            size,
+            color,
+            image,
+        }
+    }
 }
 
 /// «Надписи и полоски в мире», требования 10–11: `back`, only when the element names
-/// `back_color` (`value`/`max` having resolved at all — a missing property drops the whole
-/// element, подложка included, before a `BarDraw` is ever built); `fill`'s width already carries
-/// the `value / max` fraction, clamped to `[0, 1]`.
+/// `back_color` or `back_image` (`value`/`max` having resolved at all — a missing property drops the
+/// whole element, подложка included, before a `BarDraw` is ever built); `fill`'s width already carries
+/// the `value / max` fraction, clamped to `[0, 1]`. `trail` — «Шкала» → «След потери»: от левого края
+/// полоски до правого края следа, рисуется под заливкой; его ставит `add_trails`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct BarDraw {
     pub back: Option<WorldRect>,
     pub fill: WorldRect,
+    pub trail: Option<WorldRect>,
     /// Номер элемента в `world_elements`, как у `LabelDraw`.
     pub element: usize,
+    /// Объект, над которым стоит полоска.
+    pub object: u32,
+    /// Доля заливки, от 0 до 1.
+    pub share: f32,
+    /// Ширина всей полоски.
+    pub width: f32,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -214,6 +241,48 @@ pub(crate) fn bar_fraction(
     })
 }
 
+/// «Шкала» → «След потери» у полосок мира: память `pass` помнит долю каждой полоски с `trail_color` или
+/// `trail_image` у каждого объекта со свойствами `value` и `max` — и у того, кого отбор `for` сейчас не рисует, —
+/// и ставит след нарисованной полоске, пока он виден.
+pub fn add_trails(
+    bars: &mut [BarDraw],
+    elements: &[WorldElement],
+    world: &World,
+    pass: &mut TrailPass<'_>,
+) {
+    for (element, spec) in elements.iter().enumerate() {
+        let WorldElementKind::Bar {
+            value,
+            max,
+            trail: Some(trail),
+            ..
+        } = &spec.kind
+        else {
+            continue;
+        };
+        for object in world.ids() {
+            let Some(share) = bar_fraction(world, object, *value, max) else {
+                continue;
+            };
+            let generation = world.generation(object);
+            let Some(edge) = pass.observe(element, 0, object, generation, share) else {
+                continue;
+            };
+            let Some(bar) = bars
+                .iter_mut()
+                .find(|bar| bar.element == element && bar.object == object)
+            else {
+                continue;
+            };
+            bar.trail = Some(WorldRect::of_fill(
+                bar.fill.position,
+                [bar.width * edge, bar.fill.size[1]],
+                trail,
+            ));
+        }
+    }
+}
+
 /// «Надписи и полоски в мире», требование 17: `elements` в порядке `screens.json` → «Отрисовка»,
 /// требование 14 — между собой элементы идут в порядке списка, а над разными объектами одного
 /// элемента — в порядке их рисования (`scene::draw_order`). Возвращает полоски, надписи и картинки
@@ -361,24 +430,29 @@ fn compute_draws(
                 WorldElementKind::Bar {
                     value,
                     max,
-                    back_color,
+                    image,
+                    back,
+                    ..
                 } => {
                     let Some(fraction) = bar_fraction(world, id, *value, max) else {
                         continue;
                     };
                     let size = placement_size;
                     bars.push(BarDraw {
-                        back: back_color.map(|c| WorldRect {
-                            position: top_left,
-                            size,
-                            color: c,
-                        }),
+                        back: back
+                            .as_ref()
+                            .map(|fill| WorldRect::of_fill(top_left, size, fill)),
                         fill: WorldRect {
                             position: top_left,
                             size: [size[0] * fraction, size[1]],
                             color,
+                            image: *image,
                         },
+                        trail: None,
                         element: index,
+                        object: id,
+                        share: fraction,
+                        width: size[0],
                     });
                 }
                 WorldElementKind::Label {
@@ -472,7 +546,9 @@ mod tests {
             kind: WorldElementKind::Bar {
                 value,
                 max,
-                back_color,
+                image: None,
+                back: back_color.map(Fill::Color),
+                trail: None,
             },
         }
     }

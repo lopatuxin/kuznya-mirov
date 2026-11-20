@@ -1,0 +1,9 @@
+{
+  "robber": {
+    "name": "Разбойник",
+    "health": 60,
+    "blow_damage": 12,
+    "sweep_damage": 25,
+    "damage_taken": { "cut": 1, "pierce": 1, "blunt": 1 }
+  }
+}

@@ -12,7 +12,8 @@
     "growth": "больше всего растёт Сила богатырская",
     "sheet": "hero_ilya",
     "hud_portrait": "hud_portrait_ilya",
-    "reach": 1.5
+    "reach": 1.5,
+    "weapon": "axe"
   },
   "alyosha": {
     "name": "Алёша Попович",
@@ -27,7 +28,8 @@
     "growth": "больше всего растёт Прыть",
     "sheet": "hero_alyosha",
     "hud_portrait": "hud_portrait_alyosha",
-    "reach": 1.3
+    "reach": 1.3,
+    "weapon": "dagger"
   },
   "vasilisa": {
     "name": "Василиса Премудрая",
@@ -42,6 +44,7 @@
     "growth": "больше всего растёт Мудрость",
     "sheet": "hero_vasilisa",
     "hud_portrait": "hud_portrait_vasilisa",
-    "reach": 1.6
+    "reach": 1.6,
+    "weapon": "staff"
   }
 }

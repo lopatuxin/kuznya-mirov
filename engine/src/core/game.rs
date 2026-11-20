@@ -126,6 +126,9 @@ pub struct Game {
     /// `reset_for_play`, `new_game_with_values`, `show_scene` and `quit`, the only places that
     /// rebuild or empty `world`.
     world_exists: bool,
+    /// Растёт, когда мир собран заново (`new_game_with_values`, `show_scene`, `set_terrain`, `reset_for_play`):
+    /// следы шкал (`core::trail`) по нему узнают, что партия началась снова.
+    world_epoch: u64,
 
     /// «Камера», требования 5–6: последняя известная середина объекта камеры — держит её, пока
     /// такого объекта нет; сбрасывается при сборке мира (`new_game_with_values`, `show_scene`,
@@ -296,6 +299,7 @@ impl Game {
             session_messages: Vec::new(),
             last_report: None,
             world_exists: start_is_live,
+            world_epoch: 0,
             camera_last: None,
             camera_height: CameraHeight::default(),
             walk_paths: WalkCaches::new(),
@@ -517,6 +521,7 @@ impl Game {
     /// `name` with the smallest id — over the freshly built world, before the first step.
     pub fn new_game_with_values(&mut self, initial_values: &[(String, PropertyId, Value)]) {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
+        self.world_epoch += 1;
         self.world_exists = true;
         self.wind = self.scene_wind;
         for (name, prop, value) in initial_values {
@@ -550,6 +555,7 @@ impl Game {
     /// editor calls it once after every successful `load()`.
     pub fn show_scene(&mut self) {
         self.world = world_from_scene(&self.properties, &self.scene_objects);
+        self.world_epoch += 1;
         self.world_exists = true;
         self.wind = self.scene_wind;
         self.reset_camera_and_walk();
@@ -561,6 +567,7 @@ impl Game {
     pub fn set_terrain(&mut self, terrain: Terrain) {
         self.properties.set_terrain(terrain);
         self.world = world_from_scene(&self.properties, &self.scene_objects);
+        self.world_epoch += 1;
         self.world_exists = true;
         self.forget_camera_and_paths();
         self.walk_paths.clear_navigation();
@@ -618,6 +625,7 @@ impl Game {
         } else {
             World::new(&self.properties)
         };
+        self.world_epoch += 1;
         self.world_exists = start_is_live;
         self.wind = self.scene_wind;
         self.step_count = 0;
@@ -1296,6 +1304,10 @@ impl Game {
 
     pub fn step_count(&self) -> u64 {
         self.step_count
+    }
+
+    pub fn world_epoch(&self) -> u64 {
+        self.world_epoch
     }
 
     pub fn messages(&self) -> &[String] {

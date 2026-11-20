@@ -1,13 +1,18 @@
-//! Фаза 06 платформера — проба боя на настоящей игре `games/platformer`: Илья рубит топором, сам
-//! парирует, уворачивается и пропускает удары разбойника; каждый третий удар разбойника особый, его
-//! защита не останавливает, а прыжок спасает.
+//! Фазы 06 и 11 платформера — бой на настоящей игре `games/platformer`: герой рубит оружием из таблицы,
+//! сам парирует, уворачивается и пропускает удары разбойника; каждый третий удар разбойника особый, его
+//! защита не останавливает, а прыжок спасает. Разбойник теряет здоровье по урону героя и падает, герой
+//! теряет здоровье, погибает и встаёт в начале уровня; Василису первые удары принимают чары. Фаза 66
+//! Кузни: над разбойником шкала убывает долей и оставляет след.
 
 use std::fs;
 
 use engine::core::game::Game;
 use engine::core::input::{MouseState, UiQueue};
 use engine::core::property;
+use engine::core::scene::LayerView;
 use engine::core::screens::{self, ButtonCommand, ScreenState, ScreensConfig};
+use engine::core::trail::{TrailOwner, Trails};
+use engine::core::world_elements::{BarDraw, add_trails, compute_world_draws};
 use engine::data::load::{load_rest_with_stamps, read_entry};
 use engine::data::session::PlaySession;
 
@@ -17,6 +22,8 @@ use support::{platformer_dir, read};
 
 const VIEWPORT: [f32; 2] = [800.0, 600.0];
 const HERO_START: &str = r#""name": "Герой", "position": [3, 7.1]"#;
+/// Здоровье героя, которого бой не убьёт: тест смотрит на ход боя, а не на гибель.
+const HARDY: f64 = 1.0e6;
 
 /// Партия первого уровня, где Илья поставлен в точку `hero_at` (левый верхний угол его прямоугольника).
 struct Fight {
@@ -24,6 +31,8 @@ struct Fight {
     config: ScreensConfig,
     state: ScreenState,
     session: PlaySession,
+    trails: Trails,
+    image_names: Vec<String>,
 }
 
 impl Fight {
@@ -33,10 +42,27 @@ impl Fight {
 
     /// То же за героя `hero_id` из таблицы героев.
     fn start_as(hero_at: [f64; 2], hero_id: &str) -> Self {
+        Fight::start_with(hero_at, hero_id, |_, text| text)
+    }
+
+    /// То же, а `edit` правит текст каждой таблицы данных по её имени.
+    fn start_with(hero_at: [f64; 2], hero_id: &str, edit: impl Fn(&str, String) -> String) -> Self {
         let game_json = read("game.json");
         let (config, _) = read_entry(&game_json).expect("game.json разобран");
         let images = support::image_verdicts(&config.files.images);
-        let tables = support::table_texts(&config.files.tables);
+        let image_names = config
+            .files
+            .images
+            .iter()
+            .map(|decl| decl.name.clone())
+            .collect();
+        let tables: Vec<(String, Option<String>)> = support::table_texts(&config.files.tables)
+            .into_iter()
+            .map(|(name, text)| {
+                let text = text.map(|text| edit(&name, text));
+                (name, text)
+            })
+            .collect();
         let fonts: Vec<(String, Option<Vec<u8>>)> = config
             .files
             .fonts
@@ -78,27 +104,122 @@ impl Fight {
         .unwrap_or_else(|e| panic!("уровень не загрузился: {e:?}"));
         let mut state = ScreenState::new(config.start_screen);
         let session = PlaySession::begin_live(&mut game, &config, &mut state);
-        let level = config
+        let mut fight = Fight {
+            game,
+            config,
+            state,
+            session,
+            trails: Trails::default(),
+            image_names,
+        };
+        fight.restart();
+        fight
+    }
+
+    /// Партия заново по команде экрана, как кнопка «Начать заново».
+    fn restart(&mut self) {
+        let level = self
+            .config
             .screens
             .iter()
             .position(|screen| screen.name == "game")
             .expect("экран game");
         screens::apply_command(
             ButtonCommand::NewGame(level, None),
-            &mut game,
-            &config,
-            &mut state,
+            &mut self.game,
+            &self.config,
+            &mut self.state,
         );
-        Fight {
-            game,
-            config,
-            state,
-            session,
+    }
+
+    /// Партия с первым шагом: числа героя и разбойников уже взяты из таблиц.
+    fn ready(hero_at: [f64; 2], hero_id: &str) -> Self {
+        let mut fight = Fight::start_as(hero_at, hero_id);
+        fight.step(&[], &[]);
+        fight
+    }
+
+    /// Партия, где у героя не выпадают ни защиты, ни удар в слабое место: исход боя не зависит от случая.
+    fn plain(hero_at: [f64; 2], hero_id: &str) -> Self {
+        let mut fight = Fight::ready(hero_at, hero_id);
+        let hero = fight.hero();
+        for chance in ["parry_chance", "dodge_chance", "crit_chance"] {
+            fight.set(hero, chance, 0.0);
         }
+        fight
+    }
+
+    /// Бой героя не убивает.
+    fn make_hardy(&mut self) {
+        let hero = self.hero();
+        self.set(hero, "health", HARDY);
+        self.set(hero, "max_health", HARDY);
+    }
+
+    fn set(&mut self, id: u32, name: &str, value: f64) {
+        let prop = self.prop(name);
+        self.game.world.set_number(id, prop, value);
+    }
+
+    /// Полоски над объектами в этот миг, как их считает страница; память следов помнит прошлые вызовы.
+    fn bars(&mut self) -> Vec<BarDraw> {
+        let (mut bars, _, _) = compute_world_draws(
+            &self.game.world,
+            &self.game.scene,
+            &self.game.properties,
+            &self.config.world_elements,
+            &LayerView::default(),
+        );
+        self.trails.follow_world(self.game.world_epoch());
+        let mut pass = self.trails.pass(TrailOwner::World, self.game.step_count());
+        add_trails(
+            &mut bars,
+            &self.config.world_elements,
+            &self.game.world,
+            &mut pass,
+        );
+        bars
+    }
+
+    /// Полоска здоровья над объектом `id`, если она нарисована.
+    fn bar_over(&mut self, id: u32) -> Option<BarDraw> {
+        self.bars().into_iter().find(|bar| bar.object == id)
+    }
+
+    /// Заставляет шкалу над разбойником `id` рисоваться, как у того, кто в бою.
+    fn show_bar(&mut self, id: u32) {
+        let show_bar = self.prop("show_bar");
+        self.game.world.set_flag(id, show_bar, true);
+    }
+
+    /// Вспышки боя вида `kind`: объекты с признаком `fx`, названные так же, с картинкой того же имени.
+    fn flashes(&self, kind: &str) -> Vec<u32> {
+        let fx = self.prop("fx");
+        self.game
+            .world
+            .ids()
+            .filter(|&id| {
+                self.game.world.has(id, fx)
+                    && self.game.world.text(id, property::NAME) == Some(kind)
+                    && self
+                        .game
+                        .world
+                        .image(id, property::IMAGE)
+                        .is_some_and(|image| self.image_names[image] == kind)
+            })
+            .collect()
     }
 
     /// Один шаг мира; `down` и `up` — клавиши, нажатые и отпущенные перед ним.
     fn step(&mut self, down: &[&str], up: &[&str]) {
+        self.step_quiet(down, up);
+        if let Some(error) = self.game.code_error() {
+            panic!("ошибка кода игры: {}", error.message);
+        }
+    }
+
+    /// Шаг без проверки ошибки кода: тест сам смотрит на `game.code_error()`.
+    fn step_quiet(&mut self, down: &[&str], up: &[&str]) {
         let mut queue = UiQueue::new();
         for code in down {
             queue.push_key_down(code);
@@ -116,9 +237,6 @@ impl Fight {
             VIEWPORT,
             &[],
         );
-        if let Some(error) = self.game.code_error() {
-            panic!("ошибка кода игры: {}", error.message);
-        }
     }
 
     fn prop(&self, name: &str) -> property::PropertyId {
@@ -169,6 +287,20 @@ impl Fight {
         self.game.world.flag(id, self.prop(name))
     }
 
+    /// Отсвет разбойника номер `no`.
+    fn glow_of(&self, no: f64) -> u32 {
+        let glow = self.prop("robber_glow");
+        let robber_no = self.prop("robber_no");
+        self.game
+            .world
+            .ids()
+            .find(|&id| {
+                self.game.world.has(id, glow)
+                    && self.game.world.number_like(id, robber_no) == Some(no)
+            })
+            .expect("нет отсвета")
+    }
+
     fn center_x(&self, id: u32) -> f64 {
         let p = self.game.world.vec2(id, property::POSITION).unwrap();
         let s = self.game.world.vec2(id, property::SIZE).unwrap();
@@ -191,7 +323,7 @@ struct Blow {
 fn watch_blows(
     fight: &mut Fight,
     steps: usize,
-    mut keys: impl FnMut(&Fight, usize) -> (Vec<&'static str>, Vec<&'static str>),
+    mut keys: impl FnMut(&mut Fight, usize) -> (Vec<&'static str>, Vec<&'static str>),
 ) -> (Vec<Blow>, usize) {
     let robber = fight.robber(1.0);
     let hero = fight.hero();
@@ -221,9 +353,20 @@ fn watch_blows(
 
 #[test]
 fn ilya_standing_by_a_robber_parries_dodges_and_misses_and_every_third_blow_is_special() {
-    let mut fight = Fight::start(BY_THE_FIRST_ROBBER);
-    let (blows, _) = watch_blows(&mut fight, 30 * 60, |_, _| (vec![], vec![]));
-    assert!(blows.len() >= 12, "ударов за 30 секунд: {}", blows.len());
+    let mut fight = Fight::ready(BY_THE_FIRST_ROBBER, "ilya");
+    fight.make_hardy();
+    let hero = fight.hero();
+    // Илья стоит и не уходит от разбойника: отлёт от пропущенных ударов он возвращает на место.
+    let (blows, _) = watch_blows(&mut fight, 200 * 60, |fight, _| {
+        if fight.center_x(hero) < 13.0 {
+            fight
+                .game
+                .world
+                .set_vec2(hero, property::POSITION, BY_THE_FIRST_ROBBER);
+        }
+        (vec![], vec![])
+    });
+    assert!(blows.len() >= 90, "ударов за 200 секунд: {}", blows.len());
     for (i, blow) in blows.iter().enumerate() {
         assert_eq!(blow.special, (i + 1) % 3 == 0, "удар {}: {blows:?}", i + 1);
         if blow.special {
@@ -253,7 +396,8 @@ fn ilya_standing_by_a_robber_parries_dodges_and_misses_and_every_third_blow_is_s
 
 #[test]
 fn a_jump_in_the_middle_of_each_special_windup_clears_every_sweep() {
-    let mut fight = Fight::start(BY_THE_FIRST_ROBBER);
+    let mut fight = Fight::ready(BY_THE_FIRST_ROBBER, "ilya");
+    fight.make_hardy();
     let robber = fight.robber(1.0);
     let mut jumped_at = None;
     let (blows, missed) = watch_blows(&mut fight, 30 * 60, |fight, tick| {
@@ -319,7 +463,7 @@ fn after_chop(fight: &mut Fight, robber: u32) -> AfterChop {
 
 #[test]
 fn a_chop_staggers_a_resting_robber_but_only_flashes_one_winding_up() {
-    let mut fight = Fight::start(BY_THE_FIRST_ROBBER);
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
     let robber = fight.robber(1.0);
     until_mood(&mut fight, robber, "windup", Some(false));
     let after = after_chop(&mut fight, robber);
@@ -334,8 +478,7 @@ fn a_chop_staggers_a_resting_robber_but_only_flashes_one_winding_up() {
         "удар не пошёл: {:?}",
         after.moods
     );
-    assert_eq!(fight.number(robber, "health"), 3.0);
-    assert_eq!(fight.text(robber, "robber_health_bar"), "robber_health_3");
+    assert_eq!(fight.number(robber, "health"), 60.0);
 
     until_mood(&mut fight, robber, "rest", None);
     let after = after_chop(&mut fight, robber);
@@ -346,8 +489,11 @@ fn a_chop_staggers_a_resting_robber_but_only_flashes_one_winding_up() {
         after.moods
     );
     assert!(after.pushed > 0.25, "отлетел на {} клетки", after.pushed);
-    assert_eq!(fight.number(robber, "health"), 2.0);
-    assert_eq!(fight.text(robber, "robber_health_bar"), "robber_health_2");
+    assert_eq!(
+        fight.number(robber, "health"),
+        46.0,
+        "топор Ильи — 14 урона"
+    );
 }
 
 #[test]
@@ -358,45 +504,512 @@ fn the_health_bar_appears_in_combat_and_hides_when_the_robber_patrols() {
     let robber = fight.robber(1.0);
 
     fight.step(&[], &[]);
-    assert!(fight.text(robber, "robber_health_bar").is_empty());
+    assert!(!fight.flag(robber, "show_bar"));
 
     fight
         .game
         .world
         .set_vec2(hero, property::POSITION, BY_THE_FIRST_ROBBER);
     fight.step(&[], &[]);
-    assert_eq!(fight.text(robber, "robber_health_bar"), "robber_health_3");
+    assert!(fight.flag(robber, "show_bar"));
+    assert!(
+        fight.bar_over(robber).is_some(),
+        "шкала над разбойником в бою нарисована"
+    );
 
     fight.game.world.set_vec2(hero, property::POSITION, start);
     until_mood(&mut fight, robber, "patrol", None);
-    assert!(fight.text(robber, "robber_health_bar").is_empty());
+    assert!(!fight.flag(robber, "show_bar"));
+    assert!(fight.bar_over(robber).is_none(), "в обходе шкалы нет");
+}
+
+/// Сколько попаданий с отдачей нужно герою, чтобы убить первого разбойника: каждое — в передышке.
+/// `from_behind` — разбойник перед каждым ударом смотрит от героя.
+fn chops_to_kill(fight: &mut Fight, from_behind: bool) -> usize {
+    let robber = fight.robber(1.0);
+    for chops in 1..=20 {
+        until_mood(fight, robber, "rest", None);
+        if from_behind {
+            fight.game.world.set_flag(robber, property::FLIP_X, false);
+        }
+        after_chop(fight, robber);
+        if fight.number(robber, "health") == 0.0 {
+            return chops;
+        }
+    }
+    panic!("разбойник не упал за 20 попаданий");
 }
 
 #[test]
-fn three_effective_hits_remove_the_robber_and_his_glow() {
-    let mut fight = Fight::start(BY_THE_FIRST_ROBBER);
-    let robber = fight.robber(1.0);
+fn a_robber_falls_from_the_hits_his_hero_needs_and_then_fades_away_with_his_glow() {
+    for (hero_id, hits) in [("ilya", 5), ("alyosha", 9), ("vasilisa", 8)] {
+        let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, hero_id);
+        fight.make_hardy();
+        assert_eq!(chops_to_kill(&mut fight, false), hits, "{hero_id}");
+    }
 
-    for health in [2.0, 1.0] {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    fight.make_hardy();
+    let robber = fight.robber(1.0);
+    for _ in 0..4 {
         until_mood(&mut fight, robber, "rest", None);
         after_chop(&mut fight, robber);
-        assert_eq!(fight.number(robber, "health"), health);
     }
-
+    assert_eq!(fight.number(robber, "health"), 4.0);
     until_mood(&mut fight, robber, "rest", None);
     fight.step(&["KeyJ"], &["KeyJ"]);
-    for _ in 0..42 {
+    while fight.number(robber, "health") > 0.0 {
         fight.step(&[], &[]);
     }
-    assert!(!fight.game.world.is_alive(robber));
-    let robber_no = fight.prop("robber_no");
+    assert_eq!(fight.text(robber, "mood"), "dying");
+    assert!(!fight.flag(robber, "dead"), "гаснет, а не пропал сразу");
+    for _ in 0..11 {
+        fight.step(&[], &[]);
+    }
+    let fading = fight.number(robber, "opacity");
+    assert!(fading > 0.0 && fading < 1.0, "гаснет: {fading}");
+    for _ in 0..24 {
+        fight.step(&[], &[]);
+    }
+    assert!(fight.flag(robber, "dead"));
+    assert_eq!(fight.number(robber, "opacity"), 0.0);
     assert!(
-        fight
-            .game
-            .world
-            .ids()
-            .all(|id| fight.game.world.number_like(id, robber_no) != Some(1.0))
+        fight.bar_over(robber).is_none(),
+        "шкала пропала вместе с ним"
     );
+    let glow = fight.glow_of(1.0);
+    assert!(fight.flag(glow, "dead"), "отсвет убитого вышел из правил");
+    assert_eq!(fight.number(glow, "opacity"), 0.0);
+}
+
+#[test]
+fn alyosha_strikes_double_from_behind_and_at_a_recoiling_robber() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "alyosha");
+    fight.make_hardy();
+    assert_eq!(chops_to_kill(&mut fight, true), 5, "пять двойных в спину");
+
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "alyosha");
+    fight.make_hardy();
+    let robber = fight.robber(1.0);
+    let mood = fight.prop("mood");
+    fight
+        .game
+        .world
+        .set_text(robber, mood, "recoil".to_string());
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    for _ in 0..12 {
+        fight.step(&[], &[]);
+    }
+    assert_eq!(
+        fight.number(robber, "health"),
+        46.0,
+        "7 × 2 по отшатнувшемуся"
+    );
+
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    fight.make_hardy();
+    let robber = fight.robber(1.0);
+    until_mood(&mut fight, robber, "rest", None);
+    fight.game.world.set_flag(robber, property::FLIP_X, false);
+    after_chop(&mut fight, robber);
+    assert_eq!(
+        fight.number(robber, "health"),
+        46.0,
+        "у Ильи спина не удваивает"
+    );
+}
+
+#[test]
+fn a_hit_that_always_finds_the_weak_spot_doubles_the_damage_without_stacking_on_alyosha() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    fight.make_hardy();
+    let hero = fight.hero();
+    fight.set(hero, "crit_chance", 1.0);
+    let robber = fight.robber(1.0);
+    until_mood(&mut fight, robber, "rest", None);
+    after_chop(&mut fight, robber);
+    assert_eq!(fight.number(robber, "health"), 32.0, "14 × 2");
+
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "alyosha");
+    fight.make_hardy();
+    let hero = fight.hero();
+    fight.set(hero, "crit_chance", 1.0);
+    let robber = fight.robber(1.0);
+    until_mood(&mut fight, robber, "rest", None);
+    fight.game.world.set_flag(robber, property::FLIP_X, false);
+    after_chop(&mut fight, robber);
+    assert_eq!(fight.number(robber, "health"), 46.0, "не больше двойного");
+}
+
+/// Что случилось с героем за один удар разбойника, дошедший до него.
+struct BlowTaken {
+    special: bool,
+    health_lost: f64,
+    spirit_lost: f64,
+}
+
+fn next_blow(fight: &mut Fight, robber: u32) -> BlowTaken {
+    let hero = fight.hero();
+    let mut was_done = fight.flag(robber, "blow_done");
+    for _ in 0..30 * 60 {
+        let (health, spirit) = (fight.number(hero, "health"), fight.number(hero, "spirit"));
+        fight.step(&[], &[]);
+        let done = fight.flag(robber, "blow_done");
+        if done && !was_done {
+            return BlowTaken {
+                special: fight.flag(robber, "special"),
+                health_lost: health - fight.number(hero, "health"),
+                spirit_lost: spirit - fight.number(hero, "spirit"),
+            };
+        }
+        was_done = done;
+    }
+    panic!("удар разбойника не дошёл до героя");
+}
+
+#[test]
+fn a_missed_ordinary_blow_takes_twelve_and_a_special_one_twenty_five() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    let robber = fight.robber(1.0);
+    for (special, damage) in [(false, 12.0), (false, 12.0), (true, 25.0)] {
+        let blow = next_blow(&mut fight, robber);
+        assert_eq!(blow.special, special);
+        assert_eq!(blow.health_lost, damage);
+        assert_eq!(blow.spirit_lost, 0.0, "у Ильи чар нет");
+    }
+}
+
+#[test]
+fn vasilisas_ward_takes_ordinary_blows_and_not_the_special_one_and_recharges() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "vasilisa");
+    let robber = fight.robber(1.0);
+    let hero = fight.hero();
+    assert_eq!(fight.number(hero, "spirit"), 4.0);
+    for _ in 0..2 {
+        let blow = next_blow(&mut fight, robber);
+        assert!(!blow.special);
+        assert_eq!(blow.health_lost, 0.0, "чары приняли удар");
+        assert_eq!(blow.spirit_lost, 1.0);
+        assert_ne!(fight.text(hero, "act"), "hurt", "не отшатывается");
+        assert_eq!(fight.flashes("ward").len(), 1, "вокруг неё вспыхнули чары");
+    }
+    let blow = next_blow(&mut fight, robber);
+    assert!(blow.special);
+    assert_eq!(blow.health_lost, 25.0, "особый удар чары не держат");
+    assert_eq!(blow.spirit_lost, 0.0, "и заряд не тратит");
+
+    let mut fight = Fight::plain([3.0, 7.1], "vasilisa");
+    let hero = fight.hero();
+    fight.set(hero, "spirit", 3.0);
+    for _ in 0..168 {
+        fight.step(&[], &[]);
+    }
+    assert_eq!(
+        fight.number(hero, "spirit"),
+        3.0,
+        "через 2,8 с заряда ещё нет"
+    );
+    for _ in 0..6 {
+        fight.step(&[], &[]);
+    }
+    assert_eq!(
+        fight.number(hero, "spirit"),
+        4.0,
+        "через 2,9 с заряд вернулся"
+    );
+    for _ in 0..600 {
+        fight.step(&[], &[]);
+    }
+    assert_eq!(fight.number(hero, "spirit"), 4.0, "запас не выше полного");
+}
+
+#[test]
+fn a_ward_blow_does_not_cut_the_heros_own_chop() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "vasilisa");
+    let robber = fight.robber(1.0);
+    let hero = fight.hero();
+    until_mood(&mut fight, robber, "windup", Some(false));
+    while fight.number(robber, "act_time") < 0.45 - 0.2 {
+        fight.step(&[], &[]);
+    }
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    let mut acts: Vec<String> = Vec::new();
+    for _ in 0..60 {
+        fight.step(&[], &[]);
+        let act = fight.text(hero, "act");
+        if acts.last() != Some(&act) {
+            acts.push(act);
+        }
+    }
+    assert!(
+        acts.iter().all(|act| act == "chop" || act.is_empty()),
+        "чары не прерывают удар: {acts:?}"
+    );
+    assert_eq!(fight.number(hero, "spirit"), 3.0);
+}
+
+#[test]
+fn a_hero_with_no_health_stands_at_the_start_and_every_robber_stands_at_his_place_again() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    let hero = fight.hero();
+    let first = fight.robber(1.0);
+    let second = fight.robber(2.0);
+    chops_to_kill(&mut fight, false);
+    for _ in 0..40 {
+        fight.step(&[], &[]);
+    }
+    assert!(fight.flag(first, "dead"));
+    fight.set(second, "health", 20.0);
+    fight
+        .game
+        .world
+        .set_vec2(hero, property::POSITION, [71.6, 6.1]);
+    fight.set(hero, "health", 5.0);
+    for _ in 0..20 * 60 {
+        fight.step(&[], &[]);
+        if fight.number(hero, "health") > 100.0 {
+            break;
+        }
+    }
+    assert_eq!(fight.number(hero, "health"), 116.0, "герой так и не погиб");
+    assert_eq!(
+        fight.game.world.vec2(hero, property::POSITION),
+        Some([3.0, 7.1]),
+        "герой не в начале уровня"
+    );
+    for (robber, x, y) in [(first, 14.6, 7.1), (second, 73.6, 6.1)] {
+        assert!(!fight.flag(robber, "dead"));
+        assert_eq!(fight.number(robber, "health"), 60.0);
+        assert_eq!(fight.number(robber, "opacity"), 1.0);
+        assert_eq!(fight.text(robber, "mood"), "patrol");
+        let at = fight.game.world.vec2(robber, property::POSITION).unwrap();
+        assert!(
+            (at[0] - x).abs() < 1e-6 && (at[1] - y).abs() < 0.05,
+            "место {at:?}"
+        );
+    }
+    let glow = fight.glow_of(1.0);
+    assert!(!fight.flag(glow, "dead"), "отсвет вернулся в правила");
+}
+
+#[test]
+fn vasilisa_stands_at_the_start_with_a_full_ward_after_dying() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "vasilisa");
+    let hero = fight.hero();
+    fight.set(hero, "spirit", 0.0);
+    fight.set(hero, "health", 5.0);
+    for _ in 0..20 * 60 {
+        fight.step(&[], &[]);
+        if fight.number(hero, "health") > 100.0 {
+            break;
+        }
+    }
+    assert_eq!(
+        fight.number(hero, "health"),
+        106.0,
+        "Василиса так и не погибла"
+    );
+    assert_eq!(fight.number(hero, "spirit"), 4.0, "запас чар полный");
+}
+
+#[test]
+fn falling_into_a_gorge_keeps_the_health_and_the_robbers_as_they_are() {
+    let mut fight = Fight::plain([3.0, 7.1], "ilya");
+    let hero = fight.hero();
+    let robber = fight.robber(1.0);
+    fight.set(hero, "health", 50.0);
+    fight.set(robber, "health", 30.0);
+    let pit = fight.prop("pit");
+    let gorge = fight
+        .game
+        .world
+        .ids()
+        .find(|&id| fight.game.world.has(id, pit))
+        .expect("дно ущелья");
+    let at = fight.game.world.vec2(gorge, property::POSITION).unwrap();
+    fight
+        .game
+        .world
+        .set_vec2(hero, property::POSITION, [at[0] + 1.0, at[1] - 0.5]);
+    fight.step(&[], &[]);
+    assert_eq!(
+        fight.game.world.vec2(hero, property::POSITION),
+        Some([3.0, 7.1])
+    );
+    assert_eq!(fight.number(hero, "health"), 50.0);
+    assert_eq!(fight.number(robber, "health"), 30.0);
+}
+
+#[test]
+fn a_dead_robber_neither_strikes_nor_takes_a_hit() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    let hero = fight.hero();
+    let robber = fight.robber(1.0);
+    chops_to_kill(&mut fight, false);
+    for _ in 0..40 {
+        fight.step(&[], &[]);
+    }
+    assert!(fight.flag(robber, "dead"));
+    let health = fight.number(hero, "health");
+    let place = fight.game.world.vec2(robber, property::POSITION);
+    let swings = fight.number(robber, "last_swing");
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    for _ in 0..20 * 60 {
+        fight.step(&[], &[]);
+    }
+    assert_eq!(
+        fight.number(hero, "health"),
+        health,
+        "убитый разбойник не бьёт"
+    );
+    assert_eq!(fight.game.world.vec2(robber, property::POSITION), place);
+    assert_eq!(
+        fight.number(robber, "last_swing"),
+        swings,
+        "под удар не попал"
+    );
+    assert_eq!(fight.number(robber, "flash_time"), 0.0);
+}
+
+#[test]
+fn every_hero_takes_the_numbers_of_his_stats_and_weapon_in_the_first_step() {
+    // Здоровье, урон, время удара, парирование, уклонение и дух — числа требований фазы 11.
+    let expected = [
+        ("ilya", 116.0, 14.0, 0.43, 0.16, 0.06, 0.0),
+        ("alyosha", 108.0, 7.0, 0.27, 0.24, 0.14, 0.0),
+        ("vasilisa", 106.0, 8.0, 0.39, 0.16, 0.08, 4.0),
+    ];
+    for (hero_id, health, damage, swing, parry, dodge, spirit) in expected {
+        let fight = Fight::ready([3.0, 7.1], hero_id);
+        let hero = fight.hero();
+        let close = |name: &str, want: f64, tolerance: f64| {
+            let got = fight.number(hero, name);
+            assert!(
+                (got - want).abs() <= tolerance,
+                "{hero_id} {name}: {got}, а нужно {want}"
+            );
+        };
+        close("max_health", health, 0.0);
+        close("health", health, 0.0);
+        close("damage", damage, 0.0);
+        close("swing_time", swing, 0.005);
+        close("parry_chance", parry, 1e-9);
+        close("dodge_chance", dodge, 1e-9);
+        close("crit_chance", dodge, 1e-9);
+        close("max_spirit", spirit, 0.0);
+        close("spirit", spirit, 0.0);
+    }
+    let fight = Fight::ready([3.0, 7.1], "vasilisa");
+    let hero = fight.hero();
+    assert!((fight.number(hero, "ward_time") - 4.0 / 1.4).abs() < 1e-9);
+    let robber = fight.robber(1.0);
+    assert_eq!(fight.number(robber, "max_health"), 60.0);
+    assert_eq!(fight.number(robber, "health"), 60.0);
+}
+
+#[test]
+fn a_missing_weapon_or_enemy_row_is_a_code_error_naming_it() {
+    let mut fight = Fight::start_with([3.0, 7.1], "ilya", |name, text| match name {
+        "heroes" => text.replace(r#""weapon": "axe""#, r#""weapon": "sword""#),
+        _ => text,
+    });
+    fight.step_quiet(&[], &[]);
+    let error = fight.game.code_error().expect("ошибка кода");
+    assert!(error.message.contains("sword"), "{}", error.message);
+
+    let mut fight = Fight::start_with([3.0, 7.1], "ilya", |name, text| match name {
+        "enemies" => text.replace(r#""robber": {"#, r#""bandit": {"#),
+        _ => text,
+    });
+    fight.step_quiet(&[], &[]);
+    let error = fight.game.code_error().expect("ошибка кода");
+    assert!(error.message.contains("robber"), "{}", error.message);
+}
+
+#[test]
+fn a_chop_shrinks_the_bar_over_the_robber_by_a_share_and_leaves_a_trail() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    fight.make_hardy();
+    let robber = fight.robber(1.0);
+    until_mood(&mut fight, robber, "rest", None);
+    let full = fight.bar_over(robber).expect("в бою шкала нарисована");
+    assert_eq!(full.share, 1.0);
+    assert_eq!(full.trail, None);
+
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    let mut hit = None;
+    for _ in 0..30 {
+        fight.step(&[], &[]);
+        if fight.number(robber, "health") < 60.0 {
+            hit = fight.bar_over(robber);
+            break;
+        }
+    }
+    let hit = hit.expect("удар не попал");
+    assert!((hit.share - 46.0 / 60.0).abs() < 1e-6, "доля {}", hit.share);
+    let trail = hit.trail.expect("на месте потерянного куска след");
+    assert!(
+        (trail.size[0] - hit.width).abs() < 1e-4,
+        "след тянется до прежней доли"
+    );
+    for _ in 0..40 {
+        fight.step(&[], &[]);
+    }
+    let later = fight.bar_over(robber).expect("шкала всё ещё в бою");
+    assert!((later.share - 46.0 / 60.0).abs() < 1e-6);
+    assert!(later.trail.is_none(), "через 0,6 с следа нет");
+}
+
+#[test]
+fn a_bar_shown_in_the_step_of_the_hit_shows_the_trail_of_that_hit() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    fight.make_hardy();
+    let robber = fight.robber(1.0);
+    let show_bar = fight.prop("show_bar");
+    until_mood(&mut fight, robber, "rest", None);
+
+    let mut hit = None;
+    for i in 0..30 {
+        fight.game.world.set_flag(robber, show_bar, false);
+        assert!(fight.bar_over(robber).is_none(), "до удара шкала спрятана");
+        let keys: &[&str] = if i == 0 { &["KeyJ"] } else { &[] };
+        fight.step(keys, keys);
+        if fight.number(robber, "health") < 60.0 {
+            hit = Some(
+                fight
+                    .bar_over(robber)
+                    .expect("код показал шкалу в шаг удара"),
+            );
+            break;
+        }
+    }
+    let hit = hit.expect("удар не попал");
+    assert!((hit.share - 46.0 / 60.0).abs() < 1e-6, "доля {}", hit.share);
+    let trail = hit.trail.expect("след удара виден сразу");
+    assert!(
+        (trail.size[0] - hit.width).abs() < 1e-4,
+        "след до полной доли"
+    );
+}
+
+#[test]
+fn a_new_game_from_a_screen_starts_without_trails_however_short_the_old_one_was() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "ilya");
+    let robber = fight.robber(1.0);
+    fight.show_bar(robber);
+    let full = fight.bar_over(robber).expect("шкала нарисована");
+    assert_eq!(full.share, 1.0);
+    let steps = fight.game.step_count();
+
+    fight.restart();
+    while fight.game.step_count() < steps {
+        fight.step(&[], &[]);
+    }
+    fight.set(robber, "health", 30.0);
+    fight.show_bar(robber);
+    let fresh = fight.bar_over(robber).expect("шкала нарисована");
+    assert_eq!(fresh.share, 0.5);
+    assert_eq!(fresh.trail, None, "доля прошлой партии следа не даёт");
 }
 
 #[test]

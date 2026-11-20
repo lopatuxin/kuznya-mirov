@@ -27,6 +27,8 @@ const ERROR_KEY_LABELS: Readonly<Record<string, string>> = {
   image_scale: "толщина рамки",
   back_color: "цвет подложки",
   back_image: "картинка подложки",
+  trail_color: "цвет следа",
+  trail_image: "картинка следа",
   tooltip: "подсказка",
   ui_reference: "размер окна образца",
 };

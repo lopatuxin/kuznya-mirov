@@ -990,6 +990,18 @@ pub fn ui_fill_paints(
     );
 }
 
+/// «Интерфейс игры» → «Надписи, полоски и картинки в мире»: толщина рамки картинки `fill` у полоски в мире
+/// высотой `height` — такая, при которой высота картинки равна высоте полоски.
+pub fn bar_image_scale(
+    fill: &Fill,
+    height: f32,
+    images: &[ImageDecl],
+    atlas_rects: &[ImagePlace],
+) -> f32 {
+    let frame = fill_paint(fill, 0.0, images, atlas_rects).atlas_rect;
+    height / frame.h.max(1) as f32
+}
+
 /// «Трёхмерная сцена», требование 19: поворот плоского прямоугольника на земле — вся заливка вместе
 /// с картинкой поворачивается вокруг середины объекта на угол `rotation`.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -3830,6 +3842,60 @@ mod tests {
         );
         assert_eq!(out.len(), 1, "картинка без полей тянется целиком");
         assert_eq!(out[0].paint.atlas_rect, whole);
+    }
+
+    /// Фаза 66: у полоски в мире углы картинки с полями — в масштабе, при котором высота картинки равна высоте
+    /// полоски.
+    #[test]
+    fn a_world_bar_image_is_cut_at_the_scale_of_the_bar_height() {
+        let images = vec![ImageDecl {
+            slice: Some([4, 0, 6, 0]),
+            ..one_frame_image()
+        }];
+        let whole = AtlasRect {
+            x: 0,
+            y: 0,
+            w: 60,
+            h: 12,
+            sheet: 0,
+        };
+        let places = [ImagePlace::Whole(whole)];
+        let fill = Fill::Image {
+            image: 0,
+            opacity: 1.0,
+        };
+        let height = 0.12;
+        let scale = bar_image_scale(&fill, height, &images, &places);
+        assert!(
+            close(scale, 0.01),
+            "высота 12 точек картинки ложится на 0,12 клетки"
+        );
+        let mut out = Vec::new();
+        ui_fill_paints(
+            &fill,
+            [1.0, 2.0, 0.5, height],
+            scale,
+            0.0,
+            &images,
+            &places,
+            &mut out,
+        );
+        let left = out
+            .iter()
+            .find(|paint| paint.paint.position == [1.0, 2.0])
+            .expect("левый угол");
+        assert!(close(left.paint.size[0], 0.04) && close(left.paint.size[1], height));
+        let right = out
+            .iter()
+            .find(|paint| paint.paint.atlas_rect.x == 54)
+            .expect("правый угол");
+        assert!(close(right.paint.position[0], 1.0 + 0.5 - 0.06));
+        assert!(close(right.paint.size[0], 0.06));
+        assert_eq!(
+            bar_image_scale(&Fill::Color([1.0; 4]), height, &images, &places),
+            height,
+            "у цвета кадр — одна точка"
+        );
     }
 
     // -----------------------------------------------------------------------------------------

@@ -1,5 +1,6 @@
--- Первый уровень: кадры Ильи, бой с разбойниками и возврат в начало после падения в ущелье.
--- Разбойник теряет здоровье от попаданий, которые его отталкивают или заставляют отшатнуться.
+-- Первый уровень: кадры героя, бой с разбойниками, гибель героя и возврат в начало после падения в ущелье.
+-- Разбойник теряет здоровье от попаданий, которые его отталкивают, заставляют отшатнуться или бьют отшатнувшегося
+-- после парирования. Все числа боя — в таблицах heroes, items и enemies; здесь только правила их расчёта.
 
 local DT = 1 / 60
 local START_X = 3
@@ -25,14 +26,32 @@ local STILL_SPEED = 0.5
 local TOP_SHARE = 0.3
 local HERO_RUN_SPEED = 7
 
--- Удар героя: секунды замаха, удара и возврата; место удара — клеток выше макушки, а вперёд от середины —
--- докуда достаёт его оружие, reach из таблицы героев.
+-- Удар героя с топором: секунды замаха, удара и возврата. Время удара другого оружия — те же доли, растянутые
+-- по его swing из таблицы items. Место удара — клеток выше макушки, а вперёд от середины — докуда достаёт
+-- оружие, reach из таблицы героев.
 local CHOP_WINDUP, CHOP_STRIKE, CHOP_RECOVER = 0.18, 0.08, 0.22
+local CHOP_TOTAL = CHOP_WINDUP + CHOP_STRIKE + CHOP_RECOVER
 local CHOP_ABOVE = 0.4
 
--- Защита Ильи: секунды каждой и шансы из ста; остальное — пропущенный удар.
+-- Защита героя: секунды каждой; шансы парирования и уклонения — свойства героя, остальное — пропущенный удар.
 local DEFENCE_TIME = { parry = 0.3, dodge = 0.35, hurt = 0.35 }
-local PARRY_CHANCE, DODGE_CHANCE = 0.35, 0.30
+
+-- Числа героя из характеристик: здоровье, прибавка к урону, ускорение удара, шансы защит и удара в слабое место.
+local HEALTH_BASE, HEALTH_PER_STRENGTH = 100, 2
+local DAMAGE_PER_STRENGTH = 0.05
+local SWING_PER_SKILL = 0.03
+local PARRY_PER_SKILL = 0.015
+local DODGE_PER_AGILITY, CRIT_PER_AGILITY = 0.02, 0.02
+-- Чары пока только у Василисы: зарядов Мудрость / 2 вниз, заряд возвращается за 4 с, на 5 % быстрее за единицу Мудрости.
+local WARD_HERO = "vasilisa"
+local WARD_WISDOM_PER_CHARGE = 2
+local WARD_RECHARGE, WARD_SPEED_PER_WISDOM = 4, 0.05
+-- Удар по отшатнувшемуся после парирования и в спину у этого героя всегда двойной.
+local DOUBLE_HERO = "alyosha"
+
+-- Строка таблицы enemies, по которой живёт разбойник, и сколько секунд убитый гаснет.
+local ENEMY = "robber"
+local DEATH_FADE = 0.3
 
 -- Отлёт от удара: на сколько клеток и за сколько секунд.
 local PUSH_TIME = 0.12
@@ -40,11 +59,11 @@ local HURT_PUSH, SWEEP_PUSH, STAGGER_PUSH = 0.33, 0.5, 0.33
 -- Остановка обоих в миг попадания и парирования: шагов (0,05 с).
 local HOLD_STEPS = 3
 
--- Разбойник: где замечает Илью и откуда бьёт — по ширине между серединами и по высоте между низами.
+-- Разбойник: где замечает героя и откуда бьёт — по ширине между серединами и по высоте между низами.
 local SIGHT, SIGHT_HEIGHT = 7, 2
 local ATTACK_RANGE, ATTACK_HEIGHT = 1.2, 1.2
 local PATROL_SPEED, CHASE_SPEED, PATROL_REST = 1.5, 3.5, 1
--- Не подходит к другому разбойнику, стоящему между ним и Ильёй, ближе этого.
+-- Не подходит к другому разбойнику, стоящему между ним и героем, ближе этого.
 local ROBBER_GAP = 1
 -- Обычный удар: секунды замаха, удара, передышки; место удара — вперёд от середины и выше макушки.
 local BLOW = { windup = 0.45, strike = 0.1, rest = 0.7, reach = 1.7, above = 0.6 }
@@ -53,28 +72,29 @@ local SWEEP = { windup = 0.75, strike = 0.15, rest = 0.9, reach = 2.1, height = 
 local SPECIAL_EVERY = 3
 -- После передышки или отшатывания — столько секунд до нового замаха.
 local BLOW_PAUSE = 0.4
--- Отшатнулся от удара Ильи и после парирования.
+-- Отшатнулся от удара героя и после парирования.
 local STAGGER_TIME, RECOIL_TIME = 0.35, 0.4
 
 -- Кадры листа robber.png, по 5 в строке.
 local R_IDLE_FIRST, R_IDLE_COUNT, R_IDLE_CYCLE = 0, 4, 1.4
 local R_WALK_FIRST, R_WALK_COUNT, R_STRIDE = 4, 8, 1.6
 local R_BLOW_FIRST, R_SWEEP_FIRST, R_STAGGER_FIRST = 12, 17, 22
-local ROBBER_HEALTH_BARS = { "robber_health_1", "robber_health_2", "robber_health_3" }
 
--- Отсвет: белая вспышка от удара Ильи и красный ореол особого замаха.
+-- Отсвет: белая вспышка от удара героя и красный ореол особого замаха.
 local FLASH_TIME, FLASH_OPACITY = 0.1, 0.6
 local AURA_RISE, AURA_OPACITY = 0.2, 0.9
 
--- Вспышки боя живут столько секунд; кадры по прожитому.
-local FX_LIFE = 0.2
-local FX_FRAMES = { clash = 4, impact = 3 }
+-- Вспышки боя: кадры и сколько секунд живут; кадр — по прожитому. Вспышка чар стоит на герое и идёт за ним.
+local FX = {
+  clash = { frames = 4, life = 0.2 },
+  impact = { frames = 3, life = 0.2 },
+  ward = { frames = 5, life = 0.4, follow = true },
+}
 
-local HERO_DEFAULTS = { act = "", act_time = 0, swing = 0, hold_until = 0, push_time = 0, push_speed = 0 }
+local HERO_DEFAULTS = { act = "", act_time = 0, swing = 0, hold_until = 0, push_time = 0, push_speed = 0, ward_wait = 0 }
 local ROBBER_DEFAULTS = {
   mood = "patrol", act_time = 0, robber_frame = 0, walk_dist = 0, idle_time = 0, attacks = 0, cooldown = 0,
   hold_until = 0, flash_time = 0, push_time = 0, push_speed = 0, last_swing = 0, patrol_dir = 1,
-  health = #ROBBER_HEALTH_BARS,
 }
 
 local function ensure(obj, defaults)
@@ -83,6 +103,10 @@ local function ensure(obj, defaults)
       obj[key] = value
     end
   end
+end
+
+local function round(x)
+  return math.floor(x + 0.5)
 end
 
 local function center_x(obj)
@@ -122,20 +146,23 @@ local function ahead(obj, reach)
 end
 
 local function spawn_fx(kind, x, y)
+  local fx = FX[kind]
   create({
     name = kind,
     fx = true,
+    fx_follow = fx.follow,
     image = kind,
-    fx_frames = FX_FRAMES[kind],
+    fx_frames = fx.frames,
     fx_frame = 0,
+    fx_life = fx.life,
     position = { x - 0.1, y - 0.1 },
     size = { 0.2, 0.2 },
     layer = 55,
-    lifetime = FX_LIFE,
+    lifetime = fx.life,
   })
 end
 
--- Номер шага партии; ведёт его fight_hero — правило Ильи идёт первым среди правил боя.
+-- Номер шага партии; ведёт его fight_hero — правило героя идёт первым среди правил боя.
 local step_no = 0
 
 -- Остановка в миг попадания: признак `held` выводит объект из правила бега и прыжка, и движок его не
@@ -165,7 +192,59 @@ local function the_hero()
   return find({ has = { "hero" } })[1]
 end
 
--- Илья
+local function living_robbers()
+  return find({ has = { "robber" }, without = { "dead" } })
+end
+
+local function enemy_row()
+  local row = tables.enemies[ENEMY]
+  if row == nil then
+    error("нет врага " .. ENEMY .. " в таблице enemies")
+  end
+  return row
+end
+
+-- Отсвет разбойника: его признак dead выводит отсвет из правила, пока разбойник убит.
+local function set_glow_dead(robber, dead)
+  for _, glow in ipairs(find({ has = { "robber_glow" } })) do
+    if glow.robber_no == robber.robber_no then
+      glow.dead = dead
+      glow.opacity = 0
+    end
+  end
+end
+
+-- Здоровье разбойника берётся из таблицы enemies при его первом шаге в партии; место он запоминает для возврата.
+local function take_robber_stats(robber)
+  if robber.max_health ~= nil then
+    return
+  end
+  robber.max_health = enemy_row().health
+  robber.health = robber.max_health
+  robber.start_x, robber.start_y = robber.position.x, robber.position.y
+end
+
+-- Разбойник встаёт на своё место с полным здоровьем, в обходе и без счёта ударов до особого.
+local function reset_robber(robber)
+  for key, value in pairs(ROBBER_DEFAULTS) do
+    robber[key] = value
+  end
+  robber.health = robber.max_health
+  robber.position = { x = robber.start_x, y = robber.start_y }
+  robber.velocity = { x = 0, y = 0 }
+  robber.flip_x = false
+  robber.opacity = 1
+  robber.special = false
+  robber.blow_done = false
+  robber.held = false
+  robber.dead = false
+  robber.show_bar = false
+  robber.hold_left = false
+  robber.hold_right = false
+  set_glow_dead(robber, false)
+end
+
+-- Герой
 
 local function begin_chop(hero, unstoppable)
   hero.act = "chop"
@@ -175,11 +254,17 @@ local function begin_chop(hero, unstoppable)
   hero.swing = hero.swing + 1
 end
 
-local function act_length(act)
-  if act == "chop" then
-    return CHOP_WINDUP + CHOP_STRIKE + CHOP_RECOVER
+-- Когда у удара героя кончается замах, кончается удар и кончается возврат.
+local function chop_marks(hero)
+  local k = hero.swing_time / CHOP_TOTAL
+  return CHOP_WINDUP * k, (CHOP_WINDUP + CHOP_STRIKE) * k, hero.swing_time
+end
+
+local function act_length(hero)
+  if hero.act == "chop" then
+    return hero.swing_time
   end
-  return DEFENCE_TIME[act]
+  return DEFENCE_TIME[hero.act]
 end
 
 local function finish_act(hero)
@@ -200,46 +285,79 @@ local function stagger(robber, hero)
   push(robber, -facing(robber), STAGGER_PUSH)
 end
 
--- Илья попал по разбойнику. Отшатывается разбойник только в передышке и пока Илью не заметил: иначе
--- Илья, часто нажимая, не давал бы ему замахнуться.
+-- Смотрит ли разбойник от героя.
+local function turned_away(robber, hero)
+  return (center_x(hero) - center_x(robber)) * facing(robber) < 0
+end
+
+-- Двойной ли удар: выпал удар в слабое место, а у DOUBLE_HERO он ещё всегда двойной по отшатнувшемуся после
+-- парирования и в спину. Двойной удар и удар в слабое место не складываются.
+local function double_blow(robber, hero)
+  if hero.hero_id == DOUBLE_HERO and (robber.mood == "recoil" or turned_away(robber, hero)) then
+    return true
+  end
+  return math.random() < hero.crit_chance
+end
+
+local function blow_damage(robber, hero)
+  local kind = tables.items[hero.weapon].damage_type
+  local factor = enemy_row().damage_taken[kind]
+  if double_blow(robber, hero) then
+    factor = factor * 2
+  end
+  return round(hero.damage * factor)
+end
+
+-- Здоровье разбойника дошло до нуля: он гаснет на кадре отшатывания и больше не бьёт, не ходит и не принимает удары.
+local function begin_dying(robber)
+  robber.health = 0
+  robber.mood = "dying"
+  robber.act_time = 0
+  robber.push_time = 0
+  robber.velocity.x = 0
+end
+
+-- Герой попал по разбойнику. Урон идёт от попадания, от которого разбойник отшатывается или отлетает, и по
+-- отшатнувшемуся после парирования; в замахе и ударе — только вспышка. Отшатывается разбойник только в
+-- передышке и пока героя не заметил: иначе герой, часто нажимая, не давал бы ему замахнуться.
 local function robber_hit(robber, hero)
   robber.flash_time = FLASH_TIME
+  robber.show_bar = true
   hold(robber)
   hold(hero)
   spawn_fx("impact", center_x(robber), robber.position.y + 0.6)
   local mood = robber.mood
   local can_stagger = mood == "rest" or mood == "patrol" or mood == "watch"
-  if can_stagger or mood == "chase" then
-    robber.health = robber.health - 1
-    if robber.health <= 0 then
-      delete(robber)
-      return
-    end
+  if not (can_stagger or mood == "chase" or mood == "recoil") then
+    return
   end
-  if can_stagger then
+  robber.health = math.max(0, robber.health - blow_damage(robber, hero))
+  if robber.health == 0 then
+    begin_dying(robber)
+  elseif can_stagger then
     stagger(robber, hero)
   elseif mood == "chase" then
     push(robber, center_x(robber) < center_x(hero) and -1 or 1, STAGGER_PUSH)
   end
-  robber.robber_health_bar = ROBBER_HEALTH_BARS[robber.health]
 end
 
 local function chop_hits(hero)
   local t = hero.act_time
-  if t < CHOP_WINDUP or t >= CHOP_WINDUP + CHOP_STRIKE then
+  local windup_end, strike_end = chop_marks(hero)
+  if t < windup_end or t >= strike_end then
     return
   end
   local x0, x1 = ahead(hero, hero.reach)
   local y0, y1 = hero.position.y - CHOP_ABOVE, bottom(hero)
-  for _, robber in ipairs(find({ has = { "robber" } })) do
-    if robber.last_swing ~= hero.swing and touches(robber, x0, x1, y0, y1) then
+  for _, robber in ipairs(living_robbers()) do
+    if robber.mood ~= "dying" and robber.last_swing ~= hero.swing and touches(robber, x0, x1, y0, y1) then
       robber.last_swing = hero.swing
       robber_hit(robber, hero)
     end
   end
 end
 
--- На земле в бою Илья стоит; отлёт от удара ведёт его сам. В прыжке бег не меняется.
+-- На земле в бою герой стоит; отлёт от удара ведёт его сам. В прыжке бег не меняется.
 local function hold_ground(hero)
   local busy = hero.act ~= "" and hero.on_ground
   if hero.push_time > 0 then
@@ -256,12 +374,13 @@ local function animate(hero)
   local air = not hero.on_ground
   local act = hero.act
   if act == "chop" then
+    local windup_end, strike_end = chop_marks(hero)
     local t = hero.act_time
     local k = 4
-    if t < CHOP_WINDUP then
-      k = t < CHOP_WINDUP / 2 and 0 or 1
-    elseif t < CHOP_WINDUP + CHOP_STRIKE then
-      k = t < CHOP_WINDUP + CHOP_STRIKE / 2 and 2 or 3
+    if t < windup_end then
+      k = t < windup_end / 2 and 0 or 1
+    elseif t < strike_end then
+      k = t < (windup_end + strike_end) / 2 and 2 or 3
     end
     hero.hero_frame = (air and CHOP_AIR or CHOP_GROUND) + k
     return
@@ -300,8 +419,8 @@ local function animate(hero)
   end
 end
 
--- Лист кадров, портрет, дальность удара и числа героя — из таблицы героев по его hero_id, один раз за партию.
--- Числа бой пока не читает.
+-- Лист кадров, портрет, дальность удара, характеристики и оружие героя — из таблиц heroes и items по его hero_id,
+-- и числа боя из них — один раз за партию.
 local function take_stats(hero)
   if hero.strength ~= nil then
     return
@@ -310,16 +429,46 @@ local function take_stats(hero)
   if row == nil then
     error("нет героя " .. tostring(hero.hero_id) .. " в таблице heroes")
   end
+  local weapon = tables.items[row.weapon]
+  if weapon == nil then
+    error("нет оружия " .. tostring(row.weapon) .. " героя " .. hero.hero_id .. " в таблице items")
+  end
   hero.strength, hero.skill, hero.agility, hero.wisdom = row.strength, row.skill, row.agility, row.wisdom
   hero.image = row.sheet
   hero.hud_portrait = row.hud_portrait
   hero.reach = row.reach
+  hero.weapon = row.weapon
+  hero.max_health = HEALTH_BASE + HEALTH_PER_STRENGTH * hero.strength
+  hero.health = hero.max_health
+  hero.damage = round(weapon.damage * (1 + DAMAGE_PER_STRENGTH * hero.strength))
+  hero.swing_time = CHOP_TOTAL * weapon.swing / (1 + SWING_PER_SKILL * hero.skill)
+  hero.parry_chance = weapon.parry + PARRY_PER_SKILL * hero.skill
+  hero.dodge_chance = DODGE_PER_AGILITY * hero.agility
+  hero.crit_chance = CRIT_PER_AGILITY * hero.agility
+  hero.max_spirit = hero.hero_id == WARD_HERO and math.floor(hero.wisdom / WARD_WISDOM_PER_CHARGE) or 0
+  hero.spirit = hero.max_spirit
+  hero.ward_time = WARD_RECHARGE / (1 + WARD_SPEED_PER_WISDOM * hero.wisdom)
+end
+
+-- Заряд чар возвращается через ward_time; время идёт, пока запас не полон, и начинается заново после каждого
+-- потраченного заряда.
+local function recharge_ward(hero)
+  if hero.spirit >= hero.max_spirit then
+    hero.ward_wait = 0
+    return
+  end
+  hero.ward_wait = hero.ward_wait + DT
+  if hero.ward_wait >= hero.ward_time then
+    hero.spirit = hero.spirit + 1
+    hero.ward_wait = 0
+  end
 end
 
 function fight_hero(hero)
   ensure(hero, HERO_DEFAULTS)
   take_stats(hero)
   step_no = step_no + 1
+  recharge_ward(hero)
   -- В остановке время боя стоит, но кадр уже тот, что начался в миг попадания.
   if held(hero) then
     animate(hero)
@@ -334,10 +483,11 @@ function fight_hero(hero)
   else
     hero.act_time = hero.act_time + DT
     -- Нажатие в замахе и ударе пропадает, в возврате и в защите — помнится.
-    if pressed and (hero.act ~= "chop" or hero.act_time >= CHOP_WINDUP + CHOP_STRIKE) then
+    local _, strike_end = chop_marks(hero)
+    if pressed and (hero.act ~= "chop" or hero.act_time >= strike_end) then
       hero.attack_queued = true
     end
-    if hero.act_time >= act_length(hero.act) then
+    if hero.act_time >= act_length(hero) then
       finish_act(hero)
     end
   end
@@ -348,16 +498,69 @@ function fight_hero(hero)
   animate(hero)
 end
 
--- Удар разбойника долетел до Ильи: исход решается один раз за удар.
+-- Начало уровня: герой стоит на месте, действие и отлёт сброшены. Так он встаёт и после ущелья, и после гибели.
+local function place_at_start(hero)
+  hero.position = { x = START_X, y = START_Y }
+  hero.velocity = { x = 0, y = 0 }
+  hero.act = ""
+  hero.act_time = 0
+  hero.attack_queued = false
+  hero.unstoppable = false
+  hero.held = false
+  hero.push_time = 0
+end
+
+-- Здоровье героя дошло до нуля: он встаёт в начале уровня с полным здоровьем и запасом чар, а все разбойники,
+-- и убитые, и раненые, встают на свои места.
+local function die(hero)
+  place_at_start(hero)
+  hero.health = hero.max_health
+  hero.spirit = hero.max_spirit
+  hero.ward_wait = 0
+  for _, robber in ipairs(find({ has = { "robber" } })) do
+    reset_robber(robber)
+  end
+end
+
+-- Пропущенный удар снимает здоровье; возвращает, погиб ли герой.
+local function wound(hero, damage)
+  hero.health = hero.health - damage
+  if hero.health > 0 then
+    return false
+  end
+  die(hero)
+  return true
+end
+
+-- Чары принимают обычный удар первыми, пока в запасе есть заряд: здоровье не меняется, герой не отшатывается
+-- и не прерывает своего удара.
+local function ward_takes(hero)
+  if hero.spirit < 1 then
+    return false
+  end
+  hero.spirit = hero.spirit - 1
+  hero.ward_wait = 0
+  spawn_fx("ward", center_x(hero), hero.position.y + hero.size.y / 2)
+  return true
+end
+
+-- Удар разбойника долетел до героя: исход решается один раз за удар. Возвращает, погиб ли герой.
 local function resolve_blow(robber, hero)
+  local row = enemy_row()
   local outcome = "hurt"
   if not robber.special then
+    if ward_takes(hero) then
+      return false
+    end
     local r = math.random()
-    if r < PARRY_CHANCE then
+    if r < hero.parry_chance then
       outcome = "parry"
-    elseif r < PARRY_CHANCE + DODGE_CHANCE then
+    elseif r < hero.parry_chance + hero.dodge_chance then
       outcome = "dodge"
     end
+  end
+  if outcome == "hurt" and wound(hero, robber.special and row.sweep_damage or row.blow_damage) then
+    return true
   end
   local away = center_x(hero) < center_x(robber) and -1 or 1
   -- Удар после защиты ничто не прерывает: защиты не видно, пропущенный удар — только вспышка.
@@ -365,10 +568,11 @@ local function resolve_blow(robber, hero)
     if outcome == "hurt" then
       spawn_fx("impact", center_x(hero), hero.position.y + 0.6)
     end
-    return
+    return false
   end
   -- Защита обрывает замах и удар, а нажатие не пропадает: удар пойдёт сразу после защиты.
-  if hero.act == "chop" and hero.act_time < CHOP_WINDUP + CHOP_STRIKE then
+  local _, strike_end = chop_marks(hero)
+  if hero.act == "chop" and hero.act_time < strike_end then
     hero.attack_queued = true
   end
   hero.act = outcome
@@ -386,8 +590,9 @@ local function resolve_blow(robber, hero)
     spawn_fx("impact", center_x(hero), hero.position.y + 0.6)
     push(hero, away, robber.special and SWEEP_PUSH or HURT_PUSH)
   end
-  -- Кадр Ильи на этом шаге уже выбран раньше удара разбойника: защита показывается сразу.
+  -- Кадр героя на этом шаге уже выбран раньше удара разбойника: защита показывается сразу.
   animate(hero)
+  return false
 end
 
 -- Разбойник
@@ -415,11 +620,11 @@ local function walk_to(robber, x, speed)
   return false
 end
 
--- Стоит ли другой разбойник между этим и Ильёй ближе `ROBBER_GAP`.
+-- Стоит ли другой разбойник между этим и героем ближе `ROBBER_GAP`.
 local function blocked_by_mate(robber, hero_x)
   local cx = center_x(robber)
   local dir = hero_x > cx and 1 or -1
-  for _, mate in ipairs(find({ has = { "robber" } })) do
+  for _, mate in ipairs(living_robbers()) do
     if mate.robber_no ~= robber.robber_no then
       local gap = (center_x(mate) - cx) * dir
       if gap > 0 and gap < ROBBER_GAP and (hero_x - center_x(mate)) * dir > -ROBBER_GAP then
@@ -499,7 +704,10 @@ local function attack(robber, hero)
   elseif robber.mood == "strike" then
     if not robber.blow_done and hero and touches(hero, blow_zone(robber)) then
       robber.blow_done = true
-      resolve_blow(robber, hero)
+      -- Герой погиб — разбойники уже стоят на местах, этот удар их не продолжает.
+      if resolve_blow(robber, hero) then
+        return
+      end
     end
     if robber.act_time >= kind.strike then
       robber.mood = "rest"
@@ -512,11 +720,14 @@ local function attack(robber, hero)
   end
 end
 
-local FIGHT_MOODS = { windup = true, strike = true, rest = true, stagger = true, recoil = true }
+local FIGHT_MOODS = { windup = true, strike = true, rest = true, stagger = true, recoil = true, dying = true }
 
 local function robber_frame(robber)
   local mood = robber.mood
   local t = robber.act_time
+  if mood == "dying" then
+    return R_STAGGER_FIRST
+  end
   if mood == "stagger" or mood == "recoil" then
     local len = mood == "stagger" and STAGGER_TIME or RECOIL_TIME
     return R_STAGGER_FIRST + (t < len / 2 and 0 or 1)
@@ -540,8 +751,19 @@ local function robber_frame(robber)
   return R_IDLE_FIRST + math.floor(robber.idle_time / R_IDLE_CYCLE * R_IDLE_COUNT)
 end
 
+-- Убитый разбойник гаснет на месте; погас — он dead, и правила его больше не ведут.
+local function fade(robber)
+  stand(robber)
+  robber.opacity = 1 - math.min(1, robber.act_time / DEATH_FADE)
+  if robber.act_time >= DEATH_FADE then
+    robber.dead = true
+    set_glow_dead(robber, true)
+  end
+end
+
 function fight_robber(robber)
   ensure(robber, ROBBER_DEFAULTS)
+  take_robber_stats(robber)
   if held(robber) then
     -- Кадр боя — по времени боя, он стоит; кадр шага и стойки не трогается.
     if FIGHT_MOODS[robber.mood] then
@@ -563,6 +785,8 @@ function fight_robber(robber)
       robber.act_time = 0
       robber.cooldown = BLOW_PAUSE
     end
+  elseif mood == "dying" then
+    fade(robber)
   elseif hero and sees(robber, hero) then
     robber.mood = "chase"
     chase(robber, hero)
@@ -578,11 +802,7 @@ function fight_robber(robber)
     robber.velocity.x = robber.push_speed
   end
   robber.robber_frame = robber_frame(robber)
-  if robber.mood == "patrol" or robber.mood == "watch" then
-    robber.robber_health_bar = nil
-  else
-    robber.robber_health_bar = ROBBER_HEALTH_BARS[robber.health]
-  end
+  robber.show_bar = not (robber.mood == "patrol" or robber.mood == "watch")
 end
 
 -- Отсвет стоит на своём разбойнике тем же кадром: белая вспышка от удара, красный ореол особого замаха.
@@ -592,10 +812,6 @@ function follow_robber(glow)
     if r.robber_no == glow.robber_no then
       robber = r
     end
-  end
-  if not robber or robber.health == 0 then
-    delete(glow)
-    return
   end
   glow.position = { x = robber.position.x, y = robber.position.y }
   glow.flip_x = robber.flip_x
@@ -613,17 +829,15 @@ function follow_robber(glow)
 end
 
 function animate_fx(fx)
-  local lived = FX_LIFE - fx.lifetime
-  fx.fx_frame = math.min(fx.fx_frames - 1, math.floor(lived / FX_LIFE * fx.fx_frames))
+  if fx.fx_follow then
+    local hero = the_hero()
+    fx.position = { x = center_x(hero) - 0.1, y = hero.position.y + hero.size.y / 2 - 0.1 }
+  end
+  local lived = fx.fx_life - fx.lifetime
+  fx.fx_frame = math.min(fx.fx_frames - 1, math.floor(lived / fx.fx_life * fx.fx_frames))
 end
 
+-- Падение в ущелье: герой в начале уровня, здоровье и разбойники не меняются.
 function respawn(hero)
-  hero.position = { x = START_X, y = START_Y }
-  hero.velocity = { x = 0, y = 0 }
-  hero.act = ""
-  hero.act_time = 0
-  hero.attack_queued = false
-  hero.unstoppable = false
-  hero.held = false
-  hero.push_time = 0
+  place_at_start(hero)
 end

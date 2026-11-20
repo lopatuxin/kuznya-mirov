@@ -8541,6 +8541,8 @@ const BAR_KEYS: &[&str] = &[
     "image",
     "back_color",
     "back_image",
+    "trail_color",
+    "trail_image",
     "image_scale",
     "tooltip",
     "name",
@@ -9221,6 +9223,8 @@ struct ParsedBar {
     image_name: Option<String>,
     back_color: Option<[f32; 4]>,
     back_image_name: Option<String>,
+    trail_color: Option<[f32; 4]>,
+    trail_image_name: Option<String>,
     image_scale: Option<f32>,
     tooltip: Option<Vec<TextPart>>,
 }
@@ -9261,7 +9265,16 @@ fn parse_bar(
             "заданы и \"back_color\", и \"back_image\"; у подложки шкалы не больше одного из двух",
         );
     }
-    let has_image = image_name.is_some() || back_image_name.is_some();
+    let trail_color = parse_optional_ui_color(obj, "trail_color", file, path, errors)?;
+    let trail_image_name = parse_optional_string(obj, "trail_image", file, path, errors)?;
+    if trail_color.is_some() && trail_image_name.is_some() {
+        errors.push(
+            file,
+            path,
+            "заданы и \"trail_color\", и \"trail_image\"; у следа шкалы не больше одного из двух",
+        );
+    }
+    let has_image = image_name.is_some() || back_image_name.is_some() || trail_image_name.is_some();
     let image_scale = parse_image_scale(obj, has_image, file, path, errors)?;
     let tooltip = parse_tooltip(obj, context, true, file, path, errors)?;
     Some(ParsedElementData::Bar(Box::new(ParsedBar {
@@ -9273,6 +9286,8 @@ fn parse_bar(
         image_name,
         back_color,
         back_image_name,
+        trail_color,
+        trail_image_name,
         image_scale,
         tooltip,
     })))
@@ -11129,6 +11144,30 @@ fn resolve_fill(
     }
 }
 
+/// Картинка заливки полоски в мире: как у шкалы экрана, видео, `frame_by` и `size` она не берёт.
+fn resolve_fill_image(
+    name: &str,
+    images: &[ImageDecl],
+    file: &str,
+    image_path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ImageId> {
+    let Fill::Image { image, .. } = resolve_fill(
+        None,
+        Some(name),
+        None,
+        None,
+        images,
+        file,
+        image_path,
+        errors,
+    )?
+    else {
+        return None;
+    };
+    Some(image)
+}
+
 /// «Наведение»: имена мест наведения одного экрана и номера их элементов.
 type HoverPlaces = std::collections::HashMap<String, usize>;
 
@@ -11924,29 +11963,32 @@ fn resolve_bar(
         &join(path, "image"),
         errors,
     );
-    let back = match (bar.back_color, bar.back_image_name.as_deref()) {
-        (None, None) => Some(None),
-        (color, image) => resolve_fill(
-            color,
-            image,
-            None,
-            None,
-            images,
-            file,
-            &join(path, "back_image"),
-            errors,
-        )
-        .map(Some),
-    };
+    let back = resolve_optional_fill(
+        bar.back_color,
+        bar.back_image_name.as_deref(),
+        images,
+        file,
+        &join(path, "back_image"),
+        errors,
+    );
+    let trail = resolve_optional_fill(
+        bar.trail_color,
+        bar.trail_image_name.as_deref(),
+        images,
+        file,
+        &join(path, "trail_image"),
+        errors,
+    );
     let tooltip_ok =
         validate_tooltip_refs(&bar.tooltip, scene_names, file, scene_file, path, errors);
-    let (fill, back) = (fill?, back?);
+    let (fill, back, trail) = (fill?, back?, trail?);
     tooltip_ok.then(|| Element::Bar {
         placement: bar.placement,
         value: bar.value,
         max: bar.max,
         fill,
         back,
+        trail,
         image_scale: bar.image_scale.unwrap_or(1.0),
         tooltip: bar.tooltip.clone(),
         for_: bar.for_.clone(),
@@ -12008,9 +12050,13 @@ const WORLD_BAR_KEYS: &[&str] = &[
     "offset",
     "size",
     "color",
+    "image",
     "value",
     "max",
     "back_color",
+    "back_image",
+    "trail_color",
+    "trail_image",
 ];
 
 /// «Надписи и полоски в мире», требование 6: one `text` field after parsing — `{свойство}`
@@ -12246,7 +12292,11 @@ enum ParsedWorldElementKind {
     Bar {
         value: PropertyId,
         max: MaxSpec,
+        image_name: Option<String>,
         back_color: Option<[f32; 4]>,
+        back_image_name: Option<String>,
+        trail_color: Option<[f32; 4]>,
+        trail_image_name: Option<String>,
     },
     Image {
         image: ParsedImageRef,
@@ -12333,25 +12383,52 @@ fn parse_world_element(
             let for_obj = expect_object(for_obj_json, file, &join(path, "for"), errors)?;
             let for_ = resolve_selector(for_obj, properties, file, &join(path, "for"), errors);
             let placement = parse_placement(obj, file, path, errors)?;
-            let color_json = require_field(obj, "color", file, path, errors)?;
-            let color =
-                parse_world_color(color_json, properties, file, &join(path, "color"), errors)?;
+            let color = match obj.get("color") {
+                Some(v) => Some(parse_world_color(
+                    v,
+                    properties,
+                    file,
+                    &join(path, "color"),
+                    errors,
+                )?),
+                None => None,
+            };
+            let image_name = parse_optional_string(obj, "image", file, path, errors)?;
+            validate_fill_choice(color.is_some(), image_name.is_some(), file, path, errors);
             let value_json = require_field(obj, "value", file, path, errors)?;
             let value = resolve_number_source(value_json, "value", properties, file, path, errors)?;
             let max_json = require_field(obj, "max", file, path, errors)?;
             let max = parse_world_max(max_json, properties, file, &join(path, "max"), errors)?;
-            let back_color = match obj.get("back_color") {
-                Some(v) => Some(expect_ui_color(v, file, &join(path, "back_color"), errors)?),
-                None => None,
-            };
+            let back_color = parse_optional_ui_color(obj, "back_color", file, path, errors)?;
+            let back_image_name = parse_optional_string(obj, "back_image", file, path, errors)?;
+            if back_color.is_some() && back_image_name.is_some() {
+                errors.push(
+                    file,
+                    path,
+                    "заданы и \"back_color\", и \"back_image\"; у подложки полоски не больше одного из двух",
+                );
+            }
+            let trail_color = parse_optional_ui_color(obj, "trail_color", file, path, errors)?;
+            let trail_image_name = parse_optional_string(obj, "trail_image", file, path, errors)?;
+            if trail_color.is_some() && trail_image_name.is_some() {
+                errors.push(
+                    file,
+                    path,
+                    "заданы и \"trail_color\", и \"trail_image\"; у следа полоски не больше одного из двух",
+                );
+            }
             Some(ParsedWorldElement {
                 for_,
                 placement,
-                color,
+                color: color.unwrap_or(WorldColor::Solid([1.0; 4])),
                 kind: ParsedWorldElementKind::Bar {
                     value,
                     max,
+                    image_name,
                     back_color,
+                    back_image_name,
+                    trail_color,
+                    trail_image_name,
                 },
             })
         }
@@ -12400,17 +12477,48 @@ fn resolve_world_element(
         ParsedWorldElementKind::Bar {
             value,
             max,
+            image_name,
             back_color,
-        } => Some(WorldElement {
-            for_: parsed.for_.clone(),
-            placement: parsed.placement,
-            color: parsed.color.clone(),
-            kind: WorldElementKind::Bar {
-                value: *value,
-                max: *max,
-                back_color: *back_color,
-            },
-        }),
+            back_image_name,
+            trail_color,
+            trail_image_name,
+        } => {
+            let image = match image_name.as_deref() {
+                Some(name) => {
+                    resolve_fill_image(name, images, file, &join(path, "image"), errors).map(Some)
+                }
+                None => Some(None),
+            };
+            let back = resolve_optional_fill(
+                *back_color,
+                back_image_name.as_deref(),
+                images,
+                file,
+                &join(path, "back_image"),
+                errors,
+            );
+            let trail = resolve_optional_fill(
+                *trail_color,
+                trail_image_name.as_deref(),
+                images,
+                file,
+                &join(path, "trail_image"),
+                errors,
+            );
+            let (image, back, trail) = (image?, back?, trail?);
+            Some(WorldElement {
+                for_: parsed.for_.clone(),
+                placement: parsed.placement,
+                color: parsed.color.clone(),
+                kind: WorldElementKind::Bar {
+                    value: *value,
+                    max: *max,
+                    image,
+                    back,
+                    trail,
+                },
+            })
+        }
         ParsedWorldElementKind::Label {
             text,
             font_name,
@@ -13422,11 +13530,21 @@ fn collect_used_images(
     });
     let text_names = if named_by_property { images } else { &[] };
     for element in world_elements {
-        if let WorldElementKind::Image {
-            image: ImageRef::Fixed(image),
-        } = &element.kind
-        {
-            used.insert(*image);
+        match &element.kind {
+            WorldElementKind::Image {
+                image: ImageRef::Fixed(image),
+            } => {
+                used.insert(*image);
+            }
+            WorldElementKind::Bar {
+                image, back, trail, ..
+            } => {
+                used.extend(image);
+                for fill in back.iter().chain(trail) {
+                    mark_fill_used(&mut used, fill);
+                }
+            }
+            WorldElementKind::Image { .. } | WorldElementKind::Label { .. } => {}
         }
     }
     for layer in ground {
@@ -13539,10 +13657,12 @@ fn collect_used_images(
                     mark_fill_used(&mut used, fill_hover);
                     mark_fill_used(&mut used, fill_pressed);
                 }
-                Element::Bar { fill, back, .. } => {
+                Element::Bar {
+                    fill, back, trail, ..
+                } => {
                     mark_fill_used(&mut used, fill);
-                    if let Some(back) = back {
-                        mark_fill_used(&mut used, back);
+                    for fill in back.iter().chain(trail) {
+                        mark_fill_used(&mut used, fill);
                     }
                 }
                 Element::Slider {
