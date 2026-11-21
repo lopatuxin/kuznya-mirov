@@ -3,7 +3,7 @@
 // (art/platformer/start/vasilisa.png). Позы и раскладка листа — Ильи; ростом она чуть ниже.
 import { shade, num } from "./brush.mjs";
 import { L, add, down, uid, limb, poly, curve, line, fist, face, nose, earAndEye, sheet } from "./figure.mjs";
-import { SHEET, COLUMNS, FRAME } from "./hero.mjs";
+import { COLUMNS, FRAME, STANCE, LUNGE, withStrike } from "./hero.mjs";
 
 const C = {
   blouse: "#f4ede1",
@@ -52,7 +52,15 @@ function staff(hand, foreDir, p) {
     const r = add(tip, hd, -k);
     behind += line(add(r, side, -4.5), add(r, side, 4.5), C.woodDark, 2.2);
   }
-  return { def: pole.def, behind, front: fist(hand, hd, foreDir, C) };
+  const light = p.glow ? glow(knob, p.glow) : { def: "", body: "" };
+  return { def: pole.def + light.def, behind, front: fist(hand, hd, foreDir, C) + light.body };
+}
+
+/** Огонёк чар на навершии: золотисто-голубой, как вспышка чар; `k` — его сила от 0 до 1. */
+function glow(at, k) {
+  const id = uid("glow");
+  const def = `<radialGradient id="${id}"><stop offset="0" stop-color="#ffffff"/><stop offset="0.3" stop-color="#fff0c0"/><stop offset="0.6" stop-color="#9fd8ff" stop-opacity="0.7"/><stop offset="1" stop-color="#7fc0ff" stop-opacity="0"/></radialGradient>`;
+  return { def, body: `<circle cx="${num(at[0])}" cy="${num(at[1])}" r="${num(10 + 16 * k)}" fill="url(#${id})" opacity="${num(0.5 + 0.5 * k)}"/>` };
 }
 
 /** Обшлаг рукава: вышитая полоса у запястья. */
@@ -162,7 +170,26 @@ const VASILISA = { C, garment, head, cuff, weapon: staff };
 const STAND_ARM = { upper: 14, elbow: 46, axeAngle: 120, staffOut: 69 };
 /** След взмаха — по концу посоха: плечо, рука и 75 точек посоха из кулака. */
 const TRAIL_R = 143;
-const POSES = SHEET.map((p, i) => {
+/**
+ * Колдовство: замах — посох поднят наискось вверх, вес назад, на навершии разгорается огонёк; удар — посох
+ * выброшен навершием вперёд, корпус за ним, с навершия срывается сгусток (его рисует игра); возврат — посох
+ * опускается. Угол посоха — плечо плюс локоть плюс `axeAngle`, 90 — ровно вперёд, 180 — вверх.
+ */
+const base = { breath: 0, sash: 0, headTilt: 0 };
+const CAST = [
+  { ...base, lean: -4, headTilt: -4, sash: 4, ...STANCE,
+    nearArm: { upper: 105, elbow: 25, axeAngle: 8, glow: 0.4 }, farArm: { upper: 50, elbow: 70 } },
+  { ...base, lean: -9, headTilt: -8, sash: 6, ...STANCE,
+    nearArm: { upper: 122, elbow: 22, axeAngle: 8, glow: 1 }, farArm: { upper: 60, elbow: 60 } },
+  { ...base, lean: 6, headTilt: 0, sash: -4, ...LUNGE,
+    nearArm: { upper: 98, elbow: 14, axeAngle: 0, glow: 0.8 }, farArm: { upper: 10, elbow: 40 } },
+  { ...base, lean: 13, headTilt: 3, sash: -10, ...LUNGE,
+    nearArm: { upper: 80, elbow: 8, axeAngle: 2, glow: 0.3 }, farArm: { upper: -35, elbow: 35 } },
+  { ...base, lean: 7, headTilt: 2, sash: -6, ...LUNGE,
+    nearArm: { upper: 45, elbow: 35, axeAngle: 25 }, farArm: { upper: -12, elbow: 30 } },
+];
+
+const POSES = withStrike(CAST).map((p, i) => {
   if (i < 4) return { ...p, nearArm: { ...STAND_ARM, upper: STAND_ARM.upper + (p.nearArm.upper - 4) } };
   return p.trail ? { ...p, trail: { ...p.trail, r: TRAIL_R } } : p;
 });

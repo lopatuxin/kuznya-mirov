@@ -175,8 +175,8 @@ const JUMP = [
 const AIR_LEGS = { near: JUMP[1].near, far: JUMP[1].far };
 
 /** Ноги в бою на земле: ближняя впереди, дальняя позади. */
-const STANCE = { near: { thigh: 18, knee: 10, foot: 0 }, far: { thigh: -16, knee: 8, foot: 0 } };
-const LUNGE = { near: { thigh: 34, knee: 22, foot: -4 }, far: { thigh: -22, knee: 6, foot: 6 } };
+export const STANCE = { near: { thigh: 18, knee: 10, foot: 0 }, far: { thigh: -16, knee: 8, foot: 0 } };
+export const LUNGE = { near: { thigh: 34, knee: 22, foot: -4 }, far: { thigh: -22, knee: 6, foot: 6 } };
 
 /**
  * Удар с плеча: замах — топор за голову, лезвием назад вверх; удар — через верх вперёд вниз, лезвие
@@ -227,6 +227,12 @@ const inAir = (poses) => poses.map((p) => ({ ...p, ...AIR_LEGS, dx: 0 }));
  */
 export const SHEET = [...IDLE, ...RUN, ...JUMP, ...CHOP, ...inAir(CHOP), ...PARRY, ...inAir(PARRY), ...DODGE, ...inAir(DODGE), ...HURT, ...inAir(HURT)];
 export const COLUMNS = 6;
+
+/** Лист с другим ударом того же числа кадров: 5 поз на земле, они же в прыжке, на месте удара Ильи. */
+export function withStrike(strike) {
+  const first = IDLE.length + RUN.length + JUMP.length;
+  return [...SHEET.slice(0, first), ...strike, ...inAir(strike), ...SHEET.slice(first + 2 * CHOP.length)];
+}
 /** Кадр 3,5 × 3 клетки: топор в ударе уходит от середины на полторы клетки. */
 export const FRAME = [336, 288];
 

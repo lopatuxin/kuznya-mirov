@@ -6,6 +6,7 @@
     { "kind": "check", "for": { "has": ["robber"], "without": ["dead"] }, "do": [["run", "fight_robber"]] },
     { "kind": "check", "for": { "has": ["robber_glow"], "without": ["dead"] }, "do": [["run", "follow_robber"]] },
     { "kind": "check", "for": { "has": ["fx"] }, "do": [["run", "animate_fx"]] },
+    { "kind": "check", "for": { "has": ["bolt"] }, "do": [["run", "fly_bolt"]] },
     { "kind": "collide", "a": { "has": ["hero"] }, "b": { "has": ["pit"] }, "effects": { "a": [["run", "respawn"]] } },
     { "kind": "collide", "a": { "has": ["hero"] }, "b": { "has": ["finish"] }, "do": [["end_game", "win"]] }
   ]

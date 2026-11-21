@@ -11,7 +11,7 @@ import { sheetSvg } from "./hero.mjs";
 import { alyoshaSvg } from "./alyosha.mjs";
 import { vasilisaSvg } from "./vasilisa.mjs";
 import { robberSvg, robberFlashSvg, robberAuraSvg } from "./robber.mjs";
-import { clashSvg, impactSvg, wardSvg } from "./fx.mjs";
+import { clashSvg, impactSvg, wardSvg, boltSvg } from "./fx.mjs";
 
 const BOTTOM = 12.6;
 const LEDGE_TOP = 0.45;
@@ -61,6 +61,7 @@ export const IMAGES = {
   clash: { draw: () => ({ svg: clashSvg() }) },
   impact: { draw: () => ({ svg: impactSvg() }) },
   ward: { draw: () => ({ svg: wardSvg() }) },
+  bolt: { draw: () => ({ svg: boltSvg() }) },
 };
 for (const l of LEDGES) {
   const from = l.from ?? l.x0 - (l.left ? PAD : 0);

@@ -100,3 +100,36 @@ export function wardSvg() {
   const body = frames.map((f, i) => `<g transform="translate(${i * WARD_W},0)">${f()}</g>`).join("");
   return svg(WARD_W * frames.length, WARD_H, body, defs);
 }
+
+const BOLT_W = 192;
+const BOLT_H = 96;
+
+/**
+ * Сгусток чар Василисы: золотисто-голубой огонёк, как вспышка чар, с хвостом искр позади; летит вправо,
+ * середина огонька — середина кадра. 3 кадра мерцания 192 × 96, кадр выбирает код игры по прожитому.
+ */
+export function boltSvg() {
+  const rnd = rng(37);
+  const cx = BOLT_W / 2;
+  const cy = BOLT_H / 2;
+  const defs =
+    radial("boltCore", [[0, "#ffffff"], [0.3, "#fff4cf"], [0.65, "#9fd8ff", 0.75], [1, "#7fc0ff", 0]]) +
+    `<linearGradient id="boltTail" x1="1" y1="0" x2="0" y2="0"><stop offset="0" stop-color="#bfe6ff" stop-opacity="0.85"/><stop offset="1" stop-color="#7fc0ff" stop-opacity="0"/></linearGradient>`;
+  const sparks = Array.from({ length: 9 }, () => ({ x: rnd.range(8, cx - 10), y: rnd.range(-14, 14), r: rnd.range(1.4, 3) }));
+  const frame = (i) => {
+    const wob = [0, 3, -2][i];
+    const tail = `<path d="M${cx},${cy - 15 - wob}Q${cx - 50},${cy - 8} ${6},${cy + wob}Q${cx - 50},${cy + 8} ${cx},${cy + 15 + wob}Z" fill="url(#boltTail)"/>`;
+    const dots = sparks
+      .map((s, k) => {
+        const x = s.x + ((i * 11 + k * 5) % 13) - 6;
+        const fade = x / cx;
+        return `<circle cx="${num(x)}" cy="${num(cy + s.y * (1 - fade * 0.5))}" r="${num(s.r)}" fill="#fff0c0" opacity="${num(0.25 + 0.6 * fade)}"/>`;
+      })
+      .join("");
+    const r = [44, 48, 42][i];
+    return tail + dots + `<circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#boltCore)"/>` +
+      `<circle cx="${cx}" cy="${cy}" r="${[9, 11, 8][i]}" fill="#ffffff"/>`;
+  };
+  const body = [0, 1, 2].map((i) => `<g transform="translate(${i * BOLT_W},0)">${frame(i)}</g>`).join("");
+  return svg(BOLT_W * 3, BOLT_H, body, defs);
+}
