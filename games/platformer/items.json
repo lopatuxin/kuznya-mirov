@@ -1,5 +1,5 @@
 {
   "axe": { "name": "Топор", "slot": "weapon", "damage": 10, "damage_type": "cut", "swing": 1, "parry": 0.1 },
   "dagger": { "name": "Кинжал", "slot": "weapon", "damage": 6, "damage_type": "pierce", "swing": 0.67, "parry": 0.15 },
-  "staff": { "name": "Посох", "slot": "weapon", "damage": 7, "damage_type": "blunt", "swing": 0.92, "parry": 0.1 }
+  "staff": { "name": "Посох", "slot": "weapon", "damage": 7, "damage_type": "blunt", "swing": 0.92, "parry": 0.1, "ranged": true }
 }

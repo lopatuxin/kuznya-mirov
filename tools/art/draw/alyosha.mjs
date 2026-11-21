@@ -3,7 +3,7 @@
 // Позы и раскладка листа — Ильи.
 import { shade, num } from "./brush.mjs";
 import { add, down, uid, limb, poly, curve, line, fist, face, nose, earAndEye, sheet } from "./figure.mjs";
-import { SHEET, COLUMNS, FRAME } from "./hero.mjs";
+import { COLUMNS, FRAME, STANCE, LUNGE, withStrike } from "./hero.mjs";
 
 const C = {
   shirt: "#79bde8",
@@ -43,7 +43,22 @@ function dagger(hand, foreDir, p) {
   behind += poly(blade, C.steel, { width: 1.8 });
   behind += line(add(g0, hd, 2), add(g0, hd, 30), C.steelDark, 1.2);
   behind += line(add(g0, side, -8), add(g0, side, 8), C.brass, 5);
-  return { def: grip.def, behind, front: fist(hand, hd, foreDir, C) };
+  const trail = p.streak ? streak(g0, hd, p.streak) : { def: "", body: "" };
+  return { def: grip.def + trail.def, behind, front: fist(hand, hd, foreDir, C) + trail.body };
+}
+
+/** След укола: прямые светлые полосы над и под рукой от острия на `length` точек, у клинка ярче, назад сходят на нет. */
+function streak(g0, hd, length) {
+  const id = uid("streak");
+  const tip = add(g0, hd, 36);
+  const end = add(tip, hd, -36 - length);
+  const def = `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${num(tip[0])}" y1="${num(tip[1])}" x2="${num(end[0])}" y2="${num(end[1])}"><stop offset="0" stop-color="#fffaf0" stop-opacity="0.95"/><stop offset="1" stop-color="#fffaf0" stop-opacity="0"/></linearGradient>`;
+  const side = [hd[1], -hd[0]];
+  let body = "";
+  for (const [off, w] of [[-15, 6], [15, 6], [-25, 2.5], [25, 2.5]]) {
+    body += `<path d="M${num(add(tip, side, off)[0])},${num(add(tip, side, off)[1])}L${num(add(end, side, off)[0])},${num(add(end, side, off)[1])}" stroke="url(#${id})" stroke-width="${w}" stroke-linecap="round"/>`;
+  }
+  return { def, body };
 }
 
 /** Обшлаг рукава с вышивкой. */
@@ -105,8 +120,32 @@ function head(at) {
 
 const ALYOSHA = { C, garment, head, cuff, weapon: dagger };
 
-/** След взмаха — по острию кинжала: он короче топора, след ближе к плечу и уже. */
-const POSES = SHEET.map((p) => (p.trail ? { ...p, trail: { ...p.trail, r: 110, width: p.trail.width * 0.75 } } : p));
+const base = { breath: 0, sash: 0, headTilt: 0 };
+
+/** Выпад: ближняя нога шагает вперёд, дальняя остаётся на месте и выпрямляется. */
+const DEEP_LUNGE = { near: { thigh: 46, knee: 34, foot: -6 }, far: { thigh: -30, knee: 2, foot: 8 } };
+
+/**
+ * Укол. Замах — вес назад, кулак с кинжалом отведён за бедро, клинок вперёд, свободная рука вытянута вперёд к врагу.
+ * Удар — выпад: шаг вперёд, рука выпрямляется на уровне груди, клинок горизонтально. Возврат — дольше всех
+ * кадров удара (у Алёши около 0,12 с против 0,05 с у удара), поэтому он держит тот же выпад: иначе вытянутая
+ * рука мелькает на шаг-два и укола не видно. Угол предплечья — плечо плюс локоть, 90 — ровно вперёд.
+ */
+const THRUST = [
+  { ...base, lean: -6, headTilt: -2, sash: 5, dx: -4, ...STANCE,
+    nearArm: { upper: -45, elbow: 85, axeAngle: 40 }, farArm: { upper: 60, elbow: 45 } },
+  { ...base, lean: -11, headTilt: -4, sash: 7, dx: -8, ...STANCE,
+    nearArm: { upper: -62, elbow: 92, axeAngle: 55 }, farArm: { upper: 72, elbow: 35 } },
+  { ...base, lean: 10, headTilt: 2, sash: -6, dx: 4, ...LUNGE,
+    nearArm: { upper: 55, elbow: 36, axeAngle: 0, streak: 50 }, farArm: { upper: -10, elbow: 40 } },
+  { ...base, lean: 18, headTilt: 6, sash: -12, dx: 12, ...DEEP_LUNGE,
+    nearArm: { upper: 86, elbow: 2, axeAngle: 2, streak: 85 }, farArm: { upper: -45, elbow: 30 } },
+  { ...base, lean: 16, headTilt: 5, sash: -9, dx: 11, ...DEEP_LUNGE,
+    nearArm: { upper: 84, elbow: 6, axeAngle: 2 }, farArm: { upper: -40, elbow: 32 } },
+];
+
+/** След взмаха в парировании — по острию кинжала: он короче топора, след ближе к плечу и уже. */
+const POSES = withStrike(THRUST).map((p) => (p.trail ? { ...p, trail: { ...p.trail, r: 110, width: p.trail.width * 0.75 } } : p));
 
 export function alyoshaSvg() {
   return sheet(POSES, ALYOSHA, FRAME, COLUMNS);

@@ -71,6 +71,7 @@
       "clash": { "path": "images/clash.png", "smooth": true, "glow": true, "frames": 4, "frame_by": "fx_frame", "size": [1.5, 1.5] },
       "impact": { "path": "images/impact.png", "smooth": true, "glow": true, "frames": 3, "frame_by": "fx_frame", "size": [1.4, 1.4] },
       "ward": { "path": "images/ward.png", "smooth": true, "glow": true, "frames": 5, "frame_by": "fx_frame", "size": [1.8, 2.5] },
+      "bolt": { "path": "images/bolt.png", "smooth": true, "glow": true, "frames": 3, "frame_by": "fx_frame", "size": [1.4, 0.7] },
       "ledge_a1": { "path": "images/ledge_a1.png", "smooth": true },
       "ledge_a2": { "path": "images/ledge_a2.png", "smooth": true },
       "ledge_b": { "path": "images/ledge_b.png", "smooth": true },

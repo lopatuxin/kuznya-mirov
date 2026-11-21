@@ -1,7 +1,8 @@
-//! Фазы 06 и 11 платформера — бой на настоящей игре `games/platformer`: герой рубит оружием из таблицы,
+//! Фазы 06, 11 и 13 платформера — бой на настоящей игре `games/platformer`: герой рубит оружием из таблицы,
 //! сам парирует, уворачивается и пропускает удары разбойника; каждый третий удар разбойника особый, его
 //! защита не останавливает, а прыжок спасает. Разбойник теряет здоровье по урону героя и падает, герой
-//! теряет здоровье, погибает и встаёт в начале уровня; Василису первые удары принимают чары. Фаза 66
+//! теряет здоровье, погибает и встаёт в начале уровня; Василису первые удары принимают чары, а бьёт она сгустком,
+//! после которого раненый издали разбойник делает рывок. Фаза 66
 //! Кузни: над разбойником шкала убывает долей и оставляет след.
 
 use std::fs;
@@ -542,7 +543,7 @@ fn chops_to_kill(fight: &mut Fight, from_behind: bool) -> usize {
 
 #[test]
 fn a_robber_falls_from_the_hits_his_hero_needs_and_then_fades_away_with_his_glow() {
-    for (hero_id, hits) in [("ilya", 5), ("alyosha", 9), ("vasilisa", 8)] {
+    for (hero_id, hits) in [("ilya", 5), ("alyosha", 9), ("vasilisa", 6)] {
         let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, hero_id);
         fight.make_hardy();
         assert_eq!(chops_to_kill(&mut fight, false), hits, "{hero_id}");
@@ -873,11 +874,12 @@ fn a_dead_robber_neither_strikes_nor_takes_a_hit() {
 
 #[test]
 fn every_hero_takes_the_numbers_of_his_stats_and_weapon_in_the_first_step() {
-    // Здоровье, урон, время удара, парирование, уклонение и дух — числа требований фазы 11.
+    // Здоровье, урон, время удара, парирование, уклонение и дух — числа требований фазы 11; урон сгустка
+    // Василисы — от Мудрости, фаза 13 платформера.
     let expected = [
         ("ilya", 116.0, 14.0, 0.43, 0.16, 0.06, 0.0),
         ("alyosha", 108.0, 7.0, 0.27, 0.24, 0.14, 0.0),
-        ("vasilisa", 106.0, 8.0, 0.39, 0.16, 0.08, 4.0),
+        ("vasilisa", 106.0, 10.0, 0.39, 0.16, 0.08, 4.0),
     ];
     for (hero_id, health, damage, swing, parry, dodge, spirit) in expected {
         let fight = Fight::ready([3.0, 7.1], hero_id);
@@ -1013,8 +1015,8 @@ fn a_new_game_from_a_screen_starts_without_trails_however_short_the_old_one_was(
 }
 
 #[test]
-fn every_hero_staggers_a_resting_robber_with_his_own_weapon() {
-    for hero_id in ["ilya", "alyosha", "vasilisa"] {
+fn every_hero_with_a_blade_staggers_a_resting_robber_with_his_own_weapon() {
+    for hero_id in ["ilya", "alyosha"] {
         let mut fight = Fight::start_as(BY_THE_FIRST_ROBBER, hero_id);
         let robber = fight.robber(1.0);
         until_mood(&mut fight, robber, "rest", None);
@@ -1148,4 +1150,142 @@ fn both_fighters_stand_still_for_three_steps_after_a_parry() {
         assert!(steps < 30 * 60, "за 30 секунд ни одного парирования");
     }
     frozen_for_three_steps(&mut fight, hero, robber);
+}
+
+/// Сгустки в мире: объекты с признаком `bolt`.
+fn bolts(fight: &Fight) -> Vec<u32> {
+    let bolt = fight.prop("bolt");
+    fight
+        .game
+        .world
+        .ids()
+        .filter(|&id| fight.game.world.has(id, bolt))
+        .collect()
+}
+
+#[test]
+fn vasilisas_bolt_flies_three_cells_from_the_staff_and_goes_out() {
+    // На старте разбойник её не видит: сгусток летит, ни во что не попадая.
+    let mut fight = Fight::plain([3.0, 7.1], "vasilisa");
+    let hero = fight.hero();
+    let from = fight.center_x(hero);
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    let mut first = None;
+    let mut furthest: f64 = 0.0;
+    let mut steps = 0;
+    while steps < 120 {
+        fight.step(&[], &[]);
+        steps += 1;
+        let Some(&bolt) = bolts(&fight).first() else {
+            if first.is_some() {
+                break;
+            }
+            continue;
+        };
+        let middle = fight.center_x(bolt);
+        first.get_or_insert(middle);
+        furthest = furthest.max(middle);
+    }
+    let first = first.expect("сгусток не вылетел") - from;
+    assert!(
+        (first - 1.45).abs() < 1e-9,
+        "сгусток вылетел в {first} клетки от середины"
+    );
+    let flew = furthest - from - 1.45;
+    assert!((flew - 3.0).abs() < 0.05, "сгусток пролетел {flew} клетки");
+    assert!(bolts(&fight).is_empty(), "сгусток не погас");
+    assert!(steps < 40, "сгусток летел {steps} шагов");
+}
+
+#[test]
+fn a_bolt_wounds_a_resting_robber_by_ten_without_pushing_him() {
+    let mut fight = Fight::plain(BY_THE_FIRST_ROBBER, "vasilisa");
+    fight.make_hardy();
+    let robber = fight.robber(1.0);
+    until_mood(&mut fight, robber, "rest", None);
+    let after = after_chop(&mut fight, robber);
+    assert!(after.flashed, "по разбойнику нет вспышки");
+    assert!(
+        !after.moods.iter().any(|m| m == "stagger" || m == "dash"),
+        "сгусток вблизи заставил отшатнуться или рвануться: {:?}",
+        after.moods
+    );
+    assert!(
+        after.pushed < 0.05,
+        "сгусток отбросил на {} клетки",
+        after.pushed
+    );
+    assert_eq!(
+        fight.number(robber, "health"),
+        50.0,
+        "сгусток Василисы — 10 урона"
+    );
+}
+
+#[test]
+fn a_robber_wounded_from_afar_dashes_to_vasilisa_and_can_strike_at_once() {
+    // Середина Василисы в 3,5 клетки левее середины первого разбойника: он её видит и идёт к ней.
+    let mut fight = Fight::plain([11.1, 7.1], "vasilisa");
+    fight.make_hardy();
+    let hero = fight.hero();
+    let robber = fight.robber(1.0);
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    let mut gap_at_hit = None;
+    let mut moods = Vec::new();
+    for _ in 0..60 {
+        fight.step(&[], &[]);
+        let mood = fight.text(robber, "mood");
+        if gap_at_hit.is_none() && fight.number(robber, "health") < 60.0 {
+            gap_at_hit = Some(fight.center_x(robber) - fight.center_x(hero));
+        }
+        if moods.last() != Some(&mood) {
+            moods.push(mood);
+        }
+        if moods.last().is_some_and(|m| m == "windup") {
+            break;
+        }
+    }
+    let gap = gap_at_hit.expect("сгусток не ранил разбойника");
+    assert!(gap > 1.2, "ранен вблизи, в {gap} клетки");
+    let dash = moods
+        .iter()
+        .position(|m| m == "dash")
+        .expect("рывка не было");
+    assert_eq!(
+        moods[dash + 1..]
+            .iter()
+            .map(String::as_str)
+            .collect::<Vec<_>>(),
+        ["chase", "windup"],
+        "после рывка — погоня и сразу замах: {moods:?}"
+    );
+    let near = fight.center_x(robber) - fight.center_x(hero);
+    assert!((0.9..=1.2).contains(&near), "замахнулся с {near} клетки");
+}
+
+#[test]
+fn a_robber_who_cannot_reach_vasilisa_deflects_her_bolt() {
+    // Место первого разбойника кончается на 15, Василиса за краем, в 2,7 клетки от него, лицом к нему.
+    let mut fight = Fight::plain([17.3, 7.1], "vasilisa");
+    fight.make_hardy();
+    let hero = fight.hero();
+    let robber = fight.robber(1.0);
+    fight.set(robber, "home_right", 15.0);
+    until_mood(&mut fight, robber, "chase", None);
+    for _ in 0..90 {
+        fight.step(&[], &[]);
+    }
+    fight.game.world.set_flag(hero, property::FLIP_X, true);
+    fight.step(&["KeyJ"], &["KeyJ"]);
+    let mut clashed = false;
+    for _ in 0..40 {
+        fight.step(&[], &[]);
+        clashed |= !fight.flashes("clash").is_empty();
+        assert!(
+            fight.text(robber, "mood") != "dash",
+            "рванулся, хотя не дойдёт"
+        );
+    }
+    assert!(clashed, "сгусток не отбит");
+    assert_eq!(fight.number(robber, "health"), 60.0);
 }
