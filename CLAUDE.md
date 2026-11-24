@@ -6,11 +6,18 @@ fixed nine-stage simulation step, and renders via `wgpu`; it compiles to WebAsse
 by a browser page (`web/`, built separately). `games/snake/` and `games/arkanoid/` are demo games
 made entirely of data — no engine code exists per-game.
 
-The design documentation that governs this code lives outside this repo, in the Obsidian vault at
-`C:\projects\obsidian\Проекты\Кузня Миров\`: `Архитектура Кузни\` (how the engine is built),
-`Фазы Кузни\` (one note per feature — this is where feature plans go, not `docs/plans/`) and
-`Журнал Кузни\` (decisions). The folder follows `Проекты\Шаблон проекта.md`. Any mismatch between the
-code and those notes is a bug in the code, not in the docs — do not "fix" the docs to match the code.
+The design for the engine and editor lives in the Obsidian vault at
+`C:\projects\obsidian\Проекты\Кузня Миров\`. Use `Архитектура Кузни` for architecture,
+`Фазы Кузни` for feature plans, and `Журнал Кузни` for decisions. The folder follows
+`Проекты\Шаблон проекта.md`. Treat mismatches with the accepted design as code issues.
+
+For a game task, identify its folder under `games/` and find its Obsidian
+project card by the exact path. If the card lacks the path, locate it by
+the game title and verify which folder it covers. Use the applicable
+architecture note, phase, and accepted decisions to define and check the
+required outcome. For a demo without a project card, use the relevant
+engine phases and tests. If the task changes shared engine or editor
+behavior, also apply the corresponding design for the engine or editor.
 
 # Stack & Build
 
