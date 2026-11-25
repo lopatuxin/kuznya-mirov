@@ -655,7 +655,7 @@ end
 
 local function book_number(key, value)
   if key == "swing" then
-    return string.format("%.2f", value):gsub("%.", ",") .. " с"
+    return string.format("%.2f", value):gsub("%.", ",")
   end
   if PERCENT_KEYS[key] then
     local number = string.format("%.1f", round(value * 1000) / 10):gsub("%.0$", ""):gsub("%.", ",")
@@ -668,14 +668,19 @@ local function refresh_book(hero, preview)
   local current = calculate(hero, equipment(hero))
   local next_stats = preview and calculate(hero, with_item(equipment(hero), preview.item_id)) or current
   for _, key in ipairs(BOOK_KEYS) do
-    local text = book_number(key, current[key])
-    local precision = key == "swing" and 100 or (PERCENT_KEYS[key] and 1000 or 1)
-    local difference = (round(next_stats[key] * precision) - round(current[key] * precision)) / precision
+    local attack_speed = key == "swing"
+    local before, after = current[key], next_stats[key]
+    if attack_speed then
+      before, after = 1 / before, 1 / after
+    end
+    local text = book_number(key, before)
+    local precision = attack_speed and 100 or (PERCENT_KEYS[key] and 1000 or 1)
+    local difference = (round(after * precision) - round(before * precision)) / precision
     if difference ~= 0 then
       local sign = difference > 0 and "+" or "−"
       text = text .. " (" .. sign .. book_number(key, math.abs(difference)) .. ")"
     end
-    hero["book_" .. key] = text
+    hero["book_" .. key] = attack_speed and (text .. " уд/с") or text
   end
   hero.can_add_water = hero.strong_water > 0
   for _, key in ipairs(STATS) do

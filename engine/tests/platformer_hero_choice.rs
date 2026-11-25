@@ -355,11 +355,11 @@ fn starting_over_from_the_pause_keeps_the_chosen_hero() {
 #[test]
 fn the_hero_stats_show_current_health_and_the_heros_own_combat_numbers() {
     let profiles = [
-        ("116", "14", "0,43 с", "16 %", "6 %"),
-        ("108", "7", "0,27 с", "24 %", "14 %"),
-        ("106", "10", "0,39 с", "16 %", "8 %"),
+        ("116", "14", "2,33 уд/с", "16 %", "6 %"),
+        ("108", "7", "3,67 уд/с", "24 %", "14 %"),
+        ("106", "10", "2,54 уд/с", "16 %", "8 %"),
     ];
-    for ((hero, name, _), (health, damage, swing, parry, dodge)) in HEROES.into_iter().zip(profiles)
+    for ((hero, name, _), (health, damage, speed, parry, dodge)) in HEROES.into_iter().zip(profiles)
     {
         let (mut ui, _) = book_page_of(hero);
         click_place(&mut ui, "go");
@@ -376,7 +376,17 @@ fn the_hero_stats_show_current_health_and_the_heros_own_combat_numbers() {
         assert_eq!(active_screen(&ui), "hero_stats", "{hero}");
         assert_eq!(ui.text(id, "book_art"), Some(format!("book_{hero}")));
         let texts = label_texts(&ui);
-        for expected in [name, health, damage, swing, parry, dodge] {
+        for expected in [
+            name,
+            health,
+            damage,
+            "Скорость атаки",
+            speed,
+            parry,
+            dodge,
+            "Шанс двойного урона",
+            "Заряды чар",
+        ] {
             assert!(
                 texts.iter().any(|text| text == expected),
                 "{hero}: {texts:?}"
@@ -567,8 +577,21 @@ fn fitting_better_and_worse_items_never_changes_equipment_health_or_wards() {
     run_book(&mut ui, "preview_item", Some(axe));
     assert_eq!(ui.text(hero, "book_damage").as_deref(), Some("14 (−3)"));
     assert_eq!(ui.text(hero, "equip_weapon").as_deref(), Some("axe"));
+    let gloves = bag_item(&ui, "gloves");
+    run_book(&mut ui, "preview_item", Some(gloves));
+    assert_eq!(
+        ui.text(hero, "book_swing").as_deref(),
+        Some("2,33 (+0,07) уд/с")
+    );
+    let great_axe = bag_item(&ui, "great_axe");
+    run_book(&mut ui, "preview_item", Some(great_axe));
+    assert_eq!(
+        ui.text(hero, "book_swing").as_deref(),
+        Some("2,33 (−0,54) уд/с")
+    );
     run_book(&mut ui, "clear_preview", None);
     assert_eq!(ui.text(hero, "book_damage").as_deref(), Some("14"));
+    assert_eq!(ui.text(hero, "book_swing").as_deref(), Some("2,33 уд/с"));
     wear(&mut ui, "cap");
     assert_eq!(ui.number(hero, "strength"), Some(9.0));
     assert_eq!(ui.number(hero, "max_health"), Some(138.0));
