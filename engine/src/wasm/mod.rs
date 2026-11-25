@@ -2482,7 +2482,7 @@ impl Engine {
             &model_texture_bytes,
             motions.as_deref(),
         ) {
-            Ok((game, screens_config, warnings, image_order)) => {
+            Ok((mut game, screens_config, warnings, image_order)) => {
                 // «Картинки» → «Атлас и отрисовка»: `load_rest` just checked every declared
                 // image's own verdict/dimensions, but not whether the whole set fits in one
                 // 2048×2048 canvas — that's the render layer's job, so it only runs once the
@@ -2601,7 +2601,9 @@ impl Engine {
                     };
                     self.renderer.add_font(family, settings);
                 }
-                self.screen_state = Some(ScreenState::from_config(&screens_config));
+                let mut screen_state = ScreenState::from_config(&screens_config);
+                screens::initialize_screen(&mut game, &screens_config, &mut screen_state);
+                self.screen_state = Some(screen_state);
                 self.screens_config = Some(screens_config);
                 self.terrain_mesh = TerrainMesh::build(game.world.terrain(), game.scene.background);
                 self.terrain_revision = game.world.terrain_revision();
@@ -2790,6 +2792,23 @@ impl Engine {
                 .renderer
                 .render_frame(&WorldOverlay::default(), &UiLayers::default());
             return;
+        }
+        if let (Some(session), Some(game), Some(config), Some(state)) = (
+            self.session.as_mut(),
+            self.game.as_mut(),
+            self.screens_config.as_ref(),
+            self.screen_state.as_mut(),
+        ) && !state.is_live(config)
+        {
+            session.process_ui(
+                &mut self.ui_queue,
+                &mut self.mouse,
+                game,
+                config,
+                state,
+                self.renderer.window_size_css(),
+                &self.images,
+            );
         }
         let view = self.frame().expect("checked above");
         let game = self.game.as_ref().expect("checked above");
@@ -3368,7 +3387,7 @@ impl Engine {
     /// при уходе с элемента. Точка мыши снова неизвестна; камеру и мир уход не трогает.
     pub fn mouse_leave(&mut self) {
         self.last_mouse_window_pos = None;
-        self.ui_queue.push_mouse_move(-1.0, -1.0);
+        self.ui_queue.push_mouse_leave();
     }
 
     /// Called once per `requestAnimationFrame` with `performance.now()`. Runs `screens::engine_call`

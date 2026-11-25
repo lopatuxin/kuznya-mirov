@@ -148,6 +148,7 @@ pub fn layout<'a>(
         let Element::List {
             for_,
             row_height,
+            columns,
             gap,
             sort_by,
             descending,
@@ -177,16 +178,24 @@ pub fn layout<'a>(
             continue;
         };
         let rows = list_rows(for_, *sort_by, *descending, world);
+        let row_count = rows.len().div_ceil(*columns);
         let visible = visible_rows(height, *row_height, *gap);
-        let first = first_row(state.list_offset(screen_id, index), rows.len(), visible);
-        for (slot, &object) in rows.iter().skip(first).take(visible).enumerate() {
-            let top = y + slot as f32 * (row_height + gap);
+        let first = first_row(state.list_offset(screen_id, index), row_count, visible);
+        let column_width = width / *columns as f32;
+        for (slot, &object) in rows
+            .iter()
+            .skip(first * columns)
+            .take(visible.saturating_mul(*columns))
+            .enumerate()
+        {
+            let top = y + (slot / columns) as f32 * (row_height + gap);
+            let left = x + (slot % columns) as f32 * column_width;
             for (inner, part) in row.iter().enumerate() {
                 let own = part.placement();
                 parts.push(Part::Element(Placed {
                     element: part,
                     rect: [
-                        x + own.offset[0],
+                        left + own.offset[0],
                         top + own.offset[1],
                         own.size[0],
                         own.size[1],
@@ -201,8 +210,8 @@ pub fn layout<'a>(
                 }));
             }
         }
-        if visible > 0 && rows.len() > visible {
-            let total = rows.len() as f32;
+        if visible > 0 && row_count > visible {
+            let total = row_count as f32;
             parts.push(Part::ScrollBar {
                 rect: [
                     x + width - SCROLL_BAR_WIDTH,

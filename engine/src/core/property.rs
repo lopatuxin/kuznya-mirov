@@ -6,7 +6,7 @@ use super::imprints::StampTable;
 use super::model::ModelTable;
 use super::road_kinds::RoadKindTable;
 use super::terrain::Terrain;
-use super::value::{ImageId, PropKind};
+use super::value::{ImageId, PropKind, Value};
 
 pub type PropertyId = u16;
 
@@ -227,6 +227,7 @@ pub struct PropertyTable {
     /// «Трёхмерная сцена» → «Вид дороги»: виды дорог `scene.road_kinds` — по ним проверяется `road_kind` и
     /// кладутся куски; таблицу видят все миры, что строятся по этим свойствам.
     road_kinds: Arc<RoadKindTable>,
+    max_objects_exempt_flag: Option<PropertyId>,
 }
 
 impl PropertyTable {
@@ -240,6 +241,7 @@ impl PropertyTable {
             cloud_misfits: Vec::new(),
             models: Arc::default(),
             road_kinds: Arc::default(),
+            max_objects_exempt_flag: None,
         };
         for (name, kind) in BUILTINS {
             let id = table.defs.len() as PropertyId;
@@ -271,6 +273,24 @@ impl PropertyTable {
 
     pub fn set_three_d(&mut self, three_d: bool) {
         self.three_d = three_d;
+    }
+
+    pub(crate) fn set_max_objects_exempt_flag(&mut self, flag: PropertyId) {
+        self.max_objects_exempt_flag = Some(flag);
+    }
+
+    pub(crate) fn max_objects_exempt_flag(&self) -> Option<PropertyId> {
+        self.max_objects_exempt_flag
+    }
+
+    pub(crate) fn exempt_from_object_limit(&self, values: &[(PropertyId, Value)]) -> bool {
+        let Some(flag) = self.max_objects_exempt_flag else {
+            return false;
+        };
+        !values.iter().any(|(prop, _)| *prop == POSITION)
+            && values
+                .iter()
+                .any(|(prop, value)| *prop == flag && matches!(value, Value::Flag(true)))
     }
 
     pub fn three_d(&self) -> bool {

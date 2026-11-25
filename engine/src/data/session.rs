@@ -54,6 +54,7 @@ impl PlaySession {
         game.reset_for_play(start_is_live);
         *state = ScreenState::from_config(config);
         game.begin_session();
+        screens::initialize_screen(game, config, state);
         PlaySession {
             mode: Mode::Live,
             recording: Recording::default(),
@@ -88,6 +89,7 @@ impl PlaySession {
         game.reset_for_play(start_is_live);
         *state = ScreenState::from_config(config);
         game.begin_session();
+        screens::initialize_screen(game, config, state);
         Ok(PlaySession {
             mode: Mode::Replay,
             recording,
@@ -245,6 +247,36 @@ impl PlaySession {
                 kind: ReplayEventKind::KeyUp(code.clone()),
             });
         }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn process_ui(
+        &mut self,
+        queue: &mut UiQueue,
+        mouse: &mut MouseState,
+        game: &mut Game,
+        config: &ScreensConfig,
+        state: &mut ScreenState,
+        viewport: [f32; 2],
+        images: &[ImageDecl],
+    ) {
+        if !self.is_live() {
+            return;
+        }
+        let before_screen = state.active();
+        let mut events = Vec::new();
+        screens::process_ui_queue_recording(
+            queue,
+            mouse,
+            game,
+            config,
+            state,
+            viewport,
+            Some(&mut events),
+            true,
+        );
+        self.push_screen_events(game.session_step_count(), events, game, config, images);
+        Self::annotate_screen_change(game, config, before_screen, state.active());
     }
 
     /// One real-time tick of a live session — «Партия в редакторе»: mirrors `wasm::Engine::tick`'s
@@ -422,6 +454,7 @@ impl PlaySession {
         game.reset_for_play(start_is_live);
         *state = ScreenState::from_config(config);
         game.begin_session();
+        screens::initialize_screen(game, config, state);
         self.applied_events_step = None;
         let mut before_screen = state.active();
         loop {

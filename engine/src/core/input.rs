@@ -125,6 +125,7 @@ impl InputQueue {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum MouseEvent {
     Move([f32; 2]),
+    Leave,
     /// Нажатие левой кнопки; объект — тот, чья картинка в мире стояла под курсором, — «Надписи,
     /// полоски и картинки в мире», требование 6.
     Down(Option<u32>),
@@ -163,6 +164,10 @@ impl UiQueue {
 
     pub fn push_mouse_down(&mut self) {
         self.pending.push(UiEvent::Mouse(MouseEvent::Down(None)));
+    }
+
+    pub fn push_mouse_leave(&mut self) {
+        self.pending.push(UiEvent::Mouse(MouseEvent::Leave));
     }
 
     /// Нажатие над картинкой в мире объекта `object`: страница знает, что стоит под курсором в

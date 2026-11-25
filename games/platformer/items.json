@@ -1,5 +1,111 @@
 {
-  "axe": { "name": "Топор", "slot": "weapon", "damage": 10, "damage_type": "cut", "swing": 1, "parry": 0.1 },
-  "dagger": { "name": "Кинжал", "slot": "weapon", "damage": 6, "damage_type": "pierce", "swing": 0.67, "parry": 0.15 },
-  "staff": { "name": "Посох", "slot": "weapon", "damage": 7, "damage_type": "blunt", "swing": 0.92, "parry": 0.1, "ranged": true }
+  "axe": {
+    "name": "Топор",
+    "slot": "weapon",
+    "damage": 10,
+    "damage_type": "cut",
+    "swing": 1,
+    "parry": 0.1,
+    "icon": "item_axe"
+  },
+  "dagger": {
+    "name": "Кинжал",
+    "slot": "weapon",
+    "damage": 6,
+    "damage_type": "pierce",
+    "swing": 0.67,
+    "parry": 0.15,
+    "icon": "item_dagger"
+  },
+  "staff": {
+    "name": "Посох",
+    "slot": "weapon",
+    "damage": 7,
+    "damage_type": "blunt",
+    "swing": 0.92,
+    "parry": 0.1,
+    "ranged": true,
+    "icon": "item_staff"
+  },
+  "cap": {
+    "name": "Шапка силача",
+    "slot": "head",
+    "icon": "item_head",
+    "strength": 1
+  },
+  "armor": {
+    "name": "Кольчуга",
+    "slot": "body",
+    "icon": "item_body",
+    "health": 8,
+    "weight": 0.03
+  },
+  "gloves": {
+    "name": "Рукавицы мастера",
+    "slot": "gloves",
+    "icon": "item_gloves",
+    "skill": 1
+  },
+  "belt": {
+    "name": "Богатырский пояс",
+    "slot": "belt",
+    "icon": "item_belt",
+    "strength": 2
+  },
+  "boots": {
+    "name": "Сапоги скорохода",
+    "slot": "boots",
+    "icon": "item_boots",
+    "agility": 2
+  },
+  "shield": {
+    "name": "Дубовый щит",
+    "slot": "offhand",
+    "icon": "item_offhand",
+    "block": 0.25,
+    "stability": 8
+  },
+  "amulet": {
+    "name": "Амулет мудрости",
+    "slot": "amulet",
+    "icon": "item_amulet",
+    "wisdom": 2
+  },
+  "ring_strength": {
+    "name": "Перстень силы",
+    "slot": "ring",
+    "icon": "item_ring",
+    "strength": 1
+  },
+  "ring_skill": {
+    "name": "Перстень сноровки",
+    "slot": "ring",
+    "icon": "item_ring",
+    "skill": 1
+  },
+  "ring_wisdom": {
+    "name": "Перстень мудрости",
+    "slot": "ring",
+    "icon": "item_ring",
+    "wisdom": 2
+  },
+  "great_axe": {
+    "name": "Двуручный топор",
+    "slot": "weapon",
+    "icon": "item_axe",
+    "damage": 14,
+    "damage_type": "cut",
+    "swing": 1.3,
+    "parry": 0.1,
+    "two_handed": true
+  },
+  "worn_axe": {
+    "name": "Щербатый топор",
+    "slot": "weapon",
+    "icon": "item_axe",
+    "damage": 8,
+    "damage_type": "cut",
+    "swing": 1,
+    "parry": 0.08
+  }
 }
