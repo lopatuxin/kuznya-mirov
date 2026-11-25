@@ -268,7 +268,8 @@ pub fn add_object(
     max_objects: usize,
     props_json: &Json,
 ) -> Result<u32, String> {
-    if world.alive_count() >= max_objects {
+    let limit_reached = world.limited_object_count(properties) >= max_objects;
+    if limit_reached && properties.max_objects_exempt_flag().is_none() {
         return Err("Достигнут предел объектов".to_string());
     }
     let obj = props_json
@@ -291,6 +292,9 @@ pub fn add_object(
             prop,
             parse_edit_value(value_json, prop, properties, images)?,
         ));
+    }
+    if limit_reached && !properties.exempt_from_object_limit(&values) {
+        return Err("Достигнут предел объектов".to_string());
     }
     let id = world.create();
     for (prop, value) in crate::core::game::placed_last(&values) {

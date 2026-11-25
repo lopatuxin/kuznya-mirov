@@ -314,7 +314,7 @@ local function double_blow(robber, hero)
 end
 
 local function blow_damage(robber, hero)
-  local kind = tables.items[hero.weapon].damage_type
+  local kind = hero.weapon ~= "" and tables.items[hero.weapon].damage_type or "blunt"
   local factor = enemy_row().damage_taken[kind]
   if double_blow(robber, hero) then
     factor = factor * 2
@@ -510,39 +510,248 @@ end
 
 -- Лист кадров, портрет, дальность удара, характеристики и оружие героя — из таблиц heroes и items по его hero_id,
 -- и числа боя из них — один раз за партию.
+local STATS = { "strength", "skill", "agility", "wisdom" }
+local SLOTS = { "head", "body", "gloves", "belt", "boots", "weapon", "offhand", "amulet", "ring1", "ring2" }
+local STAT_PROPERTIES = {
+  strength = { base = "base_strength", water = "water_strength", undo = "can_undo_strength" },
+  skill = { base = "base_skill", water = "water_skill", undo = "can_undo_skill" },
+  agility = { base = "base_agility", water = "water_agility", undo = "can_undo_agility" },
+  wisdom = { base = "base_wisdom", water = "water_wisdom", undo = "can_undo_wisdom" },
+}
+local SLOT_PROPERTIES = {
+  head = { equip = "equip_head", icon = "gear_head", name = "gear_name_head" },
+  body = { equip = "equip_body", icon = "gear_body", name = "gear_name_body" },
+  gloves = { equip = "equip_gloves", icon = "gear_gloves", name = "gear_name_gloves" },
+  belt = { equip = "equip_belt", icon = "gear_belt", name = "gear_name_belt" },
+  boots = { equip = "equip_boots", icon = "gear_boots", name = "gear_name_boots" },
+  weapon = { equip = "equip_weapon", icon = "gear_weapon", name = "gear_name_weapon" },
+  offhand = { equip = "equip_offhand", icon = "gear_offhand", name = "gear_name_offhand" },
+  amulet = { equip = "equip_amulet", icon = "gear_amulet", name = "gear_name_amulet" },
+  ring1 = { equip = "equip_ring1", icon = "gear_ring1", name = "gear_name_ring1" },
+  ring2 = { equip = "equip_ring2", icon = "gear_ring2", name = "gear_name_ring2" },
+}
+local BOOK_KEYS = { "strength", "skill", "agility", "wisdom", "damage", "block", "stability", "health", "swing", "parry", "dodge", "crit", "ward", "spell" }
+local PERCENT_KEYS = { block = true, parry = true, dodge = true, crit = true, spell = true }
+
+local function item_row(id)
+  local row = tables.items[id]
+  if row == nil then
+    error("нет вещи " .. tostring(id) .. " в таблице items")
+  end
+  return row
+end
+
+local function equipment(hero)
+  local gear = {}
+  for _, slot in ipairs(SLOTS) do
+    gear[slot] = hero[SLOT_PROPERTIES[slot].equip] or ""
+  end
+  return gear
+end
+
+local function with_item(gear, id)
+  local row = item_row(id)
+  local slot = row.slot
+  if slot == "ring" then
+    slot = gear.ring1 == "" and "ring1" or (gear.ring2 == "" and "ring2" or "ring1")
+  end
+  if slot == "weapon" and row.two_handed then
+    gear.offhand = ""
+  elseif slot == "offhand" and gear.weapon ~= "" and item_row(gear.weapon).two_handed then
+    gear.weapon = ""
+  end
+  gear[slot] = id
+  return gear, slot
+end
+
+local function calculate(hero, gear)
+  local stats = {}
+  local bonus = { parry = 0, dodge = 0, crit = 0, health = 0, weight = 0 }
+  for _, key in ipairs(STATS) do
+    stats[key] = hero[STAT_PROPERTIES[key].base]
+  end
+  for _, slot in ipairs(SLOTS) do
+    if gear[slot] ~= "" then
+      local row = item_row(gear[slot])
+      for _, key in ipairs(STATS) do
+        stats[key] = stats[key] + (row[key] or 0)
+      end
+      for key, value in pairs(bonus) do
+        if not (key == "parry" and slot == "weapon") then
+          bonus[key] = value + (row[key] or 0)
+        end
+      end
+    end
+  end
+  local weapon = gear.weapon ~= "" and item_row(gear.weapon) or { damage = 0, swing = 1, parry = 0 }
+  local shield = gear.offhand ~= "" and item_row(gear.offhand) or {}
+  stats.ranged = weapon.ranged == true
+  local power = stats.ranged and stats.wisdom or stats.strength
+  stats.damage = round(weapon.damage * (1 + DAMAGE_PER_STRENGTH * power))
+  stats.health = HEALTH_BASE + HEALTH_PER_STRENGTH * stats.strength + 10 * (hero.level - 1) + bonus.health
+  stats.swing = CHOP_TOTAL * weapon.swing / (1 + SWING_PER_SKILL * stats.skill)
+  stats.parry = math.max(0, weapon.parry + PARRY_PER_SKILL * stats.skill + bonus.parry)
+  stats.dodge = math.max(0, DODGE_PER_AGILITY * stats.agility + bonus.dodge - bonus.weight)
+  stats.crit = math.max(0, CRIT_PER_AGILITY * stats.agility + bonus.crit)
+  stats.block = shield.block and shield.block + 0.015 * stats.strength or 0
+  stats.stability = stats.strength + (shield.stability or 0)
+  stats.ward = hero.hero_id == WARD_HERO and math.floor(stats.wisdom / WARD_WISDOM_PER_CHARGE) or 0
+  stats.spell = 1 + SPELL_PER_WISDOM * stats.wisdom
+  stats.ward_time = WARD_RECHARGE / (1 + WARD_SPEED_PER_WISDOM * stats.wisdom)
+  return stats
+end
+
+local function apply_stats(hero)
+  local gear = equipment(hero)
+  local stats = calculate(hero, gear)
+  for _, key in ipairs(STATS) do
+    hero[key] = stats[key]
+  end
+  hero.weapon = gear.weapon
+  hero.weapon_name = gear.weapon ~= "" and item_row(gear.weapon).name or "Без оружия"
+  hero.ranged = stats.ranged
+  hero.damage = stats.damage
+  hero.max_health = stats.health
+  hero.swing_time = stats.swing
+  hero.parry_chance, hero.dodge_chance, hero.crit_chance = stats.parry, stats.dodge, stats.crit
+  hero.block_chance, hero.stability = stats.block, stats.stability
+  hero.max_spirit, hero.ward_time = stats.ward, stats.ward_time
+  hero.has_ward = stats.ward > 0
+  hero.health = hero.health == nil and stats.health or math.min(hero.health, stats.health)
+  hero.spirit = hero.spirit == nil and stats.ward or math.min(hero.spirit, stats.ward)
+  hero.swing_seconds = string.format("%.2f", stats.swing):gsub("%.", ",")
+  hero.parry_percent, hero.dodge_percent, hero.crit_percent = round(stats.parry * 1000) / 10, round(stats.dodge * 1000) / 10, round(stats.crit * 1000) / 10
+  for _, slot in ipairs(SLOTS) do
+    local row = gear[slot] ~= "" and item_row(gear[slot]) or {}
+    hero[SLOT_PROPERTIES[slot].icon] = row.icon
+    hero[SLOT_PROPERTIES[slot].name] = row.name
+  end
+end
+
 local function take_stats(hero)
-  if hero.strength ~= nil then
+  if hero.stats_ready then
     return
   end
   local row = tables.heroes[hero.hero_id]
   if row == nil then
     error("нет героя " .. tostring(hero.hero_id) .. " в таблице heroes")
   end
-  local weapon = tables.items[row.weapon]
-  if weapon == nil then
-    error("нет оружия " .. tostring(row.weapon) .. " героя " .. hero.hero_id .. " в таблице items")
+  item_row(row.weapon)
+  for _, key in ipairs(STATS) do
+    hero[STAT_PROPERTIES[key].base] = hero[key] or row[key]
   end
-  hero.strength, hero.skill, hero.agility, hero.wisdom = row.strength, row.skill, row.agility, row.wisdom
-  hero.image = row.sheet
-  hero.hud_portrait = row.hud_portrait
-  hero.reach = row.reach
-  hero.weapon = row.weapon
-  hero.ranged = weapon.ranged == true
-  hero.max_health = HEALTH_BASE + HEALTH_PER_STRENGTH * hero.strength
-  hero.health = hero.max_health
-  if hero.ranged then
-    hero.damage = round(weapon.damage * (1 + SPELL_PER_WISDOM * hero.wisdom))
-  else
-    hero.damage = round(weapon.damage * (1 + DAMAGE_PER_STRENGTH * hero.strength))
+  hero.level, hero.xp = hero.level or 1, hero.xp or 0
+  hero.xp_needed = hero.xp_needed or 100 * hero.level
+  hero.strong_water = hero.strong_water or 0
+  hero.image, hero.hero_name, hero.hud_portrait = row.sheet, row.name, row.hud_portrait
+  hero.book_art, hero.reach = row.book_art, row.reach
+  for _, slot in ipairs(SLOTS) do
+    local property = SLOT_PROPERTIES[slot].equip
+    hero[property] = hero[property] or (slot == "weapon" and row.weapon or "")
   end
-  hero.swing_time = CHOP_TOTAL * weapon.swing / (1 + SWING_PER_SKILL * hero.skill)
-  hero.parry_chance = weapon.parry + PARRY_PER_SKILL * hero.skill
-  hero.dodge_chance = DODGE_PER_AGILITY * hero.agility
-  hero.crit_chance = CRIT_PER_AGILITY * hero.agility
-  hero.max_spirit = hero.hero_id == WARD_HERO and math.floor(hero.wisdom / WARD_WISDOM_PER_CHARGE) or 0
-  hero.spirit = hero.max_spirit
-  hero.ward_time = WARD_RECHARGE / (1 + WARD_SPEED_PER_WISDOM * hero.wisdom)
+  apply_stats(hero)
+  hero.stats_ready = true
 end
+
+local function book_number(key, value)
+  if key == "swing" then
+    return string.format("%.2f", value):gsub("%.", ",") .. " с"
+  end
+  if PERCENT_KEYS[key] then
+    local number = string.format("%.1f", round(value * 1000) / 10):gsub("%.0$", ""):gsub("%.", ",")
+    return number .. " %"
+  end
+  return string.format("%.0f", value)
+end
+
+local function refresh_book(hero, preview)
+  local current = calculate(hero, equipment(hero))
+  local next_stats = preview and calculate(hero, with_item(equipment(hero), preview.item_id)) or current
+  for _, key in ipairs(BOOK_KEYS) do
+    local text = book_number(key, current[key])
+    local precision = key == "swing" and 100 or (PERCENT_KEYS[key] and 1000 or 1)
+    local difference = (round(next_stats[key] * precision) - round(current[key] * precision)) / precision
+    if difference ~= 0 then
+      local sign = difference > 0 and "+" or "−"
+      text = text .. " (" .. sign .. book_number(key, math.abs(difference)) .. ")"
+    end
+    hero["book_" .. key] = text
+  end
+  hero.can_add_water = hero.strong_water > 0
+  for _, key in ipairs(STATS) do
+    local properties = STAT_PROPERTIES[key]
+    hero[properties.undo] = (hero[properties.water] or 0) > 0
+  end
+end
+
+function open_hero_book()
+  local hero = the_hero()
+  take_stats(hero)
+  for _, key in ipairs(STATS) do
+    hero[STAT_PROPERTIES[key].water] = 0
+  end
+  for _, item in ipairs(find({ has = { "bag_item" } })) do
+    local row = item_row(item.item_id)
+    item.item_name, item.item_icon = row.name, row.icon
+  end
+  refresh_book(hero)
+end
+
+function preview_item(item)
+  refresh_book(the_hero(), item.bag_item and item or nil)
+end
+
+function clear_preview()
+  refresh_book(the_hero())
+end
+
+function equip_item(item)
+  if not item.bag_item then
+    return
+  end
+  local hero = the_hero()
+  local old = equipment(hero)
+  local gear, target = with_item(equipment(hero), item.item_id)
+  local order = 0
+  for _, bag in ipairs(find({ has = { "bag_item" } })) do
+    order = math.max(order, bag.bag_order or 0)
+  end
+  delete(item)
+  for _, slot in ipairs(SLOTS) do
+    if old[slot] ~= "" and (old[slot] ~= gear[slot] or slot == target) then
+      order = order + 1
+      local row = item_row(old[slot])
+      create({ bag_item = true, item_id = old[slot], item_name = row.name, item_icon = row.icon, bag_order = order })
+    end
+    hero[SLOT_PROPERTIES[slot].equip] = gear[slot]
+  end
+  apply_stats(hero)
+  refresh_book(hero)
+end
+
+local function change_water(key, undo)
+  local hero = the_hero()
+  local properties = STAT_PROPERTIES[key]
+  local spent = hero[properties.water] or 0
+  if undo and spent <= 0 or not undo and hero.strong_water <= 0 then
+    return
+  end
+  local change = undo and -1 or 1
+  hero[properties.base] = hero[properties.base] + change
+  hero[properties.water] = spent + change
+  hero.strong_water = hero.strong_water - change
+  apply_stats(hero)
+  refresh_book(hero)
+end
+
+function add_strength() change_water("strength", false) end
+function add_skill() change_water("skill", false) end
+function add_agility() change_water("agility", false) end
+function add_wisdom() change_water("wisdom", false) end
+function undo_strength() change_water("strength", true) end
+function undo_skill() change_water("skill", true) end
+function undo_agility() change_water("agility", true) end
+function undo_wisdom() change_water("wisdom", true) end
 
 -- Заряд чар возвращается через ward_time; время идёт, пока запас не полон, и начинается заново после каждого
 -- потраченного заряда.

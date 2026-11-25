@@ -639,6 +639,15 @@ impl World {
         self.alive.iter().filter(|&&a| a).count()
     }
 
+    pub(crate) fn limited_object_count(&self, properties: &PropertyTable) -> usize {
+        let Some(flag) = properties.max_objects_exempt_flag() else {
+            return self.alive_count();
+        };
+        self.ids()
+            .filter(|&id| self.has(id, property::POSITION) || !self.flag(id, flag))
+            .count()
+    }
+
     pub fn slot_count(&self) -> usize {
         self.alive.len()
     }

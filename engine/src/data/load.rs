@@ -3194,6 +3194,7 @@ pub struct GameConfig {
     pub road_junctions: Vec<JunctionDecl>,
     pub random_seed: u64,
     pub max_objects: usize,
+    pub max_objects_exempt_flag: Option<String>,
     pub files: FilePaths,
     pub start_screen: String,
     pub win_screen: Option<String>,
@@ -3486,6 +3487,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             "scene",
             "random_seed",
             "max_objects",
+            "max_objects_exempt_flag",
             "files",
             "start_screen",
             "win_screen",
@@ -3517,6 +3519,9 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
             None
         }
     };
+    let max_objects_exempt_flag = obj
+        .get("max_objects_exempt_flag")
+        .and_then(|value| expect_string(value, "game.json", "max_objects_exempt_flag", errors));
 
     // «Формат игры» не ограничивает диапазон random_seed — просто «целое число, записанное в
     // game.json». Значение — сырое состояние splitmix64 (см. rng.rs), знак ему не важен, поэтому
@@ -3776,6 +3781,7 @@ fn parse_game_json(text: &str, errors: &mut ErrorSink) -> Option<GameConfig> {
         road_junctions: scene.road_junctions,
         random_seed,
         max_objects: max_objects as usize,
+        max_objects_exempt_flag,
         files: FilePaths {
             properties,
             scene: scene_path,
@@ -7694,6 +7700,7 @@ fn validate_unused_properties(
         // «Код игры»: имя свойства отдельным словом в тексте кода — тоже использование.
         if def.builtin
             || used.contains(&id)
+            || properties.max_objects_exempt_flag() == Some(id)
             || code.is_some_and(|c| code_mentions_word(c, &def.name))
         {
             continue;
@@ -8006,6 +8013,7 @@ fn warn_row_elements_outside_row(screens: &[Screen], screens_file: &str, errors:
             let Element::List {
                 placement,
                 row_height,
+                columns,
                 row,
                 ..
             } = element
@@ -8016,7 +8024,7 @@ fn warn_row_elements_outside_row(screens: &[Screen], screens_file: &str, errors:
                 let own = part.placement();
                 let outside = own.offset[0] < 0.0
                     || own.offset[1] < 0.0
-                    || own.offset[0] + own.size[0] > placement.size[0]
+                    || own.offset[0] + own.size[0] > placement.size[0] / *columns as f32
                     || own.offset[1] + own.size[1] > *row_height;
                 if outside {
                     errors.push_warning(
@@ -8024,7 +8032,7 @@ fn warn_row_elements_outside_row(screens: &[Screen], screens_file: &str, errors:
                         &format!("screens[{screen_index}] → elements[{index}] → row[{inner}]"),
                         format!(
                             "элемент строки выходит за строку {} × {}; ожидалось, что элемент строки лежит внутри неё",
-                            placement.size[0], row_height
+                            placement.size[0] / *columns as f32, row_height
                         ),
                     );
                 }
@@ -8477,6 +8485,8 @@ enum ParsedElementData {
         image_scale: Option<f32>,
         tooltip: Option<Vec<TextPart>>,
         on_click: ParsedCommand,
+        on_hover: Option<String>,
+        on_leave: Option<String>,
         /// В коробке: кнопка — самый большой вид элемента.
         for_: Option<Box<Selector>>,
         hover: HoverFields,
@@ -8486,6 +8496,7 @@ enum ParsedElementData {
         placement: Placement,
         for_: Selector,
         row_height: f32,
+        columns: usize,
         gap: f32,
         sort_by: Option<PropertyId>,
         descending: bool,
@@ -8591,6 +8602,8 @@ const BUTTON_KEYS: &[&str] = &[
     "image_scale",
     "tooltip",
     "on_click",
+    "on_hover",
+    "on_leave",
     "for",
     "name",
     "show_on_hover",
@@ -8649,6 +8662,7 @@ const LIST_KEYS: &[&str] = &[
     "size",
     "for",
     "row_height",
+    "columns",
     "gap",
     "sort_by",
     "descending",
@@ -9780,6 +9794,20 @@ fn parse_list(
     reject_unknown_keys_except(obj, LIST_KEYS, &PARTICLE_KEYS, file, path, errors);
     reject_foreign_particle_keys(obj, HoverOwner::List, file, path, errors);
     let placement = parse_placement(obj, file, path, errors)?;
+    let columns = match obj.get("columns") {
+        None => 1,
+        Some(value) => match value.as_u64().and_then(|value| usize::try_from(value).ok()) {
+            Some(value) if value > 0 => value,
+            _ => {
+                errors.push(
+                    file,
+                    &join(path, "columns"),
+                    "columns должно быть целым числом больше нуля",
+                );
+                return None;
+            }
+        },
+    };
     let for_json = require_field(obj, "for", file, path, errors)?;
     let for_path = join(path, "for");
     let for_obj = expect_object(for_json, file, &for_path, errors)?;
@@ -9851,6 +9879,7 @@ fn parse_list(
         placement,
         for_,
         row_height: row_height as f32,
+        columns,
         gap: gap as f32,
         sort_by,
         descending,
@@ -10105,6 +10134,8 @@ fn parse_element(
                 "кнопки",
                 errors,
             )?;
+            let on_hover = parse_run_callback(obj, "on_hover", file, path, errors);
+            let on_leave = parse_run_callback(obj, "on_leave", file, path, errors);
             Some(ParsedElementData::Button {
                 placement,
                 text,
@@ -10122,6 +10153,8 @@ fn parse_element(
                 image_scale,
                 tooltip,
                 on_click,
+                on_hover,
+                on_leave,
                 for_: for_.map(Box::new),
                 hover: hover?,
                 choice: choice?,
@@ -10207,12 +10240,35 @@ struct ParsedBook {
     pages: Vec<[String; 2]>,
 }
 
+fn parse_run_callback(
+    obj: &serde_json::Map<String, Json>,
+    field: &str,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<String> {
+    let value = obj.get(field)?;
+    let path = join(path, field);
+    match parse_button_command(value, file, &path, "обработчика", errors)? {
+        ParsedCommand::Run(function) => Some(function),
+        _ => {
+            errors.push(
+                file,
+                &path,
+                "обработчик допускает только [\"run\", \"функция\"]",
+            );
+            None
+        }
+    }
+}
+
 struct ParsedScreen {
     name: String,
     world_runs: bool,
     stretch_ui: bool,
     elements: ParsedElements,
     keys: Vec<(String, ParsedCommand)>,
+    on_enter: Option<String>,
     default_choices: Vec<(String, String)>,
     book: Option<ParsedBook>,
     /// Raw `music` name, not yet resolved against `files.music` — «Звук» →«Два вида звука». Resolution happens in `resolve_screens`, same as `font` on an element.
@@ -10241,6 +10297,7 @@ fn parse_screen(
             "stretch_ui",
             "elements",
             "keys",
+            "on_enter",
             "default_choices",
             "book",
             "music",
@@ -10332,12 +10389,14 @@ fn parse_screen(
         .and_then(|v| parse_vec2(v, file, &join(&path, "wind"), errors))
         .unwrap_or_default();
     let stretch_ui = parse_optional_flag(obj, "stretch_ui", file, &path, errors);
+    let on_enter = parse_run_callback(obj, "on_enter", file, &path, errors);
     Some(ParsedScreen {
         name: name?,
         world_runs: world_runs?,
         stretch_ui: stretch_ui?,
         elements,
         keys,
+        on_enter,
         default_choices,
         book,
         music,
@@ -11623,6 +11682,8 @@ fn resolve_element(
             image_scale,
             tooltip,
             on_click,
+            on_hover,
+            on_leave,
             for_,
             hover,
             choice,
@@ -11665,6 +11726,19 @@ fn resolve_element(
                 errors,
             );
             let (font, on_click, fill) = (font?, on_click?, fill?);
+            let mut callback = |function: &Option<String>, field: &str| {
+                function.as_ref().and_then(|function| {
+                    runs.add(
+                        function,
+                        format!("экран \"{screen_name}\", кнопка \"{caption}\", {field}"),
+                        file,
+                        &join(path, field),
+                        errors,
+                    )
+                })
+            };
+            let on_hover = callback(on_hover, "on_hover");
+            let on_leave = callback(on_leave, "on_leave");
             let fill_hover = resolve_fill(
                 *color_hover,
                 image_hover_name.as_deref(),
@@ -11715,6 +11789,8 @@ fn resolve_element(
                 image_scale: image_scale.unwrap_or(1.0),
                 tooltip: tooltip.clone(),
                 on_click,
+                on_hover,
+                on_leave,
                 for_: for_.as_deref().cloned(),
                 name: hover.name.clone(),
                 choose: choice.choose.clone(),
@@ -11726,6 +11802,7 @@ fn resolve_element(
             placement,
             for_,
             row_height,
+            columns,
             gap,
             sort_by,
             descending,
@@ -11762,6 +11839,7 @@ fn resolve_element(
                 placement: *placement,
                 for_: for_.clone(),
                 row_height: *row_height,
+                columns: *columns,
                 gap: *gap,
                 sort_by: *sort_by,
                 descending: *descending,
@@ -12850,12 +12928,22 @@ fn resolve_screens(
                     errors,
                 )
             });
+            let on_enter = screen.on_enter.as_ref().and_then(|function| {
+                runs.add(
+                    function,
+                    format!("экран \"{}\", on_enter", screen.name),
+                    file,
+                    &join(&screen.path, "on_enter"),
+                    errors,
+                )
+            });
             Screen {
                 name: screen.name.clone(),
                 world_runs: screen.world_runs,
                 stretch_ui: screen.stretch_ui,
                 elements,
                 keys,
+                on_enter,
                 default_choices,
                 book,
                 music,
@@ -14479,6 +14567,16 @@ pub fn load_rest_with_motions(
         }
     };
     properties.set_three_d(config.scene.is_3d());
+    if let Some(name) = &config.max_objects_exempt_flag {
+        match properties.resolve(name) {
+            Some(flag) if properties.kind(flag) == PropKind::Flag && !properties.def(flag).builtin => {
+                properties.set_max_objects_exempt_flag(flag);
+            }
+            _ => errors.push("game.json", "max_objects_exempt_flag", format!(
+                "ожидалось имя объявленного в properties.json свойства вида flag, получено \"{name}\""
+            )),
+        }
+    }
     resolve_image_frame_by(&mut config.files.images, &properties, &mut errors);
     properties.set_cloud_misfits(
         config

@@ -476,6 +476,8 @@ pub enum Element {
         image_scale: f32,
         tooltip: Option<Vec<TextPart>>,
         on_click: ButtonCommand,
+        on_hover: Option<RunId>,
+        on_leave: Option<RunId>,
         for_: Option<Selector>,
         /// «Наведение»: имя места наведения.
         name: Option<String>,
@@ -505,6 +507,7 @@ pub enum Element {
         placement: Placement,
         for_: Selector,
         row_height: f32,
+        columns: usize,
         gap: f32,
         sort_by: Option<PropertyId>,
         descending: bool,
@@ -721,6 +724,7 @@ pub struct Screen {
     pub stretch_ui: bool,
     pub elements: Vec<Element>,
     pub keys: ScreenKeyTable,
+    pub on_enter: Option<RunId>,
     pub default_choices: Vec<(String, String)>,
     pub book: Option<Book>,
     /// «Звук» → «Два вида звука»: `None` is silence, same as the pause screen.
@@ -1045,6 +1049,17 @@ pub struct ScreenState {
     /// Номер последнего открытия экрана: частицы и видео экрана начинаются заново при каждом открытии, и
     /// номер говорит об этом, даже когда экран открыт заново между двумя кадрами.
     opened: u64,
+    entered: bool,
+    pointer: bool,
+    callback_hover: Option<CallbackHover>,
+    suppress_hover: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct CallbackHover {
+    screen: ScreenId,
+    key: ButtonKey,
+    leave: Option<RunId>,
 }
 
 /// Следующий свободный номер открытия для нового `ScreenState`: у каждого состояния свой отрезок номеров, так что
@@ -1084,6 +1099,10 @@ impl ScreenState {
             chosen: HashMap::new(),
             book_page: None,
             opened: NEXT_OPENED.fetch_add(OPENINGS_PER_STATE, Ordering::Relaxed),
+            entered: false,
+            pointer: false,
+            callback_hover: None,
+            suppress_hover: false,
         }
     }
 
@@ -1358,11 +1377,27 @@ fn switch_to(
     target: ScreenId,
     chain: Chain,
 ) {
+    clear_callback_hover(game, config, state, None);
     let was_live = config.screens[state.active].world_runs;
     state.switch(target, chain);
     state.apply_default_choices(&config.screens[target]);
     if was_live && !config.screens[target].world_runs {
         game.release_held_keys();
+    }
+    state.suppress_hover = false;
+    enter_screen(game, config, state);
+}
+
+fn enter_screen(game: &mut Game, config: &ScreensConfig, state: &mut ScreenState) {
+    state.entered = true;
+    if let Some(run) = config.screens[state.active()].on_enter {
+        apply_command_recording(ButtonCommand::Run(run), None, game, config, state, None);
+    }
+}
+
+pub fn initialize_screen(game: &mut Game, config: &ScreensConfig, state: &mut ScreenState) {
+    if !state.entered {
+        enter_screen(game, config, state);
     }
 }
 
@@ -1385,6 +1420,17 @@ fn apply_command_recording(
     state: &mut ScreenState,
     events: Option<&mut Vec<RecordedEvent>>,
 ) {
+    let mut events = events;
+    if matches!(
+        cmd,
+        ButtonCommand::ShowScreen(_)
+            | ButtonCommand::NewGame(..)
+            | ButtonCommand::Quit
+            | ButtonCommand::Exit
+    ) || (matches!(cmd, ButtonCommand::Resume) && !state.returns.is_empty())
+    {
+        clear_callback_hover(game, config, state, events.as_deref_mut());
+    }
     let mut initial_values = Vec::new();
     match cmd {
         ButtonCommand::ShowScreen(target) => switch_to(state, config, game, target, Chain::Push),
@@ -1657,6 +1703,102 @@ fn topmost_interface_hit<'a>(parts: &[Part<'a>], point: [f32; 2]) -> Option<Inte
     topmost_panel.map(InterfaceHit::Panel)
 }
 
+fn clear_callback_hover(
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+    events: Option<&mut Vec<RecordedEvent>>,
+) {
+    if let Some(hover) = state.callback_hover.take()
+        && let Some(run) = hover.leave
+    {
+        apply_command_recording(
+            ButtonCommand::Run(run),
+            hover.key.object,
+            game,
+            config,
+            state,
+            events,
+        );
+    }
+}
+
+fn callback_button(
+    mouse: &MouseState,
+    game: &Game,
+    config: &ScreensConfig,
+    state: &ScreenState,
+    viewport: [f32; 2],
+) -> Option<(ButtonKey, Option<RunId>, Option<RunId>)> {
+    if !state.pointer {
+        return None;
+    }
+    let screen = state.active();
+    let frame = config.ui_frame(screen, viewport);
+    let parts = interface::layout(
+        &config.screens[screen],
+        screen,
+        &game.world,
+        state,
+        frame.viewport,
+    );
+    let InterfaceHit::Button(placed) = topmost_interface_hit(&parts, frame.point(mouse.position))?
+    else {
+        return None;
+    };
+    let Element::Button {
+        on_hover, on_leave, ..
+    } = placed.element
+    else {
+        return None;
+    };
+    Some((placed.key, *on_hover, *on_leave))
+}
+
+fn refresh_callback_hover(
+    mouse: &mut MouseState,
+    game: &mut Game,
+    config: &ScreensConfig,
+    state: &mut ScreenState,
+    viewport: [f32; 2],
+    mut events: Option<&mut Vec<RecordedEvent>>,
+) {
+    if !config.screens[state.active()].elements.iter().flat_map(Element::leaves).any(|element| {
+        matches!(element, Element::Button { on_hover, on_leave, .. } if on_hover.is_some() || on_leave.is_some())
+    }) {
+        clear_callback_hover(game, config, state, events);
+        return;
+    }
+    let button = callback_button(mouse, game, config, state, viewport);
+    let target = button.map(|(key, _, _)| (state.active(), key));
+    mouse.hover = button.map(|(key, _, _)| key);
+    if target == state.callback_hover.map(|hover| (hover.screen, hover.key)) {
+        return;
+    }
+    clear_callback_hover(game, config, state, events.as_deref_mut());
+    let Some((key, enter, leave)) = callback_button(mouse, game, config, state, viewport) else {
+        return;
+    };
+    if state.suppress_hover || mouse.captured.is_some() {
+        return;
+    }
+    state.callback_hover = Some(CallbackHover {
+        screen: state.active(),
+        key,
+        leave,
+    });
+    if let Some(run) = enter {
+        apply_command_recording(
+            ButtonCommand::Run(run),
+            key.object,
+            game,
+            config,
+            state,
+            events,
+        );
+    }
+}
+
 /// «Интерфейс игры» → «Наведение»: номер элемента экрана — места наведения, над которым курсор. Место —
 /// то, что получило бы нажатие: кнопка под точкой, а без кнопки верхняя панель; если у неё нет `name`,
 /// курсор ни над каким местом. `point` — в точках `screens.json`; `None` — курсор за краем окна.
@@ -1715,6 +1857,7 @@ pub fn scroll_wheel(
         placement,
         for_,
         row_height,
+        columns,
         gap,
         sort_by,
         descending,
@@ -1722,10 +1865,16 @@ pub fn scroll_wheel(
     } = &screen.elements[index]
         && delta_y.is_finite()
     {
-        let rows = interface::list_rows(for_, *sort_by, *descending, world).len();
+        let rows = interface::list_rows(for_, *sort_by, *descending, world)
+            .len()
+            .div_ceil(*columns);
         let visible = interface::visible_rows(placement.size[1], *row_height, *gap);
         let max = rows.saturating_sub(visible) as f64;
+        let previous = state.list_offset(screen_id, index);
         state.scroll_list(screen_id, index, delta_y / SCROLL_POINTS_PER_ROW, max);
+        if state.list_offset(screen_id, index) != previous {
+            state.suppress_hover = false;
+        }
     }
     true
 }
@@ -1833,6 +1982,11 @@ fn handle_mouse_event(
     event: MouseEvent,
 ) -> MouseOutcome {
     match event {
+        MouseEvent::Leave => {
+            mouse.hover = None;
+            mouse.captured = None;
+            MouseOutcome::None
+        }
         MouseEvent::Move(pos) => {
             mouse.position = pos;
             if let Some(captured) = mouse.captured {
@@ -1861,22 +2015,20 @@ fn handle_mouse_event(
             let point = frame.point(mouse.position);
             // Команда срабатывает, только если под указателем кнопка, на которой нажали, — тот же
             // элемент и тот же объект: строки списка могли сдвинуться.
-            parts
-                .iter()
-                .find_map(|part| match part {
-                    Part::Element(placed) if placed.key == captured && placed.contains(point) => {
-                        match placed.element {
-                            Element::Button { on_click, .. } => {
-                                Some(MouseOutcome::Command(*on_click, placed.object))
-                            }
-                            Element::Switch { setting, .. } => Some(MouseOutcome::Switch(*setting)),
-                            Element::Key { key, .. } => Some(MouseOutcome::AwaitKey(key.clone())),
-                            _ => None,
-                        }
-                    }
-                    _ => None,
-                })
-                .unwrap_or(MouseOutcome::None)
+            let placed = match topmost_interface_hit(parts, point) {
+                Some(InterfaceHit::Button(placed) | InterfaceHit::Control(placed))
+                    if placed.key == captured =>
+                {
+                    placed
+                }
+                _ => return MouseOutcome::None,
+            };
+            match placed.element {
+                Element::Button { on_click, .. } => MouseOutcome::Command(*on_click, placed.object),
+                Element::Switch { setting, .. } => MouseOutcome::Switch(*setting),
+                Element::Key { key, .. } => MouseOutcome::AwaitKey(key.clone()),
+                _ => MouseOutcome::None,
+            }
         }
     }
 }
@@ -1933,9 +2085,26 @@ pub fn process_ui_queue_recording(
     mut events: Option<&mut Vec<RecordedEvent>>,
     apply_now: bool,
 ) {
+    initialize_screen(game, config, state);
+    refresh_callback_hover(mouse, game, config, state, viewport, events.as_deref_mut());
     for event in queue.drain() {
         match event {
             UiEvent::Mouse(mouse_event) => {
+                if let MouseEvent::Move(position) = mouse_event {
+                    if !state.pointer || mouse.position != position {
+                        state.suppress_hover = false;
+                    }
+                    state.pointer = true;
+                    mouse.position = position;
+                }
+                if matches!(mouse_event, MouseEvent::Leave) {
+                    state.pointer = false;
+                    state.suppress_hover = false;
+                }
+                if matches!(mouse_event, MouseEvent::Down(_) | MouseEvent::Up) {
+                    state.suppress_hover = true;
+                    clear_callback_hover(game, config, state, events.as_deref_mut());
+                }
                 let screen_id = state.active();
                 let frame = config.ui_frame(screen_id, viewport);
                 let parts = interface::layout(
@@ -2030,6 +2199,7 @@ pub fn process_ui_queue_recording(
                 }
             }
         }
+        refresh_callback_hover(mouse, game, config, state, viewport, events.as_deref_mut());
     }
 }
 

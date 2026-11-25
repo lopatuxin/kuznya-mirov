@@ -1233,7 +1233,7 @@ impl Game {
     /// Стоит ли мир на потолке `max_objects`: тогда новая заявка отбрасывается, а сообщение об этом —
     /// одно за партию.
     fn object_ceiling_reached(&mut self) -> bool {
-        if self.world.alive_count() < self.max_objects {
+        if self.world.limited_object_count(&self.properties) < self.max_objects {
             return false;
         }
         if !self.max_objects_warned {
@@ -1255,7 +1255,11 @@ impl Game {
         report: &mut Option<StepReportBuilder>,
     ) {
         for create in creates {
-            if self.object_ceiling_reached() {
+            if !self
+                .properties
+                .exempt_from_object_limit(&create.spec.values)
+                && self.object_ceiling_reached()
+            {
                 continue;
             }
             let id = self.world.create();
