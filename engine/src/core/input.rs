@@ -215,6 +215,14 @@ impl ButtonKey {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+pub struct DragCapture {
+    pub opened: u64,
+    pub origin: [f32; 2],
+    pub object_generation: Option<u32>,
+    pub moved: bool,
+}
+
 /// Cursor position plus which button is hovered or has captured the press — «Интерфейс игры» →
 /// «Мышь».
 #[derive(Debug, Clone, Copy, Default)]
@@ -223,6 +231,7 @@ pub struct MouseState {
     pub position: [f32; 2],
     pub hover: Option<ButtonKey>,
     pub captured: Option<ButtonKey>,
+    pub drag: Option<DragCapture>,
     /// «Мышь в мире», требования 13–15: whether the press currently held down went to the world
     /// as `MouseLeft` (not over a button or a panel) — decides where the matching release goes,
     /// wherever the cursor sits when it comes.

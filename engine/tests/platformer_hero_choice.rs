@@ -74,13 +74,17 @@ fn active_screen(ui: &Ui) -> &str {
 
 /// Середина элемента активного экрана, в точках окна.
 fn middle_of(ui: &Ui, matches: impl Fn(&Element) -> bool) -> [f32; 2] {
+    middle_of_placed(ui, |placed| matches(placed.element))
+}
+
+fn middle_of_placed(ui: &Ui, matches: impl Fn(&interface::Placed<'_>) -> bool) -> [f32; 2] {
     let screen_id = ui.state.active();
     let screen = &ui.config.screens[screen_id];
     let frame = ui.config.ui_frame(screen_id, VIEWPORT);
     interface::layout(screen, screen_id, &ui.game.world, &ui.state, frame.viewport)
         .iter()
         .find_map(|part| match part {
-            interface::Part::Element(placed) if matches(placed.element) => Some([
+            interface::Part::Element(placed) if matches(placed) => Some([
                 (placed.rect[0] + placed.rect[2] / 2.0) * frame.scale[0],
                 (placed.rect[1] + placed.rect[3] / 2.0) * frame.scale[1],
             ]),
@@ -607,6 +611,99 @@ fn fitting_better_and_worse_items_never_changes_equipment_health_or_wards() {
         ui.text(bag_item(&ui, "axe"), "item_icon").as_deref(),
         Some("item_axe")
     );
+}
+
+#[test]
+fn dragging_an_equipped_item_moves_only_that_item_to_the_backpack() {
+    let mut ui = equipped_book("ilya");
+    let hero = ui.id_of("Герой");
+    let slots = [
+        ("weapon", "axe", [-776.0, 108.0]),
+        ("head", "cap", [-776.0, -15.0]),
+        ("body", "armor", [-618.0, -15.0]),
+        ("gloves", "gloves", [-461.0, -15.0]),
+        ("belt", "belt", [-303.0, -15.0]),
+        ("boots", "boots", [-143.0, -15.0]),
+        ("offhand", "shield", [-618.0, 108.0]),
+        ("amulet", "amulet", [-461.0, 108.0]),
+        ("ring1", "ring_strength", [-303.0, 108.0]),
+        ("ring2", "ring_skill", [-143.0, 108.0]),
+    ];
+    for (_, item, _) in &slots[1..] {
+        wear(&mut ui, item);
+    }
+    let original_count = ui.count("bag_item");
+    let last_order = ui.number(bag_item(&ui, "worn_axe"), "bag_order").unwrap();
+    let backpack = middle_of(&ui, |element| element.place_name() == Some("backpack"));
+
+    for (index, (slot, item, offset)) in slots.into_iter().enumerate() {
+        assert_eq!(
+            ui.text(hero, &format!("equip_{slot}")).as_deref(),
+            Some(item)
+        );
+        let icon = ui.text(hero, &format!("gear_{slot}")).unwrap();
+        let name = ui.text(hero, &format!("gear_name_{slot}")).unwrap();
+        let at = middle_of(&ui, |element| element.placement().offset == offset);
+        ui.press(at[0], at[1]);
+        ui.move_to(backpack[0], backpack[1]);
+        assert_eq!(
+            ui.text(hero, &format!("gear_{slot}")).as_deref(),
+            Some(icon.as_str())
+        );
+        ui.release();
+
+        assert!(ui.game.code_error().is_none(), "{:?}", ui.game.code_error());
+        assert!(ui.text(hero, &format!("gear_{slot}")).is_none(), "{slot}");
+        let moved = bag_item(&ui, item);
+        assert_eq!(ui.text(moved, "item_icon").as_deref(), Some(icon.as_str()));
+        assert_eq!(ui.text(moved, "item_name").as_deref(), Some(name.as_str()));
+        assert_eq!(
+            ui.number(moved, "bag_order"),
+            Some(last_order + (index + 1) as f64)
+        );
+
+        ui.click(at[0], at[1]);
+        assert_eq!(ui.count("bag_item"), original_count + index + 1);
+    }
+
+    ui.key("KeyC");
+    ui.key("KeyC");
+    assert_eq!(active_screen(&ui), "hero_stats");
+    assert_eq!(ui.text(hero, "book_damage").as_deref(), Some("0"));
+    assert_eq!(ui.text(hero, "book_strength").as_deref(), Some("8"));
+    assert_eq!(ui.count("bag_item"), original_count + slots.len());
+    bag_item(&ui, "axe");
+}
+
+#[test]
+fn dragging_from_the_backpack_equips_in_the_chosen_compatible_slot() {
+    let mut ui = equipped_book("ilya");
+    let hero = ui.id_of("Герой");
+    let ring = bag_item(&ui, "ring_skill");
+    let from = middle_of_placed(&ui, |placed| {
+        placed.object == Some(ring) && matches!(placed.element, Element::Button { .. })
+    });
+    let wrong = middle_of(&ui, |element| element.place_name() == Some("weapon_slot"));
+    let ring2 = middle_of(&ui, |element| element.place_name() == Some("ring2_slot"));
+    for destination in [wrong, from] {
+        ui.press(from[0], from[1]);
+        ui.move_to(wrong[0], wrong[1]);
+        ui.move_to(destination[0], destination[1]);
+        ui.release();
+        assert_eq!(bag_item(&ui, "ring_skill"), ring);
+        assert_eq!(ui.text(hero, "equip_weapon").as_deref(), Some("axe"));
+        assert!(ui.text(hero, "gear_ring1").is_none());
+        assert!(ui.text(hero, "gear_ring2").is_none());
+    }
+
+    ui.press(from[0], from[1]);
+    ui.move_to(ring2[0], ring2[1]);
+    ui.release();
+
+    assert!(ui.game.code_error().is_none(), "{:?}", ui.game.code_error());
+    assert!(ui.text(hero, "gear_ring1").is_none());
+    assert_eq!(ui.text(hero, "equip_ring2").as_deref(), Some("ring_skill"));
+    assert_eq!(ui.count("bag_item"), 11);
 }
 
 #[test]

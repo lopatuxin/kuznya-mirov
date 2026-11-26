@@ -22,10 +22,10 @@ use crate::core::scene::{
     CameraConfig, GroundLayer, LightConfig, ObjectSpec, PlayerCameraConfig, Projection, SceneConfig,
 };
 use crate::core::screens::{
-    Align, Anchor, Book, Bookmark, ButtonCommand, ChoiceRef, ChoiceTable, Element, Fill, FontId,
-    ImageRef, InitialValue, MaxSpec, MusicId, PanelFill, Placement, RunCall, RunId, Screen,
-    ScreenId, ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle, WorldColor, WorldElement,
-    WorldElementKind, WorldTextPart,
+    Align, Anchor, Book, Bookmark, ButtonCommand, ButtonDrag, ChoiceRef, ChoiceTable, Element,
+    Fill, FontId, ImageRef, InitialValue, MaxSpec, MusicId, PanelFill, Placement, RunCall, RunId,
+    Screen, ScreenId, ScreenKeyTable, ScreensConfig, TextPart, TooltipStyle, WorldColor,
+    WorldElement, WorldElementKind, WorldTextPart,
 };
 use crate::core::settings::{Toggle, Volume};
 use crate::core::terrain::{DENSITIES, Terrain};
@@ -8487,6 +8487,7 @@ enum ParsedElementData {
         on_click: ParsedCommand,
         on_hover: Option<String>,
         on_leave: Option<String>,
+        drag: Option<Box<ParsedButtonDrag>>,
         /// В коробке: кнопка — самый большой вид элемента.
         for_: Option<Box<Selector>>,
         hover: HoverFields,
@@ -8508,6 +8509,13 @@ enum ParsedElementData {
 /// Разобранные элементы списка или экрана с номерами, под которыми они стоят в файле: элемент с ошибкой
 /// разбора выпал, а ошибки следующих называют номер из файла.
 type ParsedElements = Vec<(usize, ParsedElementData)>;
+
+#[derive(Debug, Clone)]
+struct ParsedButtonDrag {
+    image: ParsedImageRef,
+    size: [f32; 2],
+    targets: Vec<(String, String)>,
+}
 
 /// Где стоит элемент: прямо на экране (якорь и, может быть, отбор `for`) или в строке списка (сдвиг от
 /// угла строки, без якоря и отбора).
@@ -8604,6 +8612,7 @@ const BUTTON_KEYS: &[&str] = &[
     "on_click",
     "on_hover",
     "on_leave",
+    "drag",
     "for",
     "name",
     "show_on_hover",
@@ -10136,6 +10145,17 @@ fn parse_element(
             )?;
             let on_hover = parse_run_callback(obj, "on_hover", file, path, errors);
             let on_leave = parse_run_callback(obj, "on_leave", file, path, errors);
+            let drag = match obj.get("drag") {
+                Some(value) => Some(Box::new(parse_button_drag(
+                    value,
+                    properties,
+                    own,
+                    file,
+                    &join(path, "drag"),
+                    errors,
+                )?)),
+                None => None,
+            };
             Some(ParsedElementData::Button {
                 placement,
                 text,
@@ -10155,6 +10175,7 @@ fn parse_element(
                 on_click,
                 on_hover,
                 on_leave,
+                drag,
                 for_: for_.map(Box::new),
                 hover: hover?,
                 choice: choice?,
@@ -10260,6 +10281,67 @@ fn parse_run_callback(
             None
         }
     }
+}
+
+fn parse_button_drag(
+    value: &Json,
+    properties: &PropertyTable,
+    own: bool,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ParsedButtonDrag> {
+    let obj = expect_object(value, file, path, errors)?;
+    reject_unknown_keys(obj, &["image", "size", "on_drop"], file, path, errors);
+    let image_path = join(path, "image");
+    let image = require_field(obj, "image", file, path, errors)?;
+    let image = parse_image_name(
+        expect_string(image, file, &image_path, errors)?,
+        properties,
+        file,
+        &image_path,
+        errors,
+    )?;
+    if !own && matches!(image, ParsedImageRef::Own(_)) {
+        errors.push(
+            file,
+            &image_path,
+            "для картинки из свойства у кнопки должен быть объект",
+        );
+        return None;
+    }
+    let size_path = join(path, "size");
+    let size = require_field(obj, "size", file, path, errors)?;
+    let size = parse_vec2(size, file, &size_path, errors)?.map(|axis| axis as f32);
+    if size.iter().any(|axis| !axis.is_finite() || *axis <= 0.0) {
+        errors.push(
+            file,
+            &size_path,
+            "размер должен быть конечным и больше нуля",
+        );
+        return None;
+    }
+    let drop_path = join(path, "on_drop");
+    let targets = require_field(obj, "on_drop", file, path, errors)?;
+    let targets = expect_object(targets, file, &drop_path, errors)?;
+    if targets.is_empty() {
+        errors.push(file, &drop_path, "укажи хотя бы одно место отпускания");
+        return None;
+    }
+    let targets = targets
+        .keys()
+        .map(|place| {
+            Some((
+                place.clone(),
+                parse_run_callback(targets, place, file, &drop_path, errors)?,
+            ))
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(ParsedButtonDrag {
+        image,
+        size,
+        targets,
+    })
 }
 
 struct ParsedScreen {
@@ -11684,6 +11766,7 @@ fn resolve_element(
             on_click,
             on_hover,
             on_leave,
+            drag,
             for_,
             hover,
             choice,
@@ -11739,6 +11822,18 @@ fn resolve_element(
             };
             let on_hover = callback(on_hover, "on_hover");
             let on_leave = callback(on_leave, "on_leave");
+            let drag = match drag {
+                Some(drag) => Some(Box::new(resolve_button_drag(
+                    drag,
+                    images,
+                    places,
+                    runs,
+                    file,
+                    &join(path, "drag"),
+                    errors,
+                )?)),
+                None => None,
+            };
             let fill_hover = resolve_fill(
                 *color_hover,
                 image_hover_name.as_deref(),
@@ -11791,6 +11886,7 @@ fn resolve_element(
                 on_click,
                 on_hover,
                 on_leave,
+                drag,
                 for_: for_.as_deref().cloned(),
                 name: hover.name.clone(),
                 choose: choice.choose.clone(),
@@ -11848,6 +11944,56 @@ fn resolve_element(
             })
         }
     }
+}
+
+fn resolve_button_drag(
+    drag: &ParsedButtonDrag,
+    images: &[ImageDecl],
+    places: &HoverPlaces,
+    runs: &mut RunTable<'_>,
+    file: &str,
+    path: &str,
+    errors: &mut ErrorSink,
+) -> Option<ButtonDrag> {
+    let image = match &drag.image {
+        ParsedImageRef::Name(name) => ImageRef::Fixed(resolve_image(
+            name,
+            images,
+            file,
+            &join(path, "image"),
+            errors,
+        )?),
+        ParsedImageRef::Own(property) => ImageRef::Own {
+            property: *property,
+            names: images.iter().map(|image| image.name.clone()).collect(),
+        },
+    };
+    let mut targets = Vec::with_capacity(drag.targets.len());
+    let drop_path = join(path, "on_drop");
+    for (place, function) in &drag.targets {
+        let place_path = join(&drop_path, place);
+        let Some(&target) = places.get(place) else {
+            errors.push(
+                file,
+                &place_path,
+                format!("на экране нет места \"{place}\""),
+            );
+            return None;
+        };
+        let run = runs.add(
+            function,
+            format!("перетаскивание в \"{place}\""),
+            file,
+            &place_path,
+            errors,
+        )?;
+        targets.push((target, run));
+    }
+    Some(ButtonDrag {
+        image,
+        size: drag.size,
+        targets,
+    })
 }
 
 /// «Подсказка»: подстановки `{имя объекта.свойство}` в подсказке называют объекты из сцены, как в `text`.
@@ -13739,11 +13885,17 @@ fn collect_used_images(
                     fill,
                     fill_hover,
                     fill_pressed,
+                    drag,
                     ..
                 } => {
                     mark_fill_used(&mut used, fill);
                     mark_fill_used(&mut used, fill_hover);
                     mark_fill_used(&mut used, fill_pressed);
+                    if let Some(drag) = drag
+                        && let ImageRef::Fixed(image) = drag.image
+                    {
+                        used.insert(image);
+                    }
                 }
                 Element::Bar {
                     fill, back, trail, ..
@@ -13952,7 +14104,7 @@ fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: 
                     screens_file,
                     &format!("screens[{screen_index}].elements[{element_index}].name"),
                     format!(
-                        "место наведения \"{name}\" на экране \"{}\": на него не откликается ни один элемент; ожидался show_on_hover, show_on_pointer или play_on_hover с этим именем",
+                        "место наведения \"{name}\" на экране \"{}\": на него не откликается ни один элемент; ожидался show_on_hover, show_on_pointer, play_on_hover или drag.on_drop с этим именем",
                         screen.name
                     ),
                 );
@@ -13963,7 +14115,7 @@ fn warn_unanswered_hover_places(screens: &[Screen], screens_file: &str, errors: 
 
 /// «Наведение»: номера мест экрана, на которые откликается хотя бы один элемент.
 fn answered_places(screen: &Screen) -> std::collections::HashSet<usize> {
-    screen
+    let mut answered: std::collections::HashSet<_> = screen
         .elements
         .iter()
         .flat_map(|element| {
@@ -13974,7 +14126,16 @@ fn answered_places(screen: &Screen) -> std::collections::HashSet<usize> {
             ]
         })
         .flatten()
-        .collect()
+        .collect();
+    for element in screen.elements.iter().flat_map(Element::leaves) {
+        if let Element::Button {
+            drag: Some(drag), ..
+        } = element
+        {
+            answered.extend(drag.targets.iter().map(|&(place, _)| place));
+        }
+    }
+    answered
 }
 
 /// «Выбор»: группы, которые называют подстановки `{choice:…}` текста.
