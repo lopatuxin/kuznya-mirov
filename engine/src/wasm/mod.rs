@@ -1689,11 +1689,41 @@ fn compose_ui(
             .map(|(_, sprite)| draw_rect(&atlas::screen_particle_paint(&sprite, cell))),
     );
     renderer.set_panel_videos(&panel_videos);
+    let drag = screens::dragged_button(&parts, mouse, world, state.opened());
+    if let Some((source, drag)) = drag {
+        let image = match &drag.image {
+            screens::ImageRef::Fixed(image) => Some(*image),
+            image => source
+                .object
+                .and_then(|id| image.resolve(world, id, properties)),
+        };
+        if let Some(image) = image.filter(|&image| {
+            let decl = &images[image];
+            !decl.video && decl.frame_by.is_none() && decl.size.is_none()
+        }) {
+            let [x, y] = frame.point(mouse.position);
+            let [width, height] = drag.size;
+            push_fill(
+                &mut layers.tooltip_rects,
+                &mut paints,
+                &Fill::Image {
+                    image,
+                    opacity: 1.0,
+                },
+                [x - width / 2.0, y - height / 2.0, width, height],
+                1.0,
+                ui_elapsed_steps,
+                images,
+                atlas_rects,
+            );
+        }
+    }
     if let Some(style) = &config.tooltip {
+        let pointer = tooltip.pointer.filter(|_| drag.is_none());
         let shown = tooltip.hover.show(
             &parts,
             screen_id,
-            tooltip.pointer.map(|pointer| frame.point(pointer)),
+            pointer.map(|pointer| frame.point(pointer)),
             mouse,
             tooltip.now,
             style,
@@ -3563,6 +3593,7 @@ impl Engine {
     pub fn tab_hidden(&mut self) {
         self.runner.reset();
         self.runner.forget_last_tick();
+        self.mouse_leave();
         if let Some(game) = self.game.as_mut() {
             game.camera_release_input();
         }

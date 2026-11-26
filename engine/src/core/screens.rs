@@ -7,7 +7,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use super::game::Game;
-use super::input::{ButtonKey, MouseEvent, MouseState, UiEvent, UiQueue};
+use super::input::{ButtonKey, DragCapture, MouseEvent, MouseState, UiEvent, UiQueue};
 use super::interface::{self, Part, Placed, SCROLL_POINTS_PER_ROW};
 use super::particles::Settings;
 use super::property::{self, PropertyId, PropertyTable};
@@ -419,6 +419,13 @@ pub enum ButtonCommand {
     ResetKeys,
 }
 
+#[derive(Debug, Clone)]
+pub struct ButtonDrag {
+    pub image: ImageRef,
+    pub size: [f32; 2],
+    pub targets: Vec<(usize, RunId)>,
+}
+
 /// Элемент экрана. Панель, надпись и кнопка вне строки списка могут иметь отбор `for_` — «Элемент при
 /// объекте»: пока объекта отбора нет, элемента нет. Внутри `row` списка `for_` пуст, а `placement` —
 /// сдвиг и размер от левого верхнего угла строки.
@@ -478,6 +485,7 @@ pub enum Element {
         on_click: ButtonCommand,
         on_hover: Option<RunId>,
         on_leave: Option<RunId>,
+        drag: Option<Box<ButtonDrag>>,
         for_: Option<Selector>,
         /// «Наведение»: имя места наведения.
         name: Option<String>,
@@ -1908,10 +1916,20 @@ fn press_outcome(
     world_accepts: bool,
     point: [f32; 2],
     image_object: Option<u32>,
+    world: &World,
+    opened: u64,
 ) -> MouseOutcome {
     match topmost_interface_hit(parts, point) {
         Some(InterfaceHit::Button(placed)) => {
             mouse.captured = Some(placed.key);
+            if matches!(placed.element, Element::Button { drag: Some(_), .. }) {
+                mouse.drag = Some(DragCapture {
+                    opened,
+                    origin: mouse.position,
+                    object_generation: placed.object.map(|id| world.generation(id)),
+                    moved: false,
+                });
+            }
             choose_outcome(&placed)
         }
         Some(InterfaceHit::Panel(placed)) => choose_outcome(&placed),
@@ -1970,6 +1988,59 @@ fn choose_outcome(placed: &Placed<'_>) -> MouseOutcome {
     }
 }
 
+pub fn dragged_button<'a>(
+    parts: &[Part<'a>],
+    mouse: &MouseState,
+    world: &World,
+    opened: u64,
+) -> Option<(Placed<'a>, &'a ButtonDrag)> {
+    let capture = mouse
+        .drag
+        .filter(|drag| drag.moved && drag.opened == opened)?;
+    let key = mouse.captured?;
+    if key.object.map(|id| world.generation(id)) != capture.object_generation {
+        return None;
+    }
+    parts.iter().find_map(|part| match part {
+        Part::Element(placed) if placed.key == key && !placed.locked => match placed.element {
+            Element::Button {
+                drag: Some(drag), ..
+            } => Some((*placed, drag.as_ref())),
+            _ => None,
+        },
+        _ => None,
+    })
+}
+
+fn drop_outcome(
+    parts: &[Part<'_>],
+    mouse: &MouseState,
+    world: &World,
+    opened: u64,
+    point: [f32; 2],
+) -> MouseOutcome {
+    let Some((source, drag)) = dragged_button(parts, mouse, world, opened) else {
+        return MouseOutcome::None;
+    };
+    let run = parts.iter().rev().find_map(|part| match part {
+        Part::Element(placed) if !placed.locked && placed.contains(point) => drag
+            .targets
+            .iter()
+            .find_map(|&(element, run)| (element == placed.key.element).then_some(run)),
+        _ => None,
+    });
+    run.map_or(MouseOutcome::None, |run| {
+        MouseOutcome::Command(ButtonCommand::Run(run), source.object)
+    })
+}
+
+fn cancel_drag_from_previous_screen(mouse: &mut MouseState, opened: u64) {
+    if mouse.drag.is_some_and(|drag| drag.opened != opened) {
+        mouse.drag = None;
+        mouse.captured = None;
+    }
+}
+
 /// Applies one queued mouse event to `mouse`'s hover/capture state against `screen`'s elements —
 /// «Интерфейс игры» → «Мышь», «Мышь в мире», требования 13–16. A press over a button or panel
 /// never reaches the world; elsewhere, on a live screen, it does, as `MouseLeft` — and the
@@ -1980,15 +2051,25 @@ fn handle_mouse_event(
     world_accepts: bool,
     frame: UiFrame,
     event: MouseEvent,
+    world: &World,
+    opened: u64,
 ) -> MouseOutcome {
     match event {
         MouseEvent::Leave => {
             mouse.hover = None;
             mouse.captured = None;
+            mouse.drag = None;
             MouseOutcome::None
         }
         MouseEvent::Move(pos) => {
             mouse.position = pos;
+            if let Some(drag) = &mut mouse.drag {
+                const DRAG_DISTANCE_PX: f32 = 5.0;
+                let dx = pos[0] - drag.origin[0];
+                let dy = pos[1] - drag.origin[1];
+                drag.moved |= dx * dx + dy * dy >= DRAG_DISTANCE_PX * DRAG_DISTANCE_PX;
+                return MouseOutcome::None;
+            }
             if let Some(captured) = mouse.captured {
                 return dragged_outcome(parts, captured, frame.point(pos));
             }
@@ -2001,7 +2082,16 @@ fn handle_mouse_event(
         MouseEvent::Down(image_object) => {
             mouse.presses = mouse.presses.wrapping_add(1);
             let point = frame.point(mouse.position);
-            press_outcome(mouse, parts, world_accepts, point, image_object)
+            mouse.drag = None;
+            press_outcome(
+                mouse,
+                parts,
+                world_accepts,
+                point,
+                image_object,
+                world,
+                opened,
+            )
         }
         MouseEvent::Up => {
             mouse.releases = mouse.releases.wrapping_add(1);
@@ -2009,10 +2099,17 @@ fn handle_mouse_event(
                 mouse.world_captured = false;
                 return MouseOutcome::WorldRelease;
             }
+            let point = frame.point(mouse.position);
+            if mouse.drag.is_some_and(|drag| drag.moved) {
+                let outcome = drop_outcome(parts, mouse, world, opened, point);
+                mouse.drag = None;
+                mouse.captured = None;
+                return outcome;
+            }
+            mouse.drag = None;
             let Some(captured) = mouse.captured.take() else {
                 return MouseOutcome::None;
             };
-            let point = frame.point(mouse.position);
             // Команда срабатывает, только если под указателем кнопка, на которой нажали, — тот же
             // элемент и тот же объект: строки списка могли сдвинуться.
             let placed = match topmost_interface_hit(parts, point) {
@@ -2086,6 +2183,7 @@ pub fn process_ui_queue_recording(
     apply_now: bool,
 ) {
     initialize_screen(game, config, state);
+    cancel_drag_from_previous_screen(mouse, state.opened());
     refresh_callback_hover(mouse, game, config, state, viewport, events.as_deref_mut());
     for event in queue.drain() {
         match event {
@@ -2115,7 +2213,15 @@ pub fn process_ui_queue_recording(
                     frame.viewport,
                 );
                 let accepts = world_accepts_input(game, config, state);
-                let outcome = handle_mouse_event(mouse, &parts, accepts, frame, mouse_event);
+                let outcome = handle_mouse_event(
+                    mouse,
+                    &parts,
+                    accepts,
+                    frame,
+                    mouse_event,
+                    &game.world,
+                    state.opened(),
+                );
                 if matches!(mouse_event, MouseEvent::Down(_))
                     && !matches!(outcome, MouseOutcome::PressedKey)
                 {
@@ -2199,6 +2305,7 @@ pub fn process_ui_queue_recording(
                 }
             }
         }
+        cancel_drag_from_previous_screen(mouse, state.opened());
         refresh_callback_hover(mouse, game, config, state, viewport, events.as_deref_mut());
     }
 }

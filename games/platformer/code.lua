@@ -549,11 +549,16 @@ local function equipment(hero)
   return gear
 end
 
-local function with_item(gear, id)
+local function with_item(gear, id, target)
   local row = item_row(id)
   local slot = row.slot
   if slot == "ring" then
-    slot = gear.ring1 == "" and "ring1" or (gear.ring2 == "" and "ring2" or "ring1")
+    if target ~= nil and target ~= "ring1" and target ~= "ring2" then
+      return nil
+    end
+    slot = target or (gear.ring1 == "" and "ring1" or (gear.ring2 == "" and "ring2" or "ring1"))
+  elseif target ~= nil and target ~= slot then
+    return nil
   end
   if slot == "weapon" and row.two_handed then
     gear.offhand = ""
@@ -710,29 +715,77 @@ function clear_preview()
   refresh_book(the_hero())
 end
 
-function equip_item(item)
+local function last_bag_order()
+  local order = 0
+  for _, bag in ipairs(find({ has = { "bag_item" } })) do
+    order = math.max(order, bag.bag_order or 0)
+  end
+  return order
+end
+
+local function put_in_bag(id, order)
+  local row = item_row(id)
+  create({ bag_item = true, item_id = id, item_name = row.name, item_icon = row.icon, bag_order = order })
+end
+
+local function equip_item_at(item, slot)
   if not item.bag_item then
     return
   end
   local hero = the_hero()
   local old = equipment(hero)
-  local gear, target = with_item(equipment(hero), item.item_id)
-  local order = 0
-  for _, bag in ipairs(find({ has = { "bag_item" } })) do
-    order = math.max(order, bag.bag_order or 0)
+  local gear, target = with_item(equipment(hero), item.item_id, slot)
+  if gear == nil then
+    return
   end
+  local order = last_bag_order()
   delete(item)
   for _, slot in ipairs(SLOTS) do
     if old[slot] ~= "" and (old[slot] ~= gear[slot] or slot == target) then
       order = order + 1
-      local row = item_row(old[slot])
-      create({ bag_item = true, item_id = old[slot], item_name = row.name, item_icon = row.icon, bag_order = order })
+      put_in_bag(old[slot], order)
     end
     hero[SLOT_PROPERTIES[slot].equip] = gear[slot]
   end
   apply_stats(hero)
   refresh_book(hero)
 end
+
+function equip_item(item) equip_item_at(item) end
+function equip_head(item) equip_item_at(item, "head") end
+function equip_body(item) equip_item_at(item, "body") end
+function equip_gloves(item) equip_item_at(item, "gloves") end
+function equip_belt(item) equip_item_at(item, "belt") end
+function equip_boots(item) equip_item_at(item, "boots") end
+function equip_weapon(item) equip_item_at(item, "weapon") end
+function equip_offhand(item) equip_item_at(item, "offhand") end
+function equip_amulet(item) equip_item_at(item, "amulet") end
+function equip_ring1(item) equip_item_at(item, "ring1") end
+function equip_ring2(item) equip_item_at(item, "ring2") end
+
+local function unequip_item(slot)
+  local hero = the_hero()
+  local property = SLOT_PROPERTIES[slot].equip
+  local id = hero[property]
+  if id == nil or id == "" then
+    return
+  end
+  put_in_bag(id, last_bag_order() + 1)
+  hero[property] = ""
+  apply_stats(hero)
+  refresh_book(hero)
+end
+
+function unequip_head() unequip_item("head") end
+function unequip_body() unequip_item("body") end
+function unequip_gloves() unequip_item("gloves") end
+function unequip_belt() unequip_item("belt") end
+function unequip_boots() unequip_item("boots") end
+function unequip_weapon() unequip_item("weapon") end
+function unequip_offhand() unequip_item("offhand") end
+function unequip_amulet() unequip_item("amulet") end
+function unequip_ring1() unequip_item("ring1") end
+function unequip_ring2() unequip_item("ring2") end
 
 local function change_water(key, undo)
   local hero = the_hero()
